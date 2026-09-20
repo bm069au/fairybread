@@ -1,5 +1,5 @@
 from provider_registry import ProviderRegistry
-from providers import ProviderResponse
+from provider_result import ProviderResult
 
 
 class ProviderDispatcher:
@@ -10,15 +10,27 @@ class ProviderDispatcher:
         self,
         prompt: str,
         provider_names: list[str] | None = None
-    ) -> dict[str, ProviderResponse]:
+    ) -> dict[str, ProviderResult]:
 
         if provider_names is None:
             provider_names = self.registry.names()
 
-        responses: dict[str, ProviderResponse] = {}
+        results: dict[str, ProviderResult] = {}
 
         for name in provider_names:
-            provider = self.registry.get(name)
-            responses[name] = provider.generate(prompt)
+            try:
+                provider = self.registry.get(name)
+                response = provider.generate(prompt)
 
-        return responses
+                results[name] = ProviderResult(
+                    provider_name=name,
+                    response=response
+                )
+
+            except Exception as exc:
+                results[name] = ProviderResult(
+                    provider_name=name,
+                    error=str(exc)
+                )
+
+        return results

@@ -15,33 +15,45 @@ class FakeProvider(AIProvider):
         )
 
 
+class FailingProvider(AIProvider):
+    def generate(self, prompt: str) -> ProviderResponse:
+        raise RuntimeError("Simulated provider failure")
+
+
 def test_dispatcher():
     registry = ProviderRegistry()
 
     registry.register("openai", FakeProvider("openai"))
-    registry.register("gemini", FakeProvider("gemini"))
+    registry.register("gemini", FailingProvider())
     registry.register("claude", FakeProvider("claude"))
 
     dispatcher = ProviderDispatcher(registry)
 
-    all_responses = dispatcher.dispatch("Hello Palace")
+    results = dispatcher.dispatch("Hello Palace")
 
-    assert len(all_responses) == 3
-    assert all_responses["openai"].text == "openai: Hello Palace"
-    assert all_responses["gemini"].text == "gemini: Hello Palace"
-    assert all_responses["claude"].text == "claude: Hello Palace"
+    assert len(results) == 3
 
-    selected_responses = dispatcher.dispatch(
+    assert results["openai"].succeeded
+    assert results["openai"].response.text == "openai: Hello Palace"
+
+    assert not results["gemini"].succeeded
+    assert results["gemini"].response is None
+    assert results["gemini"].error == "Simulated provider failure"
+
+    assert results["claude"].succeeded
+    assert results["claude"].response.text == "claude: Hello Palace"
+
+    selected_results = dispatcher.dispatch(
         "Selective test",
         provider_names=["openai", "claude"]
     )
 
-    assert len(selected_responses) == 2
-    assert "openai" in selected_responses
-    assert "claude" in selected_responses
-    assert "gemini" not in selected_responses
+    assert len(selected_results) == 2
+    assert "openai" in selected_results
+    assert "claude" in selected_results
+    assert "gemini" not in selected_results
 
 
 if __name__ == "__main__":
     test_dispatcher()
-    print("Dispatcher test passed.")
+    print("Dispatcher failure-isolation test passed.")
