@@ -2,19 +2,9 @@ import subprocess
 import sys
 
 def clean_output(raw_text):
-    lines = raw_text.splitlines()
-    cleaned = []
-
-    keep = False
-
-    for line in lines:
-        if "Memory:" in line:
-            keep = True
-
-        if keep:
-            cleaned.append(line.strip())
-
-    return "\n".join(cleaned)
+    if not raw_text:
+        return ""
+    return raw_text.strip()
 
 def search_memory(query, wing="gpt_palace"):
     result = subprocess.run(
@@ -29,7 +19,7 @@ def search_memory(query, wing="gpt_palace"):
         ],
         capture_output=True,
         text=True,
-        encoding="utf-8"
+        encoding="cp1252"
     )
 
     return result.stdout
@@ -71,3 +61,5 @@ if __name__ == "__main__":
     print("\nAnswer:\n")
 
     print("========== END PROMPT ==========\n")
+
+
