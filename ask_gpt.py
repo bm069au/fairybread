@@ -1,4 +1,4 @@
-from openai import OpenAI
+from openai_provider import OpenAIProvider
 import subprocess
 import sys
 from datetime import datetime
@@ -32,7 +32,7 @@ if not api_key:
     input("Press ENTER to exit...")
     sys.exit()
 
-client = OpenAI(api_key=api_key)
+provider = OpenAIProvider(api_key=api_key)
 print("Memory Assistant")
 print("=" * 60)
 
@@ -88,12 +88,9 @@ FINAL ANSWER:
 
 print("Calling GPT...\n")
 
-response = client.responses.create(
-    model="gpt-5-mini",
-    input=prompt
-)
+response = provider.generate(prompt)
 
-answer_text = response.output_text
+answer_text = response.text
 
 print("=" * 60)
 print("GPT says:")
