@@ -1,0 +1,3 @@
+Issue: MemPalace CLI argument order confusion
+Solution: Global options must come before subcommands
+Pattern: python -m mempalace --palace X search Y

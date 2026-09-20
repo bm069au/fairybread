@@ -1,0 +1,22 @@
+# MEM PALACE COMMANDS
+
+# Mine (update memory after editing files)
+python -m mempalace mine gpt_palace
+python -m mempalace mine grok_palace
+
+# Search GPT memory
+python -m mempalace search "your query here" --wing gpt_palace
+
+# Search Grok memory
+python -m mempalace search "your query here" --wing grok_palace
+
+# Search everything
+python -m mempalace search "your query here"
+
+# Status (what has been indexed)
+python -m mempalace status
+
+---
+headphones are uncomfortable.. pressing on top of my left ear where I had surgury several years ago.
+Stock pads shallow. Likely need Velour or breathable pads.
+---

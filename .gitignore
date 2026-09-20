@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Environment / credentials
+.env
+.env.*
+*.key
+*.pem
+
+# Local databases / Palace state
+*.sqlite
+*.sqlite3
+chroma.sqlite3
+
+# Runtime / captured private material
+capture.txt
+gpt_note.txt
+grok_note.txt
+*_capture.txt
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Local secrets
+key.txt
+
+# Generated build/output
+build/
+dist/
