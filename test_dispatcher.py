@@ -1,3 +1,4 @@
+import threading
 from dispatcher import ProviderDispatcher
 from provider_registry import ProviderRegistry
 from providers import AIProvider, ProviderResponse
@@ -8,6 +9,20 @@ class FakeProvider(AIProvider):
         self.name = name
 
     def generate(self, prompt: str) -> ProviderResponse:
+        return ProviderResponse(
+            text=f"{self.name}: {prompt}",
+            model=f"{self.name}-model",
+            provider=self.name
+        )
+
+class SynchronisedProvider(AIProvider):
+    def __init__(self, name: str, barrier: threading.Barrier):
+        self.name = name
+        self.barrier = barrier
+
+    def generate(self, prompt: str) -> ProviderResponse:
+        self.barrier.wait(timeout=2)
+
         return ProviderResponse(
             text=f"{self.name}: {prompt}",
             model=f"{self.name}-model",
@@ -53,6 +68,36 @@ def test_dispatcher():
     assert "claude" in selected_results
     assert "gemini" not in selected_results
 
+    barrier = threading.Barrier(3)
+
+    parallel_registry = ProviderRegistry()
+    parallel_registry.register(
+        "one",
+        SynchronisedProvider("one", barrier)
+    )
+    parallel_registry.register(
+        "two",
+        SynchronisedProvider("two", barrier)
+    )
+    parallel_registry.register(
+        "three",
+        SynchronisedProvider("three", barrier)
+    )
+
+    parallel_dispatcher = ProviderDispatcher(
+        parallel_registry,
+        max_workers=3
+    )
+
+    parallel_results = parallel_dispatcher.dispatch(
+        "Parallel test"
+    )
+
+    assert all(
+        result.succeeded
+        for result in parallel_results.values()
+    )
+    
 
 if __name__ == "__main__":
     test_dispatcher()
