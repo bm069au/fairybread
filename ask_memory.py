@@ -12,7 +12,7 @@ def clean_output(raw_text):
             keep = True
 
         if keep:
-            cleaned.append(line.strip())Select-String -Path ".venv\Lib\site-packages\mempalace\*.py" -Pattern "subprocess|os.system|eval|exec|requests|http|socket|openai|anthropic|delete|rmtree|unlink" -Recurse
+            cleaned.append(line.strip())
 
     return "\n".join(cleaned)
 
