@@ -24,21 +24,26 @@ def test_memory_service():
         assert result.error is None
         assert result.context == "1234567890"
 
-        mock_run.assert_called_once_with(
-            [
-                "python",
-                "-m",
-                "mempalace",
-                "search",
-                "test query",
-                "--wing",
-                "test_wing"
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="ignore"
-        )
+        mock_run.assert_called_once()
+
+        args, kwargs = mock_run.call_args
+
+        assert args[0] == [
+            "python",
+            "-m",
+            "mempalace",
+            "search",
+            "test query",
+            "--wing",
+            "test_wing"
+        ]
+
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "ignore"
+
+        assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
 
     # Successful search with no results
     with patch("memory_service.subprocess.run") as mock_run:

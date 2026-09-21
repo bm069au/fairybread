@@ -7,7 +7,7 @@ import os
 # =========================================================
 # WING SELECTION
 # =========================================================
-client = OpenAI(api_key="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")
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # Select wing (default = gpt_palace)
 if len(sys.argv) > 1:
     wing = sys.argv[1]
