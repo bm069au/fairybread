@@ -97,8 +97,8 @@ def test_dispatcher():
         result.succeeded
         for result in parallel_results.values()
     )
-    
+
 
 if __name__ == "__main__":
     test_dispatcher()
-    print("Dispatcher failure-isolation test passed.")
+    print("Dispatcher tests passed.")
