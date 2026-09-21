@@ -1,30 +1,29 @@
 from dispatcher import ProviderDispatcher
 from memory_service import MemoryService
-from openai_provider import OpenAIProvider
 from orchestrator import PalaceOrchestrator
 from provider_registry import ProviderRegistry
+from providers import AIProvider
 
 
 def build_palace(
-    api_key: str,
-    model: str = "gpt-5-mini",
+    providers: dict[str, AIProvider],
     wing: str = "gpt_palace",
     memory_limit: int = 4000,
     max_workers: int = 4
 ) -> PalaceOrchestrator:
 
-    if not api_key.strip():
-        raise ValueError("API key cannot be empty.")
+    if not providers:
+        raise ValueError(
+            "At least one AI provider is required."
+        )
 
     registry = ProviderRegistry()
 
-    registry.register(
-        "openai",
-        OpenAIProvider(
-            api_key=api_key,
-            model=model
+    for name, provider in providers.items():
+        registry.register(
+            name,
+            provider
         )
-    )
 
     dispatcher = ProviderDispatcher(
         registry,
