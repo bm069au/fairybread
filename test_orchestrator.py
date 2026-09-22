@@ -34,7 +34,10 @@ class FakeDispatcher:
 
 
 def test_orchestrator():
-    # Normal memory path
+    # -----------------------------------------------------
+    # Memory included successfully
+    # -----------------------------------------------------
+
     memory_service = FakeMemoryService(
         SimpleNamespace(
             succeeded=True,
@@ -52,25 +55,54 @@ def test_orchestrator():
 
     result = orchestrator.run(
         "What should Palace do?",
-        provider_names=["openai"]
+        provider_names=["openai"],
+        include_memory=True
     )
 
-    assert memory_service.last_query == "What should Palace do?"
+    assert memory_service.last_query == (
+        "What should Palace do?"
+    )
 
-    assert result.question == "What should Palace do?"
-    assert result.memory_context == "Relevant stored memory"
+    assert result.question == (
+        "What should Palace do?"
+    )
+
+    assert result.memory_context == (
+        "Relevant stored memory"
+    )
+
     assert result.memory_error is None
 
-    assert "Relevant stored memory" in result.prompt
-    assert "What should Palace do?" in result.prompt
+    assert (
+        "Relevant stored memory"
+        in result.prompt
+    )
 
-    assert dispatcher.last_prompt == result.prompt
-    assert dispatcher.last_provider_names == ["openai"]
+    assert (
+        "What should Palace do?"
+        in result.prompt
+    )
+
+    assert dispatcher.last_prompt == (
+        result.prompt
+    )
+
+    assert dispatcher.last_provider_names == [
+        "openai"
+    ]
 
     assert "openai" in result.provider_results
-    assert result.provider_results["openai"].succeeded
 
-    # Memory failure path
+    assert (
+        result
+        .provider_results["openai"]
+        .succeeded
+    )
+
+    # -----------------------------------------------------
+    # Memory requested but memory service fails
+    # -----------------------------------------------------
+
     failing_memory = FakeMemoryService(
         SimpleNamespace(
             succeeded=False,
@@ -87,17 +119,89 @@ def test_orchestrator():
     )
 
     result = orchestrator.run(
+        "Can Palace continue?",
+        include_memory=True
+    )
+
+    assert failing_memory.last_query == (
         "Can Palace continue?"
     )
 
-    assert result.memory_context == "Memory unavailable."
-    assert result.memory_error == "Simulated memory failure"
+    assert result.memory_context == (
+        "Memory unavailable."
+    )
 
-    assert "Memory unavailable." in result.prompt
-    assert "Can Palace continue?" in result.prompt
+    assert result.memory_error == (
+        "Simulated memory failure"
+    )
+
+    assert (
+        "Memory unavailable."
+        in result.prompt
+    )
+
+    assert (
+        "Can Palace continue?"
+        in result.prompt
+    )
 
     assert "openai" in result.provider_results
-    assert result.provider_results["openai"].succeeded
+
+    assert (
+        result
+        .provider_results["openai"]
+        .succeeded
+    )
+
+    # -----------------------------------------------------
+    # Privacy default:
+    # memory must NOT be queried unless explicitly enabled
+    # -----------------------------------------------------
+
+    private_memory = FakeMemoryService(
+        SimpleNamespace(
+            succeeded=True,
+            context="This should never be read",
+            error=None
+        )
+    )
+
+    private_dispatcher = FakeDispatcher()
+
+    orchestrator = PalaceOrchestrator(
+        private_memory,
+        private_dispatcher
+    )
+
+    result = orchestrator.run(
+        "Private test"
+    )
+
+    assert private_memory.last_query is None
+
+    assert result.memory_context == (
+        "Memory not included."
+    )
+
+    assert result.memory_error is None
+
+    assert (
+        "Memory not included."
+        in result.prompt
+    )
+
+    assert (
+        "Private test"
+        in result.prompt
+    )
+
+    assert "openai" in result.provider_results
+
+    assert (
+        result
+        .provider_results["openai"]
+        .succeeded
+    )
 
 
 if __name__ == "__main__":

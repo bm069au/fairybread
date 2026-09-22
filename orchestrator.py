@@ -46,17 +46,24 @@ Rules:
 """.strip()
 
     def run(
-        self,
-        question: str,
-        provider_names: list[str] | None = None
+            self,
+            question: str,
+            provider_names: list[str] | None = None,
+            include_memory: bool = False
     ) -> PalaceRunResult:
 
-        memory_result = self.memory_service.search(question)
+        if include_memory:
+            memory_result = self.memory_service.search(question)
 
-        if memory_result.succeeded:
-            memory_context = memory_result.context
+            if memory_result.succeeded:
+                memory_context = memory_result.context
+                memory_error = memory_result.error
+            else:
+                memory_context = "Memory unavailable."
+                memory_error = memory_result.error
         else:
-            memory_context = "Memory unavailable."
+            memory_context = "Memory not included."
+            memory_error = None
 
         prompt = self._build_prompt(
             question,
@@ -72,6 +79,6 @@ Rules:
             question=question,
             prompt=prompt,
             memory_context=memory_context,
-            memory_error=memory_result.error,
+            memory_error=memory_error,
             provider_results=provider_results
         )
