@@ -25,6 +25,7 @@ def build_configured_palace():
 def main():
     try:
         palace = build_configured_palace()
+
     except RuntimeError as exc:
         print(exc)
         sys.exit(1)
@@ -32,7 +33,9 @@ def main():
     print("Palace")
     print("=" * 60)
 
-    question = input("Ask Palace: ").strip()
+    question = input(
+        "Ask Palace: "
+    ).strip()
 
     if not question:
         print("No question entered.")
@@ -42,30 +45,49 @@ def main():
         "\nConsulting configured providers...\n"
     )
 
-    result = palace.run(question)
+    result = palace.run(
+        question
+    )
 
     if result.memory_error:
         print(
-            f"Memory warning: {result.memory_error}"
+            f"Memory warning: "
+            f"{result.memory_error}"
         )
         print()
 
-    for provider_name, provider_result in (
-        result.provider_results.items()
-    ):
-        print("=" * 60)
-        print(provider_name.upper())
-        print("=" * 60)
+    print("=" * 60)
+    print("PALACE")
+    print("=" * 60)
 
-        if provider_result.succeeded:
-            print(provider_result.response.text)
-        else:
-            print(
-                f"Provider failed: "
-                f"{provider_result.error}"
-            )
+    if result.final_answer:
+        print(
+            result.final_answer
+        )
+    else:
+        print(
+            "No provider produced "
+            "a usable response."
+        )
 
+    if result.contributors:
         print()
+        print(
+            "Contributors: "
+            + ", ".join(
+                result.contributors
+            )
+        )
+
+    if (
+        result.synthesis
+        and not result.synthesis.succeeded
+    ):
+        print()
+        print(
+            "Synthesis warning: "
+            f"{result.synthesis.error}"
+        )
 
 
 if __name__ == "__main__":

@@ -13,15 +13,16 @@ class FakePalace:
 
         return SimpleNamespace(
             memory_error=None,
-            provider_results={
-                "gemini": SimpleNamespace(
-                    succeeded=True,
-                    response=SimpleNamespace(
-                        text="Fake Palace answer"
-                    ),
-                    error=None
-                )
-            }
+            final_answer="Fake Palace answer",
+            contributors=[
+                "gemini",
+                "groq"
+            ],
+            synthesis=SimpleNamespace(
+                succeeded=True,
+                error=None
+            ),
+            provider_results={}
         )
 
 
@@ -43,7 +44,10 @@ def test_build_configured_palace():
         return_value=fake_palace
     ) as mock_build:
 
-        palace = palace_cli.build_configured_palace()
+        palace = (
+            palace_cli
+            .build_configured_palace()
+        )
 
     mock_load.assert_called_once_with(
         fake_credentials
@@ -69,7 +73,9 @@ def test_build_configured_palace_rejects_no_providers():
         try:
             palace_cli.build_configured_palace()
 
-            assert False, "Expected RuntimeError"
+            assert False, (
+                "Expected RuntimeError"
+            )
 
         except RuntimeError as exc:
             assert str(exc) == (
@@ -90,7 +96,9 @@ def test_main():
 
         palace_cli.main()
 
-    assert fake_palace.last_question == "Hello Palace"
+    assert fake_palace.last_question == (
+        "Hello Palace"
+    )
 
 
 def test_empty_question():
