@@ -7,7 +7,7 @@ class GeminiProvider(AIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash-lite"
+        model: str = "gemini-3.5-flash-lite"
     ):
         self.client = genai.Client(
             api_key=api_key
@@ -15,13 +15,13 @@ class GeminiProvider(AIProvider):
         self.model = model
 
     def generate(self, prompt: str) -> ProviderResponse:
-        response = self.client.models.generate_content(
+        interaction = self.client.interactions.create(
             model=self.model,
-            contents=prompt
+            input=prompt
         )
 
         return ProviderResponse(
-            text=response.text,
+            text=interaction.output_text,
             model=self.model,
             provider="gemini"
         )
