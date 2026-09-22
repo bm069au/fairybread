@@ -39,7 +39,7 @@ def main():
         return
 
     print(
-        "\nSearching memory and consulting providers...\n"
+        "\nConsulting configured providers...\n"
     )
 
     result = palace.run(question)

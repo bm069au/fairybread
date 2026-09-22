@@ -2,6 +2,7 @@ from typing import Callable
 
 from credential_store import CredentialStore
 from gemini_provider import GeminiProvider
+from groq_provider import GroqProvider
 from providers import AIProvider
 
 
@@ -14,6 +15,9 @@ def load_configured_providers(
         Callable[[str], AIProvider]
     ] = {
         "gemini": lambda api_key: GeminiProvider(
+            api_key=api_key
+        ),
+        "groq": lambda api_key: GroqProvider(
             api_key=api_key
         )
     }
