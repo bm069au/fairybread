@@ -1,30 +1,33 @@
-import os
 import sys
 
 from bootstrap import build_palace
+from credential_store import CredentialStore
+from provider_loader import load_configured_providers
 
 
-def load_api_key() -> str:
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+def build_configured_palace():
+    credentials = CredentialStore()
 
-    if not api_key:
+    providers = load_configured_providers(
+        credentials
+    )
+
+    if not providers:
         raise RuntimeError(
-            "OPENAI_API_KEY environment variable is not set."
+            "No AI providers are configured."
         )
 
-    return api_key
+    return build_palace(
+        providers=providers
+    )
 
 
 def main():
     try:
-        api_key = load_api_key()
+        palace = build_configured_palace()
     except RuntimeError as exc:
         print(exc)
         sys.exit(1)
-
-    palace = build_palace(
-        api_key=api_key
-    )
 
     print("Palace")
     print("=" * 60)
@@ -35,7 +38,9 @@ def main():
         print("No question entered.")
         return
 
-    print("\nSearching memory and consulting providers...\n")
+    print(
+        "\nSearching memory and consulting providers...\n"
+    )
 
     result = palace.run(question)
 

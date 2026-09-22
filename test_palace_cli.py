@@ -14,7 +14,7 @@ class FakePalace:
         return SimpleNamespace(
             memory_error=None,
             provider_results={
-                "openai": SimpleNamespace(
+                "gemini": SimpleNamespace(
                     succeeded=True,
                     response=SimpleNamespace(
                         text="Fake Palace answer"
@@ -25,50 +25,70 @@ class FakePalace:
         )
 
 
-def test_load_api_key():
-    with patch.dict(
-        "os.environ",
-        {"OPENAI_API_KEY": "test-key"}
-    ):
-        key = palace_cli.load_api_key()
+def test_build_configured_palace():
+    fake_credentials = object()
+    fake_provider = object()
+    fake_palace = object()
 
-    assert key == "test-key"
+    with patch(
+        "palace_cli.CredentialStore",
+        return_value=fake_credentials
+    ), patch(
+        "palace_cli.load_configured_providers",
+        return_value={
+            "gemini": fake_provider
+        }
+    ) as mock_load, patch(
+        "palace_cli.build_palace",
+        return_value=fake_palace
+    ) as mock_build:
 
-def test_missing_api_key():
-    with patch.dict(
-        "os.environ",
-        {},
-        clear=True
+        palace = palace_cli.build_configured_palace()
+
+    mock_load.assert_called_once_with(
+        fake_credentials
+    )
+
+    mock_build.assert_called_once_with(
+        providers={
+            "gemini": fake_provider
+        }
+    )
+
+    assert palace is fake_palace
+
+
+def test_build_configured_palace_rejects_no_providers():
+    with patch(
+        "palace_cli.CredentialStore"
+    ), patch(
+        "palace_cli.load_configured_providers",
+        return_value={}
     ):
+
         try:
-            palace_cli.load_api_key()
+            palace_cli.build_configured_palace()
 
             assert False, "Expected RuntimeError"
 
         except RuntimeError as exc:
             assert str(exc) == (
-                "OPENAI_API_KEY environment variable is not set."
+                "No AI providers are configured."
             )
+
 
 def test_main():
     fake_palace = FakePalace()
 
     with patch(
-        "palace_cli.load_api_key",
-        return_value="test-key"
-    ), patch(
-        "palace_cli.build_palace",
+        "palace_cli.build_configured_palace",
         return_value=fake_palace
-    ) as mock_build, patch(
+    ), patch(
         "builtins.input",
         return_value="Hello Palace"
     ):
 
         palace_cli.main()
-
-    mock_build.assert_called_once_with(
-        api_key="test-key"
-    )
 
     assert fake_palace.last_question == "Hello Palace"
 
@@ -77,10 +97,7 @@ def test_empty_question():
     fake_palace = FakePalace()
 
     with patch(
-        "palace_cli.load_api_key",
-        return_value="test-key"
-    ), patch(
-        "palace_cli.build_palace",
+        "palace_cli.build_configured_palace",
         return_value=fake_palace
     ), patch(
         "builtins.input",
@@ -93,8 +110,8 @@ def test_empty_question():
 
 
 if __name__ == "__main__":
-    test_load_api_key()
-    test_missing_api_key()
+    test_build_configured_palace()
+    test_build_configured_palace_rejects_no_providers()
     test_main()
     test_empty_question()
 
