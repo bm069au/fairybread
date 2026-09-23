@@ -3,7 +3,7 @@ import sys
 from bootstrap import build_palace
 from credential_store import CredentialStore
 from provider_loader import load_configured_providers
-
+from palace_config import load_enabled_provider_names
 
 def build_configured_palace():
     credentials = CredentialStore()
@@ -11,6 +11,13 @@ def build_configured_palace():
     providers = load_configured_providers(
         credentials
     )
+    enabled_names = load_enabled_provider_names()
+
+    providers = {
+        name: provider
+        for name, provider in providers.items()
+        if name in enabled_names
+    }
 
     if not providers:
         raise RuntimeError(

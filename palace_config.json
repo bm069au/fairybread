@@ -1,0 +1,22 @@
+{
+  "providers": {
+    "gemini": {
+      "enabled": true
+    },
+    "groq": {
+      "enabled": true
+    },
+    "mistral": {
+      "enabled": true
+    },
+    "cerebras": {
+      "enabled": false
+    },
+    "cohere": {
+      "enabled": true
+    },
+    "openai": {
+      "enabled": false
+    }
+  }
+}
