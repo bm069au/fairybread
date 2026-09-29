@@ -82,6 +82,8 @@ When a tool blocks a save, finish the local record, state precisely which copy r
 
 Brett's primary goal is to learn what is being built, how it is built and especially why each choice is made. Saving credits is secondary. Explain bounded changes before implementation, including purpose, alternatives and tradeoffs. Give Brett meaningful design, coding, inspection and testing work; running a completed command alone is not adequate participation. Do not use Computer Use, consume external credits, start agents or make live AI calls unless authorized. Documentation maintenance should reduce Brett's repetition, not create a review burden for every routine save.
 
+Education is the standing default. An explicit request for shortcuts or more assistant-led work due to tiredness or reduced capacity is a session-only exception. It expires with that session and must not be carried into later work as a permanent preference.
+
 ## Coverage and portability
 
 Retain a project source inventory with audited/unreviewed coverage and unresolved inconsistencies. A new framework does not mean all old project histories have been migrated. Keep startup instructions short and point them to the records. Other apps and web conversations must be given the current-record link; repository instructions are not a universal memory guarantee.

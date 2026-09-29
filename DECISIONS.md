@@ -68,6 +68,8 @@ This is an education exercise, not 'Ash does everything'. Its primary purpose is
 
 Correction 2026-09-29: Brett explicitly corrected the priority after the source-ID exercise: "To reduce credit usage but Primarily so I CAN LEARN. This is an education exercise to teach me what we do, how we do it and specially.. WHY we do it." This supersedes any wording that frames participation mainly as a cost-saving measure.
 
+Session exception: Brett may sometimes explicitly ask for a shortcut or more assistant-led work because he is tired or not functioning at full capacity. That permission applies only to the stated session. Education automatically remains the rule for later sessions; do not treat a temporary shortcut as a changed standing preference.
+
 ## P-013 — Save and actually recover the full plan
 Status: AGREED standing requirement, S5/S7.
 Save meaningful changes and pauses in the existing Google Drive project-memory area, synchronize appropriate Git work, and record verified sync results. Keep a current plan and decision register with original source links; resumptions must read/reconcile them. Do not merely accumulate snapshots or promise memory without a verified save.
