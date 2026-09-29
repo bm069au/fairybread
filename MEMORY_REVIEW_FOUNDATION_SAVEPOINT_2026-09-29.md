@@ -10,7 +10,7 @@ This checkpoint continues the source-linked memory-proposal milestone. It does n
 Previous detail: https://drive.google.com/file/d/1V8U_1agBps8ScF5zcSbbhqc9yBBWfvkt/view
 Previous summary: https://drive.google.com/file/d/1SUGLu6rA-594yhqkKZGSzl6ZFvpihbG0/view
 Stable index: https://drive.google.com/file/d/1G9HLoa2l9i_JfjMkJb9z5GFVTn_6eZcP/view
-Matching summary: PENDING DRIVE UPLOAD
+Matching summary: https://drive.google.com/file/d/1Z_-rXbD5DWclBWkRvok-3XoPvmT49Ccw/view
 
 ## Behaviour and architecture clarified
 A proposal is a candidate durable memory, not the raw conversation and not accepted memory. It preserves a summary, complete detail, type, status and exact source-entry identity. Semantic proposals describe facts or decisions; procedural proposals describe how work should be done. Edit, Approve and Reject remain unimplemented.
@@ -39,7 +39,15 @@ Brett also identified a communication failure: he was asked to build a proposal 
 - Brett ran `python -B -m unittest test_palace_gui`: 17 tests passed in 2.440 seconds using simulated providers and temporary files.
 - A Qt warning reported a missing bundled font directory. Tests passed and Qt used an available fallback; packaging/fonts remain a later deployment concern.
 - Brett manually ran `python palace_gui.py --demo`, confirmed the Memory Review button stays selected, confirmed the right-hand panel opens inside Palace, and confirmed closing it returns space to the conversation.
+- A later assistant-side combined rerun was not counted as validation: the system Python lacked the existing `google` provider package and stopped while importing `test_session_context`. Changed Python files passed an AST structure check. This environment gap did not invalidate Brett's completed test runs.
 - No live AI/provider calls, paid services, Computer Use or additional agents were used.
+
+## Git save receipt
+Repository: https://github.com/bm069au/palace.git
+Branch: `feature/provider-neutral-core`
+Commit: `ee315dd2e0198b3944b5a9f3ff894e53cf4d5902`
+Message: `Add Palace GUI and memory review foundation`
+Push succeeded. Local HEAD and the live remote branch matched at 2026-09-29 20:07:38 +09:30. The commit includes the GUI/attachment/session draft, memory-list service and tests, education instruction, requirements, and this checkpoint pair. It is a development checkpoint, not a claim that Memory Review or Palace V1 is complete.
 
 ## Incomplete work and risks
 - The Memory Review panel currently contains explanatory text only. It does not yet list proposals.
