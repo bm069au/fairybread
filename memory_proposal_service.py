@@ -37,7 +37,6 @@ class MemoryProposalService:
             raise ValueError("Memory type must be semantic or procedural")
         if visibility != "private":
             raise ValueError("Only private proposals are supported in this milestone")
-            self.assertNotIn("store", record["source"])
         source = context.read_entry(source_id)
         if source is None:
             raise ValueError("Session source ID was not found")

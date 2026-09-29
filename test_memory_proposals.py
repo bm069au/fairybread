@@ -37,6 +37,7 @@ class MemoryProposalTests(unittest.TestCase):
             self.assertEqual(record["memory_type"], "semantic")
             self.assertEqual(record["detail"], "Palace uses PySide6. é")
             self.assertEqual(record["source"]["entry_id"], source_id)
+            self.assertNotIn("store", record["source"])
             self.assertEqual(
                 ContextService(root / "session.jsonl")
                     .read_entry(source_id)["content"],
