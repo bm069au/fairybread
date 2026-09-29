@@ -1,3 +1,46 @@
+# Standing order: project planning, recall and paired saves
+
+Revision: PROJECT-RECORDS-2026-09-29-R2
+Authority: Brett's explicit instruction in task 01a0eb48-e3a9-78b1-95c6-cd91ca6071c9, 29 September 2026, beginning "OK so lets solve this". Applies across development projects. Google Drive is the durable project-memory home; local/Git copies support development and recovery.
+
+## Every detailed checkpoint has a summary
+At every meaningful design change, implementation milestone, handoff or pause, save BOTH a detailed checkpoint and a short matching summary on Google Drive. Use the same project/checkpoint/revision identifier. The summary links directly to the detailed checkpoint and its important sections. The detailed checkpoint links back to its summary and lists its predecessors and original sources. Maintain a stable START HERE index pointing to the latest verified pair. Do not leave the only current plan in chat.
+
+The summary contains purpose, established direction, changes since the previous checkpoint, actual implementation status, key open issues, exact restart step and links. It is an index, not a replacement for source material. No arbitrary summary length limit may erase unique requirements from the detailed record.
+
+## Recall before action
+Read START HERE and the latest summary, then follow links into the full relevant plan, decision history and original evidence before proposing or changing work. Search older project records and task history when a requirement is missing, ambiguous or contradictory. A missing item in a recap is not a cancellation. An older decision changes only through an explicit superseding decision. Do not ask Brett to repeat material that can be recovered. Report inaccessible sources and unresolved gaps specifically; never invent recall or claim a complete audit from a partial search.
+
+## Normal development pathway
+Each project maintains these linked sections, reusing existing living plans/registers:
+1. Discovery/brainstorm: problem, users, examples, candidate ideas and their origin.
+2. Clarification: precise behaviour, scope, exclusions, constraints and open questions.
+3. Design: architecture, data ownership, interfaces, memory/storage, integrations and alternatives with rationale.
+4. Working experience: user journeys, screens, interactions and concrete acceptance examples.
+5. Problems and tradeoffs: failure cases, privacy, costs, limits, conflicts and mitigations.
+6. Delivery: bounded milestones, dependencies, learning/manual work, task states and restart step.
+7. Validation: tests actually run, results, limitations and user acceptance separately.
+8. History: dated decisions, corrections, rejected/superseded alternatives, source links and verified save receipts.
+Unknown sections stay explicitly open; never backfill invented discussions to make the plan look complete.
+
+## Attribution and state
+Give consequential requirements stable IDs. Preserve Brett's contributions, examples and corrections, assistant proposals, rationale, date/source and changes over time. Distinguish AGREED, RECOVERED, PROPOSED, OPEN and SUPERSEDED; track implementation separately. Preserve original sources. Do not promote an assistant suggestion into user agreement. Cross-project interfaces have one owning design with references from each client project; do not merge product scopes or copy divergent specifications.
+
+## Save transaction and verification
+1. Reconcile sources and local changes. Update the full plan, decisions and task register.
+2. Write a dated detailed checkpoint and matching summary locally; validate identifiers, source links and encoding.
+3. Upload the detail, obtain its real URL, then upload the summary with that URL. Complete the reverse link and read back BOTH files. Check matching revision, required sections/decision IDs and both links. Never guess IDs.
+4. Synchronize only appropriate authorized Git files; list excluded drafts. Record repository, branch, exact SHA, message, push result and live remote equality with timezone/time. Do not imply Git sync for a non-repository or files excluded from the commit.
+5. Record the receipt and update stable START HERE only after the pair is verified. Read back the index and confirm it points to the verified pair. A failed partial save is INCOMPLETE, with its exact remaining step; preserve the last complete checkpoint pointer.
+6. Keep historical pairs; corrections create a new revision with a supersedes link. Stable indexes/current summaries may be updated in place. Verify actual content, not just existence or metadata. Never claim success for a blocked write.
+
+Routine authorized documentation saves do not need repeated permission. New external sharing, publication, credentials and protected actions still follow their applicable authorization rules. Save within the established private project-memory destination; do not change sharing settings.
+
+## Learning and portability
+Brett participates in bounded development steps and manual UI checks. No Computer Use, paid services, live AI calls or extra agents unless authorized. Saving is not proof every future assistant will retrieve a file: local startup instructions point to this index, and other interfaces must be given the START HERE link. No background automation is implied by this standing order.
+
+## Earlier recording agreement (retained context)
+
 # Project recording agreement
 
 Established 2026-09-29 after repeated failures to recover agreed project plans. Applies to project design and implementation work with Brett. Use an existing living register when present; do not create a competing source of truth.

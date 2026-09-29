@@ -1,4 +1,4 @@
-# Palace â€” START HERE
+# Palace — START HERE
 
 Revision: PALACE-RECORDS-2026-09-29-R1
 Purpose: one stable restart point for the full project plan, not another replacement summary.
@@ -30,15 +30,15 @@ Next development step is to review the shared record/service boundary with Brett
 The GUI draft remains available for Brett's manual checks. Its attachment excerpts do not satisfy the full-data preservation requirement yet.
 
 ## Original source inventory and audit coverage
-S1. [Portfolio and idea register â€” September 14](https://drive.google.com/file/d/1qM1uZO_T2zMm0TpgHwikuIzZhAc_ULbK/view). Read in this audit; Palace-related sections reviewed. Contains episodic, semantic and procedural memory, provenance/conflicts, interface/orchestrator architecture and bounded competition scope. Other portfolio projects not reconciled here.
+S1. [Portfolio and idea register — September 14](https://drive.google.com/file/d/1qM1uZO_T2zMm0TpgHwikuIzZhAc_ULbK/view). Read in this audit; Palace-related sections reviewed. Contains episodic, semantic and procedural memory, provenance/conflicts, interface/orchestrator architecture and bounded competition scope. Other portfolio projects not reconciled here.
 
-S2. [Multi-AI orchestration â€” September 14](https://drive.google.com/file/d/1OQBN9kkqAnUVuKwEm6upKl00-22D319L/view). Previously fetched in this task; delegation, role specialization, cost-aware routing and reuse.
+S2. [Multi-AI orchestration — September 14](https://drive.google.com/file/d/1OQBN9kkqAnUVuKwEm6upKl00-22D319L/view). Previously fetched in this task; delegation, role specialization, cost-aware routing and reuse.
 
-S3. [AI ecosystem and cost-controlled development â€” September 20](https://docs.google.com/document/d/1QgEQQJ3AlPdNx7Te6h23kT2r20BF4YZpSBI0epIZP3I/edit). Read in this task. Cross-project services, conservative IP separation, routing and cost rules. This is broader than Palace; do not collapse its unrelated requirements into this project.
+S3. [AI ecosystem and cost-controlled development — September 20](https://docs.google.com/document/d/1QgEQQJ3AlPdNx7Te6h23kT2r20BF4YZpSBI0epIZP3I/edit). Read in this task. Cross-project services, conservative IP separation, routing and cost rules. This is broader than Palace; do not collapse its unrelated requirements into this project.
 
-S4. [Palace context/provider checkpoint â€” September 23](https://docs.google.com/document/d/1SFmNTaB-3YhvF0FuFoRObanpMi_0ZvhVsWCGaiG9Qj4/edit), with local Palace_Project_Savepoint_2026-09-23.md. Read and compared to code. Detailed later memory direction, opt-in retrieval, providers and restart point.
+S4. [Palace context/provider checkpoint — September 23](https://docs.google.com/document/d/1SFmNTaB-3YhvF0FuFoRObanpMi_0ZvhVsWCGaiG9Qj4/edit), with local Palace_Project_Savepoint_2026-09-23.md. Read and compared to code. Detailed later memory direction, opt-in retrieval, providers and restart point.
 
-S5. [Standing save/sync rules â€” September 29](https://docs.google.com/document/d/1G3rLvYWa8VuyRAaEIuOh1G1Bj1gmH4fWedzgt3QasR4/edit). Read. Its earlier unverified Git status is historical; use the later successful receipts for current code synchronization.
+S5. [Standing save/sync rules — September 29](https://docs.google.com/document/d/1G3rLvYWa8VuyRAaEIuOh1G1Bj1gmH4fWedzgt3QasR4/edit). Read. Its earlier unverified Git status is historical; use the later successful receipts for current code synchronization.
 
 S6. Original task title: Resume Palace coding. ChatGPT conversation ID 6ab0901b-5a8c-83ec-aadb-6a8ee0558bb4. Relevant older pages reviewed, not a full transcript audit. PySide6 selection message: 2b2fd2f6-e97e-4fbc-96bb-25cf4caa8461. Additional nearby messages describe the shell, source separation and status indicators.
 
@@ -49,8 +49,7 @@ S8. [Verified recovery checkpoint](https://drive.google.com/file/d/1x3MVwfO1KGBn
 Remaining coverage: other older conversations, any earlier exact thin-client decision passage, and the full Fairybread/Evidence Workbench histories are not exhaustively audited. This record is not proof every historical detail has been recovered.
 
 ## Save locations and verification
-Local owner: E:\Visual_studio\Palace. These four records and AGENTS.md are project documentation.
-Established Drive folder: [01 â€” Portfolio & App Ideas](https://drive.google.com/drive/folders/13uazeSHKXk2k8Ifn4cupSzoHcng41aFZ), verified by metadata. Keep existing historical files in place.
-Stable current Drive record: BLOCKED / NOT UPLOADED. On 2026-09-29 automatic approval review rejected the consolidated private project-record upload to the established folder because it requires explicit authorization for this new payload/destination. A complete upload-ready bundle is at C:\Users\moore\AppData\Local\Temp\PALACE_CURRENT_PROJECT_RECORD.md. Earlier UI-plan upload was also blocked. No Drive file ID was created for this bundle.
-New documentation Git sync: pending at drafting. The verified code baseline above is not a claim the later GUI draft or these docs have been pushed.
-The external save receipt must identify the documentation commit separately from unsynchronized UI code. Future restarts must inspect current Git state rather than rely on a stale timestamp here.
+Drive records home: https://drive.google.com/drive/folders/1L72QXJLKlWPx1SiWoAQN7runJvlI_52T
+Current paired-checkpoint revision: PROJECT-RECORDS-2026-09-29-R2. See PROJECT_RECORD_LINKS.md for the actual summary, detail and standing-order URLs and verified receipt. The earlier blocked bundle was not uploaded; this newer save is authorized by Brett's explicit paired-save instruction. Verify live state on resumption.
+Previous documentation sync: c20fa57d2f098b0bd1a21652f9d89f67334a575c, message Preserve Palace decisions and add verified project restart records, verified 2026-09-29 14:46:31 +09:30. Current GUI drafts remain excluded.
+Development pathway and cross-project source reconciliation: DEVELOPMENT_PATH.md. Follow the actual newer Fairybread scope freeze and EvidenceBench desktop checkpoint; older plans alone are insufficient.

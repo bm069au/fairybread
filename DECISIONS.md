@@ -76,3 +76,6 @@ Save meaningful changes and pauses in the existing Google Drive project-memory a
 - 2026-09-29: corrected P-001 from 'new clarification' to established design reaffirmed by Brett.
 - 2026-09-29: classified idle persistence details and typed API as proposals/open, not agreed implementation.
 - Still needed: audit remaining older Palace conversations and project-specific records. Preserve the source inventory's incomplete status until done.
+
+## P-014 - Mandatory paired summaries and detailed checkpoints
+Status: AGREED standing instruction, Brett 2026-09-29, current task message beginning "OK so lets solve this". Every detailed savepoint must create a matching linked summary on Google Drive. Keep the normal development pathway, rationale, human contributions and cross-project links. Recall must follow relevant source detail before acting; brevity is not authority to drop decisions. Implementation: documentation workflow and startup pointers, not a running background service. See PROJECT_RECORDING.md.

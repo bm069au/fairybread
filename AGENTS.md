@@ -9,3 +9,5 @@ Palace's delegated service sits behind thin clients for Fairybread and other pro
 Brett wants a learning exercise: explain bounded steps and let him do hands-on UI checks. Do not use Computer Use or credit-consuming services unless requested. Preserve any uncommitted GUI work; it is not yet user-accepted or synchronized.
 
 If this task started in FairybreadBridge but concerns Palace, inspect E:\Visual_studio\Palace explicitly. Do not infer project identity from the current working directory alone.
+
+Mandatory paired-save rule: read PROJECT_RECORD_LINKS.md and DEVELOPMENT_PATH.md. Every detailed checkpoint creates a matching summary on Google Drive, with verified reciprocal links and a stable index. Follow full relevant source records before acting. The summary alone is insufficient.

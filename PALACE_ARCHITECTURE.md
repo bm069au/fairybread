@@ -1,4 +1,4 @@
-# Palace architecture â€” working specification
+# Palace architecture — working specification
 
 Recorded 2026-09-29 from Brett's requirements. This is a specification, not a claim that the features already exist.
 
@@ -88,5 +88,5 @@ No delegated/idle mode or durable semantic-memory workflow has been implemented.
 5. Add delegated execution using agent limits, then idle operation with a tested no-persistence boundary and human participation.
 Use bounded milestones, explain the change, let Brett perform the hands-on check, and save checkpoints with accurate Git sync status.
 
-## This checkpoint's sync status
-At the original drafting step this specification and the GUI were local pending changes. Documentation is now being versioned separately; consult PROJECT_RECORD.md and the verified sync receipt for the latest documentation state. The GUI code remains uncommitted. Automatic approval review blocked both the earlier UI-plan upload and the later consolidated project-record upload; do not imply they exist on Google Drive.
+## Save status
+Consult PROJECT_RECORD_LINKS.md for the verified paired Drive checkpoint and Git receipt. Historical blocked uploads were not successful saves. GUI code remains a separate local draft.
