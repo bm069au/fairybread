@@ -6,7 +6,7 @@ Preserve agreed designs and their rationale. Missing from a later recap does not
 
 Palace's delegated service sits behind thin clients for Fairybread and other projects. The PySide6 Windows GUI is another interface to the same core. Enough providers exist for current development; do not restart provider expansion without a reason agreed with Brett.
 
-Brett wants a learning exercise: explain bounded steps and let him do hands-on UI checks. Do not use Computer Use or credit-consuming services unless requested. Preserve any uncommitted GUI work; it is not yet user-accepted or synchronized.
+Brett's primary purpose is education: teach what we are building, how we build it, and especially why each design and coding choice is made. Reduced credit use is secondary. Before implementing a bounded step, explain its purpose, relevant alternatives and tradeoff in plain language; give Brett a meaningful decision, coding task, inspection or hands-on test rather than using him only to run finished work. Do not use Computer Use or credit-consuming services unless requested. Preserve any uncommitted GUI work; it is not yet user-accepted or synchronized.
 
 If this task started in FairybreadBridge but concerns Palace, inspect E:\Visual_studio\Palace explicitly. Do not infer project identity from the current working directory alone.
 

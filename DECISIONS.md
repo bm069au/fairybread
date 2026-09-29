@@ -62,9 +62,11 @@ Status: RECORDED DESIGN, S3/S4.
 Long-term retrieval remains opt-in. Memories need visibility such as shared, private, provider-specific and local-only; do not send every retrieved record to every provider indiscriminately. Discussion does not grant authority for external actions. Keep valuable orchestration/memory internals behind deliberate private/service boundaries and do not publish them accidentally through client or competition code.
 Implementation: opt-in long-term retrieval exists. Per-record visibility and action authorization services are not complete.
 
-## P-012 — Brett participates; conserve credits
+## P-012 — Education is the primary working purpose
 Status: AGREED working instruction, S7.
-This is a learning exercise, not 'Ash does everything'. Explain bounded changes and let Brett do hands-on checks and work that otherwise consumes credits. No Computer Use or credit-consuming services unless requested. Two hours was the available session window, not authorization for autonomous idle work or spend.
+This is an education exercise, not 'Ash does everything'. Its primary purpose is to teach Brett what is being built, how it is built and especially why each decision is made. Reduced credit use is a secondary benefit. Explain a bounded step before implementing it, including its purpose, relevant alternatives and tradeoffs. Give Brett a meaningful role in design, coding, inspection or hands-on testing; merely asking him to run finished code is insufficient. No Computer Use or credit-consuming services unless requested. A stated session window is not authorization for autonomous idle work or spend.
+
+Correction 2026-09-29: Brett explicitly corrected the priority after the source-ID exercise: "To reduce credit usage but Primarily so I CAN LEARN. This is an education exercise to teach me what we do, how we do it and specially.. WHY we do it." This supersedes any wording that frames participation mainly as a cost-saving measure.
 
 ## P-013 — Save and actually recover the full plan
 Status: AGREED standing requirement, S5/S7.

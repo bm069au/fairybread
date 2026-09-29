@@ -78,9 +78,9 @@ Prefer updating a stable current-record Drive file in place once created. Keep d
 
 When a tool blocks a save, finish the local record, state precisely which copy remains unsaved, and obtain the needed approval without pretending the checkpoint completed. Do not bypass an approval rejection. Do not repeat broad assurances such as 'everything is recorded' when source coverage is partial.
 
-## Learning and budget
+## Education first; budget second
 
-Brett wants to participate, not have the assistant do everything. Explain bounded changes and hand over the relevant manual checks. Do not use Computer Use, consume external credits, start agents or make live AI calls unless authorized. Documentation maintenance should reduce Brett's repetition, not create a review burden for every routine save.
+Brett's primary goal is to learn what is being built, how it is built and especially why each choice is made. Saving credits is secondary. Explain bounded changes before implementation, including purpose, alternatives and tradeoffs. Give Brett meaningful design, coding, inspection and testing work; running a completed command alone is not adequate participation. Do not use Computer Use, consume external credits, start agents or make live AI calls unless authorized. Documentation maintenance should reduce Brett's repetition, not create a review burden for every routine save.
 
 ## Coverage and portability
 
