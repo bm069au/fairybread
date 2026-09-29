@@ -60,6 +60,11 @@ Do not apply arbitrary truncation that loses returned answers or original attach
 No finite model can receive unlimited data in one request. Separate durable full storage from each call's context window. Supply a manifest, relevant excerpts, summaries with links, and operations for retrieving further ranges/pages. Summaries supplement source records rather than replace them. Large generated answers can be assembled in sections with stable references and displayed/exported in full.
 Delegation uses provider context/output limits, current quota/rate constraints, availability and capability. Unknown quota is unknown, not assumed free capacity. These controls manage calls without silently deleting the user's data.
 
+## Backup, disaster recovery and portability
+Palace must be recoverable without losing any persisted query, response, contribution, relationship, log, memory, source, artifact or structural information. Backups are logical, versioned exports rather than copies tied to one operating system's paths. Stable record and artifact IDs survive restore; physical storage paths are installation details. The same data must restore on another Windows computer and, when supported, Linux.
+
+First start asks for a backup destination on a different drive from Palace data and recommends a cloud-synchronised destination. Before each attempt, preflight reports source size, file count, conservative required space and destination free space. Palace refuses insufficient destinations, writes a complete snapshot, verifies manifest/checksums, and only then reports success. Restore verifies first, protects the current Palace, restores into a temporary location, validates it, then switches atomically. Idle content remains outside backup because the agreed idle mode does not persist it. Credential recovery/encryption remains an explicit open design question.
+
 ## GUI behaviour
 - Familiar chat composer and transcript, standard Windows clipboard and drag/drop/file selection.
 - Conversations can be followed chronologically, with task branches and peer replies inspectable.

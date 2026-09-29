@@ -83,3 +83,15 @@ Save meaningful changes and pauses in the existing Google Drive project-memory a
 
 ## P-014 - Mandatory paired summaries and detailed checkpoints
 Status: AGREED standing instruction, Brett 2026-09-29, current task message beginning "OK so lets solve this". Every detailed savepoint must create a matching linked summary on Google Drive. Keep the normal development pathway, rationale, human contributions and cross-project links. Recall must follow relevant source detail before acting; brevity is not authority to drop decisions. Implementation: documentation workflow and startup pointers, not a running background service. See PROJECT_RECORDING.md.
+
+## P-015 — Complete, verified and portable Palace backup
+Status: AGREED requirement, Brett 2026-09-29.
+Backup must preserve every Palace record that is permitted to persist: queries, individual contributions, peer replies, synthesis, delegated work, non-idle logs, failures, memory layers, proposals and their status/history, sources, revisions, relationships, structure, original attachments, generated artifacts and configuration. The unlogged idle mode remains absent because its content is never persisted.
+
+Restore must reproduce stable identities and relationships without loss on another Windows computer and eventually Linux. Durable references therefore use logical, platform-neutral IDs rather than absolute paths such as `E:\\...`. Backups need a versioned manifest, portable relative paths, integrity checks and an all-or-nothing restore that first protects the current Palace.
+
+At first start, Palace prompts for a backup location. The destination must not be the same drive as Palace data; a cloud-synchronised destination is preferred. Before writing, Palace calculates the source size, file count, safe required-space figure and destination free space, then informs the user. Insufficient space prevents the attempt. A backup is successful only after content/integrity verification. Version 1 direction is manual full backup and verified restore; automatic retention can follow after the complete path works.
+
+Open security detail: decide separately how credentials are recovered. Do not silently put API keys into a cloud backup or weaken the complete-data requirement by pretending this question is settled.
+
+Implementation: NOT STARTED. The source-ID proposal draft was corrected to remove an absolute source-store path before commit.

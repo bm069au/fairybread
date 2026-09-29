@@ -9,6 +9,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.vs/
 
 # Environment / credentials
 .env
