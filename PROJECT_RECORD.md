@@ -53,3 +53,6 @@ Drive records home: https://drive.google.com/drive/folders/1L72QXJLKlWPx1SiWoAQN
 Current paired-checkpoint revision: PROJECT-RECORDS-2026-09-29-R2. See PROJECT_RECORD_LINKS.md for the actual summary, detail and standing-order URLs and verified receipt. The earlier blocked bundle was not uploaded; this newer save is authorized by Brett's explicit paired-save instruction. Verify live state on resumption.
 Previous documentation sync: c20fa57d2f098b0bd1a21652f9d89f67334a575c, message Preserve Palace decisions and add verified project restart records, verified 2026-09-29 14:46:31 +09:30. Current GUI drafts remain excluded.
 Development pathway and cross-project source reconciliation: DEVELOPMENT_PATH.md. Follow the actual newer Fairybread scope freeze and EvidenceBench desktop checkpoint; older plans alone are insufficient.
+
+## Source ID milestone - 29 September
+See SOURCE_ID_MILESTONE.md. New entries now have retrievable source IDs; 12 offline tests passed. Brett's manual exercise is pending. Latest paired Drive checkpoint and Git receipt are in the stable index. Promotion policy remains open.

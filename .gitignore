@@ -42,3 +42,6 @@ key.txt
 # Generated build/output
 build/
 dist/
+
+# Offline learning exercise data
+.learning/
