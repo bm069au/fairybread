@@ -25,5 +25,5 @@ Brett ran `python -B -m unittest test_memory_proposals`: 3 tests passed in 0.095
 ## Restart point
 Review the proposed-memory record in the PySide6 GUI using a collapsible details/review area, preserving Windows conventions. Teach the layout and tradeoffs before coding. The review UI needs Proposed status, summary, full detail, type, exact source, and future Edit/Approve/Reject operations. Backup architecture must shape all new persistent references.
 
-Matching Drive summary: PENDING UNTIL UPLOAD.
+Matching Drive summary: https://drive.google.com/file/d/1SUGLu6rA-594yhqkKZGSzl6ZFvpihbG0/view
 Previous planning detail: https://drive.google.com/file/d/1Bo_aQxUdyA43AHCxEoZT6ceuo48nuPi0/view
