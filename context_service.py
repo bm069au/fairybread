@@ -15,11 +15,7 @@ class ContextService:
                 / "session_context.jsonl"
             )
 
-        self.path = path
-        self.path.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
+        self.path = Path(path)
 
     def append(
         self,
@@ -32,6 +28,7 @@ class ContextService:
             "content": content
         }
 
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open(
             "a",
             encoding="utf-8"
@@ -41,38 +38,42 @@ class ContextService:
                 + "\n"
             )
 
-    def load_recent(
-        self,
-        max_chars: int = 12000
-    ) -> str:
-        if not self.path.exists():
+    def append_exchange(self, question: str, answer: str) -> None:
+        """Persist only the user's question and the answer Palace displayed."""
+        timestamp = datetime.now().isoformat()
+        entries = [
+            {"timestamp": timestamp, "role": "user", "content": question},
+            {"timestamp": timestamp, "role": "assistant", "content": answer},
+        ]
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as file:
+            file.write("".join(json.dumps(entry) + "\n" for entry in entries))
+
+    def load_recent(self, max_chars: int = 12000) -> str:
+        """Return the newest history within a strict prompt character budget."""
+        if max_chars <= 0 or not self.path.exists():
             return ""
-
-        lines = self.path.read_text(
-            encoding="utf-8"
-        ).splitlines()
-
         entries = []
-
-        for line in reversed(lines):
+        remaining = max_chars
+        for line in reversed(self.path.read_text(encoding="utf-8").splitlines()):
             if not line.strip():
                 continue
-
             entry = json.loads(line)
-
-            text = (
-                f"{entry['role'].upper()}: "
-                f"{entry['content']}"
-            )
-
-            entries.append(text)
-
-            if sum(
-                len(item)
-                for item in entries
-            ) >= max_chars:
+            if (not isinstance(entry, dict)
+                    or entry.get("role") not in {"user", "assistant"}
+                    or not isinstance(entry.get("content"), str)):
+                raise ValueError("Invalid session history entry")
+            prefix = f"{entry['role'].upper()}: "
+            separator = 2 if entries else 0
+            available = remaining - separator
+            if available <= len(prefix):
                 break
-
-        entries.reverse()
-
-        return "\n\n".join(entries)
+            text = prefix + entry["content"]
+            clipped = len(text) > available
+            if clipped:
+                text = prefix + entry["content"][:available - len(prefix)]
+            entries.append(text)
+            remaining -= separator + len(text)
+            if clipped or remaining <= 0:
+                break
+        return "\n\n".join(reversed(entries))

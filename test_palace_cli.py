@@ -30,6 +30,7 @@ def test_build_configured_palace():
     fake_credentials = object()
     fake_provider = object()
     fake_palace = object()
+    fake_context = object()
 
     with patch(
         "palace_cli.CredentialStore",
@@ -40,6 +41,10 @@ def test_build_configured_palace():
             "gemini": fake_provider
         }
     ) as mock_load, patch(
+        "palace_cli.ContextService", return_value=fake_context
+    ), patch(
+        "palace_cli.load_enabled_provider_names", return_value=["gemini"]
+    ), patch(
         "palace_cli.build_palace",
         return_value=fake_palace
     ) as mock_build:
@@ -56,7 +61,8 @@ def test_build_configured_palace():
     mock_build.assert_called_once_with(
         providers={
             "gemini": fake_provider
-        }
+        },
+        context_service=fake_context
     )
 
     assert palace is fake_palace
@@ -94,7 +100,7 @@ def test_main():
         return_value="Hello Palace"
     ):
 
-        palace_cli.main()
+        palace_cli.main([])
 
     assert fake_palace.last_question == (
         "Hello Palace"
@@ -112,7 +118,7 @@ def test_empty_question():
         return_value="   "
     ):
 
-        palace_cli.main()
+        palace_cli.main([])
 
     assert fake_palace.last_question is None
 
