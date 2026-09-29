@@ -65,6 +65,33 @@ class MemoryProposalTests(unittest.TestCase):
                     )
             self.assertFalse(proposals.path.exists())
 
+    def test_list_proposals_is_lightweight_and_newest_first(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = ContextService(root / "session.jsonl")
+            proposals = MemoryProposalService(root / "proposals.jsonl")
+            self.assertEqual(proposals.list_proposals(), [])
+
+            first_source = context.append("user", "First full detail")
+            first_id = proposals.propose_from_session(
+                context, first_source, "First summary"
+            )
+            second_source = context.append("user", "Second full detail")
+            second_id = proposals.propose_from_session(
+                context, second_source, "Second summary"
+            )
+
+            listed = proposals.list_proposals()
+            self.assertEqual(
+                [item["id"] for item in listed], [second_id, first_id]
+            )
+            self.assertEqual(listed[0]["summary"], "Second summary")
+            self.assertNotIn("detail", listed[0])
+            self.assertEqual(
+                proposals.read_proposal(second_id)["detail"],
+                "Second full detail",
+            )
+
     def test_duplicate_and_corrupt_proposals_fail_visibly(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

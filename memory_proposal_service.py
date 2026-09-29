@@ -64,6 +64,34 @@ class MemoryProposalService:
             file.write(json.dumps(proposal) + "\n")
         return proposal_id
 
+    def list_proposals(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+
+        records = []
+        seen = set()
+        with self.path.open(encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                proposal = json.loads(line)
+                self._validate(proposal)
+                if proposal["id"] in seen:
+                    raise ValueError("Duplicate memory proposal ID")
+                seen.add(proposal["id"])
+                records.append({
+                    "id": proposal["id"],
+                    "created_at": proposal["created_at"],
+                    "status": proposal["status"],
+                    "memory_type": proposal["memory_type"],
+                    "summary": proposal["summary"],
+                    "visibility": proposal["visibility"],
+                    "source": proposal["source"],
+                })
+
+        records.reverse()
+        return records
+
     def read_proposal(self, proposal_id: str) -> dict | None:
         if not isinstance(proposal_id, str) or not proposal_id.strip():
             raise ValueError("A non-empty proposal ID is required")

@@ -4,3 +4,7 @@ google-genai
 groq
 cerebras_cloud_sdk
 cohere
+PySide6>=6.8,<7
+pypdf>=5,<7
+python-docx>=1.1,<2
+mistralai

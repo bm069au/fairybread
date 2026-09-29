@@ -8,7 +8,7 @@ from credential_store import CredentialStore
 from provider_loader import load_configured_providers
 from palace_config import load_enabled_provider_names
 
-def build_configured_palace(*, include_context=True):
+def build_configured_palace(*, include_context=True, context_service=None):
     credentials = CredentialStore()
 
     providers = load_configured_providers(
@@ -29,7 +29,7 @@ def build_configured_palace(*, include_context=True):
 
     return build_palace(
         providers=providers,
-        context_service=ContextService() if include_context else None
+        context_service=(context_service if context_service is not None else ContextService()) if include_context else None
     )
 
 
