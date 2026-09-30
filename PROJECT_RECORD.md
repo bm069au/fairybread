@@ -1,6 +1,6 @@
 # Palace — START HERE
 
-Revision: PALACE-RECORDS-2026-09-29-R1
+Revision: PALACE-RECORDS-2026-09-30-R2
 Purpose: one stable restart point for the full project plan, not another replacement summary.
 
 ## Read before proposing work
@@ -56,3 +56,13 @@ Development pathway and cross-project source reconciliation: DEVELOPMENT_PATH.md
 
 ## Source ID milestone - 29 September
 See SOURCE_ID_MILESTONE.md. New entries now have retrievable source IDs; 12 offline tests passed. Brett's manual exercise is pending. Latest paired Drive checkpoint and Git receipt are in the stable index. Promotion policy remains open.
+
+## Memory Review lightweight-list milestone - 30 September
+Revision: PALACE-MEMORY-REVIEW-LIST-2026-09-30-R1.
+
+Summary: https://drive.google.com/file/d/1XEQz5cxHSuQ-tWQgH3cZExZobm7xupT0/view
+Detail: https://drive.google.com/file/d/1CY6lQ6PLJdZ26gNyzHKHbZyp_ZY1eAdV/view
+
+Memory Review now displays lightweight proposal summaries and retains each proposal ID without loading complete detail into the list. Brett's final combined GUI/proposal run passed 22 tests, and his manual preview confirmed the empty state and corrected splitter spacing. Demo proposals use preview-only storage. P-016 records typed provider-access/refusal outcomes and prevents one participant's access restriction from being treated as a truth claim or silently suppressing other contributions; the full shared event model remains unimplemented.
+
+Implementation commit `42e26b771474d8d4ddf4e7d549c7277b0eba445d` was pushed to `feature/provider-neutral-core`; local and live remote SHAs matched at 2026-09-30 13:18:46 +09:30. Exact restart: implement and inspect read-only full-detail retrieval for a selected proposal before designing Approve/Edit/Reject.
