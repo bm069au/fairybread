@@ -171,6 +171,7 @@ class WindowTests(unittest.TestCase):
         self.window.composer.setPlainText(text)
         QTest.keyClick(self.window.composer, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
         self.wait_idle()
+
     def test_memory_review_panel_toggles(self):
         self.assertFalse(self.window.memory_panel.isVisible())
         self.window.memory_button.click()
@@ -179,6 +180,25 @@ class WindowTests(unittest.TestCase):
         self.window.memory_button.click()
         self.app.processEvents()
         self.assertFalse(self.window.memory_panel.isVisible())
+
+    def test_memory_review_lists_summaries_without_full_detail(self):
+        context = self.window.store.context(self.window.session_id)
+        source_id = context.append(
+            "user",
+            "Full PySide6 decision detail",
+        )
+        self.window.proposal_service.propose_from_session(
+            context,
+            source_id,
+            "Palace uses PySide6",
+        )
+
+        self.window.memory_button.click()
+        self.app.processEvents()
+
+        displayed = self.window.proposal_list.item(0).text()
+        self.assertIn("Palace uses PySide6", displayed)
+        self.assertNotIn("Full PySide6 decision detail", displayed)
 
     def test_send_copy_and_window_restart_restores_history(self):
         self.send('Remember apricot')

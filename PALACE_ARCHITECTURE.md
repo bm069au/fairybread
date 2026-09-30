@@ -1,6 +1,6 @@
 # Palace architecture — working specification
 
-Recorded 2026-09-29 from Brett's requirements. This is a specification, not a claim that the features already exist.
+Recorded 2026-09-29 from Brett's requirements; updated 2026-09-30. This is a specification, not a claim that the features already exist.
 
 Current index: PROJECT_RECORD.md. Stable decisions and original sources: DECISIONS.md. Read these before treating this narrative as the entire historical plan.
 
@@ -78,10 +78,15 @@ First start asks for a backup destination on a different drive from Palace data 
 For non-idle modes log the observable work: user requests, attachment/artifact references, dispatch/task decisions, actual agent responses, peer exchanges, synthesis, memory read/write events, failures and usage information when provided. Do not log credentials or authorization headers. 'Everything' does not promise access to a provider's hidden internal reasoning.
 For idle mode enforce the no-content-persistence policy across every component rather than only hiding a transcript in the UI. In-memory context must still allow participants to understand the ongoing conversation.
 
+## Access, refusal and disagreement semantics
+Palace records what each participant actually observed. Use distinct outcomes for not attempted, retrieved, network/DNS failure, provider/tool policy refusal, authentication/permission failure, retrieved with no relevant material, and substantive disagreement. Never turn a participant's access restriction into a claim about the source's existence, availability to other participants or truth.
+
+Each recorded attempt carries the participant/tool identity, source or operation, timestamp, outcome and exact observable reason. Other enabled agents may attempt the work independently when their own capabilities, policies and the user's authorization permit it; Palace does not bypass a provider's controls. The combined answer exposes material coverage gaps, refusals and disagreements alongside provenance. No single agent can silently remove another's contribution, and consensus is not automatically treated as proof.
+
 ## Current implementation and gaps
-Committed and synced core: 3a3960a780d4686b26ba9a0a30f443f03a566936 on feature/provider-neutral-core, https://github.com/bm069au/palace.git. Last independently verified remote match: 2026-09-29 13:55:27 +09:30.
+Committed and synced development checkpoint: implementation `ee315dd2e0198b3944b5a9f3ff894e53cf4d5902`, reciprocal-record commit `a682ef20cccf1407d09b2685bca7e64ee3fece44`, on feature/provider-neutral-core, https://github.com/bm069au/palace.git. Last verified remote match: 2026-09-29 20:11:48 +09:30.
 The existing dispatcher asks providers in parallel and synthesis combines results. The current stored session history contains the user question and final answer only; it does not preserve all peer contributions or implement the common Palace read/write interface.
-Local uncommitted GUI work: palace_gui.py, attachment_service.py, session_store.py, test_palace_gui.py, and changes to palace_cli.py and requirements.txt. The desktop/session suite passed 25 automated tests; existing targeted core regression scripts passed. A preview window was visually inspected, then Brett stopped Computer Use.
+The PySide6 GUI, attachment/session services and Memory Review foundation are committed as a development preview. Brett's latest verified run passed 18 GUI tests and 4 memory-proposal tests together. He manually confirmed the hidden-by-default docked Memory Review panel opens and returns space when closed, shows a clear empty state, and no longer has the splitter overlapping the centre controls. The panel now lists lightweight proposal summaries while retaining proposal IDs for later retrieval; opening a selected proposal's full detail is not implemented yet.
 Prototype attachments currently extract bounded excerpts and do not archive original files. Those limits do not meet the full artifact-preservation requirement above. The prototype is not the complete architecture.
 No delegated/idle mode or durable semantic-memory workflow has been implemented. No new implementation is claimed by this specification.
 
@@ -94,4 +99,4 @@ No delegated/idle mode or durable semantic-memory workflow has been implemented.
 Use bounded milestones, explain the change, let Brett perform the hands-on check, and save checkpoints with accurate Git sync status.
 
 ## Save status
-Consult PROJECT_RECORD_LINKS.md for the verified paired Drive checkpoint and Git receipt. Historical blocked uploads were not successful saves. GUI code remains a separate local draft.
+Consult the stable Drive index and latest paired Memory Review checkpoint for verified links and Git receipts. Historical blocked uploads were not successful saves. The GUI is now a committed development preview, not a completed release.

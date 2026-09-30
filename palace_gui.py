@@ -117,6 +117,10 @@ class PalaceWindow(QMainWindow):
         side.addWidget(QLabel('CONVERSATIONS'))
         self.session_list = QListWidget()
         self.session_list.setAccessibleName('Conversations')
+        self.session_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.session_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.session_list.currentItemChanged.connect(self.change_session)
         side.addWidget(self.session_list, 1)
         note = QLabel('Conversation history stays on this PC.\nSelected knowledge will be a separate memory layer.')
@@ -127,7 +131,7 @@ class PalaceWindow(QMainWindow):
 
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(8, 0, 0, 0)
+        layout.setContentsMargins(8, 0, 8, 0)
         layout.setSpacing(10)
         self.conversation_title = QLabel('New conversation')
         self.conversation_title.setObjectName('sectionTitle')
@@ -219,11 +223,16 @@ class PalaceWindow(QMainWindow):
         memory_note.setWordWrap(True)
         memory_note.setObjectName('muted')
         memory_layout.addWidget(memory_note)
+
+        self.proposal_list = QListWidget()
+        self.proposal_list.setAccessibleName("Proposed memories")
+        memory_layout.addWidget(self.proposal_list, 1)
         memory_layout.addStretch()
         self.memory_panel.hide()
         splitter.addWidget(self.memory_panel)
         self.memory_button.toggled.connect(self.memory_panel.setVisible)
         self.memory_button.toggled.connect(lambda visible: splitter.setSizes([245, 600, 300]) if visible else None)
+        self.memory_button.toggled.connect(self.refresh_memory_review)
         splitter.setSizes([245, 850])
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
@@ -252,6 +261,35 @@ class PalaceWindow(QMainWindow):
         else:
             text = 'This turn sends only your message and attachments. It will not read or save conversation history.'
         self.privacy_label.setText(text)
+
+    @Slot(bool)
+    def refresh_memory_review(self, visible):
+        if not visible:
+            return
+
+        self.proposal_list.clear()
+
+        try:
+            proposals = self.proposal_service.list_proposals()
+        except (OSError, ValueError) as exc:
+            self.show_notice(f'Could not load memory proposals: {exc}')
+            return
+
+        if not proposals:
+            self.proposal_list.addItem('No proposed memories yet.')
+            return
+
+        for proposal in proposals:
+            item = QListWidgetItem(
+                f'{proposal["status"].title()} · '
+                f'{proposal["memory_type"].title()}\n'
+                f'{proposal["summary"]}'
+            )
+            item.setData(Qt.ItemDataRole.UserRole, proposal['id'])
+            item.setToolTip(
+                f'Source entry: {proposal["source"]["entry_id"]}'
+            )
+            self.proposal_list.addItem(item)
 
     def refresh_sessions(self):
         self.session_list.blockSignals(True)
@@ -567,8 +605,21 @@ def main(argv=None):
                     time.sleep(0.3)
                     return ProviderResponse(text='This is a local preview response.\n\nThe Palace window, saved conversations and attachment handling are working. Live mode uses your configured AI providers. No API was called in this preview.')
 
-            store = SessionStore(Path(os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview')
-            window = PalaceWindow(store, lambda context: build_palace({'preview': PreviewProvider()}, context_service=context), {'preview': True}, demo=True)
+            preview_root = Path(os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview'
+            store = SessionStore(preview_root)
+            proposal_service = MemoryProposalService(
+                preview_root / 'memory_proposals.jsonl'
+            )
+            window = PalaceWindow(
+                store,
+                lambda context: build_palace(
+                    {'preview': PreviewProvider()},
+                    context_service=context,
+                ),
+                {'preview': True},
+                demo=True,
+                proposal_service=proposal_service,
+            )
         else:
             window = PalaceWindow()
     except Exception as exc:

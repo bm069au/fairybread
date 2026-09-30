@@ -1,6 +1,6 @@
 # Palace decision register
 
-Revision: PALACE-RECORDS-2026-09-29-R1. This preserves established decisions; it does not declare the full historical audit finished. Source keys resolve in PROJECT_RECORD.md. Implementation status is independent of design status.
+Revision: PALACE-RECORDS-2026-09-30-R2. This preserves established decisions; it does not declare the full historical audit finished. Source keys resolve in PROJECT_RECORD.md. Implementation status is independent of design status.
 
 ## P-001 — Reusable delegated service behind thin clients
 Status: AGREED, reiterated by Brett on 2026-09-29 as an existing decision, not a new proposal.
@@ -95,3 +95,14 @@ At first start, Palace prompts for a backup location. The destination must not b
 Open security detail: decide separately how credentials are recovered. Do not silently put API keys into a cloud backup or weaken the complete-data requirement by pretending this question is settled.
 
 Implementation: NOT STARTED. The source-ID proposal draft was corrected to remove an absolute source-store path before commit.
+
+## P-016 — Provider restrictions and refusals are evidence, not truth
+Status: AGREED requirement, Brett 2026-09-30, after a direct browser-control attempt to `https://rt.com/` was stopped by that tool's site-safety policy before navigation.
+
+Palace must distinguish at least: not attempted; source retrieved; network/DNS failure; provider or tool policy refusal; authentication/permission failure; source retrieved but no relevant material found; and a substantive agent disagreement about the material. An access failure or refusal by one participant must never be silently rewritten as “the source is unavailable,” “the claim is false,” or “the information does not exist.”
+
+Record the participant/tool, attempted source or operation, timestamp, observable outcome and exact available reason. Other enabled participants may contribute independently through their own permitted capabilities and policies; Palace must not bypass a provider's controls. Synthesis must disclose material coverage gaps, refusals and disagreements, preserve each contribution's provenance, and avoid letting one participant silently suppress or overwrite another.
+
+Palace cannot guarantee that providers are politically neutral. It can make viewpoint, access and policy boundaries visible so Brett can judge the combined result. Agreement among agents is not proof of truth, and one agent's refusal is not proof about the source.
+
+Implementation: PARTIAL FOUNDATION ONLY. Provider failures can appear in current results/status, but the shared typed event record, complete failure log, independent coverage display and synthesis rules are not implemented.
