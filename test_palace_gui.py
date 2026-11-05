@@ -173,6 +173,7 @@ class WindowTests(unittest.TestCase):
         self.wait_idle()
 
     def test_memory_review_panel_toggles(self):
+
         self.assertFalse(self.window.memory_panel.isVisible())
         self.window.memory_button.click()
         self.app.processEvents()
@@ -199,6 +200,47 @@ class WindowTests(unittest.TestCase):
         displayed = self.window.proposal_list.item(0).text()
         self.assertIn("Palace uses PySide6", displayed)
         self.assertNotIn("Full PySide6 decision detail", displayed)
+
+    def test_memory_review_selects_proposal_and_loads_full_detail(self):
+        context = self.window.store.context(self.window.session_id)
+        source_id = context.append(
+            "user",
+            "Palace should preserve the complete source-linked memory detail.",
+        )
+
+        proposal_id = self.window.proposal_service.propose_from_session(
+            context,
+            source_id,
+            "Preserve complete source-linked memory detail",
+        )
+
+        self.window.memory_button.click()
+        self.app.processEvents()
+
+        item = self.window.proposal_list.item(0)
+
+        self.assertEqual(
+            item.data(Qt.ItemDataRole.UserRole),
+            proposal_id,
+        )
+
+        self.window.proposal_list.setCurrentItem(item)
+        self.app.processEvents()
+
+        detail = self.window.proposal_detail.toPlainText()
+
+        self.assertIn(
+            "Preserve complete source-linked memory detail",
+            detail,
+        )
+        self.assertIn(
+            "Palace should preserve the complete source-linked memory detail.",
+            detail,
+        )
+        self.assertIn(
+            source_id,
+            detail,
+        )
 
     def test_send_copy_and_window_restart_restores_history(self):
         self.send('Remember apricot')

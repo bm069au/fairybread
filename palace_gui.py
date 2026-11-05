@@ -226,7 +226,25 @@ class PalaceWindow(QMainWindow):
 
         self.proposal_list = QListWidget()
         self.proposal_list.setAccessibleName("Proposed memories")
+        self.proposal_list.currentItemChanged.connect(
+            self.show_memory_proposal
+        )
         memory_layout.addWidget(self.proposal_list, 1)
+
+        detail_title = QLabel("Selected memory")
+        detail_title.setObjectName("sectionTitle")
+        memory_layout.addWidget(detail_title)
+
+        self.proposal_detail = QTextBrowser()
+        self.proposal_detail.setAccessibleName(
+            "Selected memory proposal detail"
+        )
+        self.proposal_detail.setPlaceholderText(
+            "Select a proposed memory to inspect its full detail."
+        )
+        self.proposal_detail.setMaximumHeight(260)
+        memory_layout.addWidget(self.proposal_detail)
+
         memory_layout.addStretch()
         self.memory_panel.hide()
         splitter.addWidget(self.memory_panel)
@@ -268,6 +286,7 @@ class PalaceWindow(QMainWindow):
             return
 
         self.proposal_list.clear()
+        self.proposal_detail.clear()
 
         try:
             proposals = self.proposal_service.list_proposals()
@@ -291,6 +310,35 @@ class PalaceWindow(QMainWindow):
             )
             self.proposal_list.addItem(item)
 
+    @Slot(QListWidgetItem, QListWidgetItem)
+    def show_memory_proposal(self, current, previous):
+        if current is None:
+            self.proposal_detail.clear()
+            return
+
+        proposal_id = current.data(Qt.ItemDataRole.UserRole)
+        if not proposal_id:
+            self.proposal_detail.clear()
+            return
+
+        try:
+            proposal = self.proposal_service.read_proposal(proposal_id)
+        except (OSError, ValueError) as exc:
+            self.proposal_detail.clear()
+            self.show_notice(f'Could not load memory proposal: {exc}')
+            return
+
+        if proposal is None:
+            self.proposal_detail.clear()
+            self.show_notice('The selected memory proposal could not be found.')
+            return
+
+        source = proposal['source']
+        self.proposal_detail.setPlainText(
+            f'Summary:\n{proposal["summary"]}\n\n'
+            f'Detail:\n{proposal["detail"]}\n\n'
+            f'Source entry:\n{source["entry_id"]}'
+        )
     def refresh_sessions(self):
         self.session_list.blockSignals(True)
         self.session_list.clear()
