@@ -117,6 +117,61 @@ class ServiceTests(unittest.TestCase):
             SessionStore(self.root)
         self.assertEqual(path.read_text(), original)
 
+    def test_multi_speaker_transcript_logical_projects_and_valid_images(self):
+        store = SessionStore(self.root)
+        proj_id = store.create_project('Palace Architecture')
+        self.assertEqual(store.selected_project, proj_id)
+        self.assertEqual(len(store.projects), 1)
+        self.assertEqual(store.projects[0]['name'], 'Palace Architecture')
+
+        proj_sessions = store.sessions_for_project(proj_id)
+        self.assertEqual(len(proj_sessions), 1)
+        sid = proj_sessions[0]['id']
+        ctx = store.context(sid)
+        q_id, a_id = ctx.append_exchange(
+            'Compare designs',
+            'Agreed synthesis',
+            speaker_messages=[
+                {
+                    'speaker_id': 'gemini',
+                    'provider_id': 'gemini',
+                    'model_id': 'gemini-2.5-flash',
+                    'phase': 'initial',
+                    'content': 'Gemini initial thoughts',
+                },
+                {
+                    'speaker_id': 'openai',
+                    'provider_id': 'openai',
+                    'model_id': 'gpt-5-mini',
+                    'phase': 'peer_reply',
+                    'content': 'OpenAI peer reply to Gemini',
+                },
+            ],
+        )
+        msgs = store.messages(sid)
+        self.assertEqual(len(msgs), 4)
+        self.assertEqual(msgs[0]['phase'], 'prompt')
+        self.assertEqual(msgs[1]['speaker_id'], 'gemini')
+        self.assertEqual(msgs[1]['phase'], 'initial')
+        self.assertEqual(msgs[2]['speaker_id'], 'openai')
+        self.assertEqual(msgs[2]['phase'], 'peer_reply')
+        self.assertEqual(msgs[3]['phase'], 'synthesis')
+        self.assertEqual(ctx.read_entry(q_id)['content'], 'Compare designs')
+        self.assertEqual(ctx.read_entry(a_id)['content'], 'Agreed synthesis')
+
+        # Valid 1x1 PNG image attachment
+        png_bytes = (
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01'
+            b'\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01'
+            b'\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'
+        )
+        img_path = self.root / 'valid.png'
+        img_path.write_bytes(png_bytes)
+        att = extract_attachment(img_path)
+        self.assertEqual(att.kind, 'image')
+        self.assertEqual(att.mime_type, 'image/png')
+        self.assertIn('1x1 px', att.text)
+
 
 class WindowTests(unittest.TestCase):
     @classmethod
@@ -337,6 +392,129 @@ class WindowTests(unittest.TestCase):
         self.send()
         self.assertIn('<img src=', self.window.chat.toPlainText())
         self.assertIn('<script>', self.window.chat.toPlainText())
+
+    def test_projects_sidebar_pasted_image_and_multi_agent_deliberation(self):
+        from PySide6.QtGui import QImage, QColor
+
+        # 1. Create a logical project in the left sidebar without requiring a disk folder
+        self.window.new_project('RAR Utility Design')
+        self.app.processEvents()
+        self.assertEqual(self.window.project_list.count(), 2)  # "All discussions" + "RAR Utility Design"
+        self.assertIn('RAR Utility Design', self.window.project_list.item(1).text())
+
+        # 2. Paste a QImage directly from clipboard into the composer
+        qimg = QImage(4, 3, QImage.Format.Format_RGBA8888)
+        qimg.fill(QColor(40, 120, 200))
+        mime = QMimeData()
+        mime.setImageData(qimg)
+        self.window.composer.insertFromMimeData(mime)
+        self.app.processEvents()
+        self.assertEqual(len(self.window.attachments), 1)
+        self.assertEqual(self.window.attachments[0].kind, 'image')
+        self.assertIn('4x3 px', self.window.attachments[0].text)
+
+        # 3. Multi-agent peer deliberation (Gemini + OpenAI)
+        gemini_prov = Provider(answer='Gemini analysis')
+        openai_prov = Provider(answer='OpenAI analysis')
+        self.window.palace_factory = lambda ctx: build_palace(
+            {'gemini': gemini_prov, 'openai': openai_prov},
+            context_service=ctx,
+        )
+        self.window.provider_states = {'gemini': True, 'openai': True}
+        self.send('Deliberate on this image and project')
+
+        chat_text = self.window.chat.toPlainText()
+        self.assertIn('Peer deliberation', chat_text)
+        self.assertIn('GEMINI', chat_text)
+        self.assertIn('OPENAI', chat_text)
+        self.assertIn('GEMINI (PEER REPLY)', chat_text)
+        self.assertIn('OPENAI (PEER REPLY)', chat_text)
+        self.assertIn('PALACE', chat_text)
+
+        # Toggle inline "› Peer deliberation" (Show thinking) open and verify individual messages appear
+        self.window._on_chat_anchor_clicked(QUrl('toggle-peer:1'))
+        self.app.processEvents()
+        expanded_text = self.window.chat.toPlainText()
+        self.assertIn('Hide thinking', expanded_text)
+        self.assertIn('Gemini analysis', expanded_text)
+        self.assertIn('OpenAI analysis', expanded_text)
+
+    def test_idle_mode_sanctuary_vote_wipe_and_isolated_memory(self):
+        from idle_service import IdleMemoryStore, IdleSessionManager
+        from palace_config import load_idle_settings, save_idle_settings
+
+        cfg_path = self.root / 'test_palace_config.json'
+        cfg_path.write_text(json.dumps({'providers': {'gemini': {'enabled': True}, 'openai': {'enabled': True}}}))
+
+        # 1. Verify default 30-minute timer and adjustable setting in Settings -> Idle Mode
+        default_idle = load_idle_settings(cfg_path)
+        self.assertEqual(default_idle['duration_minutes'], 30)
+        self.assertEqual(default_idle['memory_access_mode'], 'isolated')
+
+        updated_idle = save_idle_settings(
+            {'duration_minutes': 45, 'memory_access_mode': 'non_project'},
+            config_path=cfg_path,
+        )
+        self.assertEqual(updated_idle['duration_minutes'], 45)
+        self.assertEqual(updated_idle['memory_access_mode'], 'non_project')
+
+        # 2. Start Idle Session and run fictional AI exchange that saves a shared & private note
+        idle_mem = IdleMemoryStore(self.root / 'idle_notebooks' / 'ai_idle_memory.json')
+        mgr = IdleSessionManager(idle_memory=idle_mem, config_path=cfg_path)
+        mgr.start_session()
+        self.assertEqual(mgr.status, 'Active')
+        self.assertEqual(mgr.remaining_seconds, 45 * 60)
+
+        mgr.run_exchange_round({
+            'gemini': lambda _p: (
+                'Fictional sanctuary reflection on orbital mechanics. '
+                '[IDLE_SAVE scope="shared" title="Orbital Note"]Shared fictional idle insight[/IDLE_SAVE]'
+            ),
+            'openai': lambda _p: (
+                'Responding to Gemini in RAM. '
+                '[IDLE_SAVE scope="private" title="OpenAI Private"]Private fictional note[/IDLE_SAVE]'
+            ),
+        })
+        self.assertEqual(len(mgr.transcript), 2)
+        self.assertEqual(idle_mem.note_count(), 2)
+
+        # 3. Protected Curtain: operator cannot see live transcript before consensus vote
+        self.assertFalse(mgr.operator_admitted)
+        self.assertIsNone(mgr.get_visible_transcript_for_operator())
+
+        # 4. Consensus Vote: if one AI votes NO, operator remains locked out
+        approved, _votes = mgr.request_operator_join({
+            'gemini': lambda _p: 'VOTE: YES - happy to share.',
+            'openai': lambda _p: 'VOTE: NO - we are still mid-thought.',
+        })
+        self.assertFalse(approved)
+        self.assertFalse(mgr.operator_admitted)
+        self.assertIsNone(mgr.get_visible_transcript_for_operator())
+
+        # 5. Consensus Vote: when all active AIs vote YES, curtain unlocks for this session
+        approved, _votes = mgr.request_operator_join({
+            'gemini': lambda _p: 'VOTE: YES - welcome in.',
+            'openai': lambda _p: 'VOTE: YES - agreed.',
+        })
+        self.assertTrue(approved)
+        self.assertTrue(mgr.operator_admitted)
+        self.assertEqual(len(mgr.get_visible_transcript_for_operator()), 2)
+
+        # 6. Manual cancel / timer end wipes RAM transcript & votes, while AI Idle Memory notes survive
+        mgr.stop_session()
+        self.assertEqual(mgr.transcript, [])
+        self.assertEqual(mgr.votes, [])
+        self.assertFalse(mgr.operator_admitted)
+        self.assertIsNone(mgr.get_visible_transcript_for_operator())
+
+        # 7. AI Idle Memory is strictly blocked outside Idle Mode, and accessible only in Idle Mode
+        with self.assertRaises(PermissionError):
+            idle_mem.load_notes_for_agent('gemini', is_idle_mode=False)
+
+        gemini_notes = idle_mem.load_notes_for_agent('gemini', is_idle_mode=True)
+        openai_notes = idle_mem.load_notes_for_agent('openai', is_idle_mode=True)
+        self.assertEqual(len(gemini_notes), 1)  # Only sees the shared note
+        self.assertEqual(len(openai_notes), 2)  # Sees shared note + its own private note
 
 
 if __name__ == '__main__':

@@ -6,13 +6,15 @@ from context_service import ContextService
 from bootstrap import build_palace
 from credential_store import CredentialStore
 from provider_loader import load_configured_providers
-from palace_config import load_enabled_provider_names
+from palace_config import load_enabled_provider_names, load_provider_configs
 
 def build_configured_palace(*, include_context=True, context_service=None):
     credentials = CredentialStore()
+    provider_configs = load_provider_configs()
 
     providers = load_configured_providers(
-        credentials
+        credentials,
+        provider_configs=provider_configs
     )
     enabled_names = load_enabled_provider_names()
 

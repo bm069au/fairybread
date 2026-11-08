@@ -1,4 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 
 from provider_registry import ProviderRegistry
 from provider_result import ProviderResult
@@ -28,7 +29,8 @@ class ProviderDispatcher:
     def dispatch(
         self,
         prompt: str,
-        provider_names: list[str] | None = None
+        provider_names: list[str] | None = None,
+        on_result: Callable[[ProviderResult], None] | None = None
     ) -> dict[str, ProviderResult]:
 
         if provider_names is None:
@@ -38,20 +40,27 @@ class ProviderDispatcher:
             return {}
 
         worker_count = min(self.max_workers, len(provider_names))
+        completed_map: dict[str, ProviderResult] = {}
 
         with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                name: executor.submit(
+            future_to_name = {
+                executor.submit(
                     self._dispatch_one,
                     name,
                     prompt
-                )
+                ): name
                 for name in provider_names
             }
 
-            results = {
-                name: futures[name].result()
-                for name in provider_names
-            }
+            for future in as_completed(future_to_name):
+                name = future_to_name[future]
+                res = future.result()
+                completed_map[name] = res
+                if on_result is not None:
+                    on_result(res)
 
-        return results
+        return {
+            name: completed_map[name]
+            for name in provider_names
+            if name in completed_map
+        }

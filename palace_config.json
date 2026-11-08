@@ -16,7 +16,7 @@
       "enabled": true
     },
     "openai": {
-      "enabled": false
+      "enabled": true
     }
   }
 }

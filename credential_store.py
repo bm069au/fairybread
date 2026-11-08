@@ -49,3 +49,34 @@ class CredentialStore:
             return None
 
         return api_key.strip()
+
+    def has_api_key(self, provider_name: str) -> bool:
+        return bool(self.get_api_key(provider_name))
+
+    def set_api_key(self, provider_name: str, api_key: str) -> None:
+        normalized_name = provider_name.strip().lower()
+        if not normalized_name:
+            raise ValueError("Provider name cannot be empty.")
+
+        data: dict = {"providers": {}}
+        if self.path.exists():
+            try:
+                loaded = json.loads(
+                    self.path.read_text(encoding="utf-8")
+                )
+                if isinstance(loaded, dict):
+                    data = loaded
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Unable to read Palace credentials: {exc}"
+                ) from exc
+
+        providers = data.setdefault("providers", {})
+        entry = providers.setdefault(normalized_name, {})
+        entry["api_key"] = api_key.strip()
+
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(data, indent=2) + "\n",
+            encoding="utf-8"
+        )
