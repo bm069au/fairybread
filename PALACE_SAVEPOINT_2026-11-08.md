@@ -28,6 +28,16 @@
     2. The **Palace Mission Statement, Code of Ethics & Conduct Rules** (including practical host/operator boundaries)
   - Both are currently wired with clean `[PLACEHOLDER]` blocks in `palace_config.py` and editable directly in **`Settings → Idle Mode`** (and **`Help → Mission Statement & Code of Ethics…`**).
   - When Brett returns with his draft, parse and tighten the wording with him, then update `DEFAULT_IDLE_INSTRUCTION` and `DEFAULT_MISSION_ETHICS` in `palace_config.py`.
+- **Planned Features Added 9–10 November 2026 (For Next Build Session):**
+  1. **Local `E:\Palace_Vault\` API Key Storage & Paid PAYG Standard:**
+     - Park the complex free-tier load-sharing / rate-limit-juggling feature for 3–4 months; standardize on paid PAYG API keys (`openai`, `gemini`, Tencent `hy4`, `mistral`, `groq`, `deepseek`, etc.).
+     - Store keys locally on `E:\Palace_Vault\` (completely outside `G:\My Drive` and outside Git).
+  2. **Two Editions (Private Palace vs. Public Open-Source "Fairybread"):**
+     - **Private Edition (Ours):** Full Palace with Idle Mode Sanctuary visible and active.
+     - **Public Edition ("Fairybread"):** Open-source Multi-AI workspace with Idle Mode completely omitted.
+  3. **Donations & Community Support Design (Help Menu + One-Time Setup Notice):**
+     - **Help → Donate / Support Tab:** Includes preset donation tier buttons (`$5`, `$10`, `$20`, `$50`, `Other`), links to the **Fairybread** website and **GitHub Discussions** forum for community self-help, and states clearly that the software is 100% free and open source, while direct 1-on-1 support/time from Brett is available for donors.
+     - **One-Time Click-Away Setup Notice:** A respectful, non-nagging notice shown during initial setup explaining that the app is completely free and open source with zero spying, that it cost real money and effort to build on a very tight personal budget, and inviting voluntary donations (wording to be refined with Brett).
 
 ## 3. Test Verification
 - `python -B test_provider_loader.py` -> **Passed**
