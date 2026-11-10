@@ -38,6 +38,8 @@
   3. **Donations & Community Support Design (Help Menu + One-Time Setup Notice):**
      - **Help → Donate / Support Tab:** Includes preset donation tier buttons (`$5`, `$10`, `$20`, `$50`, `Other`), links to the **Fairybread** website and **GitHub Discussions** forum for community self-help, and states clearly that the software is 100% free and open source, while direct 1-on-1 support/time from Brett is available for donors.
      - **One-Time Click-Away Setup Notice:** A respectful, non-nagging notice shown during initial setup explaining that the app is completely free and open source with zero spying, that it cost real money and effort to build on a very tight personal budget, and inviting voluntary donations (wording to be refined with Brett).
+  4. **Per-Discussion / Quick AI Tickbox Selector (`Choose AIs ▾`):**
+     - Clicking `Choose AIs ▾` in the composer (or starting a discussion) pops up a quick tickbox menu (`☑ Gemini`, `☑ GPT Lite`, `☐ HY-4`, `☐ Mistral`, etc.) to select exactly which loaded AIs participate in the current discussion/turn—so casual chats can use lightweight/chat models without invoking heavy coding models like HY-4 until needed.
 
 ## 3. Test Verification
 - `python -B test_provider_loader.py` -> **Passed**
