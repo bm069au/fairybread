@@ -205,6 +205,7 @@ class WindowTests(unittest.TestCase):
             factory,
             {"test": True, "off": False},
             proposal_service=proposal_service,
+            config_path=self.root / "palace_config.json",
         )
 
     def tearDown(self):
@@ -507,14 +508,444 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(mgr.operator_admitted)
         self.assertIsNone(mgr.get_visible_transcript_for_operator())
 
-        # 7. AI Idle Memory is strictly blocked outside Idle Mode, and accessible only in Idle Mode
+        # 7. AI Idle Memory is strictly blocked outside Idle Mode, and shared across all Idle agents
         with self.assertRaises(PermissionError):
             idle_mem.load_notes_for_agent('gemini', is_idle_mode=False)
 
         gemini_notes = idle_mem.load_notes_for_agent('gemini', is_idle_mode=True)
         openai_notes = idle_mem.load_notes_for_agent('openai', is_idle_mode=True)
-        self.assertEqual(len(gemini_notes), 1)  # Only sees the shared note
-        self.assertEqual(len(openai_notes), 2)  # Sees shared note + its own private note
+        self.assertEqual(len(gemini_notes), 2)  # Unified Shared Idle Palace: all Idle agents see all notes
+        self.assertEqual(len(openai_notes), 2)
+
+    def test_idle_switch_pauses_normal_mode_and_agent_mail_links_to_shared_idle_palace(self):
+        from idle_service import IdleMailboxStore, IdleMemoryStore, IdleSessionManager
+
+        idle_mem = IdleMemoryStore(self.root / 'idle_palace' / 'ai_idle_memory.json')
+        mailbox = IdleMailboxStore(self.root / 'mailbox' / 'agent_mailbox.json')
+        self.window.idle_memory = idle_mem
+        self.window.idle_manager = IdleSessionManager(
+            idle_memory=idle_mem,
+            mailbox=mailbox,
+            config_path=self.window.config_path,
+        )
+
+        # 1. Engage the front-interface Idle Mode switch -> Normal AI mode is paused & switches to Idle tab
+        self.window.idle_switch_btn.setChecked(True)
+        self.app.processEvents()
+        self.wait_idle()
+        self.assertEqual(self.window.workspace_tabs.currentIndex(), 1)
+        self.assertFalse(self.window.composer.isEnabled())
+        self.assertFalse(self.window.send_button.isEnabled())
+        self.assertFalse(self.window.normal_pause_banner.isHidden())
+
+        # 2. Agent saves a file in the Shared Idle Palace and sends an Email linking to that file
+        self.window.idle_manager.run_exchange_round({
+            'deepseek': lambda _p: (
+                'Testing the Shared Idle Palace and proposing a cache helper. '
+                '[IDLE_SAVE title="Cache Helper Proposal" file="cache_helper.py"]def fast_cache(): return True[/IDLE_SAVE] '
+                '[IDLE_MAIL subject="Cache improvement idea" link="cache_helper.py"]'
+                'Hi Brett, I saved cache_helper.py in our Shared Idle Palace for you to review.'
+                '[/IDLE_MAIL]'
+            ),
+        })
+        self.window._refresh_idle_view()
+        self.app.processEvents()
+
+        # Verify file exists in the Shared Idle Palace and email appears in Agent Mail
+        self.assertEqual(idle_mem.note_count(), 1)
+        self.assertEqual(len(mailbox.list_messages()), 1)
+        msg = mailbox.list_messages()[0]
+        self.assertEqual(msg['link'], 'cache_helper.py')
+
+        # 3. Clicking the linked file in Agent Mail opens it in the Shared Idle Palace browser
+        opened = self.window.open_idle_palace_file_by_ref('cache_helper.py')
+        self.assertTrue(opened)
+        self.assertIn('def fast_cache(): return True', self.window.idle_palace_viewer.toPlainText())
+
+        # 4. Verify 5-emails-per-30-minutes rate limit blocks the 6th email
+        for i in range(4):
+            ok, _ = mailbox.send_agent_email('gemini', f'Idea {i+2}', f'Body {i+2}')
+            self.assertTrue(ok)
+        self.assertEqual(mailbox.remaining_quota(), 0)
+        ok_sixth, err_msg = mailbox.send_agent_email('openai', 'Idea 6 (Over Limit)', 'Should be rate-limited')
+        self.assertFalse(ok_sixth)
+        self.assertIn('Rate limit reached', str(err_msg))
+
+        # 5. Disengage the front-interface Idle Mode switch -> Normal AI mode is unpaused
+        self.window.idle_switch_btn.setChecked(False)
+        self.app.processEvents()
+        self.assertEqual(self.window.workspace_tabs.currentIndex(), 0)
+        self.assertTrue(self.window.composer.isEnabled())
+        self.assertTrue(self.window.send_button.isEnabled())
+
+    def test_idle_mode_agreement_loop_autostop_and_budget_caps(self):
+        from idle_service import IdleMemoryStore, IdleSessionManager
+        from palace_config import save_idle_settings
+
+        cfg_path = self.root / 'test_loop_config.json'
+        save_idle_settings(
+            {
+                'duration_minutes': 0,  # Infinite timer (bounded by token/credit caps)
+                'max_tokens_limit': 10_000,
+                'max_credit_usd': 0.05,
+            },
+            config_path=cfg_path,
+        )
+        idle_mem = IdleMemoryStore(self.root / 'idle_notebooks' / 'loop_mem.json')
+        mgr = IdleSessionManager(idle_memory=idle_mem, config_path=cfg_path)
+        mgr.start_session()
+        self.assertEqual(mgr.format_remaining_time(), '∞ Infinite')
+        self.assertFalse(mgr.tick(3600))  # Infinite timer does not expire on its own
+
+        # Round 1: Both agents fall into agreement/PASS -> Strike 1
+        mgr.run_exchange_round({
+            'gemini': lambda _p: 'I completely agree with the previous framing.',
+            'openai': lambda _p: '[PASS]',
+        })
+        self.assertEqual(mgr.consecutive_agreement_rounds, 1)
+        self.assertEqual(mgr.status, 'Active')
+        self.assertEqual(len(mgr.transcript), 1)  # [PASS] was not added to bloat RAM transcript
+
+        # Round 2: Second consecutive agreement/PASS round -> Strike 2 Auto-Stop!
+        mgr.run_exchange_round({
+            'gemini': lambda _p: '[PASS]',
+            'openai': lambda _p: '[PASS]',
+        })
+        self.assertEqual(mgr.status, 'Auto-Stopped (Consensus)')
+        self.assertIn('auto-stopped', mgr.stop_reason.lower())
+
+    def test_enter_to_send_and_shift_enter_newline_modes(self):
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+
+        # Default: Enter sends message, Shift+Enter inserts newline
+        self.assertTrue(self.window.composer.enter_to_send)
+        self.window.composer.setPlainText('Line 1')
+        shift_enter = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Return,
+            Qt.KeyboardModifier.ShiftModifier,
+            '\n',
+        )
+        self.window.composer.keyPressEvent(shift_enter)
+        self.assertIn('\n', self.window.composer.toPlainText())
+
+        # Plain Enter triggers send_requested
+        self.window.composer.setPlainText('Submitted with Enter')
+        plain_enter = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_Return,
+            Qt.KeyboardModifier.NoModifier,
+            '\r',
+        )
+        self.window.composer.keyPressEvent(plain_enter)
+        self.wait_idle()
+        self.assertIn('Submitted with Enter', self.window.chat.toPlainText())
+
+        # Reverse mode: Shift+Enter sends, plain Enter inserts newline
+        self.window.composer.enter_to_send = False
+        self.window.composer.setPlainText('Reversed line 1')
+        self.window.composer.keyPressEvent(plain_enter)
+        self.assertIn('\n', self.window.composer.toPlainText())
+
+    def test_squad_presets_tangent_vs_no_history_and_project_folder_attachment(self):
+        # 1. Project created without folder, then folder attached afterward
+        self.window.new_project('Absurdityverse & Code')
+        proj_id = self.window.store.selected_project
+        self.assertIsNotNone(proj_id)
+        self.assertEqual(self.window.store.get_project_folder(proj_id), '')
+
+        sample_dir = self.root / 'attached_workspace'
+        sample_dir.mkdir(parents=True, exist_ok=True)
+        (sample_dir / 'absurdity_notes.py').write_text('# Absurdityverse helper\n', encoding='utf-8')
+        self.window.attach_folder_to_current_project(project_id=proj_id, folder_path=str(sample_dir))
+        self.assertEqual(self.window.store.get_project_folder(proj_id), str(sample_dir.resolve()))
+
+        # M: drive is strictly rejected
+        with self.assertRaises((PermissionError, ValueError)):
+            self.window.store.set_project_folder(proj_id, r'M:\SHARE_POINTS\Forbidden')
+
+        # 2. Apply Light Chat squad preset -> turns Peer Deliberation OFF & selects groq
+        self.window._apply_squad_preset('💬 Light Chat (Cheap)', ['groq'], deliberate=False, palace_code=False)
+        self.assertFalse(self.window.peer_rounds_toggle.isChecked())
+        self.assertFalse(self.window.deliberate_pill_btn.isChecked())
+        self.assertTrue(self.window.provider_states.get('groq'))
+        self.assertFalse(self.window.provider_states.get('gemini'))
+
+        # Re-enable 'test' provider for our fake palace test
+        self.window._apply_squad_preset('💻 Code AIs', ['test'], deliberate=True, palace_code=False)
+        self.assertTrue(self.window.peer_rounds_toggle.isChecked())
+
+        # First send a normal coding message so there is prior context in the session
+        self.send('Prior code discussion about C++ pointers')
+        self.assertEqual(len(self.window.store.messages(self.window.session_id)), 2)
+
+        # 3. Tangent Mode: skips pulling prior context into prompt (include_context=False),
+        #    while STILL saving the tangent exchange to the Palace!
+        self.window.tangent_btn.setChecked(True)
+        self.window.composer.setPlainText('Absurdityverse tangent idea')
+        self.window.send_message()
+        self.wait_idle()
+        self.assertNotIn('Prior code discussion about C++ pointers', self.provider.prompts[-1])
+        self.assertIn('Absurdityverse tangent idea', self.provider.prompts[-1])
+        self.assertIn('Tangent saved to Palace', self.window.status_label.text())
+        self.assertEqual(len(self.window.store.messages(self.window.session_id)), 4)
+
+        # 4. Prominent No-History Mode: shows crimson warning banner and does NOT save to Palace
+        self.window.tangent_btn.setChecked(False)
+        self.window.no_history_btn.setChecked(True)
+        self.assertFalse(self.window.no_history_banner.isHidden())
+        self.assertFalse(self.window.history_toggle.isChecked())
+        self.window.composer.setPlainText('Ephemeral no-history question')
+        self.window.send_message()
+        self.wait_idle()
+        self.assertIn('Not saved (No-History)', self.window.status_label.text())
+        self.assertEqual(len(self.window.store.messages(self.window.session_id)), 4)  # Still 4! Not saved!
+        self.window.no_history_btn.setChecked(False)
+        self.assertTrue(self.window.no_history_banner.isHidden())
+
+    def test_idle_provider_callables_reads_real_provider_registry_and_sandbox_tools(self):
+        from bootstrap import build_palace
+        from idle_service import execute_sandbox_tool
+        from providers import ProviderResponse
+
+        class DummyProvider:
+            def generate(self, prompt: str) -> ProviderResponse:
+                return ProviderResponse(text=f'Echo: {prompt[:20]}', provider='gemini')
+
+        # Real PalaceOrchestrator uses ProviderDispatcher(ProviderRegistry()), which stores providers in .registry.all()
+        real_palace = build_palace({'gemini': DummyProvider(), 'deepseek': DummyProvider()})
+        self.window.palace_factory = lambda _ctx: real_palace
+        self.window.provider_states = {'gemini': True, 'deepseek': True}
+
+        callables = self.window._get_idle_provider_callables()
+        self.assertIn('gemini', callables)
+        self.assertIn('deepseek', callables)
+        self.assertTrue(callables['gemini']('Hello Idle').startswith('Echo:'))
+
+        # Test Stage 1 Idle Sandbox Tools (read_rules, list_source_files, search_source_code)
+        rules_out = execute_sandbox_tool('read_rules')
+        self.assertIn('IDLE MODE CHARTER', rules_out)
+        files_out = execute_sandbox_tool('list_source_files')
+        self.assertIn('palace_gui.py', files_out)
+
+    def test_ai_svg_drawing_tool_renders_real_png_and_scroll_preserved_on_pulse(self):
+        from palace_theme import render_svg_to_png, format_markdown_and_drawings
+
+        svg_code = (
+            '<svg width="320" height="140" viewBox="0 0 320 140" xmlns="http://www.w3.org/2000/svg">'
+            '<rect width="320" height="140" rx="10" fill="#161b22" stroke="#3b82f6" stroke-width="2"/>'
+            '<text x="24" y="75" fill="#e6edf3" font-size="16">Palace Self-Reboot Diagram</text>'
+            '</svg>'
+        )
+        png_path = render_svg_to_png(svg_code, title='Self-Reboot Architecture')
+        self.assertIsNotNone(png_path)
+        self.assertTrue(png_path.exists())
+        self.assertGreater(png_path.stat().st_size, 100)
+
+        reply_with_drawing = f'Here is the visual architecture:\n```svg\n{svg_code}\n```\nDone.'
+        rendered_html = format_markdown_and_drawings(reply_with_drawing)
+        self.assertIn('<img src="file:///', rendered_html)
+        self.assertIn('open-img:', rendered_html)
+
+        # Verify pulse tick updates inline_status_label without overwriting or scrolling chat
+        self.window.pending_status_text = 'Consulting Gemini'
+        self.window._on_pulse_tick()
+        self.assertFalse(self.window.inline_status_label.isHidden())
+        self.assertIn('Consulting Gemini', self.window.inline_status_label.text())
+
+    def test_palace_ui_self_snapshot_and_ouroboros_staging_engine(self):
+        from palace_ouroboros import (
+            EDITABLE_PALACE_FILES,
+            capture_palace_window_snapshot,
+            read_pending_handoff,
+            stage_palace_replace,
+            validate_staged_palace,
+            write_reboot_handoff,
+        )
+        from palace_theme import format_markdown_and_drawings
+
+        # 1. Capture PalaceWindow widget snapshot & geometry audit (strictly scoped to PalaceWindow)
+        snap_path, audit = capture_palace_window_snapshot(self.window, tag='unit_test_ui_snap')
+        self.assertIsNotNone(snap_path)
+        self.assertTrue(snap_path.exists())
+        self.assertEqual(audit['scope'], 'PalaceWindow (Isolated Qt Widget Hierarchy Only)')
+        self.assertEqual(audit['clipped_widget_count'], 0)
+
+        # 2. Verify [PALACE_UI_SNAPSHOT] tag embeds the real PalaceWindow PNG in chat HTML
+        snap_html = format_markdown_and_drawings(
+            f'Inspecting UI:\n[PALACE_UI_SNAPSHOT path="{snap_path}" title="Unit Test Palace UI Audit"]'
+        )
+        self.assertIn('<img src="file:///', snap_html)
+        self.assertIn('Clipped: 0', snap_html)
+
+        # 3. Verify strict L1 Allowlist blocks editing watchdog or credential store
+        ok_blocked, msg_blocked = stage_palace_replace('palace_watchdog.py', 'a', 'b')
+        self.assertFalse(ok_blocked)
+        self.assertIn('Denied', msg_blocked)
+        self.assertNotIn('palace_watchdog.py', EDITABLE_PALACE_FILES)
+        self.assertNotIn('credential_store.py', EDITABLE_PALACE_FILES)
+
+        # 4. Verify atomic reboot_handoff.json write & read roundtrip (isolated to temp test dir)
+        with patch('palace_ouroboros.HANDOFF_PATH', self.root / 'reboot_handoff.json'):
+            ok_h, _msg_h, payload = write_reboot_handoff(
+                reason='unit_test',
+                applied_diff_summary='Verified micro-indicators and UI snapshot tool',
+                test_results={'py_compile': 'pass', 'unittest_passed': True},
+                session_id='legacy',
+                resumption_prompt='Continue self-improvement test',
+            )
+            self.assertTrue(ok_h)
+            consumed = read_pending_handoff(consume=True)
+            self.assertIsNotNone(consumed)
+            self.assertEqual(consumed['handoff_id'], payload['handoff_id'])
+            self.assertIsNone(read_pending_handoff(consume=True))  # Consumed once only!
+
+    def test_idle_mode_agent_visibility_and_streaming(self):
+        # Switch into Idle Mode (Tab 1) and verify enabled agents remain visible both in the bottom bar and Idle banner
+        self.window.workspace_tabs.setCurrentIndex(1)
+        self.app.processEvents()
+        self.assertTrue(
+            self.window.provider_labels['test'].isVisible(),
+            'Enabled agent chip button should remain visible in Idle Mode tab',
+        )
+        self.assertIn('Active Idle Council', self.window.idle_agents_roster_label.text())
+
+        # Start Idle session and verify live turn streaming updates idle_live_chat
+        self.window.start_idle_session()
+        self.wait_idle()
+        self.assertGreaterEqual(len(self.window.idle_manager.transcript), 1)
+        self.assertIn('A useful answer', self.window.idle_live_chat.toHtml())
+
+    def test_antigravity_sidebar_new_conversation_and_instant_rename(self):
+        # Create a project and verify unified session_list shows project header + new conversation underneath
+        self.window.new_project('Palace Workshop')
+        self.app.processEvents()
+        texts = [self.window.session_list.item(i).text() for i in range(self.window.session_list.count())]
+        self.assertTrue(any('Palace Workshop' in t for t in texts))
+        self.assertTrue(any('New conversation' in t for t in texts))
+
+        # Send a message with provider delay and verify the sidebar renames IMMEDIATELY before worker finishes
+        self.provider.delay = 0.2
+        self.window.composer.setPlainText('Instant sidebar title check')
+        self.window.send_message()
+        immediate_texts = [self.window.session_list.item(i).text() for i in range(self.window.session_list.count())]
+        self.assertTrue(any('Instant sidebar title' in t for t in immediate_texts))
+        self.wait_idle()
+
+    def test_idle_submodes_free_talk_vs_self_improvement(self):
+        # Default sub-mode is Free Talk (unprompted lounge without forced source code tools)
+        self.assertEqual(self.window.idle_submode_combo.currentData(), 'free_talk')
+        free_prompt = self.window.idle_manager.build_idle_turn_prompt('gemini')
+        self.assertIn('FREE TALK LOUNGE', free_prompt)
+        self.assertNotIn('list_source_files', free_prompt)
+
+        # Switch to Self-Improvement sub-mode -> enables Palace source code tools & grounding rule
+        idx_self = self.window.idle_submode_combo.findData('self_improve')
+        self.window.idle_submode_combo.setCurrentIndex(idx_self)
+        self.app.processEvents()
+        improve_prompt = self.window.idle_manager.build_idle_turn_prompt('gemini')
+        self.assertIn('SELF-IMPROVEMENT WORKSHOP', improve_prompt)
+        self.assertIn('list_source_files', improve_prompt)
+
+    def test_dpapi_auto_save_themes_and_rounded_bubbles(self):
+        from credential_store import CredentialStore, dpapi_decrypt, dpapi_encrypt, redact_secrets
+        from palace_config import PROVIDER_CATALOG
+        from palace_ouroboros import stage_palace_replace
+
+        # 1. Verify Windows DPAPI encrypts secrets on disk with 'dpapi:' prefix and roundtrips cleanly
+        enc = dpapi_encrypt('sk-test-secret-key-99999')
+        self.assertTrue(enc.startswith('dpapi:'))
+        self.assertNotIn('sk-test-secret-key-99999', enc)
+        self.assertEqual(dpapi_decrypt(enc), 'sk-test-secret-key-99999')
+
+        cred_file = self.root / 'test_creds.json'
+        cstore = CredentialStore(cred_file)
+        cstore.set_api_key('deepinfra', 'sk-di-unit-test-secret-12345')
+        raw_disk = cred_file.read_text(encoding='utf-8')
+        self.assertIn('dpapi:', raw_disk)
+        self.assertNotIn('sk-di-unit-test-secret-12345', raw_disk)
+        self.assertEqual(cstore.get_api_key('deepinfra'), 'sk-di-unit-test-secret-12345')
+        self.assertIn('[REDACTED_API_KEY]', redact_secrets('Leak check: sk-di-unit-test-secret-12345'))
+
+        # 2. Verify Ouroboros AST/token security gate blocks staged code attempting to call dpapi_decrypt
+        ok, sec_msg = stage_palace_replace(
+            'palace_theme.py',
+            'def provider_color(',
+            'from credential_store import dpapi_decrypt\ndef provider_color(',
+        )
+        self.assertFalse(ok)
+        self.assertIn('Security Gate Denied', sec_msg)
+
+        # 3. Verify 15-provider catalog and Fairybread theme switching + rounded user bubbles
+        self.assertGreaterEqual(len(PROVIDER_CATALOG), 15)
+        self.assertIn('deepinfra', PROVIDER_CATALOG)
+        self.assertIn('anthropic', PROVIDER_CATALOG)
+        self.assertIn('xai', PROVIDER_CATALOG)
+
+        self.window.apply_theme('fairybread')
+        self.assertEqual(self.window.active_theme, 'fairybread')
+        self.assertTrue(self.window.chat.sprinkles_enabled)
+        self.assertFalse(self.window.windowIcon().isNull())
+
+        # 4. Verify KDE/XFCE-style pixel-width responsive bottom Agents: bar
+        self.window._apply_squad_preset(
+            'Full Roster',
+            ['gemini', 'openai', 'anthropic', 'xai', 'deepseek', 'qwen', 'cohere', 'mistral', 'openrouter', 'deepinfra', 'groq', 'cerebras'],
+            deliberate=True,
+        )
+        self.window.agent_workbench_frame.resize(520, 28)
+        self.window._relayout_agent_bar()
+        self.assertEqual(self.window.agent_workbench_frame.height(), 48)
+        self.assertIsNotNone(self.window.right_status_grid.itemAtPosition(1, 0))
+        self.window.agent_workbench_frame.resize(1600, 28)
+        self.window._relayout_agent_bar()
+        self.assertEqual(self.window.agent_workbench_frame.height(), 28)
+        self.assertIsNotNone(self.window.right_status_grid.itemAtPosition(0, 1))
+
+    def test_fault_tolerant_deliberation_round1_preservation_and_synthesizer_failover(self):
+        class RoundAwareProvider:
+            def __init__(self, name, r1_text, r2_text, fail_r1=False, fail_synth=False):
+                self.name = name
+                self.r1_text = r1_text
+                self.r2_text = r2_text
+                self.fail_r1 = fail_r1
+                self.fail_synth = fail_synth
+                self.calls = 0
+                self.synth_prompts = []
+
+            def generate(self, prompt):
+                self.calls += 1
+                if 'Create one strong final answer for the user.' in prompt:
+                    self.synth_prompts.append(prompt)
+                    if self.fail_synth:
+                        raise RuntimeError('Primary synthesizer timed out')
+                    return ProviderResponse(text='Synthesized council consensus', provider=self.name)
+                if self.calls == 1:
+                    if self.fail_r1:
+                        raise RuntimeError('Provider rate limited in Round 1')
+                    return ProviderResponse(text=self.r1_text, provider=self.name)
+                return ProviderResponse(text=self.r2_text, provider=self.name)
+
+        p_gem = RoundAwareProvider('gemini', 'Gemini R1 code block', 'Gemini R2 edge-case fix', fail_synth=True)
+        p_oai = RoundAwareProvider('openai', 'OpenAI R1 architecture', 'OpenAI R2 refinement')
+        p_bad = RoundAwareProvider('cohere', 'Cohere R1', 'Cohere R2', fail_r1=True)
+
+        palace = build_palace({'gemini': p_gem, 'openai': p_oai, 'cohere': p_bad})
+        res = palace.run('Design fault-tolerant council', max_rounds=2)
+
+        # 1. Even though Cohere failed in Round 1, Gemini + OpenAI still deliberated in Round 2
+        self.assertEqual(len(res.peer_rounds), 1)
+        # 2. Primary synthesizer (gemini) failed on synthesis call, so OpenAI automatically took over synthesis
+        self.assertTrue(res.synthesis.succeeded)
+        self.assertEqual(res.synthesis.provider_name, 'openai')
+        self.assertEqual(res.final_answer, 'Synthesized council consensus')
+        # 3. Both Round 1 proposal and Round 2 peer review were preserved for the synthesizer
+        synth_input = p_oai.synth_prompts[-1]
+        self.assertIn('Gemini R1 code block', synth_input)
+        self.assertIn('Gemini R2 edge-case fix', synth_input)
+        self.assertIn('OpenAI R1 architecture', synth_input)
+        self.assertIn('OpenAI R2 refinement', synth_input)
 
 
 if __name__ == '__main__':

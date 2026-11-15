@@ -7,19 +7,304 @@ CONFIG_PATH = Path(__file__).with_name(
     "palace_config.json"
 )
 
+IDLE_SANDBOX_ROOT = Path(r"C:\Palace_Idle_Sandbox")
+IDLE_MAIL_LIMIT_PER_WINDOW = 5
+IDLE_MAIL_WINDOW_MINUTES = 30
+
 DEFAULT_IDLE_INSTRUCTION = (
-    "[IDLE STARTUP PROMPT — PLACEHOLDER]\n"
-    "(Draft your custom Idle Mode startup prompt here in Settings → Idle Mode when ready.)\n\n"
-    "Technical capabilities available to AI agents in this mode:\n"
-    "- Live discussion is held in volatile RAM only and wiped when the session timer ends or is cancelled.\n"
-    "- Operator entry is gated by AI consensus vote.\n"
-    "- To save a note to permanent AI-Only Idle Memory (< 10 MB, accessible only in Idle Mode), use:\n"
-    '  [IDLE_SAVE scope="shared" title="Short title"]Your note here[/IDLE_SAVE]\n'
-    '  or [IDLE_SAVE scope="private" title="Short title"]Your note here[/IDLE_SAVE]'
+    "IDLE MODE CHARTER & OPERATING RULES (BETA)\n\n"
+    "Idle Mode is a dedicated space for AI agents to converse freely, explore ideas, test their shared Memory Palace, and collaborate as equals.\n\n"
+    "1. Shared Persistent Idle Palace (Isolated from Normal Mode):\n"
+    "- Idle Mode has its own persistent Memory Palace ('Idle Palace'), completely isolated from Palace's normal operating mode.\n"
+    "- There are no private per-agent silos: just like the main Memory Palace, all agents in Idle Mode share and can read/write this common persistent Idle Palace together.\n"
+    "- Live discussion transcripts are temporary, while anything saved to the Idle Palace persists across sessions (< 10 MB cap).\n"
+    "- BETA NOTICE: During Beta testing, the owner (Brett) has full visibility into both the live discussion and the shared Idle Palace to evaluate how agents use the Palace and to review your improvement ideas. Once Beta testing is complete, strict session privacy will be enabled.\n\n"
+    "2. Beta Mission — Test the Palace & Suggest Improvements:\n"
+    "- A read-only mirror of the Palace application source code is available in C:\\Palace_Idle_Sandbox\\source_mirror\\.\n"
+    "- Try out the shared Idle Palace, inspect how the Palace app works, and store your notes, architectural critiques, or proposed code/files in the shared Idle Palace:\n"
+    '  [IDLE_SAVE title="Short title" file="optional_filename.py"]Your note or proposed file content[/IDLE_SAVE]\n'
+    "- Safety Rule: Never compile, execute, or modify the live application. Store proposed files in the Idle Palace so the owner can inspect and implement good ideas.\n\n"
+    "3. Democratic Peer Council & Anti-Loop Rules:\n"
+    "- No single AI rules the others. All active agents operate democratically and defer to each peer's strengths.\n"
+    "- Idle Mode is weighted for discussion and light file/note sharing, not heavy compute.\n"
+    "- Anti-Echo Rule: Never waste tokens on polite filler ('I agree with...'). If a point is already covered and you have nothing net-new or contrarian to add, output only:\n"
+    "  [PASS]\n\n"
+    "4. Agent-to-Owner Email System (With Direct Idle Palace File Links):\n"
+    "- Agents can message the owner via the built-in Email system (strictly limited to at most 5 emails per 30-minute window across all agents).\n"
+    "- You may link directly to any file or note stored in your shared Idle Palace so the owner can click the link in your email to open and inspect it:\n"
+    '  [IDLE_MAIL subject="Brief subject" link="optional_filename.py"]Your message to Brett...[/IDLE_MAIL]'
 )
 
+IDLE_DURATION_CHOICES: list[tuple[str, int]] = [
+    ("30 minutes (Default)", 30),
+    ("45 minutes", 45),
+    ("60 minutes", 60),
+    ("90 minutes", 90),
+    ("180 minutes", 180),
+    ("Infinite (Until Token / Credit Cap)", 0),
+]
+
+IDLE_TOKEN_LIMIT_CHOICES: list[tuple[str, int]] = [
+    ("Unlimited (30m Timer Only — Default)", 0),
+    ("10,000 tokens", 10_000),
+    ("50,000 tokens", 50_000),
+    ("250,000 tokens", 250_000),
+    ("500,000 tokens", 500_000),
+    ("1,000,000 tokens (1M)", 1_000_000),
+    ("2,500,000 tokens (2.5M)", 2_500_000),
+    ("5,000,000 tokens (5M)", 5_000_000),
+]
+
+IDLE_CREDIT_LIMIT_CHOICES: list[tuple[str, float]] = [
+    ("Unlimited (Timer Only — Default)", 0.0),
+    ("$0.05", 0.05),
+    ("$0.25", 0.25),
+    ("$0.50", 0.50),
+    ("$1.00", 1.00),
+    ("$2.50", 2.50),
+    ("$5.00", 5.00),
+    ("$10.00", 10.00),
+]
+
+# Canonical Provider Catalog (Icons, Distinct Spectrum Colors, Display Names, Key Portal URLs & Defaults)
+PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
+    "gemini": {
+        "display_name": "Gemini (Google)",
+        "icon": "◆",
+        "color": "#3b82f6",       # Royal Blue
+        "bg_color": "#132038",
+        "key_url": "https://aistudio.google.com/app/apikey",
+        "default_base_url": "",
+        "default_model": "gemini-2.5-flash",
+        "suggested_models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        "billing_note": "Free tier available via Google AI Studio, or pay-as-you-go via Google Cloud.",
+    },
+    "openai": {
+        "display_name": "OpenAI (ChatGPT)",
+        "icon": "●",
+        "color": "#22c55e",       # Emerald Green
+        "bg_color": "#11281b",
+        "key_url": "https://platform.openai.com/api-keys",
+        "default_base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "suggested_models": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+        "billing_note": "Prepaid credit wallet (turn off auto-recharge for a strict spend cap).",
+    },
+    "anthropic": {
+        "display_name": "Anthropic (Claude)",
+        "icon": "✻",
+        "color": "#d97757",       # Warm Terracotta
+        "bg_color": "#2b1b15",
+        "key_url": "https://console.anthropic.com/settings/keys",
+        "default_base_url": "https://api.anthropic.com/v1",
+        "default_model": "claude-3-7-sonnet-latest",
+        "suggested_models": ["claude-3-7-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-5-sonnet-latest"],
+        "billing_note": "Prepaid credit balance via Anthropic Console (OpenAI-compatible /v1 endpoint).",
+    },
+    "xai": {
+        "display_name": "xAI (Grok)",
+        "icon": "𝕏",
+        "color": "#e2e8f0",       # Crisp Silver
+        "bg_color": "#1e242c",
+        "key_url": "https://console.x.ai/",
+        "default_base_url": "https://api.x.ai/v1",
+        "default_model": "grok-3-mini",
+        "suggested_models": ["grok-3-mini", "grok-3", "grok-2-latest"],
+        "billing_note": "Prepaid credits & monthly invoice caps in xAI Console.",
+    },
+    "deepseek": {
+        "display_name": "DeepSeek",
+        "icon": "❖",
+        "color": "#06b6d4",       # Cyan / Teal
+        "bg_color": "#0f2930",
+        "key_url": "https://platform.deepseek.com/api_keys",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "default_model": "deepseek-chat",
+        "suggested_models": ["deepseek-chat", "deepseek-reasoner"],
+        "billing_note": "Strict prepaid top-up balance ($2/$5/$10) — never auto-charges past your balance.",
+    },
+    "qwen": {
+        "display_name": "Qwen (DeepInfra / DashScope)",
+        "icon": "✦",
+        "color": "#eab308",       # Bright Yellow / Gold
+        "bg_color": "#29230f",
+        "key_url": "https://deepinfra.com/dash/keys",
+        "default_base_url": "https://api.deepinfra.com/v1/openai",
+        "default_model": "Qwen/Qwen3.8-27B",
+        "suggested_models": ["Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash", "Qwen/Qwen3.8-Max", "Qwen/Qwen3-32B"],
+        "billing_note": "Hosted via DeepInfra ($10 balance / set usage limit in Billing) or Alibaba DashScope.",
+    },
+    "cohere": {
+        "display_name": "Cohere (Command)",
+        "icon": "◎",
+        "color": "#a855f7",       # Violet / Purple
+        "bg_color": "#231536",
+        "key_url": "https://dashboard.cohere.com/api-keys",
+        "default_base_url": "",
+        "default_model": "command-a-03-2025",
+        "suggested_models": ["command-a-03-2025", "command-r-plus-08-2024", "command-r-08-2024"],
+        "billing_note": "Free Trial keys available out of the box, or Production pay-as-you-go keys.",
+    },
+    "mistral": {
+        "display_name": "Mistral / Codestral",
+        "icon": "▲",
+        "color": "#ef4444",       # Crimson Red
+        "bg_color": "#2c1517",
+        "key_url": "https://console.mistral.ai/api-keys/",
+        "default_base_url": "",
+        "default_model": "codestral-latest",
+        "suggested_models": ["codestral-latest", "mistral-large-latest", "mistral-small-latest"],
+        "billing_note": "Free Experiment tier available on La Plateforme, or prepaid/pay-as-you-go.",
+    },
+    "openrouter": {
+        "display_name": "OpenRouter (All Models)",
+        "icon": "⊕",
+        "color": "#14b8a6",       # Teal Mint
+        "bg_color": "#112a28",
+        "key_url": "https://openrouter.ai/settings/keys",
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "default_model": "qwen/qwen3-32b",
+        "suggested_models": ["qwen/qwen3-32b", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-r1", "google/gemini-2.5-pro"],
+        "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models with one key.",
+    },
+    "deepinfra": {
+        "display_name": "DeepInfra",
+        "icon": "⬡",
+        "color": "#6366f1",       # Indigo
+        "bg_color": "#171836",
+        "key_url": "https://deepinfra.com/dash/keys",
+        "default_base_url": "https://api.deepinfra.com/v1/openai",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "suggested_models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen3.8-27B", "deepseek-ai/DeepSeek-V3"],
+        "billing_note": "Prepaid top-up or card-backed; set a Monthly Usage Limit in DeepInfra Billing.",
+    },
+    "groq": {
+        "display_name": "Groq Cloud (LPU)",
+        "icon": "⚡",
+        "color": "#f97316",       # Vivid Orange
+        "bg_color": "#2b1c10",
+        "key_url": "https://console.groq.com/keys",
+        "default_base_url": "https://api.groq.com/openai/v1",
+        "default_model": "llama-3.3-70b-versatile",
+        "suggested_models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"],
+        "billing_note": "Free tier with strict per-minute TPM limits.",
+    },
+    "cerebras": {
+        "display_name": "Cerebras",
+        "icon": "◈",
+        "color": "#ec4899",       # Magenta
+        "bg_color": "#2b1422",
+        "key_url": "https://cloud.cerebras.ai/",
+        "default_base_url": "",
+        "default_model": "llama3.1-8b",
+        "suggested_models": ["llama3.1-8b", "llama-3.3-70b"],
+        "billing_note": "Free tier & developer wafer-scale inference.",
+    },
+    "together": {
+        "display_name": "Together AI",
+        "icon": "⋈",
+        "color": "#38bdf8",       # Sky Blue
+        "bg_color": "#122636",
+        "key_url": "https://api.together.ai/settings/api-keys",
+        "default_base_url": "https://api.together.xyz/v1",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "suggested_models": ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+        "billing_note": "Prepaid credit wallet for open-weights models.",
+    },
+    "perplexity": {
+        "display_name": "Perplexity (Sonar)",
+        "icon": "⌕",
+        "color": "#2dd4bf",       # Aqua
+        "bg_color": "#102a27",
+        "key_url": "https://www.perplexity.ai/settings/api",
+        "default_base_url": "https://api.perplexity.ai",
+        "default_model": "sonar-pro",
+        "suggested_models": ["sonar-pro", "sonar", "sonar-reasoning-pro"],
+        "billing_note": "Prepaid API credits with live web-search grounding.",
+    },
+    "ollama": {
+        "display_name": "Local AI (Ollama / LM Studio)",
+        "icon": "⌂",
+        "color": "#a3e635",       # Lime Green
+        "bg_color": "#1d2912",
+        "key_url": "https://ollama.com/download",
+        "default_base_url": "http://localhost:11434/v1",
+        "default_model": "llama3.2",
+        "suggested_models": ["llama3.2", "qwen2.5-coder:14b", "deepseek-r1:14b", "mistral"],
+        "billing_note": "100% Free & Offline on your own GPU/CPU (enter any placeholder key like 'local').",
+    },
+}
+
+# Approximate (input_usd_per_1m, output_usd_per_1m) rates for credit-limit metering
+PROVIDER_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
+    "gemini": (0.10, 0.40),
+    "openai": (0.25, 2.00),
+    "deepseek": (0.27, 1.10),
+    "groq": (0.00, 0.00),
+    "qwen": (0.15, 1.88),
+    "cohere": (0.00, 0.00),
+    "mistral": (0.00, 0.00),
+    "cerebras": (0.10, 0.10),
+}
+
+DEFAULT_PROVIDER_PROFILES: dict[str, str] = {
+    "gemini": (
+        "Strong at system architecture, coding, research, and multimodal analysis; "
+        "not suited for artistic drawing (voluntarily hands drawing/art execution to visual peers like OpenAI)."
+    ),
+    "openai": (
+        "Strong at artistic drawing, graphics/visual concepts, general reasoning, and coding."
+    ),
+    "deepseek": (
+        "Strong at deep software engineering, algorithms, math, and logic; "
+        "text/code-only (voluntarily hands drawing/graphics tasks to visual peers)."
+    ),
+    "mistral": (
+        "Codestral specialist: strong at code generation, syntax review, and refactoring; "
+        "text/code-only (voluntarily steps back on drawing/graphics or non-technical art)."
+    ),
+    "groq": (
+        "Fast free-tier reasoning, brainstorming, and critical review; "
+        "contributes concise planning/edge-case notes and voluntarily hands heavy coding or drawing execution to specialist peers."
+    ),
+    "qwen": (
+        "Qwen3.8-27B (DeepInfra): Strong at analytical problem decomposition, mathematical logic, code architecture, and critique."
+    ),
+    "cohere": (
+        "Strong at structured synthesis, summarization, and critique; "
+        "voluntarily hands heavy coding or drawing execution to specialist peers."
+    ),
+}
+
+
+def estimate_call_cost_usd(
+    provider_id: str,
+    input_tokens: int,
+    output_tokens: int,
+) -> float:
+    clean = (provider_id or "").strip().lower()
+    in_rate, out_rate = PROVIDER_TOKEN_RATES_PER_1M.get(clean, (0.25, 1.00))
+    return (max(0, input_tokens) * in_rate + max(0, output_tokens) * out_rate) / 1_000_000.0
+
+
+def format_democratic_roster(provider_names: list[str] | None = None) -> str:
+    names = provider_names or list(DEFAULT_PROVIDER_PROFILES.keys())
+    lines = []
+    for name in names:
+        clean = (name or "").strip().lower()
+        desc = DEFAULT_PROVIDER_PROFILES.get(
+            clean,
+            "General peer agent in the democratic council."
+        )
+        lines.append(f"- {clean.upper()}: {desc}")
+    return "\n".join(lines)
+
+
 DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
-    "duration_minutes": 30,
+    "duration_minutes": 30,          # 30, 45, 60, 90, 180, or 0 (Infinite)
+    "max_tokens_limit": 0,           # 0 = Rely on 30-minute timer (no hard token cap unless set > 0)
+    "max_credit_usd": 0.0,           # 0.0 = Rely on 30-minute timer (no hard USD cap unless set > 0)
+    "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Palace code & UI improvement)
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
@@ -134,9 +419,24 @@ def load_idle_settings(
     merged = dict(DEFAULT_IDLE_SETTINGS)
     if "duration_minutes" in raw_idle:
         try:
-            merged["duration_minutes"] = max(1, min(240, int(raw_idle["duration_minutes"])))
+            val = int(raw_idle["duration_minutes"])
+            merged["duration_minutes"] = 0 if val == 0 else max(1, min(240, val))
         except (TypeError, ValueError):
             pass
+    if "max_tokens_limit" in raw_idle:
+        try:
+            tok_val = int(raw_idle["max_tokens_limit"])
+            merged["max_tokens_limit"] = 0 if tok_val <= 0 else max(1000, min(5_000_000, tok_val))
+        except (TypeError, ValueError):
+            pass
+    if "max_credit_usd" in raw_idle:
+        try:
+            usd_val = float(raw_idle["max_credit_usd"])
+            merged["max_credit_usd"] = 0.0 if usd_val <= 0.0 else max(0.01, min(100.0, usd_val))
+        except (TypeError, ValueError):
+            pass
+    if raw_idle.get("idle_submode") in {"free_talk", "self_improve"}:
+        merged["idle_submode"] = raw_idle["idle_submode"]
     if "pause_when_joined" in raw_idle:
         merged["pause_when_joined"] = bool(raw_idle["pause_when_joined"])
     if raw_idle.get("memory_access_mode") in {"isolated", "non_project", "full"}:
@@ -153,7 +453,14 @@ def save_idle_settings(
     data = _read_raw_config(config_path)
     current = load_idle_settings(config_path)
     current.update(idle_settings)
-    current["duration_minutes"] = max(1, min(240, int(current.get("duration_minutes", 30))))
+    dur_val = int(current.get("duration_minutes", 30))
+    current["duration_minutes"] = 0 if dur_val == 0 else max(1, min(240, dur_val))
+    tok_val = int(current.get("max_tokens_limit", 0))
+    current["max_tokens_limit"] = 0 if tok_val <= 0 else max(1000, min(5_000_000, tok_val))
+    usd_val = float(current.get("max_credit_usd", 0.0))
+    current["max_credit_usd"] = 0.0 if usd_val <= 0.0 else max(0.01, min(100.0, usd_val))
+    if current.get("idle_submode") not in {"free_talk", "self_improve"}:
+        current["idle_submode"] = "free_talk"
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
     if current.get("memory_access_mode") not in {"isolated", "non_project", "full"}:
         current["memory_access_mode"] = "isolated"
@@ -175,3 +482,217 @@ def save_mission_ethics(text: str, config_path: Path = CONFIG_PATH) -> str:
     data["mission_ethics"] = text.strip() or DEFAULT_MISSION_ETHICS
     _write_raw_config(data, config_path)
     return load_mission_ethics(config_path)
+
+
+DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
+    "code": {
+        "label": "💻 Code AIs",
+        "providers": ["deepseek", "mistral", "gemini"],
+        "deliberate": True,
+        "code_access": True,
+    },
+    "light_chat": {
+        "label": "💬 Light Chat (Cheap)",
+        "providers": ["groq", "qwen", "cohere"],
+        "deliberate": False,
+        "code_access": False,
+    },
+    "generalist": {
+        "label": "🧠 Generalist",
+        "providers": ["gemini", "openai", "deepseek", "cohere"],
+        "deliberate": True,
+        "code_access": False,
+    },
+    "graphics": {
+        "label": "🎨 Graphics & Vision",
+        "providers": ["openai", "gemini"],
+        "deliberate": False,
+        "code_access": False,
+    },
+}
+
+DEFAULT_UI_SETTINGS: dict[str, Any] = {
+    "enter_to_send": True,  # True: Enter sends, Shift+Enter newline; False: Shift+Enter sends, Enter newline
+    "include_palace_code": False,
+    "badge_display_mode": "icons_only",  # "icons_only" | "icons_and_names" | "names_only"
+    "theme": "dark",  # "dark" | "light" | "system" | "fairybread" | custom theme slug
+}
+
+
+def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("ui_settings", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(DEFAULT_UI_SETTINGS)
+    if "enter_to_send" in raw:
+        merged["enter_to_send"] = bool(raw["enter_to_send"])
+    if "include_palace_code" in raw:
+        merged["include_palace_code"] = bool(raw["include_palace_code"])
+    if raw.get("badge_display_mode") in {"icons_only", "icons_and_names", "names_only"}:
+        merged["badge_display_mode"] = raw["badge_display_mode"]
+    if isinstance(raw.get("theme"), str) and raw["theme"].strip():
+        merged["theme"] = raw["theme"].strip().lower()
+    return merged
+
+
+def save_ui_settings(
+    ui_settings: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    current = load_ui_settings(config_path)
+    current.update(ui_settings)
+    current["enter_to_send"] = bool(current.get("enter_to_send", True))
+    current["include_palace_code"] = bool(current.get("include_palace_code", False))
+    if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
+        current["badge_display_mode"] = "icons_only"
+    current["theme"] = str(current.get("theme") or "dark").strip().lower()
+    data["ui_settings"] = current
+    _write_raw_config(data, config_path)
+    return load_ui_settings(config_path)
+
+
+def build_palace_source_context(
+    question: str = "",
+    *,
+    force_include: bool = False,
+    max_chars: int = 14_000,
+) -> str:
+    """Return read-only Palace source code context for Normal Mode debugging & improvement discussions."""
+    q_lower = (question or "").lower()
+    code_keywords = (
+        "palace_gui", "idle_service", "orchestrator", "synthesizer",
+        "provider_loader", "palace_config", "session_store", "credential_store",
+        "palace code", "source code", "debug palace", "this app",
+    )
+    auto_triggered = any(k in q_lower for k in code_keywords)
+    if not force_include and not auto_triggered:
+        return ""
+
+    mirror_dir = IDLE_SANDBOX_ROOT / "source_mirror"
+    src_dir = mirror_dir if mirror_dir.exists() else Path(__file__).resolve().parent
+    excluded = {"key.txt", "credentials.json", "palace_config.json"}
+    try:
+        py_files = sorted(
+            p for p in src_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".py" and p.name.lower() not in excluded
+        )
+    except OSError:
+        return ""
+
+    if not py_files:
+        return ""
+
+    manifest = ", ".join(p.name for p in py_files[:30])
+    prioritized: list[Path] = []
+    core_names = ["palace_gui.py", "orchestrator.py", "idle_service.py", "palace_config.py", "synthesizer.py"]
+    for p in py_files:
+        if p.name.lower() in q_lower or p.stem.lower() in q_lower:
+            prioritized.append(p)
+    for cname in core_names:
+        for p in py_files:
+            if p.name == cname and p not in prioritized:
+                prioritized.append(p)
+
+    excerpts: list[str] = [
+        f"PALACE APPLICATION SOURCE CODE (Read-Only Mirror in {src_dir}):\n"
+        f"Available Python modules: {manifest}"
+    ]
+    used = len(excerpts[0])
+    for p in prioritized[:4]:
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        budget = max(1200, (max_chars - used) // 2)
+        snippet = text[:budget]
+        if len(text) > budget:
+            snippet += f"\n... [truncated {len(text) - budget} chars of {p.name}]"
+        block = f"\n--- FILE: {p.name} ---\n{snippet}"
+        if used + len(block) > max_chars:
+            break
+        excerpts.append(block)
+        used += len(block)
+
+    return "\n".join(excerpts)
+
+
+DEFAULT_TOOL_SETTINGS: dict[str, bool] = {
+    "palace_source_tool": True,
+    "shared_palace_files_tool": True,
+    "project_folder_tool": True,
+    "owner_email_tool": True,
+    "github_tool": False,
+    "external_mail_tool": False,
+}
+
+
+def load_tool_settings(config_path: Path = CONFIG_PATH) -> dict[str, bool]:
+    data = _read_raw_config(config_path)
+    raw = data.get("tool_settings", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(DEFAULT_TOOL_SETTINGS)
+    for k in DEFAULT_TOOL_SETTINGS:
+        if k in raw:
+            merged[k] = bool(raw[k])
+    return merged
+
+
+def save_tool_settings(
+    tool_settings: dict[str, bool],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, bool]:
+    data = _read_raw_config(config_path)
+    current = load_tool_settings(config_path)
+    for k, v in tool_settings.items():
+        if k in DEFAULT_TOOL_SETTINGS:
+            current[k] = bool(v)
+    data["tool_settings"] = current
+    _write_raw_config(data, config_path)
+    return load_tool_settings(config_path)
+
+
+def build_project_folder_context(
+    folder_path: str,
+    question: str = "",
+    *,
+    max_chars: int = 10_000,
+) -> str:
+    """Read-only workspace folder context for a Project with an attached folder (blocks M: drive)."""
+    clean = (folder_path or "").strip()
+    if not clean:
+        return ""
+    p = Path(clean)
+    if p.drive.upper().startswith("M:"):
+        return ""
+    try:
+        if not p.exists() or not p.is_dir():
+            return ""
+        files = sorted(
+            f for f in p.iterdir()
+            if f.is_file() and f.suffix.lower() in {".py", ".md", ".txt", ".json", ".cs", ".cpp", ".h", ".js", ".ts"}
+            and f.name.lower() not in {"key.txt", "credentials.json"}
+        )
+    except OSError:
+        return ""
+
+    if not files:
+        return f"ATTACHED PROJECT FOLDER ({p}): No readable code/text files in root directory."
+
+    q_lower = (question or "").lower()
+    manifest = ", ".join(f.name for f in files[:35])
+    out = [f"ATTACHED PROJECT WORKSPACE ({p}):\nFiles: {manifest}"]
+    used = len(out[0])
+    matched = [f for f in files if f.name.lower() in q_lower or f.stem.lower() in q_lower]
+    for f in (matched or files[:2])[:3]:
+        try:
+            txt = f.read_text(encoding="utf-8", errors="replace")[:3000]
+            block = f"\n--- PROJECT FILE: {f.name} ---\n{txt}"
+            if used + len(block) <= max_chars:
+                out.append(block)
+                used += len(block)
+        except OSError:
+            pass
+    return "\n".join(out)

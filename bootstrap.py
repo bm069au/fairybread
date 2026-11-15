@@ -55,7 +55,8 @@ def build_palace(
         provider_name=synthesis_provider_name,
         provider=providers[
             synthesis_provider_name
-        ]
+        ],
+        fallback_providers=providers,
     )
 
     return PalaceOrchestrator(

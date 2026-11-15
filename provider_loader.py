@@ -25,6 +25,12 @@ def load_configured_providers(
             kwargs["base_url"] = cfg["base_url"]
         return OpenAIProvider(**kwargs)
 
+    def _build_mistral(api_key: str) -> AIProvider:
+        cfg = configs.get("mistral", {})
+        if cfg.get("model"):
+            return MistralProvider(api_key=api_key, model=cfg["model"])
+        return MistralProvider(api_key=api_key)
+
     factories: dict[
         str,
         Callable[[str], AIProvider]
@@ -36,9 +42,7 @@ def load_configured_providers(
         "groq": lambda api_key: GroqProvider(
             api_key=api_key
         ),
-        "mistral": lambda api_key: MistralProvider(
-            api_key=api_key
-        ),
+        "mistral": _build_mistral,
         "cerebras": lambda api_key: CerebrasProvider(
             api_key=api_key
         ),
@@ -52,14 +56,26 @@ def load_configured_providers(
             continue
         model = cfg.get("model") or "gpt-4o-mini"
         base_url = cfg.get("base_url")
-        factories[custom_name] = (
-            lambda api_key, m=model, b=base_url, n=custom_name: OpenAIProvider(
-                api_key=api_key,
-                model=m,
-                base_url=b,
-                provider_name=n
+        max_tokens = cfg.get("max_tokens")
+        if max_tokens is not None:
+            factories[custom_name] = (
+                lambda api_key, m=model, b=base_url, n=custom_name, mt=int(max_tokens): OpenAIProvider(
+                    api_key=api_key,
+                    model=m,
+                    base_url=b,
+                    provider_name=n,
+                    max_tokens=mt
+                )
             )
-        )
+        else:
+            factories[custom_name] = (
+                lambda api_key, m=model, b=base_url, n=custom_name: OpenAIProvider(
+                    api_key=api_key,
+                    model=m,
+                    base_url=b,
+                    provider_name=n
+                )
+            )
 
     providers: dict[str, AIProvider] = {}
 

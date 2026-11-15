@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import time
 from uuid import uuid4
 
 from context_service import ContextService, normalize_message_entry
@@ -105,16 +106,53 @@ class SessionStore:
                 return new_state
         raise ValueError('Unknown conversation.')
 
-    def create_project(self, name: str) -> str:
+    def create_project(self, name: str, folder: str | None = None) -> str:
         clean_name = ' '.join((name or '').split())[:65]
         if not clean_name:
             raise ValueError('Enter a project name.')
         project_id = uuid4().hex
-        self.projects.insert(0, {'id': project_id, 'name': clean_name})
+        proj_entry: dict = {'id': project_id, 'name': clean_name}
+        if folder:
+            proj_entry['folder'] = self._validate_folder_path(folder)
+        self.projects.insert(0, proj_entry)
         self.data['selected_project'] = project_id
         self._add(project_id=project_id)
         self.save()
         return project_id
+
+    @staticmethod
+    def _validate_folder_path(folder_path: str) -> str:
+        raw = (folder_path or '').strip()
+        if not raw:
+            return ''
+        p = Path(raw).resolve()
+        drive = p.drive.upper()
+        if drive.startswith('M:'):
+            raise PermissionError('M: drive is strictly off-limits for Palace project attachments.')
+        return str(p)
+
+    def set_project_folder(self, project_id: str, folder_path: str | None) -> str:
+        """Attach or detach a local folder to an existing project after creation."""
+        for proj in self.projects:
+            if proj['id'] == project_id:
+                if folder_path and folder_path.strip():
+                    clean_folder = self._validate_folder_path(folder_path)
+                    proj['folder'] = clean_folder
+                else:
+                    proj.pop('folder', None)
+                    clean_folder = ''
+                self.save()
+                return clean_folder
+        raise ValueError('Unknown project.')
+
+    def get_project_folder(self, project_id: str | None = None) -> str:
+        target = self.selected_project if project_id is None else project_id
+        if not target:
+            return ''
+        for proj in self.projects:
+            if proj['id'] == target:
+                return str(proj.get('folder') or '')
+        return ''
 
     def select_project(self, project_id: str | None):
         if project_id is not None and project_id not in {p['id'] for p in self.projects}:
@@ -167,10 +205,37 @@ class SessionStore:
         return key
 
     def select(self, key):
-        if key not in {item['id'] for item in self.sessions}:
+        target = None
+        for item in self.sessions:
+            if item['id'] == key:
+                target = item
+                break
+        if target is None:
             raise ValueError('Unknown conversation.')
         self.data['selected'] = key
+        if 'project_id' in target:
+            self.data['selected_project'] = target.get('project_id')
         self.save()
+
+    def session_relative_age(self, key: str) -> str:
+        """Return compact Antigravity-style relative age ('now', '2m', '3h', '5d')."""
+        try:
+            ctx = self.context(key)
+            if not ctx.path.exists():
+                return 'now'
+            delta = max(0.0, time.time() - ctx.path.stat().st_mtime)
+            if delta < 60:
+                return 'now'
+            mins = int(delta // 60)
+            if mins < 60:
+                return f'{mins}m'
+            hours = int(mins // 60)
+            if hours < 24:
+                return f'{hours}h'
+            days = int(hours // 24)
+            return f'{days}d'
+        except Exception:
+            return ''
 
     def rename_from_question(self, key, question):
         for item in self.sessions:

@@ -9,7 +9,8 @@ class OpenAIProvider(AIProvider):
         api_key: str,
         model: str = "gpt-5-mini",
         base_url: str | None = None,
-        provider_name: str = "openai"
+        provider_name: str = "openai",
+        max_tokens: int | None = None
     ):
         if base_url:
             self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -18,13 +19,17 @@ class OpenAIProvider(AIProvider):
         self.model = model
         self.base_url = base_url
         self.provider_name = provider_name
+        self.max_tokens = max_tokens
 
     def generate(self, prompt: str) -> ProviderResponse:
         if self.base_url:
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            kwargs = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            if self.max_tokens is not None:
+                kwargs["max_tokens"] = self.max_tokens
+            completion = self.client.chat.completions.create(**kwargs)
             text = (
                 completion.choices[0].message.content or ""
                 if getattr(completion, "choices", None)

@@ -3,20 +3,32 @@
     "gemini": {
       "enabled": true
     },
+    "openai": {
+      "enabled": true
+    },
+    "deepseek": {
+      "enabled": true,
+      "model": "deepseek-chat",
+      "base_url": "https://api.deepseek.com/v1"
+    },
     "groq": {
-      "enabled": true
-    },
-    "mistral": {
-      "enabled": true
-    },
-    "cerebras": {
       "enabled": false
+    },
+    "qwen": {
+      "enabled": true,
+      "model": "Qwen/Qwen3.8-27B",
+      "base_url": "https://api.deepinfra.com/v1/openai",
+      "max_tokens": 4096
     },
     "cohere": {
       "enabled": true
     },
-    "openai": {
-      "enabled": true
+    "mistral": {
+      "enabled": true,
+      "model": "codestral-latest"
+    },
+    "cerebras": {
+      "enabled": false
     }
   }
 }
