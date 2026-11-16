@@ -6,7 +6,7 @@ from provider_result import ProviderResult
 
 
 class ProviderDispatcher:
-    def __init__(self, registry: ProviderRegistry, max_workers: int = 4):
+    def __init__(self, registry: ProviderRegistry, max_workers: int = 16):
         self.registry = registry
         self.max_workers = max_workers
 
@@ -47,7 +47,7 @@ class ProviderDispatcher:
                 executor.submit(
                     self._dispatch_one,
                     name,
-                    prompt
+                    prompt.get(name, next(iter(prompt.values()), "")) if isinstance(prompt, dict) else prompt,
                 ): name
                 for name in provider_names
             }

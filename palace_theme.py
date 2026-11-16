@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QIcon,
+    QImage,
     QPainter,
     QPainterPath,
     QPen,
@@ -304,15 +305,143 @@ _SVG_FENCE_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_GENERATE_IMAGE_PATTERN = re.compile(
-    r"\[GENERATE_IMAGE\s+prompt=\"([^\"]+)\"(?:\s+title=\"([^\"]*)\")?\s*\]",
+_GENERATE_IMAGE_TAG_PATTERN = re.compile(
+    r"\[GENERATE_IMAGE\s+([^\]]+)\]",
     re.IGNORECASE,
 )
+
+_ATTR_KV_PATTERN = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"')
 
 _PALACE_SNAPSHOT_PATTERN = re.compile(
     r"\[PALACE_UI_SNAPSHOT(?:\s+path=\"([^\"]*)\")?(?:\s+title=\"([^\"]*)\")?\s*\]",
     re.IGNORECASE,
 )
+
+# Named social media, wallpaper, banner, and 300-DPI print presets
+IMAGE_SIZE_PRESETS: dict[str, tuple[int, int, str]] = {
+    "default": (1024, 1024, "1024×1024 Square HD"),
+    "square": (1024, 1024, "1024×1024 Square HD"),
+    "1:1": (1024, 1024, "1024×1024 Square HD"),
+    "landscape": (1792, 1024, "1792×1024 Widescreen HD"),
+    "wide": (1792, 1024, "1792×1024 Widescreen HD"),
+    "16:9": (1920, 1080, "1920×1080 16:9 HD"),
+    "portrait": (1024, 1792, "1024×1792 Portrait HD"),
+    "vertical": (1024, 1792, "1024×1792 Portrait HD"),
+    "9:16": (1080, 1920, "1080×1920 Vertical 9:16"),
+    "youtube_banner": (2560, 1440, "2560×1440 YouTube Channel Banner"),
+    "youtube_header": (2560, 1440, "2560×1440 YouTube Channel Banner"),
+    "youtube_thumbnail": (1280, 720, "1280×720 YouTube Thumbnail"),
+    "facebook_cover": (1920, 1080, "1920×1080 Facebook Page Cover"),
+    "facebook_page": (1920, 1080, "1920×1080 Facebook Page Cover"),
+    "facebook_pc_banner": (820, 312, "820×312 Facebook PC Cover"),
+    "facebook_group": (1640, 856, "1640×856 Facebook Group Cover Banner"),
+    "fb_group": (1640, 856, "1640×856 Facebook Group Cover Banner"),
+    "desktop_wallpaper": (1920, 1080, "1920×1080 Desktop Wallpaper"),
+    "pc_background": (1920, 1080, "1920×1080 PC Background"),
+    "wallpaper_1440p": (2560, 1440, "2560×1440 QHD Wallpaper"),
+    "wallpaper_4k": (3840, 2160, "3840×2160 4K UHD Wallpaper"),
+    "phone_wallpaper": (1080, 1920, "1080×1920 Phone Wallpaper"),
+    "story": (1080, 1920, "1080×1920 Social Story / Reel"),
+    "instagram_post": (1080, 1080, "1080×1080 Instagram Square"),
+    "instagram_portrait": (1080, 1350, "1080×1350 Instagram 4:5 Portrait"),
+    "print_8x10": (2400, 3000, "2400×3000 (8×10 in @ 300 DPI Print)"),
+    "print_10x8": (3000, 2400, "3000×2400 (10×8 in @ 300 DPI Print)"),
+    "print_a4": (2480, 3508, "2480×3508 (A4 Portrait @ 300 DPI Print)"),
+    "print_a4_landscape": (3508, 2480, "3508×2480 (A4 Landscape @ 300 DPI Print)"),
+    "print_poster": (2700, 3600, "2700×3600 (18×24 Poster Ratio)"),
+}
+
+
+def resolve_target_image_size(size_spec: str = "", prompt: str = "") -> tuple[int, int, str]:
+    """Resolve an explicit preset name, 'WxH' pixel string, 'WxHin' print string, or natural-language prompt hint
+    into (target_width_px, target_height_px, human_label).
+    """
+    spec = (size_spec or "").strip().lower().replace(" ", "_")
+    if spec in IMAGE_SIZE_PRESETS:
+        return IMAGE_SIZE_PRESETS[spec]
+
+    # Check explicit pixel dimensions like '2560x1440' or '1640×856'
+    px_m = re.match(r"^(\d{2,4})\s*[x×]\s*(\d{2,4})(?:_?px)?$", spec)
+    if px_m:
+        w = max(128, min(4096, int(px_m.group(1))))
+        h = max(128, min(4096, int(px_m.group(2))))
+        return w, h, f"{w}×{h} px"
+
+    # Check physical print inches like '8x10in' or '8x10_inches' at 300 DPI
+    in_m = re.match(r"^(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)_?(?:in|inch|inches)$", spec)
+    if in_m:
+        in_w, in_h = float(in_m.group(1)), float(in_m.group(2))
+        w = max(256, min(4096, int(round(in_w * 300))))
+        h = max(256, min(4096, int(round(in_h * 300))))
+        return w, h, f"{w}×{h} px ({in_w:g}×{in_h:g} in @ 300 DPI)"
+
+    # Inspect natural-language prompt for platform/print hints when size_spec is omitted or generic
+    p_low = f"{spec} {(prompt or '').lower()}"
+    if "youtube" in p_low and ("banner" in p_low or "header" in p_low or "channel" in p_low):
+        return IMAGE_SIZE_PRESETS["youtube_banner"]
+    if "youtube" in p_low and "thumb" in p_low:
+        return IMAGE_SIZE_PRESETS["youtube_thumbnail"]
+    if "facebook" in p_low and "group" in p_low:
+        return IMAGE_SIZE_PRESETS["facebook_group"]
+    if "facebook" in p_low and ("page" in p_low or "cover" in p_low or "background" in p_low or "banner" in p_low):
+        return IMAGE_SIZE_PRESETS["facebook_cover"]
+    if any(k in p_low for k in ("desktop wallpaper", "pc background", "desktop background", "monitor wallpaper")):
+        return IMAGE_SIZE_PRESETS["desktop_wallpaper"]
+    if any(k in p_low for k in ("phone wallpaper", "mobile wallpaper", "tiktok", "instagram story", "reel")):
+        return IMAGE_SIZE_PRESETS["phone_wallpaper"]
+    if "8x10" in p_low or "8 x 10" in p_low:
+        return IMAGE_SIZE_PRESETS["print_8x10"]
+    if "a4" in p_low and "landscape" in p_low:
+        return IMAGE_SIZE_PRESETS["print_a4_landscape"]
+    if "a4" in p_low:
+        return IMAGE_SIZE_PRESETS["print_a4"]
+    if any(k in p_low for k in ("banner", "widescreen", "landscape", "header", "panoramic", "16:9")):
+        return IMAGE_SIZE_PRESETS["landscape"]
+    if any(k in p_low for k in ("portrait", "vertical", "poster", "tall", "9:16")):
+        return IMAGE_SIZE_PRESETS["portrait"]
+
+    return IMAGE_SIZE_PRESETS["default"]
+
+
+def _parse_generate_image_attrs(attr_str: str) -> dict[str, str]:
+    attrs = {k.lower(): v.strip() for k, v in _ATTR_KV_PATTERN.findall(attr_str or "")}
+    return attrs
+
+
+def _fit_and_save_target_png(raw_bytes: bytes, out_path: Path, target_w: int, target_h: int) -> bool:
+    """Decode generated image bytes, perform aspect-preserving center crop + smooth Lanczos/bilinear scale
+    to exact (target_w, target_h), stamp 300 DPI print metadata (11811 dots/meter), and save PNG.
+    """
+    qimg = QImage()
+    if not qimg.loadFromData(raw_bytes):
+        return False
+    src_w, src_h = qimg.width(), qimg.height()
+    if src_w <= 0 or src_h <= 0:
+        return False
+
+    if (src_w, src_h) != (target_w, target_h):
+        target_ratio = target_w / float(target_h)
+        src_ratio = src_w / float(src_h)
+        if abs(src_ratio - target_ratio) > 0.02:
+            if src_ratio > target_ratio:
+                crop_w = int(round(src_h * target_ratio))
+                crop_x = max(0, (src_w - crop_w) // 2)
+                qimg = qimg.copy(crop_x, 0, crop_w, src_h)
+            else:
+                crop_h = int(round(src_w / target_ratio))
+                crop_y = max(0, (src_h - crop_h) // 2)
+                qimg = qimg.copy(0, crop_y, src_w, crop_h)
+        qimg = qimg.scaled(
+            target_w,
+            target_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
+    # Stamp 300 DPI (11811 pixels per meter) so print apps respect exact physical dimensions
+    qimg.setDotsPerMeterX(11811)
+    qimg.setDotsPerMeterY(11811)
+    return bool(qimg.save(str(out_path), "PNG"))
 
 
 _MARKDOWN_HTML_CACHE: dict[str, str] = {}
@@ -331,15 +460,18 @@ def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | Non
     # Escape bare '&' inside AI-written SVG text (e.g. '100s & 1000s') so XML parsing succeeds
     clean_svg = re.sub(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)", "&amp;", clean_svg)
 
-    # Expand viewBox right margin slightly if AI text overflows the right edge
-    vb_match = re.search(r'viewBox="(\d+)\s+(\d+)\s+(\d+)\s+(\d+)"', clean_svg)
+    # Respect viewBox aspect ratio (fixes widescreen viewBox being squished into square width/height)
+    vb_w, vb_h = 0, 0
+    vb_match = re.search(r'viewBox="(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"', clean_svg)
     if vb_match:
-        vx, vy, vw, vh = (int(vb_match.group(i)) for i in range(1, 5))
-        padded_vw = int(vw * 1.12)
-        clean_svg = clean_svg.replace(vb_match.group(0), f'viewBox="{vx} {vy} {padded_vw} {vh}"', 1)
+        vx, vy = float(vb_match.group(1)), float(vb_match.group(2))
+        vw, vh = float(vb_match.group(3)), float(vb_match.group(4))
+        vb_w, vb_h = int(round(vw)), int(round(vh))
+        padded_vw = int(round(vw * 1.06))
+        clean_svg = clean_svg.replace(vb_match.group(0), f'viewBox="{vx:g} {vy:g} {padded_vw} {vb_h}"', 1)
 
     # Instant SHA-1 disk cache check BEFORE touching QSvgRenderer or QPixmap!
-    digest = hashlib.sha1((clean_svg + "_v2").encode("utf-8", errors="replace")).hexdigest()[:10]
+    digest = hashlib.sha1((clean_svg + "_v3").encode("utf-8", errors="replace")).hexdigest()[:10]
     safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (title or "drawing").strip())[:24] or "drawing"
     out_path = get_generated_images_dir() / f"{safe_slug}_{digest}.png"
     if out_path.exists() and out_path.stat().st_size > 100:
@@ -350,12 +482,13 @@ def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | Non
         return None
 
     default_size = renderer.defaultSize()
-    base_w = max(560, min(1400, default_size.width() if default_size.width() > 0 else 860))
-    base_h = max(300, min(1000, default_size.height() if default_size.height() > 0 else 440))
+    raw_w = vb_w if vb_w > 0 else (default_size.width() if default_size.width() > 0 else 860)
+    raw_h = vb_h if vb_h > 0 else (default_size.height() if default_size.height() > 0 else 440)
+    base_w = max(480, min(1600, raw_w))
+    base_h = max(240, min(1200, int(round(base_w * (raw_h / float(max(1, raw_w)))))))
 
-    # Render at crisp 1:1 display width (760px) so QTextBrowser never blurs it by scaling!
-    target_w = min(820, max(640, base_w))
-    target_h = int(base_h * (target_w / float(base_w)))
+    target_w = min(920, max(640, base_w))
+    target_h = max(200, int(round(base_h * (target_w / float(base_w)))))
 
     pix = QPixmap(target_w, target_h)
     pix.fill(QColor("#0d1117"))
@@ -370,59 +503,267 @@ def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | Non
     return out_path
 
 
-def generate_ai_image_to_png(prompt: str, title: str = "ai_image", *, allow_network: bool = False) -> Path | None:
-    """Return cached image or generate via OpenAI Images API (only when allow_network=True on worker thread)."""
+def _save_engine_badge(out_path: Path, engine_label: str) -> None:
+    try:
+        out_path.with_suffix(".engine").write_text(engine_label, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def get_image_engine_badge(out_path: Path) -> str:
+    try:
+        badge_path = out_path.with_suffix(".engine")
+        if badge_path.exists():
+            return badge_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    return ""
+
+
+def generate_ai_image_to_png(
+    prompt: str,
+    title: str = "ai_image",
+    size: str = "",
+    quality: str = "high",
+    style: str = "",
+    *,
+    model: str = "",
+    allow_network: bool = False,
+) -> Path | None:
+    """Return cached image or generate at highest quality by default using the verified frontier engines:
+    1. Google Gemini `gemini-3-pro-image` (Nano Banana Pro, ~15s)
+    2. Google Gemini `gemini-3.1-flash-image` (Nano Banana 2, ~8.5s — primary when fast/draft requested)
+    3. OpenAI `gpt-image-2` (2nd-gen High-Res, ~90s)
+    4. DeepInfra `FLUX-1-dev` (fallback)
+    Scaled to the exact requested preset/custom/print dimensions and stamped at 300 DPI.
+    """
     clean_prompt = (prompt or "").strip()
     if not clean_prompt:
         return None
-    digest = hashlib.sha1(clean_prompt.encode("utf-8", errors="replace")).hexdigest()[:10]
+
+    target_w, target_h, _size_label = resolve_target_image_size(size, clean_prompt)
+    q_norm = (quality or "high").strip().lower()
+    is_low_quality = q_norm in {"low", "draft", "fast", "standard", "medium"}
+
+    cache_key = f"{clean_prompt}|{target_w}x{target_h}|{'std' if is_low_quality else 'hd'}|v2"
+    digest = hashlib.sha1(cache_key.encode("utf-8", errors="replace")).hexdigest()[:10]
     safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (title or "image").strip())[:24] or "image"
-    out_path = get_generated_images_dir() / f"{safe_slug}_{digest}.png"
-    if out_path.exists():
+    out_path = get_generated_images_dir() / f"{safe_slug}_{target_w}x{target_h}_{digest}.png"
+    if out_path.exists() and out_path.stat().st_size > 100:
         return out_path
     if not allow_network:
         return None
 
-    # Try OpenAI DALL-E / gpt-image if key is present (worker thread only!)
-    api_key = CredentialStore().get_api_key("openai")
-    if api_key:
+    aspect = target_w / float(max(1, target_h))
+    if aspect >= 1.55:
+        gemini_aspect = "16:9"
+        gpt_img_size = "1536x1024"
+        flux_w, flux_h = 1344, 768
+    elif aspect >= 1.15:
+        gemini_aspect = "4:3"
+        gpt_img_size = "1536x1024"
+        flux_w, flux_h = 1344, 768
+    elif aspect <= 0.65:
+        gemini_aspect = "9:16"
+        gpt_img_size = "1024x1536"
+        flux_w, flux_h = 768, 1344
+    elif aspect <= 0.88:
+        gemini_aspect = "3:4"
+        gpt_img_size = "1024x1536"
+        flux_w, flux_h = 768, 1344
+    else:
+        gemini_aspect = "1:1"
+        gpt_img_size = "1024x1024"
+        flux_w, flux_h = 1024, 1024
+
+    cs = CredentialStore()
+    gem_key = cs.get_api_key("gemini")
+    openai_key = cs.get_api_key("openai")
+    req_model = (model or "").strip().lower()
+
+    def _try_gemini_image(gem_model: str) -> Path | None:
+        if not gem_key:
+            return None
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent?key={gem_key}"
+            payload = json.dumps({
+                "contents": [{"parts": [{"text": clean_prompt}]}],
+                "generationConfig": {
+                    "responseModalities": ["IMAGE"],
+                    "imageConfig": {"aspectRatio": gemini_aspect},
+                },
+            }).encode("utf-8")
+            req = urllib_request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=75) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                for cand in body.get("candidates", []):
+                    for part in cand.get("content", {}).get("parts", []):
+                        inline = part.get("inlineData") or part.get("inline_data")
+                        if inline and inline.get("data"):
+                            raw_bytes = base64.b64decode(inline["data"])
+                            if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                                _save_engine_badge(out_path, gem_model)
+                                return out_path
+        except Exception:
+            pass
+        return None
+
+    def _try_openai_gpt_image_2() -> Path | None:
+        if not openai_key:
+            return None
         try:
             payload = json.dumps({
-                "model": "dall-e-3",
+                "model": "gpt-image-2",
                 "prompt": clean_prompt,
                 "n": 1,
-                "size": "1024x1024",
-                "response_format": "b64_json",
+                "size": gpt_img_size,
+                "quality": "low" if q_norm in {"low", "draft", "fast"} else ("medium" if q_norm in {"medium", "standard"} else "high"),
             }).encode("utf-8")
             req = urllib_request.Request(
                 "https://api.openai.com/v1/images/generations",
                 data=payload,
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
+                    "Authorization": f"Bearer {openai_key}",
                 },
                 method="POST",
             )
-            with urllib_request.urlopen(req, timeout=35) as resp:
+            with urllib_request.urlopen(req, timeout=115) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
-                b64_data = body["data"][0].get("b64_json")
+                item0 = body["data"][0]
+                b64_data = item0.get("b64_json")
                 if b64_data:
-                    out_path.write_bytes(base64.b64decode(b64_data))
-                    return out_path
+                    raw_bytes = base64.b64decode(b64_data)
+                    if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                        _save_engine_badge(out_path, "gpt-image-2")
+                        return out_path
+        except Exception:
+            pass
+        return None
+
+    # Honor explicit gpt-image-2 model request if specified
+    if req_model == "gpt-image-2":
+        res = _try_openai_gpt_image_2()
+        if res is not None:
+            return res
+
+    # 1 & 2. Try Google Gemini Nano Banana Pro (gemini-3-pro-image) & Nano Banana 2 (gemini-3.1-flash-image)
+    gem_order = (
+        ["gemini-3.1-flash-image", "gemini-3-pro-image"]
+        if is_low_quality or "flash" in req_model
+        else ["gemini-3-pro-image", "gemini-3.1-flash-image"]
+    )
+    for gm in gem_order:
+        res = _try_gemini_image(gm)
+        if res is not None:
+            return res
+
+    # 3. Try OpenAI 2nd-Gen gpt-image-2 (High-Res)
+    res = _try_openai_gpt_image_2()
+    if res is not None:
+        return res
+
+    # 4. Fallback to DeepInfra FLUX (FLUX-1-dev for high quality, FLUX-1-schnell for draft/fast)
+    di_key = cs.get_api_key("deepinfra") or cs.get_api_key("qwen")
+    if di_key:
+        try:
+            flux_model = "black-forest-labs/FLUX-1-schnell" if is_low_quality else "black-forest-labs/FLUX-1-dev"
+            payload = json.dumps({
+                "prompt": clean_prompt,
+                "width": flux_w,
+                "height": flux_h,
+                "num_inference_steps": 4 if is_low_quality else 28,
+            }).encode("utf-8")
+            req = urllib_request.Request(
+                f"https://api.deepinfra.com/v1/inference/{flux_model}",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {di_key}",
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=60) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+                images_list = body.get("images") or []
+                if images_list:
+                    b64_str = str(images_list[0])
+                    if "," in b64_str:
+                        b64_str = b64_str.split(",", 1)[1]
+                    raw_bytes = base64.b64decode(b64_str)
+                    if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                        _save_engine_badge(out_path, "FLUX-1-dev")
+                        return out_path
         except Exception:
             pass
 
     return None
 
 
+def _strip_code_spans_for_tag_scan(text: str) -> str:
+    """Remove fenced code blocks and inline backtick spans so example tags inside code never fire API calls."""
+    without_fenced = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+    return re.sub(r"`[^`\n]+`", "", without_fenced)
+
+
+def neutralize_intermediate_image_tags(text: str) -> str:
+    """Wrap bare [GENERATE_IMAGE ...] tags inside intermediate peer deliberation bubbles in inline backticks
+    so only the final synthesized answer executes and renders the actual high-resolution image once.
+    """
+    if not text or "[GENERATE_IMAGE" not in text.upper():
+        return text
+
+    def _wrap_if_bare(m: re.Match) -> str:
+        return f"`{m.group(0)}`"
+
+    return _GENERATE_IMAGE_TAG_PATTERN.sub(_wrap_if_bare, text)
+
+
+def prewarm_generated_images(content: str) -> list[Path]:
+    """Run on background worker thread before UI render: pre-generates any real (non-backticked)
+    [GENERATE_IMAGE ...] tags with allow_network=True so UI rendering is 100% instant and non-blocking.
+    """
+    scannable = _strip_code_spans_for_tag_scan(content or "")
+    generated: list[Path] = []
+    for match in _GENERATE_IMAGE_TAG_PATTERN.finditer(scannable):
+        attrs = _parse_generate_image_attrs(match.group(1))
+        img_prompt = attrs.get("prompt", "")
+        if not img_prompt:
+            continue
+        img_title = attrs.get("title") or img_prompt[:40]
+        img_size = attrs.get("size") or attrs.get("preset") or ""
+        img_quality = attrs.get("quality") or "high"
+        img_style = attrs.get("style") or ""
+        img_model = attrs.get("model") or ""
+        path = generate_ai_image_to_png(
+            img_prompt,
+            title=img_title,
+            size=img_size,
+            quality=img_quality,
+            style=img_style,
+            model=img_model,
+            allow_network=True,
+        )
+        if path is not None:
+            generated.append(path)
+    return generated
+
+
 def format_markdown_and_drawings(content: str) -> str:
     """Convert AI response text into clean HTML with rendered SVG/Image pictures, headings, bold, and code blocks."""
     raw = content or ""
-    if raw in _MARKDOWN_HTML_CACHE and "[PALACE_UI_SNAPSHOT" not in raw:
+    if raw in _MARKDOWN_HTML_CACHE and "[PALACE_UI_SNAPSHOT" not in raw and "[GENERATE_IMAGE" not in raw:
         return _MARKDOWN_HTML_CACHE[raw]
     rendered_images_html: list[str] = []
+    code_blocks: list[str] = []
+    inline_codes: list[str] = []
 
-    # 1. Extract and render any ```svg ... ``` or [DRAW_SVG]...[/DRAW_SVG] blocks into real PNG images
+    # 1. Extract and render any ```svg ... ``` or [DRAW_SVG]...[/DRAW_SVG] blocks into real PNG images first
     def _replace_svg(match: re.Match) -> str:
         fenced_svg = match.group(1)
         tag_title = match.group(2) or "UI & Graphic Preview"
@@ -440,7 +781,7 @@ def format_markdown_and_drawings(content: str) -> str:
                 f'🖼 {esc_title} &nbsp;·&nbsp; '
                 f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">Click to Zoom / Open Full Size ↗</a>'
                 f'</div>'
-                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="220"></a>'
+                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="420"></a>'
                 f'</td></tr></table>'
             )
             idx = len(rendered_images_html)
@@ -450,29 +791,82 @@ def format_markdown_and_drawings(content: str) -> str:
 
     processed = _SVG_FENCE_PATTERN.sub(_replace_svg, raw)
 
-    # 2. Extract and render any [GENERATE_IMAGE prompt="..."] tags
+    # 2. Extract fenced code blocks ```lang ... ``` and inline backticks `...` BEFORE matching [GENERATE_IMAGE]
+    # so backticked documentation examples never trigger image rendering!
+    def _replace_code(match: re.Match) -> str:
+        lang = (match.group(1) or "").strip()
+        code_txt = html.escape(match.group(2) or "")
+        lang_hdr = (
+            f'<div style="color:#6e7681; font-size:11px; font-family:Consolas,monospace; margin-bottom:4px;">{html.escape(lang)}</div>'
+            if lang else ""
+        )
+        block = (
+            f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:8px 0; background:#0d1117; border:1px solid #21262d;">'
+            f'<tr><td style="font-family:Consolas,monospace; font-size:12px; color:#d0d7de; white-space:pre-wrap;">'
+            f'{lang_hdr}{code_txt}</td></tr></table>'
+        )
+        idx = len(code_blocks)
+        code_blocks.append(block)
+        return f"@@PALACE_CODE_{idx}@@"
+
+    processed = re.sub(r"```([a-zA-Z0-9_-]*)\n(.*?)```", _replace_code, processed, flags=re.DOTALL)
+
+    def _replace_inline_code(match: re.Match) -> str:
+        code_span = (
+            f'<span style="background:#1c2128; color:#e6edf3; font-family:Consolas,monospace; '
+            f'padding:1px 5px; border-radius:4px;">{html.escape(match.group(1))}</span>'
+        )
+        idx = len(inline_codes)
+        inline_codes.append(code_span)
+        return f"@@PALACE_INLINECODE_{idx}@@"
+
+    processed = re.sub(r"`([^`\n]+)`", _replace_inline_code, processed)
+
+    # 3. Extract and render any real [GENERATE_IMAGE ...] tags
     def _replace_gen_img(match: re.Match) -> str:
-        img_prompt = match.group(1)
-        img_title = match.group(2) or img_prompt[:40]
-        png_path = generate_ai_image_to_png(img_prompt, title=img_title)
+        attrs = _parse_generate_image_attrs(match.group(1))
+        img_prompt = attrs.get("prompt", "")
+        if not img_prompt:
+            return match.group(0)
+        img_title = attrs.get("title") or img_prompt[:40]
+        img_size = attrs.get("size") or attrs.get("preset") or ""
+        img_quality = attrs.get("quality") or "high"
+        img_style = attrs.get("style") or ""
+        img_model = attrs.get("model") or ""
+        target_w, target_h, size_label = resolve_target_image_size(img_size, img_prompt)
+        png_path = generate_ai_image_to_png(
+            img_prompt,
+            title=img_title,
+            size=img_size,
+            quality=img_quality,
+            style=img_style,
+            model=img_model,
+            allow_network=False,
+        )
         if png_path and png_path.exists():
             file_url = png_path.as_uri()
             esc_title = html.escape(img_title)
+            esc_path = html.escape(str(png_path))
+            engine_badge = get_image_engine_badge(png_path)
+            meta_txt = f"{engine_badge} · {size_label}" if engine_badge else size_label
+            esc_size = html.escape(meta_txt)
+            preview_w = min(680, max(360, int(540 * (target_w / float(max(1, target_h))))))
             img_block = (
-                f'<div style="margin:10px 0; padding:10px; background:#0d1117; border:1px solid #21262d; border-radius:8px;">'
+                f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:10px 0; background:#0d1117; border:1px solid #21262d;">'
+                f'<tr><td>'
                 f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
-                f'🎨 {esc_title} &nbsp;·&nbsp; '
-                f'<a href="open-img:{html.escape(str(png_path))}" style="color:#22c55e; text-decoration:none;">Open Full Size ↗</a>'
+                f'🎨 {esc_title} &nbsp;<span style="color:#6e7681;">({esc_size})</span> &nbsp;·&nbsp; '
+                f'<a href="open-img:{esc_path}" style="color:#22c55e; text-decoration:none;">Click to Inspect / Save Full-Res PNG ↗</a>'
                 f'</div>'
-                f'<img src="{file_url}" width="540" style="border-radius:6px;">'
-                f'</div>'
+                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="{preview_w}"></a>'
+                f'</td></tr></table>'
             )
             idx = len(rendered_images_html)
             rendered_images_html.append(img_block)
             return f"@@PALACE_IMG_{idx}@@"
-        return f'[Image Request: "{img_prompt}"]'
+        return f'[Image Request ({size_label}): "{img_prompt}"]'
 
-    processed = _GENERATE_IMAGE_PATTERN.sub(_replace_gen_img, processed)
+    processed = _GENERATE_IMAGE_TAG_PATTERN.sub(_replace_gen_img, processed)
 
     # 2b. Extract and render any [PALACE_UI_SNAPSHOT] tags (strictly PalaceWindow widget buffer only)
     def _replace_ui_snap(match: re.Match) -> str:
@@ -520,27 +914,6 @@ def format_markdown_and_drawings(content: str) -> str:
 
     processed = _PALACE_SNAPSHOT_PATTERN.sub(_replace_ui_snap, processed)
 
-    # 3. Extract fenced code blocks ```lang ... ``` so we don't mangle code
-    code_blocks: list[str] = []
-
-    def _replace_code(match: re.Match) -> str:
-        lang = (match.group(1) or "").strip()
-        code_txt = html.escape(match.group(2) or "")
-        lang_hdr = (
-            f'<div style="color:#6e7681; font-size:11px; font-family:Consolas,monospace; margin-bottom:4px;">{html.escape(lang)}</div>'
-            if lang else ""
-        )
-        block = (
-            f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:8px 0; background:#0d1117; border:1px solid #21262d;">'
-            f'<tr><td style="font-family:Consolas,monospace; font-size:12px; color:#d0d7de; white-space:pre-wrap;">'
-            f'{lang_hdr}{code_txt}</td></tr></table>'
-        )
-        idx = len(code_blocks)
-        code_blocks.append(block)
-        return f"@@PALACE_CODE_{idx}@@"
-
-    processed = re.sub(r"```([a-zA-Z0-9_-]*)\n(.*?)```", _replace_code, processed, flags=re.DOTALL)
-
     # 4. Escape remaining text and format Markdown headings, bold, inline code, and horizontal rules
     escaped = html.escape(processed)
     lines = escaped.split("\n")
@@ -569,14 +942,10 @@ def format_markdown_and_drawings(content: str) -> str:
     formatted = "<br>".join(out_lines)
     # Bold **text**
     formatted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", formatted)
-    # Inline `code`
-    formatted = re.sub(
-        r"`([^`\n]+)`",
-        r'<span style="font-family:Consolas,monospace; background:#1c2129; color:#e6edf3; padding:1px 5px; border-radius:4px; font-size:12px;">\1</span>',
-        formatted,
-    )
 
-    # Restore code blocks and rendered images
+    # Restore inline code, fenced code blocks, and rendered images
+    for idx, icblock in enumerate(inline_codes):
+        formatted = formatted.replace(f"@@PALACE_INLINECODE_{idx}@@", icblock)
     for idx, cblock in enumerate(code_blocks):
         formatted = formatted.replace(f"@@PALACE_CODE_{idx}@@", cblock)
     for idx, iblock in enumerate(rendered_images_html):
@@ -858,7 +1227,9 @@ QTextBrowser#chatView {{ background: {bg_main}; color: {txt}; border: none; padd
 QFrame#composerCard {{ background: {bg_card}; border: 1px solid {border}; border-radius: 12px; }}
 QTextEdit#composerInput {{ background: transparent; border: none; color: {txt}; font-size: 13px; padding: 2px; }}
 QListWidget#attachmentList {{ background: {bg_side}; border: 1px solid {border}; border-radius: 6px; padding: 4px; }}
-QLineEdit, QComboBox, QSpinBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px; color: {txt}; }}
+QLineEdit, QComboBox, QSpinBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 8px; color: {txt}; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
+QComboBox QAbstractItemView {{ background: {bg_card}; color: {txt}; border: 1px solid {border}; selection-background-color: #1f4b8e; selection-color: #ffffff; padding: 4px; outline: none; }}
+QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 4px 10px; }}
 QPushButton {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 10px; color: {txt_sec}; }}
 QPushButton:hover {{ background: {bg_hover}; color: {txt}; }}
 QPushButton#newConvoButton {{ background: {bg_card}; border: 1px solid {border}; border-radius: 8px; padding: 8px 12px; text-align: left; font-weight: 600; color: {txt}; }}

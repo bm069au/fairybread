@@ -11,7 +11,7 @@ def build_palace(
     providers: dict[str, AIProvider],
     wing: str = "gpt_palace",
     memory_limit: int = 4000,
-    max_workers: int = 4,
+    max_workers: int = 16,
     synthesis_provider_name: str | None = None,
     context_service: ContextService | None = None
 ) -> PalaceOrchestrator:

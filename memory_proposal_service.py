@@ -130,3 +130,64 @@ class MemoryProposalService:
                 or source.get("kind") != "session_entry"
                 or not isinstance(source.get("entry_id"), str)):
             raise ValueError("Invalid memory proposal source")
+
+    def approve_proposal(
+        self,
+        proposal_id: str,
+        memory_index=None,
+        wing: str = "gpt_palace",
+        room: str = "general",
+        project: str = "",
+    ) -> str:
+        """Promote a proposed memory into the SQLite FTS5 durable memory index and remove from pending queue."""
+        record = self.read_proposal(proposal_id)
+        if record is None:
+            raise ValueError(f"Proposal {proposal_id!r} not found.")
+        if memory_index is None:
+            from memory_service import SQLiteMemoryIndex
+            memory_index = SQLiteMemoryIndex(self.path.parent / "memory.db")
+        mem_id = memory_index.upsert(
+            summary=record["summary"],
+            body=record["detail"],
+            memory_id=record["id"],
+            wing=wing,
+            room=room,
+            project=project,
+            memory_type=record["memory_type"],
+            visibility=record["visibility"],
+            source=record["source"],
+        )
+        self._remove_from_pending(proposal_id, decision="promoted")
+        return mem_id
+
+    def reject_proposal(self, proposal_id: str) -> bool:
+        """Reject and remove a pending memory proposal, recording an audit entry."""
+        record = self.read_proposal(proposal_id)
+        if record is None:
+            return False
+        self._remove_from_pending(proposal_id, decision="rejected")
+        return True
+
+    def _remove_from_pending(self, proposal_id: str, decision: str) -> None:
+        if not self.path.exists():
+            return
+        kept: list[str] = []
+        removed_rec = None
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            if obj.get("id") == proposal_id:
+                removed_rec = obj
+            else:
+                kept.append(json.dumps(obj))
+        self.path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+        if removed_rec is not None:
+            audit_path = self.path.with_name("memory_promotions_audit.jsonl")
+            audit_entry = {
+                **removed_rec,
+                "status": decision,
+                "decided_at": datetime.now().astimezone().isoformat(),
+            }
+            with audit_path.open("a", encoding="utf-8") as af:
+                af.write(json.dumps(audit_entry) + "\n")

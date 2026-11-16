@@ -838,6 +838,8 @@ class IdleSessionManager:
         total_called = 0
 
         for idx, (provider_id, generate_fn) in enumerate(providers.items()):
+            if not self.is_idle_mode or self.status not in {"Active", "Waiting", "Paused"}:
+                break
             budget_stop = self.check_budget_exceeded()
             if budget_stop:
                 self.stop_reason = budget_stop
@@ -854,6 +856,8 @@ class IdleSessionManager:
             try:
                 raw_reply = generate_fn(prompt) or ""
             except Exception as exc:
+                if not self.is_idle_mode or self.status not in {"Active", "Waiting", "Paused"}:
+                    break
                 err_entry = {
                     "speaker": provider_id,
                     "content": f"[Provider temporarily unavailable / rate-limited: {str(exc)[:90]}]",
@@ -863,6 +867,8 @@ class IdleSessionManager:
                 if on_turn is not None:
                     on_turn(err_entry)
                 continue
+            if not self.is_idle_mode or self.status not in {"Active", "Waiting", "Paused"}:
+                break
             total_called += 1
 
             # Meter token and USD credit usage

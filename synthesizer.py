@@ -78,6 +78,15 @@ class PalaceSynthesizer:
             if text.strip().upper() not in {"[PASS]", "PASS"}
         ] or successful
 
+        # Speed optimization: if all peers except one replied [PASS], return the single substantive answer immediately
+        if len(substantive) == 1:
+            _, single_text = substantive[0]
+            return SynthesisResult(
+                text=single_text,
+                provider_name=substantive[0][0],
+                contributors=contributors,
+            )
+
         responses = "\n\n".join(
             f"--- {name.upper()} ---\n{text}"
             for name, text in substantive
@@ -99,6 +108,7 @@ Create one strong final answer for the user.
 
 Rules:
 - Respect the council's democratic division of labor: when peers voluntarily defer execution (`[DEFER EXECUTION TO: ...]`) or vote for a specialist peer (`[VOTE: ...]`), give primary weight to the specialist peer's artifact while integrating valid edge-case catches or suggestions from supporting peers.
+- Preserve any `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="..."]`, `[PALACE_UI_SNAPSHOT ...]`, or ` ```svg ... ``` ` visual blocks produced by the council (or emit the single best consolidated `[GENERATE_IMAGE ...]` tag at `quality="high"` with the appropriate `size` preset/dimensions when the user requested an image/graphic).
 - Preserve useful points of agreement without repeating filler.
 - Resolve differences using careful reasoning; do not invent consensus where the agents disagree.
 - Remove unnecessary repetition and meta-commentary.
