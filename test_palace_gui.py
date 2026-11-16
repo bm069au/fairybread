@@ -1135,6 +1135,88 @@ class WindowTests(unittest.TestCase):
         if stopped_worker is not None:
             stopped_worker.wait(1000)
 
+        # 8. Verify Storage Sliders (100 MB -> Unlimited), Data Mover, Password-Locked AES-256 Backup,
+        #    Council Memory Optimizations (Stopwords, Zlib Blob, Hot/Cold Context), and %5C Image URL Decoding
+        from palace_config import (
+            compute_palace_storage_stats,
+            format_storage_mb_label,
+            mb_to_slider_index,
+            move_palace_data_to_directory,
+            parse_storage_mb_text,
+            slider_index_to_mb,
+        )
+        self.assertEqual(format_storage_mb_label(0), 'Unlimited')
+        self.assertEqual(format_storage_mb_label(100), '100 MB')
+        self.assertEqual(format_storage_mb_label(1024), '1 GB (1,024 MB)')
+        self.assertEqual(parse_storage_mb_text('Unlimited'), 0)
+        self.assertEqual(parse_storage_mb_text('2 GB'), 2048)
+        self.assertEqual(parse_storage_mb_text('250 MB'), 250)
+        self.assertEqual(slider_index_to_mb(mb_to_slider_index(0)), 0)
+        self.assertEqual(slider_index_to_mb(0), 100)
+
+        # Password-Locked AES-256-GCM Backup & Restore
+        pw_cred_path = self.root / 'palace_appdata' / 'credentials.json'
+        pw_cs = CredentialStore(pw_cred_path)
+        pw_cs.set_api_key('openai', 'sk-test-secret-key-999999999')
+        pw_zip = self.root / 'test_pw_locked_backup.zip'
+        pw_manifest = create_full_backup_zip(
+            pw_zip,
+            config_path=test_cfg_path,
+            appdata_root=self.root / 'palace_appdata',
+            backup_password='CorrectHorseBatteryStaple!',
+        )
+        self.assertTrue(pw_manifest['password_protected'])
+        pw_restore_dir = self.root / 'pw_restored_appdata'
+        with self.assertRaises(PermissionError):
+            restore_full_backup_zip(
+                pw_zip,
+                config_path=restored_cfg,
+                appdata_root=pw_restore_dir,
+                backup_password='WrongPassword123',
+            )
+        pw_summary = restore_full_backup_zip(
+            pw_zip,
+            config_path=restored_cfg,
+            appdata_root=pw_restore_dir,
+            backup_password='CorrectHorseBatteryStaple!',
+        )
+        self.assertTrue(pw_summary['password_unlocked'])
+        self.assertEqual(
+            CredentialStore(pw_restore_dir / 'credentials.json').get_api_key('openai'),
+            'sk-test-secret-key-999999999',
+        )
+
+        # Council Memory Optimizations: Stopwords, Zlib sidecar blob (>4KB), Deduplication & Hot/Cold Context
+        large_text = ('Fairybread local privacy architecture and SQLite FTS5 BM25 indexing. ' * 120).strip()
+        mid1 = mem_idx.upsert('Large Architecture Doc', large_text, wing='gpt_palace')
+        mid2 = mem_idx.upsert('Large Architecture Doc', large_text, wing='gpt_palace')
+        self.assertEqual(mid1, mid2)  # Content-hash deduplication
+        hits = mem_idx.search('Can you please tell me how the Fairybread architecture works?', wing='gpt_palace')
+        self.assertTrue(any(h['id'] == mid1 and len(h['body']) == len(large_text) for h in hits))
+
+        # Hot/Cold ContextService: skips intermediate peer drafts when synthesis exists
+        ctx_hot = ContextService(self.root / 'hot_cold_session.jsonl')
+        ctx_hot.append_exchange(
+            'What is 2+2?',
+            'Synthesized answer: 4',
+            speaker_messages=[
+                {'speaker_id': 'gemini', 'phase': 'initial', 'content': 'Peer draft from Gemini that should be skipped'},
+                {'speaker_id': 'openai', 'phase': 'peer_reply', 'content': 'Peer reply from OpenAI that should be skipped'},
+            ],
+        )
+        hot_str = ctx_hot.load_recent(12000)
+        self.assertIn('USER: What is 2+2?', hot_str)
+        self.assertIn('ASSISTANT: Synthesized answer: 4', hot_str)
+        self.assertNotIn('Peer draft from Gemini', hot_str)
+        self.assertEqual(len(ctx_hot.get_peer_drafts()), 2)
+
+        # Move Palace data to another directory
+        moved_dir = self.root / 'moved_palace_drive'
+        move_res = move_palace_data_to_directory(moved_dir, config_path=test_cfg_path)
+        self.assertEqual(Path(move_res['new_root']), moved_dir.resolve())
+        st_stats = compute_palace_storage_stats(test_cfg_path)
+        self.assertEqual(Path(st_stats['data_root']), moved_dir.resolve())
+
 
 if __name__ == '__main__':
     unittest.main()

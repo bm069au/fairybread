@@ -334,11 +334,73 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "duration_minutes": 30,          # 30, 45, 60, 90, 180, or 0 (Infinite)
     "max_tokens_limit": 0,           # 0 = Rely on 30-minute timer (no hard token cap unless set > 0)
     "max_credit_usd": 0.0,           # 0.0 = Rely on 30-minute timer (no hard USD cap unless set > 0)
+    "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
     "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Palace code & UI improvement)
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
 }
+
+STORAGE_SLIDER_STOPS_MB: list[int] = [
+    100,
+    250,
+    500,
+    1024,
+    2048,
+    5120,
+    10240,
+    25600,
+    51200,
+    0,  # Far-right stop = Unlimited
+]
+
+
+def slider_index_to_mb(idx: int) -> int:
+    clamped = max(0, min(len(STORAGE_SLIDER_STOPS_MB) - 1, int(idx)))
+    return STORAGE_SLIDER_STOPS_MB[clamped]
+
+
+def mb_to_slider_index(mb: int) -> int:
+    val = int(mb or 0)
+    if val <= 0:
+        return len(STORAGE_SLIDER_STOPS_MB) - 1
+    finite_stops = STORAGE_SLIDER_STOPS_MB[:-1]
+    best_i = 0
+    best_diff = abs(finite_stops[0] - val)
+    for i, stop in enumerate(finite_stops):
+        d = abs(stop - val)
+        if d < best_diff:
+            best_diff = d
+            best_i = i
+    return best_i
+
+
+def format_storage_mb_label(mb: int) -> str:
+    val = int(mb or 0)
+    if val <= 0:
+        return "Unlimited"
+    if val >= 1024:
+        gb = val / 1024.0
+        if abs(gb - round(gb)) < 0.05:
+            return f"{int(round(gb))} GB ({val:,} MB)"
+        return f"{gb:.1f} GB ({val:,} MB)"
+    return f"{val:,} MB"
+
+
+def parse_storage_mb_text(text: str) -> int:
+    import re
+    clean = (text or "").strip().lower()
+    if not clean or "unlimit" in clean or clean in {"0", "none", "inf", "infinite", "max"}:
+        return 0
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(gb|g|mb|m)?", clean)
+    if not m:
+        return 0
+    num = float(m.group(1))
+    unit = (m.group(2) or "mb").lower()
+    if unit.startswith("g"):
+        num *= 1024.0
+    mb_val = int(round(num))
+    return 0 if mb_val <= 0 else max(100, min(1_048_576, mb_val))
 
 DEFAULT_MISSION_ETHICS = (
     "[MISSION STATEMENT & CODE OF ETHICS]\n\n"
@@ -481,6 +543,12 @@ def load_idle_settings(
             merged["max_credit_usd"] = 0.0 if usd_val <= 0.0 else max(0.01, min(100.0, usd_val))
         except (TypeError, ValueError):
             pass
+    if "max_storage_mb" in raw_idle:
+        try:
+            st_val = int(raw_idle["max_storage_mb"])
+            merged["max_storage_mb"] = 0 if st_val <= 0 else max(100, min(1_048_576, st_val))
+        except (TypeError, ValueError):
+            pass
     if raw_idle.get("idle_submode") in {"free_talk", "self_improve"}:
         merged["idle_submode"] = raw_idle["idle_submode"]
     if "pause_when_joined" in raw_idle:
@@ -505,6 +573,8 @@ def save_idle_settings(
     current["max_tokens_limit"] = 0 if tok_val <= 0 else max(1000, min(5_000_000, tok_val))
     usd_val = float(current.get("max_credit_usd", 0.0))
     current["max_credit_usd"] = 0.0 if usd_val <= 0.0 else max(0.01, min(100.0, usd_val))
+    st_val = int(current.get("max_storage_mb", 0))
+    current["max_storage_mb"] = 0 if st_val <= 0 else max(100, min(1_048_576, st_val))
     if current.get("idle_submode") not in {"free_talk", "self_improve"}:
         current["idle_submode"] = "free_talk"
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
@@ -562,6 +632,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "include_palace_code": False,
     "badge_display_mode": "icons_only",  # "icons_only" | "icons_and_names" | "names_only"
     "theme": "dark",  # "dark" | "light" | "system" | "fairybread" | custom theme slug
+    "normal_max_storage_mb": 0,  # 0 = Unlimited, or >= 100 MB (warns at 85% and 100%)
+    "custom_data_dir": "",  # Empty = %LOCALAPPDATA%\Palace; or custom directory path on any drive
 }
 
 
@@ -579,6 +651,16 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["badge_display_mode"] = raw["badge_display_mode"]
     if isinstance(raw.get("theme"), str) and raw["theme"].strip():
         merged["theme"] = raw["theme"].strip().lower()
+    if "normal_max_storage_mb" in raw:
+        try:
+            n_mb = int(raw["normal_max_storage_mb"])
+            merged["normal_max_storage_mb"] = 0 if n_mb <= 0 else max(100, min(1_048_576, n_mb))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(raw.get("custom_data_dir"), str):
+        cdir = raw["custom_data_dir"].strip()
+        if cdir and not cdir.upper().startswith("M:"):
+            merged["custom_data_dir"] = cdir
     return merged
 
 
@@ -594,9 +676,216 @@ def save_ui_settings(
     if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
         current["badge_display_mode"] = "icons_only"
     current["theme"] = str(current.get("theme") or "dark").strip().lower()
+    try:
+        n_mb = int(current.get("normal_max_storage_mb", 0))
+    except (TypeError, ValueError):
+        n_mb = 0
+    current["normal_max_storage_mb"] = 0 if n_mb <= 0 else max(100, min(1_048_576, n_mb))
+    cdir = str(current.get("custom_data_dir") or "").strip()
+    if cdir.upper().startswith("M:"):
+        raise ValueError("M: drive is strictly off-limits for Palace storage.")
+    current["custom_data_dir"] = cdir
     data["ui_settings"] = current
     _write_raw_config(data, config_path)
     return load_ui_settings(config_path)
+
+
+def get_palace_data_root(config_path: Path = CONFIG_PATH) -> Path:
+    """Resolve the active Palace data directory (custom drive/folder if set, otherwise %LOCALAPPDATA%\\Palace)."""
+    try:
+        ui = load_ui_settings(config_path)
+        custom = str(ui.get("custom_data_dir") or "").strip()
+        if custom and not custom.upper().startswith("M:"):
+            p = Path(custom)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
+    default_root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
+    default_root.mkdir(parents=True, exist_ok=True)
+    return default_root
+
+
+def move_palace_data_to_directory(
+    new_dir: str | Path,
+    *,
+    config_path: Path = CONFIG_PATH,
+    remove_source_after_copy: bool = False,
+) -> dict[str, Any]:
+    """Move or copy all Palace Memory, Conversations, Uploaded Files, Generated Images, and Idle Palace to a new folder/drive."""
+    import shutil
+    target = Path(new_dir).resolve()
+    if str(target.drive).upper().startswith("M:"):
+        raise ValueError("M: drive is strictly off-limits.")
+    old_root = get_palace_data_root(config_path).resolve()
+    if target == old_root:
+        return {"moved_files": 0, "new_root": str(target)}
+    target.mkdir(parents=True, exist_ok=True)
+
+    moved_count = 0
+    # Copy SQLite memory.db safely using online backup API if present
+    mem_src = old_root / "memory.db"
+    if mem_src.exists():
+        try:
+            from memory_service import SQLiteMemoryIndex
+            SQLiteMemoryIndex(mem_src).backup_to_file(target / "memory.db")
+            moved_count += 1
+        except Exception:
+            shutil.copy2(mem_src, target / "memory.db")
+            moved_count += 1
+
+    for item in old_root.rglob("*"):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(old_root)
+        if rel.name in {"memory.db", "memory.db-wal", "memory.db-shm"}:
+            continue
+        dest_file = target / rel
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dest_file)
+        moved_count += 1
+
+    save_ui_settings({"custom_data_dir": str(target)}, config_path=config_path)
+    if remove_source_after_copy:
+        for sub in ("uploaded_files", "generated_images", "sessions", "idle_palace"):
+            sp = old_root / sub
+            if sp.is_dir():
+                shutil.rmtree(sp, ignore_errors=True)
+    return {"moved_files": moved_count, "old_root": str(old_root), "new_root": str(target)}
+
+
+def _dir_size_bytes(directory: Path) -> int:
+    if not directory.exists() or not directory.is_dir():
+        return 0
+    total = 0
+    try:
+        for f in directory.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def compute_palace_storage_stats(
+    config_path: Path = CONFIG_PATH,
+    data_root: Path | None = None,
+    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+) -> dict[str, Any]:
+    """Compute live disk space breakdown and warning states for both Normal Mode and Idle Mode."""
+    root = Path(data_root) if data_root is not None else get_palace_data_root(config_path)
+    ui_cfg = load_ui_settings(config_path)
+    idle_cfg = load_idle_settings(config_path)
+
+    mem_bytes = 0
+    for db_name in ("memory.db", "memory.db-wal", "memory.db-shm"):
+        p = root / db_name
+        if p.exists():
+            try:
+                mem_bytes += p.stat().st_size
+            except OSError:
+                pass
+
+    sess_bytes = _dir_size_bytes(root / "sessions")
+    for top_f in ("conversations.json", "session_context.jsonl", "memory_proposals.jsonl", "memory_promotions_audit.jsonl"):
+        p = root / top_f
+        if p.exists():
+            try:
+                sess_bytes += p.stat().st_size
+            except OSError:
+                pass
+
+    up_bytes = _dir_size_bytes(root / "uploaded_files")
+    img_bytes = _dir_size_bytes(root / "generated_images")
+    normal_total = mem_bytes + sess_bytes + up_bytes + img_bytes
+
+    idle_bytes = _dir_size_bytes(root / "idle_palace") + _dir_size_bytes(Path(sandbox_root) / "files")
+    for ip in (root / "ai_idle_memory.json", Path(sandbox_root) / "ai_idle_memory.json"):
+        if ip.exists():
+            try:
+                idle_bytes += ip.stat().st_size
+            except OSError:
+                pass
+
+    normal_cap_mb = int(ui_cfg.get("normal_max_storage_mb", 0))
+    idle_cap_mb = int(idle_cfg.get("max_storage_mb", 0))
+
+    normal_cap_bytes = normal_cap_mb * 1024 * 1024 if normal_cap_mb > 0 else 0
+    idle_cap_bytes = idle_cap_mb * 1024 * 1024 if idle_cap_mb > 0 else 0
+
+    normal_pct = (normal_total / normal_cap_bytes * 100.0) if normal_cap_bytes > 0 else 0.0
+    idle_pct = (idle_bytes / idle_cap_bytes * 100.0) if idle_cap_bytes > 0 else 0.0
+
+    normal_state = "exceeded" if (normal_cap_bytes > 0 and normal_total >= normal_cap_bytes) else (
+        "warning" if (normal_cap_bytes > 0 and normal_pct >= 85.0) else "ok"
+    )
+    idle_state = "exceeded" if (idle_cap_bytes > 0 and idle_bytes >= idle_cap_bytes) else (
+        "warning" if (idle_cap_bytes > 0 and idle_pct >= 85.0) else "ok"
+    )
+
+    return {
+        "data_root": str(root),
+        "memory_db_bytes": mem_bytes,
+        "sessions_bytes": sess_bytes,
+        "uploaded_files_bytes": up_bytes,
+        "generated_images_bytes": img_bytes,
+        "normal_total_bytes": normal_total,
+        "normal_total_mb": round(normal_total / (1024 * 1024), 2),
+        "normal_cap_mb": normal_cap_mb,
+        "normal_pct": round(normal_pct, 1),
+        "normal_state": normal_state,
+        "idle_total_bytes": idle_bytes,
+        "idle_total_mb": round(idle_bytes / (1024 * 1024), 2),
+        "idle_cap_mb": idle_cap_mb,
+        "idle_pct": round(idle_pct, 1),
+        "idle_state": idle_state,
+    }
+
+
+def list_palace_stored_files(
+    config_path: Path = CONFIG_PATH,
+    data_root: Path | None = None,
+    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+) -> list[dict[str, Any]]:
+    """List all user-accessible files stored in the Palace (Uploaded Files, Generated Images, and Idle Shared Files)."""
+    from datetime import datetime
+    root = Path(data_root) if data_root is not None else get_palace_data_root(config_path)
+    items: list[dict[str, Any]] = []
+    sources = [
+        ("Uploaded File", root / "uploaded_files"),
+        ("Generated Picture", root / "generated_images"),
+        ("Idle Shared File", root / "idle_palace" / "files"),
+        ("Idle Shared File", Path(sandbox_root) / "files"),
+    ]
+    seen_paths: set[str] = set()
+    for category, folder in sources:
+        if not folder.exists() or not folder.is_dir():
+            continue
+        try:
+            for fp in folder.iterdir():
+                if not fp.is_file():
+                    continue
+                resolved = str(fp.resolve())
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+                st = fp.stat()
+                items.append({
+                    "name": fp.name,
+                    "category": category,
+                    "path": resolved,
+                    "size_bytes": st.st_size,
+                    "size_kb": round(st.st_size / 1024.0, 1),
+                    "mtime": st.st_mtime,
+                    "modified": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                })
+        except OSError:
+            continue
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return items
 
 
 def build_palace_source_context(

@@ -278,14 +278,19 @@ class ContextService:
                     found = entry
         return found
 
-    def load_recent(self, max_chars: int = 12000) -> str:
-        """Return the newest history within a strict prompt character budget."""
+    def load_recent(self, max_chars: int = 12000, *, include_peer_drafts: bool = False) -> str:
+        """Return the newest history within a strict prompt character budget.
+
+        Council optimization: Prioritizes HOT entries ('prompt' and 'synthesis' phases) and skips
+        redundant intermediate peer drafts ('initial', 'peer_reply') whenever an exchange already
+        has a synthesized final answer, preventing 6-AI peer drafts from exhausting the context budget.
+        """
         if max_chars <= 0 or not self.path.exists():
             return ""
-        entries = []
-        remaining = max_chars
         lines = self.path.read_text(encoding="utf-8").splitlines()
-        for idx, line in enumerate(reversed(lines), start=1):
+        parsed_entries: list[dict[str, Any]] = []
+        exchanges_with_synthesis: set[str] = set()
+        for idx, line in enumerate(lines, start=1):
             if not line.strip():
                 continue
             raw = json.loads(line)
@@ -294,6 +299,21 @@ class ContextService:
                 default_session_id=self.session_id,
                 default_sequence=idx,
             )
+            parsed_entries.append(entry)
+            if entry.get("phase") == "synthesis" and entry.get("exchange_id"):
+                exchanges_with_synthesis.add(str(entry["exchange_id"]))
+
+        entries = []
+        remaining = max_chars
+        for entry in reversed(parsed_entries):
+            phase = entry.get("phase")
+            eid = str(entry.get("exchange_id") or "")
+            if (
+                not include_peer_drafts
+                and phase in {"initial", "peer_reply"}
+                and eid in exchanges_with_synthesis
+            ):
+                continue
             speaker = entry.get("speaker_id") or entry["role"]
             label = (
                 "USER"
@@ -318,3 +338,17 @@ class ContextService:
             if clipped or remaining <= 0:
                 break
         return "\n\n".join(reversed(entries))
+
+    def get_peer_drafts(self, exchange_id: str | None = None, message_id: str | None = None) -> list[dict[str, Any]]:
+        """Retrieve intermediate peer deliberation drafts ('initial', 'peer_reply') on demand by ID."""
+        if not self.path.exists():
+            return []
+        all_msgs = self.read_messages()
+        if message_id:
+            return [m for m in all_msgs if m.get("id") == message_id or m.get("message_id") == message_id]
+        if exchange_id:
+            return [
+                m for m in all_msgs
+                if m.get("exchange_id") == exchange_id and m.get("phase") in {"initial", "peer_reply"}
+            ]
+        return [m for m in all_msgs if m.get("phase") in {"initial", "peer_reply"}]

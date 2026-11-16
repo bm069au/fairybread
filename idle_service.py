@@ -228,11 +228,24 @@ class IdleMemoryStore:
     - Strictly accessible ONLY while in Idle Mode (or by the owner during Beta).
     """
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, max_storage_mb: int | None = None):
         if path is None:
             path = IDLE_SANDBOX_ROOT / "idle_palace" / "ai_idle_memory.json"
         self.path = Path(path)
         self.files_dir = self.path.parent / "files"
+        self._explicit_max_mb = max_storage_mb
+
+    def max_storage_bytes(self) -> int:
+        """Return the configured Idle Palace byte limit, or 0 for Unlimited."""
+        if self._explicit_max_mb is not None:
+            mb = int(self._explicit_max_mb)
+            return 0 if mb <= 0 else mb * 1024 * 1024
+        try:
+            cfg = load_idle_settings()
+            mb = int(cfg.get("max_storage_mb", 0))
+            return 0 if mb <= 0 else mb * 1024 * 1024
+        except Exception:
+            return 0
 
     def _load_raw(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -250,8 +263,10 @@ class IdleMemoryStore:
     def _save_raw(self, notes: list[dict[str, Any]]) -> None:
         payload = json.dumps({"notes": notes}, indent=2, ensure_ascii=False) + "\n"
         encoded = payload.encode("utf-8")
-        if len(encoded) > MAX_IDLE_MEMORY_BYTES:
-            raise ValueError("AI Idle Memory limit (10 MB) exceeded.")
+        cap = self.max_storage_bytes()
+        if cap > 0 and (len(encoded) > cap or self.usage_bytes() + len(encoded) > cap * 1.05):
+            cap_mb = cap // (1024 * 1024)
+            raise ValueError(f"AI Idle Memory limit ({cap_mb} MB) exceeded.")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_bytes(encoded)
 
@@ -357,11 +372,30 @@ class IdleMemoryStore:
                 return dict(note)
         return None
 
+    def search_notes(self, query: str, *, limit: int = 8) -> list[dict[str, Any]]:
+        """Council optimization: Keyword-ranked search across the shared Idle Palace when note count grows large."""
+        from memory_service import extract_keywords
+        notes = self._load_raw()
+        if not notes:
+            return []
+        terms = extract_keywords(query or "", max_terms=10)
+        if not terms:
+            return notes[-limit:]
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        for idx, n in enumerate(notes):
+            hay = f"{n.get('title', '')} {n.get('file', '')} {n.get('content', '')}".lower()
+            hits = sum(2 if t in str(n.get("title", "")).lower() else 1 for t in terms if t in hay)
+            if hits > 0:
+                scored.append((hits, idx, dict(n)))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [item[2] for item in scored[:limit]]
+
     def format_context_for_agent(
         self,
         provider_id: str,
         *,
         is_idle_mode: bool,
+        query: str = "",
     ) -> str:
         notes = self.load_notes_for_agent(provider_id, is_idle_mode=is_idle_mode)
         if not notes:
@@ -375,6 +409,15 @@ class IdleMemoryStore:
                 for n in older[-20:]
             ]
             lines.append("[EARLIER SHARED IDLE PALACE FILES INDEX]: " + " | ".join(idx_items))
+            if query:
+                matched_older = [
+                    m for m in self.search_notes(query, limit=3)
+                    if m.get("id") not in {r.get("id") for r in recent}
+                ]
+                for note in matched_older:
+                    author_tag = str(note.get("author", "AI")).upper()
+                    title = note.get("title") or "Untitled"
+                    lines.append(f"[RELEVANT EARLIER IDLE PALACE NOTE · by {author_tag} · {title}]\n{note.get('content', '')}")
         for note in recent:
             author_tag = str(note.get("author", "AI")).upper()
             title = note.get("title") or "Untitled"

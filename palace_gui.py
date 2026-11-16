@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QImage, QK
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy, QSpinBox,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -137,12 +137,41 @@ class ChatBrowser(QTextBrowser):
     """QTextBrowser subclass that paints true anti-aliased 14px rounded pills behind user prompt tables
     (working around Qt QTextDocument's CSS border-radius limitation while keeping text 100% selectable).
     """
+    anchor_action_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.user_bubble_bg = '#1c2128'
         self.user_bubble_border = '#30363d'
         self.sprinkles_enabled = False
+
+    def contextMenuEvent(self, event):
+        import urllib.parse
+        anchor = self.anchorAt(event.pos())
+        if anchor:
+            decoded = urllib.parse.unquote(anchor)
+            for prefix in ('open-img:', 'save-file:', 'reveal-file:', 'delete-file:'):
+                if decoded.startswith(prefix):
+                    file_path = decoded.split(prefix, 1)[1]
+                    menu = QMenu(self)
+                    p_obj = Path(file_path)
+                    is_img = p_obj.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}
+                    if is_img:
+                        view_act = menu.addAction('🔍 View Full-Size Image')
+                        view_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'open-img:{file_path}'))
+                    dl_act = menu.addAction('💾 Download / Save As…')
+                    dl_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'save-file:{file_path}'))
+                    if is_img and p_obj.exists():
+                        cp_act = menu.addAction('📋 Copy Image to Clipboard')
+                        cp_act.triggered.connect(lambda: QApplication.clipboard().setPixmap(QPixmap(str(p_obj))))
+                    rev_act = menu.addAction('📂 Show in File Explorer')
+                    rev_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'reveal-file:{file_path}'))
+                    menu.addSeparator()
+                    del_act = menu.addAction('🗑 Delete from Palace Storage')
+                    del_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'delete-file:{file_path}'))
+                    menu.exec(event.globalPos())
+                    return
+        super().contextMenuEvent(event)
 
     def set_theme_colors(self, theme_dict: dict):
         self.user_bubble_bg = str(theme_dict.get('user_bubble_bg', '#1c2128'))
@@ -962,6 +991,43 @@ class ManageAIsDialog(QDialog):
                 break
         form.addRow('Max credit / spend limit (per session):', self.idle_credit_limit_combo)
 
+        from palace_config import (
+            STORAGE_SLIDER_STOPS_MB,
+            format_storage_mb_label,
+            mb_to_slider_index,
+            parse_storage_mb_text,
+            slider_index_to_mb,
+        )
+        cur_idle_mb = int(idle_cfg.get('max_storage_mb', 0))
+        idle_space_row = QHBoxLayout()
+        self.idle_storage_slider = QSlider(Qt.Orientation.Horizontal)
+        self.idle_storage_slider.setRange(0, len(STORAGE_SLIDER_STOPS_MB) - 1)
+        self.idle_storage_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.idle_storage_slider.setTickInterval(1)
+        self.idle_storage_slider.setValue(mb_to_slider_index(cur_idle_mb))
+        self.idle_storage_edit = QLineEdit(format_storage_mb_label(cur_idle_mb))
+        self.idle_storage_edit.setFixedWidth(165)
+        self.idle_storage_edit.setToolTip('Type any size (e.g. 250 MB, 2 GB, or Unlimited) or drag the slider (Min: 100 MB → Max: Unlimited)')
+
+        def _on_idle_slider_changed(val: int):
+            mb = slider_index_to_mb(val)
+            self.idle_storage_edit.setText(format_storage_mb_label(mb))
+
+        def _on_idle_edit_finished():
+            mb = parse_storage_mb_text(self.idle_storage_edit.text())
+            self.idle_storage_slider.blockSignals(True)
+            self.idle_storage_slider.setValue(mb_to_slider_index(mb))
+            self.idle_storage_slider.blockSignals(False)
+            self.idle_storage_edit.setText(format_storage_mb_label(mb))
+
+        self.idle_storage_slider.valueChanged.connect(_on_idle_slider_changed)
+        self.idle_storage_edit.editingFinished.connect(_on_idle_edit_finished)
+        idle_space_row.addWidget(QLabel('100 MB'))
+        idle_space_row.addWidget(self.idle_storage_slider, 1)
+        idle_space_row.addWidget(QLabel('Unlimited'))
+        idle_space_row.addWidget(self.idle_storage_edit)
+        form.addRow('Idle Palace drive space limit:', idle_space_row)
+
         self.idle_memory_mode_combo = QComboBox()
         self.idle_memory_mode_combo.addItem(
             'Only their own Idle memory (Isolated — No Palace memory access)',
@@ -1004,9 +1070,9 @@ class ManageAIsDialog(QDialog):
 
         mem_row = QHBoxLayout()
         used_kb = self.idle_memory.usage_bytes() / 1024.0
-        max_mb = MAX_IDLE_MEMORY_BYTES / (1024 * 1024)
+        cap_label = format_storage_mb_label(cur_idle_mb)
         self.idle_mem_status_label = QLabel(
-            f'AI-Only Permanent Idle Memory: {self.idle_memory.note_count()} notes ({used_kb:.1f} KB / {max_mb:.0f} MB cap) · Accessible only in Idle Mode'
+            f'AI-Only Permanent Idle Memory: {self.idle_memory.note_count()} notes ({used_kb:.1f} KB / {cap_label} cap) · Accessible only in Idle Mode'
         )
         self.idle_mem_status_label.setObjectName('muted')
         self.idle_mem_status_label.setWordWrap(True)
@@ -1145,28 +1211,236 @@ class ManageAIsDialog(QDialog):
         )
 
     def _build_backup_restore_page(self):
-        from backup_service import create_full_backup_zip, get_palace_appdata_root, restore_full_backup_zip
+        from backup_service import (
+            create_full_backup_zip,
+            get_palace_appdata_root,
+            inspect_backup_zip,
+            restore_full_backup_zip,
+        )
+        from palace_config import (
+            STORAGE_SLIDER_STOPS_MB,
+            compute_palace_storage_stats,
+            format_storage_mb_label,
+            list_palace_stored_files,
+            mb_to_slider_index,
+            move_palace_data_to_directory,
+            parse_storage_mb_text,
+            slider_index_to_mb,
+        )
 
         w, lay = self._make_simple_page(
-            '📦 Full Backup & Restore (All Settings, Chats & Memory)',
-            'Create an atomic, SHA-256 verified ZIP archive of all Fairybread settings, conversations, '
-            'SQLite FTS5 durable Memory Palace, memory proposals, Shared Idle Palace, Agent Mail, and custom themes.'
+            '📦 Storage, Files & Password-Locked Backup',
+            'Manage Normal Mode drive space & optional cap, move Palace Memory to another drive/folder, '
+            'download or delete stored files & pictures, and create password-locked AES-256 backups.'
         )
 
-        self.backup_include_images_check = QCheckBox(
-            'Include generated high-resolution PNG images (generated_images/)',
-            checked=True,
-        )
-        lay.addWidget(self.backup_include_images_check)
+        ui_cfg = load_ui_settings(self.config_path)
+        stats = compute_palace_storage_stats(self.config_path)
 
-        self.backup_include_creds_check = QCheckBox(
-            'Include Windows DPAPI encrypted credentials (restores automatically on this PC; skipped on a different PC)',
-            checked=True,
-        )
-        lay.addWidget(self.backup_include_creds_check)
+        # --- 1. NORMAL MODE DRIVE SPACE SLIDER + LIVE USAGE & CAP WARNING ---
+        space_grp = QFrame()
+        space_grp.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:8px;')
+        sp_lay = QVBoxLayout(space_grp)
+        sp_lay.setSpacing(6)
+        self.normal_space_summary_lbl = QLabel()
+        self.normal_space_summary_lbl.setWordWrap(True)
+        self.normal_space_summary_lbl.setTextFormat(Qt.TextFormat.RichText)
+        sp_lay.addWidget(self.normal_space_summary_lbl)
+
+        cur_norm_mb = int(ui_cfg.get('normal_max_storage_mb', 0))
+        norm_slider_row = QHBoxLayout()
+        norm_slider_row.addWidget(QLabel('Normal Palace Cap:'))
+        norm_slider_row.addWidget(QLabel('100 MB'))
+        self.normal_storage_slider = QSlider(Qt.Orientation.Horizontal)
+        self.normal_storage_slider.setRange(0, len(STORAGE_SLIDER_STOPS_MB) - 1)
+        self.normal_storage_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.normal_storage_slider.setTickInterval(1)
+        self.normal_storage_slider.setValue(mb_to_slider_index(cur_norm_mb))
+        self.normal_storage_edit = QLineEdit(format_storage_mb_label(cur_norm_mb))
+        self.normal_storage_edit.setFixedWidth(165)
+
+        def _refresh_storage_summary_labels():
+            st = compute_palace_storage_stats(self.config_path)
+            cap_mb = parse_storage_mb_text(self.normal_storage_edit.text())
+            cap_txt = format_storage_mb_label(cap_mb)
+            mem_mb = st['memory_db_bytes'] / (1024 * 1024)
+            chat_mb = st['sessions_bytes'] / (1024 * 1024)
+            up_mb = st['uploaded_files_bytes'] / (1024 * 1024)
+            img_mb = st['generated_images_bytes'] / (1024 * 1024)
+            tot_mb = st['normal_total_mb']
+            warn_html = ''
+            if cap_mb > 0:
+                pct = (tot_mb / float(cap_mb)) * 100.0
+                if pct >= 100.0:
+                    warn_html = f'<br><span style="color:#f85149; font-weight:700;">⚠ DATA LIMIT REACHED ({pct:.1f}% of {cap_txt}): Delete old files below, raise your cap, or move Palace data to another drive!</span>'
+                elif pct >= 85.0:
+                    warn_html = f'<br><span style="color:#d29922; font-weight:700;">⚠ Approaching Data Limit ({pct:.1f}% of {cap_txt} used).</span>'
+            self.normal_space_summary_lbl.setText(
+                f'<b>💾 Normal Palace Drive Space Used: {tot_mb:.2f} MB / {cap_txt}</b> '
+                f'<span style="color:#8b949e; font-size:12px;">'
+                f'(Memory DB: {mem_mb:.2f} MB · Chats: {chat_mb:.2f} MB · Uploaded Files: {up_mb:.2f} MB · Pictures: {img_mb:.2f} MB)'
+                f'</span>{warn_html}'
+            )
+
+        def _on_norm_slider(val: int):
+            mb = slider_index_to_mb(val)
+            self.normal_storage_edit.setText(format_storage_mb_label(mb))
+            _refresh_storage_summary_labels()
+
+        def _on_norm_edit():
+            mb = parse_storage_mb_text(self.normal_storage_edit.text())
+            self.normal_storage_slider.blockSignals(True)
+            self.normal_storage_slider.setValue(mb_to_slider_index(mb))
+            self.normal_storage_slider.blockSignals(False)
+            self.normal_storage_edit.setText(format_storage_mb_label(mb))
+            _refresh_storage_summary_labels()
+
+        self.normal_storage_slider.valueChanged.connect(_on_norm_slider)
+        self.normal_storage_edit.editingFinished.connect(_on_norm_edit)
+        norm_slider_row.addWidget(self.normal_storage_slider, 1)
+        norm_slider_row.addWidget(QLabel('Unlimited'))
+        norm_slider_row.addWidget(self.normal_storage_edit)
+        sp_lay.addLayout(norm_slider_row)
+
+        # --- 2. MOVE PALACE MEMORY LOCATION (DIFFERENT DRIVE / FOLDER) ---
+        loc_row = QHBoxLayout()
+        loc_row.addWidget(QLabel('Palace Storage Folder:'))
+        self.palace_data_dir_edit = QLineEdit(str(stats['data_root']))
+        loc_browse_btn = QPushButton('Browse Drive/Folder…')
+        loc_move_btn = QPushButton('🚚 Move Palace Data Here')
+        loc_move_btn.setToolTip('Copy all Palace Memory, Chats, Uploaded Files & Pictures to the selected drive/folder and switch active storage there.')
+        loc_row.addWidget(self.palace_data_dir_edit, 1)
+        loc_row.addWidget(loc_browse_btn)
+        loc_row.addWidget(loc_move_btn)
+        sp_lay.addLayout(loc_row)
+        lay.addWidget(space_grp)
+
+        def _browse_data_dir():
+            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Palace Memory Storage', self.palace_data_dir_edit.text())
+            if chosen:
+                self.palace_data_dir_edit.setText(chosen)
+
+        def _move_data_dir():
+            target_dir = self.palace_data_dir_edit.text().strip()
+            if not target_dir:
+                return
+            try:
+                res = move_palace_data_to_directory(target_dir, config_path=self.config_path)
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+                self.backup_status_label.setText(
+                    f'✓ Moved {res["moved_files"]} Palace files to {res["new_root"]}. Active storage updated!'
+                )
+                _refresh_storage_summary_labels()
+                _refresh_stored_files_list()
+            except Exception as exc:
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.backup_status_label.setText(f'⚠ Could not move Palace data: {exc}')
+
+        loc_browse_btn.clicked.connect(_browse_data_dir)
+        loc_move_btn.clicked.connect(_move_data_dir)
+
+        # --- 3. MANAGE STORED FILES & PICTURES (DOWNLOAD OR DELETE OLD FILES) ---
+        files_hdr = QLabel('<b>🗂 Stored Palace Files &amp; Pictures (Retrieve / Download or Delete Old Files Taking Up Space):</b>')
+        files_hdr.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(files_hdr)
+
+        self.stored_files_list = QListWidget()
+        self.stored_files_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.stored_files_list.setMinimumHeight(110)
+        self.stored_files_list.setMaximumHeight(145)
+        lay.addWidget(self.stored_files_list)
+
+        def _refresh_stored_files_list():
+            self.stored_files_list.clear()
+            for item in list_palace_stored_files(self.config_path):
+                lbl = f"[{item['category']}]  {item['name']}   ({item['size_kb']:.1f} KB · {item['modified']})"
+                lw = QListWidgetItem(lbl)
+                lw.setData(Qt.ItemDataRole.UserRole, item['path'])
+                self.stored_files_list.addItem(lw)
+
+        file_btn_row = QHBoxLayout()
+        dl_file_btn = QPushButton('💾 Download / Save Selected As…')
+        open_file_btn = QPushButton('🔍 Open / View Selected')
+        del_file_btn = QPushButton('🗑 Delete Selected Files')
+        refresh_files_btn = QPushButton('↻ Refresh List')
+        file_btn_row.addWidget(dl_file_btn)
+        file_btn_row.addWidget(open_file_btn)
+        file_btn_row.addWidget(del_file_btn)
+        file_btn_row.addWidget(refresh_files_btn)
+        file_btn_row.addStretch()
+        lay.addLayout(file_btn_row)
+
+        def _download_selected():
+            sel = self.stored_files_list.selectedItems()
+            if not sel:
+                return
+            for s_item in sel:
+                src_p = Path(str(s_item.data(Qt.ItemDataRole.UserRole)))
+                if not src_p.exists():
+                    continue
+                dest_str, _ = QFileDialog.getSaveFileName(self, f'Save {src_p.name} As', str(Path.home() / 'Downloads' / src_p.name))
+                if dest_str:
+                    import shutil
+                    shutil.copy2(src_p, dest_str)
+                    self.backup_status_label.setText(f'✓ Downloaded {src_p.name} to {dest_str}')
+
+        def _open_selected():
+            sel = self.stored_files_list.selectedItems()
+            if not sel:
+                return
+            src_p = Path(str(sel[0].data(Qt.ItemDataRole.UserRole)))
+            if src_p.exists() and hasattr(os, 'startfile'):
+                os.startfile(str(src_p))
+
+        def _delete_selected():
+            sel = self.stored_files_list.selectedItems()
+            if not sel:
+                return
+            reclaimed = 0
+            deleted_n = 0
+            for s_item in sel:
+                src_p = Path(str(s_item.data(Qt.ItemDataRole.UserRole)))
+                if src_p.exists():
+                    try:
+                        reclaimed += src_p.stat().st_size
+                        src_p.unlink()
+                        deleted_n += 1
+                    except OSError:
+                        pass
+            _refresh_stored_files_list()
+            _refresh_storage_summary_labels()
+            self.backup_status_label.setText(f'✓ Deleted {deleted_n} file(s), freed {reclaimed / 1024.0:.1f} KB.')
+
+        dl_file_btn.clicked.connect(_download_selected)
+        open_file_btn.clicked.connect(_open_selected)
+        del_file_btn.clicked.connect(_delete_selected)
+        refresh_files_btn.clicked.connect(lambda: (_refresh_stored_files_list(), _refresh_storage_summary_labels()))
+
+        # --- 4. PASSWORD-LOCKED AES-256 BACKUP & RESTORE ---
+        bak_hdr = QLabel('<b>🔐 Password-Locked Backup &amp; Restore (Palace Memory + Settings &amp; API Keys):</b>')
+        bak_hdr.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(bak_hdr)
+
+        chk_row = QHBoxLayout()
+        self.backup_include_memory_check = QCheckBox('Palace Memory, Chats & Idle Palace', checked=True)
+        self.backup_include_settings_check = QCheckBox('All Settings & API Keys (AES-256 Password Locked)', checked=True)
+        self.backup_include_images_check = QCheckBox('Generated PNG Pictures', checked=True)
+        self.backup_include_creds_check = self.backup_include_settings_check
+        chk_row.addWidget(self.backup_include_memory_check)
+        chk_row.addWidget(self.backup_include_settings_check)
+        chk_row.addWidget(self.backup_include_images_check)
+        lay.addLayout(chk_row)
+
+        pw_row = QHBoxLayout()
+        pw_row.addWidget(QLabel('🔑 Backup / Restore Password (protects API keys across PCs):'))
+        self.backup_password_edit = QLineEdit()
+        self.backup_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.backup_password_edit.setPlaceholderText('Enter password to lock/unlock API keys inside backup archive…')
+        pw_row.addWidget(self.backup_password_edit, 1)
+        lay.addLayout(pw_row)
 
         btn_row = QHBoxLayout()
-        export_btn = QPushButton('📦 Create Full Backup Archive (.zip)…')
+        export_btn = QPushButton('📦 Create Backup Archive (.zip)…')
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         restore_btn = QPushButton('♻ Restore From Backup Archive (.zip)…')
         restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1176,7 +1450,7 @@ class ManageAIsDialog(QDialog):
         lay.addLayout(btn_row)
 
         self.backup_status_label = QLabel(
-            f'Active Config: {self.config_path}\nActive Palace Data Root: {get_palace_appdata_root()}'
+            f'Active Config: {self.config_path}  |  Active Palace Root: {get_palace_appdata_root()}'
         )
         self.backup_status_label.setWordWrap(True)
         self.backup_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
@@ -1184,10 +1458,26 @@ class ManageAIsDialog(QDialog):
 
         def _do_export():
             from datetime import datetime
+            pw = self.backup_password_edit.text().strip()
+            inc_settings = self.backup_include_settings_check.isChecked()
+            if inc_settings and not pw:
+                pw_in, ok = QInputDialog.getText(
+                    self,
+                    'Set Backup Password for API Keys',
+                    'Because this backup contains your API keys, enter a password to encrypt them (AES-256-GCM):',
+                    QLineEdit.EchoMode.Password,
+                )
+                if not ok or not pw_in.strip():
+                    self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                    self.backup_status_label.setText('⚠ Backup cancelled: a password is required when backing up API keys.')
+                    return
+                pw = pw_in.strip()
+                self.backup_password_edit.setText(pw)
+
             default_name = f"Fairybread_Full_Backup_{datetime.now().strftime('%Y-%m-%d_%H%M')}.zip"
             dest_str, _ = QFileDialog.getSaveFileName(
                 self,
-                'Save Full Fairybread Backup Archive',
+                'Save Fairybread Backup Archive',
                 str(Path.home() / 'Documents' / default_name),
                 'ZIP Archives (*.zip)',
             )
@@ -1197,12 +1487,16 @@ class ManageAIsDialog(QDialog):
                 manifest = create_full_backup_zip(
                     Path(dest_str),
                     config_path=self.config_path,
+                    include_memory=self.backup_include_memory_check.isChecked(),
+                    include_settings=inc_settings,
                     include_generated_images=self.backup_include_images_check.isChecked(),
-                    include_credentials=self.backup_include_creds_check.isChecked(),
+                    include_credentials=inc_settings,
+                    backup_password=pw,
                 )
+                lock_tag = 'AES-256 Password-Locked' if manifest.get('password_protected') else 'No API keys'
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                 self.backup_status_label.setText(
-                    f'✓ Full backup saved ({manifest["file_count"]} files, SHA-256 verified):\n{dest_str}'
+                    f'✓ Backup saved ({manifest["file_count"]} files, {lock_tag}, SHA-256 verified):\n{dest_str}'
                 )
             except Exception as exc:
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
@@ -1218,16 +1512,39 @@ class ManageAIsDialog(QDialog):
             if not src_str:
                 return
             try:
-                summary = restore_full_backup_zip(Path(src_str), config_path=self.config_path)
-                cred_note = (
-                    'Credentials restored (same PC).'
-                    if not summary.get('skipped_credentials')
-                    else 'Different PC detected: re-enter API keys in AI Providers.'
+                info = inspect_backup_zip(Path(src_str))
+                pw = self.backup_password_edit.text().strip()
+                if info.get('password_protected') and self.backup_include_settings_check.isChecked() and not pw:
+                    pw_in, ok = QInputDialog.getText(
+                        self,
+                        'Unlock Password-Protected Backup',
+                        'Enter the backup password to unlock and restore your API keys:',
+                        QLineEdit.EchoMode.Password,
+                    )
+                    if not ok:
+                        return
+                    pw = pw_in.strip()
+                    self.backup_password_edit.setText(pw)
+
+                summary = restore_full_backup_zip(
+                    Path(src_str),
+                    config_path=self.config_path,
+                    backup_password=pw,
+                    restore_memory=self.backup_include_memory_check.isChecked(),
+                    restore_settings=self.backup_include_settings_check.isChecked(),
                 )
+                if summary.get('password_unlocked'):
+                    cred_note = f"Unlocked & re-sealed {summary.get('restored_keys_count', 0)} API keys into Windows DPAPI."
+                elif not summary.get('skipped_credentials'):
+                    cred_note = 'Settings restored.'
+                else:
+                    cred_note = 'Different PC detected: re-enter API keys in AI Providers.'
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                 self.backup_status_label.setText(
                     f'✓ Restored {summary["restored_files"]} files from archive ({summary["created_at"]}). {cred_note}'
                 )
+                _refresh_storage_summary_labels()
+                _refresh_stored_files_list()
                 parent = self.parent()
                 if parent is not None:
                     if hasattr(parent, 'reload_providers_from_config'):
@@ -1244,6 +1561,8 @@ class ManageAIsDialog(QDialog):
 
         export_btn.clicked.connect(_do_export)
         restore_btn.clicked.connect(_do_restore)
+        _refresh_storage_summary_labels()
+        _refresh_stored_files_list()
 
         lay.addStretch()
         self.pages.addWidget(w)
@@ -1327,11 +1646,13 @@ class ManageAIsDialog(QDialog):
         self._auto_save_current_provider()
         self._save_email_and_notification_fields()
         self._save_bridge_fields()
+        from palace_config import parse_storage_mb_text
         save_idle_settings(
             {
                 'duration_minutes': int(self.idle_duration_combo.currentData()),
                 'max_tokens_limit': int(self.idle_token_limit_combo.currentData()),
                 'max_credit_usd': float(self.idle_credit_limit_combo.currentData()),
+                'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
                 'pause_when_joined': self.idle_pause_check.isChecked(),
                 'memory_access_mode': self.idle_memory_mode_combo.currentData(),
                 'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
@@ -1342,12 +1663,19 @@ class ManageAIsDialog(QDialog):
             self.mission_ethics_edit.toPlainText(),
             config_path=self.config_path,
         )
+        ui_updates = {
+            'enter_to_send': bool(self.enter_mode_combo.currentData()),
+            'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
+            'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
+        }
+        if hasattr(self, 'normal_storage_edit'):
+            ui_updates['normal_max_storage_mb'] = parse_storage_mb_text(self.normal_storage_edit.text())
+        if hasattr(self, 'palace_data_dir_edit'):
+            chosen_dir = self.palace_data_dir_edit.text().strip()
+            default_appdata = str(Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'Palace')
+            ui_updates['custom_data_dir'] = '' if chosen_dir == default_appdata else chosen_dir
         save_ui_settings(
-            {
-                'enter_to_send': bool(self.enter_mode_combo.currentData()),
-                'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
-                'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
-            },
+            ui_updates,
             config_path=self.config_path,
         )
         save_tool_settings(
@@ -1694,6 +2022,7 @@ class PalaceWindow(QMainWindow):
         self.chat.setOpenLinks(False)
         self.chat.setAcceptDrops(False)
         self.chat.anchorClicked.connect(self._on_chat_anchor_clicked)
+        self.chat.anchor_action_requested.connect(lambda s: self._on_chat_anchor_clicked(QUrl(s)))
         normal_lay.addWidget(self.chat, 1)
 
         # --- UNIFIED ROUNDED COMPOSER CARD ---
@@ -4428,16 +4757,28 @@ class PalaceWindow(QMainWindow):
 
     @Slot(QUrl)
     def _on_chat_anchor_clicked(self, url: QUrl):
-        raw = url.toString()
+        import urllib.parse
+        raw = urllib.parse.unquote(url.toString())
         if raw.startswith('toggle-peer:'):
             try:
                 idx = int(raw.split(':', 1)[1])
                 self.toggle_deliberation(idx)
             except ValueError:
                 pass
-        elif raw.startswith('open-img:'):
-            img_path = raw.split('open-img:', 1)[1]
+        elif raw.startswith('open-img:') or raw.startswith('img:'):
+            prefix = 'open-img:' if raw.startswith('open-img:') else 'img:'
+            img_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
             self._open_image_viewer_dialog(img_path)
+        elif raw.startswith('save-file:') or raw.startswith('save-img:'):
+            prefix = 'save-file:' if raw.startswith('save-file:') else 'save-img:'
+            file_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
+            self._download_file_as(file_path)
+        elif raw.startswith('reveal-file:'):
+            file_path = urllib.parse.unquote(raw.split('reveal-file:', 1)[1])
+            self._reveal_file_in_explorer(file_path)
+        elif raw.startswith('delete-file:'):
+            file_path = urllib.parse.unquote(raw.split('delete-file:', 1)[1])
+            self._delete_stored_file(file_path)
         elif raw.startswith('copy:'):
             try:
                 idx = int(raw.split(':', 1)[1])
@@ -4450,6 +4791,79 @@ class PalaceWindow(QMainWindow):
             self.status_label.setText('Feedback noted: Helpful (👍)')
         elif raw.startswith('down:'):
             self.status_label.setText('Feedback noted: Needs improvement')
+
+    def _download_file_as(self, file_path: str):
+        import shutil
+        p = Path(file_path)
+        if not p.exists():
+            self.show_notice(f'File not found: {file_path}')
+            return
+        downloads_dir = Path.home() / 'Downloads'
+        default_dest = (downloads_dir / p.name) if downloads_dir.exists() else Path(p.name)
+        dest, _ = QFileDialog.getSaveFileName(
+            self,
+            f'Download / Save {p.name} As',
+            str(default_dest),
+            'All Files (*.*)',
+        )
+        if dest:
+            shutil.copy2(p, dest)
+            self.status_label.setText(f'Downloaded {p.name} to {dest}')
+
+    def _reveal_file_in_explorer(self, file_path: str):
+        import subprocess
+        p = Path(file_path)
+        if not p.exists():
+            self.show_notice(f'File not found: {file_path}')
+            return
+        if os.name == 'nt':
+            subprocess.Popen(['explorer', f'/select,{p}'])
+        elif hasattr(os, 'startfile'):
+            os.startfile(str(p.parent))
+
+    def _delete_stored_file(self, file_path: str):
+        p = Path(file_path)
+        if not p.exists():
+            self.show_notice(f'File already removed: {p.name}')
+            return
+        ans = QMessageBox.question(
+            self,
+            'Delete Stored File',
+            f'Delete "{p.name}" from Palace storage to free up drive space?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans == QMessageBox.StandardButton.Yes:
+            try:
+                sz = p.stat().st_size
+                p.unlink()
+                self.status_label.setText(f'Deleted {p.name} (freed {sz / 1024.0:.1f} KB)')
+                self._render_chat_items(scroll_to_bottom=False)
+            except OSError as exc:
+                self.show_notice(f'Could not delete file: {exc}')
+
+    def _check_storage_warnings(self):
+        try:
+            from palace_config import compute_palace_storage_stats, format_storage_mb_label
+            st = compute_palace_storage_stats(self.config_path)
+            if st['normal_state'] == 'exceeded':
+                cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
+                self.show_notice(
+                    f"⚠ Normal Palace storage cap reached ({st['normal_total_mb']:.1f} MB / {cap_lbl}). "
+                    f"Open Settings → Storage & Backup to delete old files, raise your cap, or move to another drive."
+                )
+            elif st['normal_state'] == 'warning':
+                cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
+                self.show_notice(
+                    f"⚠ Approaching Normal Palace storage limit ({st['normal_pct']:.0f}% of {cap_lbl} used)."
+                )
+            elif st['idle_state'] in {'exceeded', 'warning'}:
+                cap_lbl = format_storage_mb_label(st['idle_cap_mb'])
+                self.show_notice(
+                    f"⚠ Idle Palace storage is at {st['idle_pct']:.0f}% of {cap_lbl} ({st['idle_total_mb']:.1f} MB used)."
+                )
+        except Exception:
+            pass
 
     def _open_image_viewer_dialog(self, img_path: str):
         path_obj = Path(img_path)
@@ -5174,6 +5588,7 @@ class PalaceWindow(QMainWindow):
         if completed:
             completed.deleteLater()
         self.composer.setFocus()
+        self._check_storage_warnings()
         if getattr(self, 'queued_prompts', None):
             next_q = self.queued_prompts.pop(0)
             self.composer.setPlainText(next_q)

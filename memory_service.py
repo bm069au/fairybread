@@ -1,8 +1,10 @@
 """High-speed in-process SQLite FTS5 (BM25 + temporal decay) durable memory engine with mempalace bridge."""
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 import os
@@ -13,10 +15,63 @@ import subprocess
 import time
 from typing import Any, Iterator, Optional
 from uuid import uuid4
+import zlib
+
+
+_STOPWORDS = frozenset(
+    """
+    a an the and or but if then else when while of to in on at by for with about
+    as is are was were be been being do does did doing have has had having
+    i you he she it we they me him her us them my your his its our their
+    this that these those there here what which who whom whose why how
+    not no nor so than too very can will just don should now from into over under
+    also any all each every some such only own same other more most tell please
+    """.split()
+)
+
+_WORD_RE = re.compile(r"[A-Za-z0-9_]{2,}", re.UNICODE)
+COLD_THRESHOLD_BYTES = 4096
+HOT_INDEX_PREFIX_CHARS = 2048
+
+
+def extract_keywords(text: str, max_terms: int = 12) -> list[str]:
+    if not text:
+        return []
+    raw = [w.lower() for w in _WORD_RE.findall(text)]
+    filtered = [w for w in raw if w not in _STOPWORDS and len(w) >= 2]
+    if not filtered:
+        filtered = [w for w in raw if len(w) >= 2]
+    if not filtered:
+        return []
+    counts = Counter(filtered)
+    return [
+        w
+        for w, _ in sorted(
+            counts.items(),
+            key=lambda item: (item[1], len(item[0])),
+            reverse=True,
+        )[:max_terms]
+    ]
+
+
+def build_fts_match_query(user_prompt: str, max_terms: int = 12) -> str:
+    terms = extract_keywords(user_prompt, max_terms=max_terms)
+    if not terms:
+        return ""
+    return " OR ".join(f'"{t}"*' for t in terms)
+
+
+def _content_hash(summary: str, body: str) -> str:
+    norm = re.sub(r"\s+", " ", f"{summary or ''}\x00{body or ''}").strip().lower()
+    return hashlib.sha256(norm.encode("utf-8", errors="replace")).hexdigest()
 
 
 def get_default_memory_db_path() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
+    try:
+        from palace_config import get_palace_data_root
+        base = get_palace_data_root()
+    except Exception:
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
     base.mkdir(parents=True, exist_ok=True)
     return base / "memory.db"
 
@@ -64,6 +119,17 @@ class SQLiteMemoryIndex:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS memories_blob (
+                    memory_id TEXT PRIMARY KEY,
+                    codec TEXT NOT NULL DEFAULT 'zlib',
+                    payload BLOB NOT NULL,
+                    raw_bytes INTEGER NOT NULL,
+                    stored_bytes INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                     id UNINDEXED,
                     summary,
@@ -74,6 +140,20 @@ class SQLiteMemoryIndex:
                 );
                 """
             )
+
+    def _hydrate_body(self, conn: sqlite3.Connection, row_dict: dict[str, Any]) -> dict[str, Any]:
+        mid = row_dict.get("id")
+        if mid:
+            blob_row = conn.execute(
+                "SELECT codec, payload FROM memories_blob WHERE memory_id = ?;",
+                (mid,),
+            ).fetchone()
+            if blob_row and blob_row["codec"] == "zlib":
+                try:
+                    row_dict["body"] = zlib.decompress(blob_row["payload"]).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+        return row_dict
 
     def upsert(
         self,
@@ -89,12 +169,47 @@ class SQLiteMemoryIndex:
         source: dict[str, Any] | None = None,
         ts: float | None = None,
     ) -> str:
-        mid = (memory_id or str(uuid4())).strip()
         now_ts = float(ts if ts is not None else time.time())
         clean_summary = (summary or "").strip()
         clean_body = (body or clean_summary).strip()
-        src_str = json.dumps(source or {})
+        ch = _content_hash(clean_summary, clean_body)
+        src_dict = dict(source or {})
+        src_dict["content_hash"] = ch
+        src_str = json.dumps(src_dict)
+
         with self._connect() as conn:
+            if memory_id is None:
+                # Check for exact content_hash deduplication within the same wing
+                existing = conn.execute(
+                    "SELECT id FROM memories WHERE wing = ? AND summary = ? LIMIT 1;",
+                    (wing, clean_summary),
+                ).fetchone()
+                if existing and _content_hash(clean_summary, clean_body) == ch:
+                    mid = str(existing["id"])
+                else:
+                    mid = str(uuid4())
+            else:
+                mid = memory_id.strip()
+
+            raw_bytes = clean_body.encode("utf-8")
+            indexed_body = clean_body
+            if len(raw_bytes) > COLD_THRESHOLD_BYTES:
+                compressed = zlib.compress(raw_bytes, level=6)
+                if len(compressed) < int(len(raw_bytes) * 0.85):
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO memories_blob
+                        (memory_id, codec, payload, raw_bytes, stored_bytes)
+                        VALUES (?, 'zlib', ?, ?, ?);
+                        """,
+                        (mid, compressed, len(raw_bytes), len(compressed)),
+                    )
+                    indexed_body = clean_body[:HOT_INDEX_PREFIX_CHARS]
+                else:
+                    conn.execute("DELETE FROM memories_blob WHERE memory_id = ?;", (mid,))
+            else:
+                conn.execute("DELETE FROM memories_blob WHERE memory_id = ?;", (mid,))
+
             conn.execute("DELETE FROM memory_fts WHERE id = ?;", (mid,))
             conn.execute(
                 """
@@ -102,7 +217,7 @@ class SQLiteMemoryIndex:
                 (id, wing, room, project, ts, memory_type, visibility, summary, body, source_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (mid, wing, room, project, now_ts, memory_type, visibility, clean_summary, clean_body, src_str),
+                (mid, wing, room, project, now_ts, memory_type, visibility, clean_summary, indexed_body, src_str),
             )
             conn.execute(
                 """
@@ -133,10 +248,11 @@ class SQLiteMemoryIndex:
                     "SELECT * FROM memories ORDER BY ts DESC LIMIT ?;",
                     (limit,),
                 ).fetchall()
-            return [dict(r) for r in rows]
+            return [self._hydrate_body(conn, dict(r)) for r in rows]
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._connect() as conn:
+            conn.execute("DELETE FROM memories_blob WHERE memory_id = ?;", (memory_id,))
             conn.execute("DELETE FROM memory_fts WHERE id = ?;", (memory_id,))
             cur = conn.execute("DELETE FROM memories WHERE id = ?;", (memory_id,))
             return cur.rowcount > 0
@@ -149,11 +265,10 @@ class SQLiteMemoryIndex:
         project: str | None = None,
         limit: int = 12,
     ) -> list[dict[str, Any]]:
-        tokens = [t for t in re.findall(r"[A-Za-z0-9_]{2,}", query or "") if t]
+        fts_query = build_fts_match_query(query or "", max_terms=12)
         now_ts = time.time()
         with self._connect() as conn:
-            if tokens:
-                fts_query = " OR ".join(f'"{t}"*' for t in tokens[:12])
+            if fts_query:
                 sql = """
                     SELECT m.*, bm25(memory_fts, 0.0, 8.0, 4.0, 2.0, 1.0) AS raw_bm25
                     FROM memory_fts
@@ -177,7 +292,7 @@ class SQLiteMemoryIndex:
 
             if not rows:
                 # Fallback to recent memories in wing if query has no token hits
-                if not tokens:
+                if not fts_query:
                     sql_recent = "SELECT *, -1.0 AS raw_bm25 FROM memories"
                     p_rec: list[Any] = []
                     if wing:
@@ -189,7 +304,7 @@ class SQLiteMemoryIndex:
 
             scored: list[tuple[float, dict[str, Any]]] = []
             for r in rows:
-                d = dict(r)
+                d = self._hydrate_body(conn, dict(r))
                 # In SQLite FTS5, bm25() returns negative numbers where more negative = better match
                 relevance = abs(float(d.pop("raw_bm25", -1.0) or -1.0))
                 age_days = max(0.0, (now_ts - float(d.get("ts", now_ts))) / 86400.0)

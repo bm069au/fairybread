@@ -41,7 +41,11 @@ AI_DISPLAY_NAMES = {k: v["display_name"] for k, v in PROVIDER_CATALOG.items()}
 
 
 def get_generated_images_dir() -> Path:
-    base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace" / "generated_images"
+    try:
+        from palace_config import get_palace_data_root
+        base = get_palace_data_root() / "generated_images"
+    except Exception:
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace" / "generated_images"
     base.mkdir(parents=True, exist_ok=True)
     return base
 
@@ -779,7 +783,10 @@ def format_markdown_and_drawings(content: str) -> str:
                 f'<tr><td>'
                 f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'🖼 {esc_title} &nbsp;·&nbsp; '
-                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">Click to Zoom / Open Full Size ↗</a>'
+                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
+                f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
                 f'</div>'
                 f'<a href="open-img:{esc_path}"><img src="{file_url}" width="420"></a>'
                 f'</td></tr></table>'
@@ -856,7 +863,10 @@ def format_markdown_and_drawings(content: str) -> str:
                 f'<tr><td>'
                 f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'🎨 {esc_title} &nbsp;<span style="color:#6e7681;">({esc_size})</span> &nbsp;·&nbsp; '
-                f'<a href="open-img:{esc_path}" style="color:#22c55e; text-decoration:none;">Click to Inspect / Save Full-Res PNG ↗</a>'
+                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
+                f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
                 f'</div>'
                 f'<a href="open-img:{esc_path}"><img src="{file_url}" width="{preview_w}"></a>'
                 f'</td></tr></table>'
@@ -902,7 +912,9 @@ def format_markdown_and_drawings(content: str) -> str:
                 f'<tr><td>'
                 f'<div style="color:#2ea043; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'📸 {esc_title} &nbsp;·&nbsp; '
-                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">Click to Inspect Full Size ↗</a>'
+                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a>'
                 f'</div>'
                 f'<a href="open-img:{esc_path}"><img src="{file_url}" width="720"></a>'
                 f'</td></tr></table>'

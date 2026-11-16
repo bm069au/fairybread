@@ -10,7 +10,14 @@ from context_service import ContextService, normalize_message_entry
 
 class SessionStore:
     def __init__(self, root: Path | None = None):
-        self.root = Path(root) if root is not None else Path(os.environ['LOCALAPPDATA']) / 'Palace'
+        if root is not None:
+            self.root = Path(root)
+        else:
+            try:
+                from palace_config import get_palace_data_root
+                self.root = get_palace_data_root()
+            except Exception:
+                self.root = Path(os.environ['LOCALAPPDATA']) / 'Palace'
         self.index_path = self.root / 'conversations.json'
         if self.index_path.exists():
             self.data = json.loads(self.index_path.read_text(encoding='utf-8'))

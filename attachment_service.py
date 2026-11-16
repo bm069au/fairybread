@@ -1,7 +1,35 @@
 """Local text and image attachment extraction. Original files are never modified or uploaded."""
 import base64
 from dataclasses import dataclass
+import hashlib
+import os
 from pathlib import Path
+import shutil
+
+
+def get_uploaded_files_dir() -> Path:
+    try:
+        from palace_config import get_palace_data_root
+        base = get_palace_data_root() / "uploaded_files"
+    except Exception:
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace" / "uploaded_files"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _archive_uploaded_bytes(raw: bytes, original_name: str) -> Path | None:
+    try:
+        up_dir = get_uploaded_files_dir()
+        safe_name = Path(original_name or "uploaded_file").name
+        digest = hashlib.sha256(raw).hexdigest()[:8]
+        stem = Path(safe_name).stem[:48]
+        suffix = Path(safe_name).suffix or ".bin"
+        dest = up_dir / f"{stem}_{digest}{suffix}"
+        if not dest.exists():
+            dest.write_bytes(raw)
+        return dest
+    except OSError:
+        return None
 
 
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -26,6 +54,7 @@ class Attachment:
     kind: str = "document"
     mime_type: str = "text/plain"
     image_base64: str = ""
+    stored_path: Path | None = None
 
     @property
     def name(self):
@@ -66,6 +95,7 @@ def attachment_from_image_bytes(raw: bytes, filename: str = "clipboard-image.png
     summary = (
         f'[Attached Image: {filename}{dims}, {mime_type}, {len(raw):,} bytes]'
     )
+    stored = _archive_uploaded_bytes(raw, filename)
     return Attachment(
         path=Path(filename),
         text=summary,
@@ -73,6 +103,7 @@ def attachment_from_image_bytes(raw: bytes, filename: str = "clipboard-image.png
         kind="image",
         mime_type=mime_type,
         image_base64=b64,
+        stored_path=stored,
     )
 
 
@@ -82,9 +113,11 @@ def extract_attachment(path: str | Path) -> Attachment:
         raise ValueError('Choose a file, not a folder.')
     if path.stat().st_size > MAX_FILE_BYTES:
         raise ValueError('Files must be 8 MB or smaller.')
+    raw_all = path.read_bytes()
+    stored_copy = _archive_uploaded_bytes(raw_all, path.name)
     suffix = path.suffix.lower()
     if suffix in IMAGE_EXTENSIONS:
-        raw = path.read_bytes()
+        raw = raw_all
         info = _detect_valid_image(raw)
         if info is None:
             raise ValueError('This file is not a valid image.')
@@ -99,6 +132,7 @@ def extract_attachment(path: str | Path) -> Attachment:
             kind="image",
             mime_type=mime_type,
             image_base64=b64,
+            stored_path=stored_copy,
         )
     if suffix in TEXT_EXTENSIONS:
         raw = path.read_bytes()
@@ -143,7 +177,7 @@ def extract_attachment(path: str | Path) -> Attachment:
         raise ValueError('Supported: text/code, PDF with selectable text, Word .docx, and standard images (.png, .jpg, .webp, .gif, .bmp).')
     if not text.strip():
         raise ValueError('No readable text found. Scanned pages need OCR, which is not included yet.')
-    return Attachment(path, text[:MAX_TEXT_CHARS], len(text) > MAX_TEXT_CHARS)
+    return Attachment(path, text[:MAX_TEXT_CHARS], len(text) > MAX_TEXT_CHARS, stored_path=stored_copy)
 
 
 def compose_question(question: str, attachments: list[Attachment]) -> str:
