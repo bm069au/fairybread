@@ -320,6 +320,31 @@ def mic_qicon(recording: bool = False) -> QIcon:
     return QIcon(pix)
 
 
+def voice_wave_qicon(active: bool = False) -> QIcon:
+    """Live Voice Mode soundwave + sparkle icon (matching Antigravity's Live Voice Chat button)."""
+    pix = QPixmap(18, 18)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    col = QColor("#22c55e" if active else "#0d1117")
+    pen = QPen(col, 1.7)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    # 4 vertical soundwave bars
+    painter.drawLine(3, 7, 3, 11)
+    painter.drawLine(6, 4, 6, 14)
+    painter.drawLine(9, 6, 9, 12)
+    painter.drawLine(12, 8, 12, 10)
+    # Small 4-point sparkle at top-right
+    spark_pen = QPen(col, 1.3)
+    spark_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(spark_pen)
+    painter.drawLine(14, 3, 14, 7)
+    painter.drawLine(12, 5, 16, 5)
+    painter.end()
+    return QIcon(pix)
+
+
 # --- AI DRAWING & IMAGE GENERATION TOOLS ---
 
 _SVG_FENCE_PATTERN = re.compile(
@@ -1258,6 +1283,7 @@ def build_theme_stylesheet(theme_id: str = "dark") -> str:
     send_fg = t["send_fg"]
     return f"""
 QMainWindow, QDialog {{ background: {bg_main}; color: {txt}; font-family: "Segoe UI Variable", "Segoe UI"; font-size: 13px; }}
+QToolTip {{ background: {bg_card}; color: {txt}; border: 1px solid {border}; border-radius: 6px; padding: 6px 10px; font-size: 12px; }}
 QMenuBar {{ background: {bg_main}; color: {txt_sec}; border-bottom: 1px solid {border}; padding: 3px 8px; font-size: 12.5px; }}
 QMenuBar::item {{ padding: 4px 10px; border-radius: 5px; }}
 QMenuBar::item:selected {{ background: {bg_card}; }}

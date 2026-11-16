@@ -1238,12 +1238,50 @@ class WindowTests(unittest.TestCase):
         self.assertIsNone(s_map[s_two]['project_id'])
         self.assertEqual(self.window.store.sessions[0]['id'], s_one)
 
-        save_voice_settings({'volume_percent': 85, 'auto_speak_responses': True}, config_path=test_cfg_path)
+        save_voice_settings(
+            {'volume_percent': 85, 'mic_gain_percent': 180, 'silence_timeout_ms': 1400, 'auto_speak_responses': True},
+            config_path=test_cfg_path,
+        )
         v_loaded = load_voice_settings(test_cfg_path)
         self.assertEqual(v_loaded['volume_percent'], 85)
+        self.assertEqual(v_loaded['mic_gain_percent'], 180)
+        self.assertEqual(v_loaded['silence_timeout_ms'], 1400)
         self.assertTrue(v_loaded['auto_speak_responses'])
         cleaned_tts = clean_text_for_speech('### Hello **Brett**! `[GENERATE_IMAGE prompt="x"]` Visit https://example.com')
         self.assertEqual(cleaned_tts, 'Hello Brett ! Visit')
+
+        from voice_service import format_wave_bars, pcm_chunk_to_int16_mono_and_level, write_pcm16_wav
+        import struct
+        raw_tone = struct.pack('<100h', *([6000, -6000] * 50))
+        pcm_out, lvl = pcm_chunk_to_int16_mono_and_level(raw_tone, 'Int16', 1, gain_percent=150)
+        self.assertGreater(lvl, 50)
+        self.assertEqual(len(pcm_out), 200)
+        wav_test = self.root / 'test_pcm.wav'
+        write_pcm16_wav(wav_test, pcm_out, sample_rate=16000)
+        self.assertTrue(wav_test.exists() and wav_test.stat().st_size > 200)
+        self.assertEqual(len(format_wave_bars([10, 40, 80, 100, 60, 20], width=6)), 6)
+
+        # Verify Live Voice button, Dictate button, and Mouseover Tooltips on all main controls
+        for btn in (
+            self.window.new_button,
+            self.window.sidebar_mail_btn,
+            self.window.attach_project_folder_btn,
+            self.window.new_project_button,
+            self.window.manage_ais_button,
+            self.window.no_history_btn,
+            self.window.idle_switch_btn,
+            self.window.memory_button,
+            self.window.attach_button,
+            self.window.ai_pill_button,
+            self.window.deliberate_pill_btn,
+            self.window.tangent_btn,
+            self.window.palace_code_btn,
+            self.window.search_depth_btn,
+            self.window.mic_button,
+            self.window.live_voice_button,
+            self.window.send_button,
+        ):
+            self.assertTrue(bool(btn.toolTip().strip()), f'Missing tooltip on {btn}')
 
 
 if __name__ == '__main__':

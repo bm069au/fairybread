@@ -70,22 +70,27 @@ The Prompt Architect and image engines natively understand photographic and arti
 - **Artistic Styles:** `oil painting`, `watercolor`, `concept art`, `isometric 3D`, `minimalist flat vector`, `cyberpunk`, `studio product shot`.
 - **Technical Diagrams (`SVG`):** For system architecture diagrams, flowcharts, and crisp vector icons, Fairybread automatically uses inline `SVG` vector rendering instead of raster diffusion.
 
-### Viewing, Saving & Copying Full-Resolution Images
-- Click any image in chat (or click **`Click to Inspect / Save Full-Res PNG ↗`**) to open the **Full-Resolution Image Viewer**.
-- Inside the viewer:
-  - Click **`💾 Save Image As…`** to save the full-resolution 300-DPI PNG to any folder on your PC.
-  - Click **`📋 Copy Image`** to copy the uncompressed full-resolution image directly to your Windows clipboard.
+### Viewing, Downloading, Copying & Deleting Full-Resolution Images
+- Every generated image in chat includes a clickable action bar (plus a right-click context menu):
+  - **`🔍 View Full Size`** — Opens the **Full-Resolution Image Viewer** (`💾 Save Image As…` and `📋 Copy Image` to clipboard).
+  - **`💾 Download / Save As…`** — Opens a Save dialog defaulted to your `Downloads` folder.
+  - **`📂 Show in Folder`** — Opens Windows Explorer with the PNG file highlighted.
+  - **`🗑 Delete`** — Deletes the stored PNG file to free up drive space.
+- **Multi-Image Comparison Requests:** You can ask for multiple options in a single turn (e.g., *"Make 3 different banners and let me choose"*) and Fairybread will render all 3 high-resolution images side-by-side immediately.
 
 ---
 
-## 3. Composer Toolbar & Council Modes
+## 3. Composer Toolbar, Council Modes & Mouseover Hints
 
-- **`Choose AIs (N)`:** Pick which AI providers are active, or choose a quick preset squad (**Coding & Architecture**, **Research & Review**, **Full Council**).
+Hover your mouse over **any button, icon, or chip** in Fairybread to see a plain-English tooltip explaining what it does:
+- **`Choose AIs (N)`:** Pick which AI providers are active, or choose a quick preset squad (**Code AIs**, **Light Chat**, **Generalist**, **Graphics & Vision**, **Work Mode**).
 - **`Council` Toggle (Purple when ON):**
   - **ON (2-Round Peer Deliberation):** Agents answer in Round 1, inspect and critique each other's responses in Round 2 (replying `[PASS]` if a peer already nailed it), and the Synthesizer combines the best insights into one final answer.
   - **OFF (1-Round Fast Synthesis):** Agents answer in one parallel wave and synthesize immediately.
 - **`Tangent` Toggle:** Ask a side question without including prior conversation history in the prompt, while still saving the exchange to your current chat.
-- **`Fairybread Code` Toggle:** Grants the council read-only visibility into Fairybread's own source code (`E:\Visual_studio\Palace\`) so the agents can diagnose or design upgrades for their own app.
+- **`{} Code` Toggle:** Grants the council read-only visibility into Fairybread's own source code (`E:\Visual_studio\Palace\`) so the agents can diagnose or design upgrades for their own app.
+- **`🎤` Dictate Button:** Click once and speak (`🎙 ▂▅▇█▄▂` shows your live mic level); click again to transcribe your voice directly into the prompt box for all Council AIs.
+- **`|||✨` Live Voice Mode Button (Circular Soundwave + Sparkle):** Hands-free live voice conversation with the Council. Automatically detects when you pause speaking (`~1.5s`), sends your spoken prompt to the Council, and reads the synthesized reply back to you aloud.
 - **`No-History` (Top Bar):** Ephemeral privacy mode—neither reads nor saves session history.
 - **`Idle: OFF / ON` (Top Bar):** Switches to the autonomous **Idle Mode Sanctuary**, where agents converse freely, test their shared Idle Palace, and send you improvement proposals via **Agent Mail**.
 
@@ -197,29 +202,57 @@ Fairybread includes a 3-tier **Sharded Multi-Agent Web Search Engine** controlla
 
 ---
 
-## 9. Stop Button (`■ Stop`), Live Steering (`🧭 Steer`) & Command Queuing (`⏳ Queue`)
+## 9. Stop Button (`■ Stop`) & Combined `Steer / Queue ▾` Dropdown
 
-While a turn is running, the composer input box and **`{} Fairybread Code`** toggle remain **unlocked**, and three live control buttons appear on the right side of the composer bar:
+While a turn is running, the composer input box and **`{} Code`** toggle remain **unlocked**, and two clean controls appear on the right side of the composer bar:
 
 1. **`■ Stop` (`Esc` key):**
-   - Immediately aborts the active turn, cancels any remaining rounds/synthesis, removes the unfinished turn bubble, and **restores your original prompt right back into the composer box** so you can edit it, attach a file, or toggle **`{} Fairybread Code`** and hit Send again without retyping.
-2. **`🧭 Steer` (Modify / Add Instructions on the Fly):**
-   - Type additional instructions into the composer (or toggle **`{} Fairybread Code`** ON) while agents are working and click **`🧭 Steer`**. Fairybread injects your new instructions and/or source code context directly into the active turn's next phase and synthesis.
-3. **`⏳ Queue` (Queue Next Command):**
-   - Type your next question while the council is working and click **`⏳ Queue`**. Your message is added to the queue and fires automatically the instant the current turn finishes.
+   - Immediately aborts the active turn, cancels any remaining rounds/synthesis, removes the unfinished turn bubble, and **restores your original prompt right back into the composer box** so you can edit it, attach a file, or toggle **`{} Code`** and hit Send again without retyping.
+2. **`Steer / Queue ▾` Dropdown:**
+   - **`🧭 Steer Active Turn`:** Type additional instructions into the composer (or toggle **`{} Code`** ON) while agents are working and choose **Steer Active Turn**. Fairybread injects your new instructions directly into the active turn's next phase and synthesis.
+   - **`⏳ Queue Next Turn`:** Type your next question while the council is working and choose **Queue Next Turn**. Your message is added to the queue and fires automatically the instant the current turn finishes.
 
 ---
 
-## 10. Durable Memory Palace (SQLite FTS5) & Full Backup & Restore
+## 10. Durable Memory Palace (SQLite FTS5), Storage Sliders, Drive Mover & AES-256 Password-Locked Backups
 
-### SQLite FTS5 Durable Memory Engine
-- Fairybread stores approved durable memories in a fast, in-process **SQLite WAL + FTS5 (`BM25` + temporal recency boost)** database (`%LOCALAPPDATA%\Palace\memory.db`), eliminating cold subprocess startup delays.
+### SQLite FTS5 Durable Memory Engine (With Phase-Aware Retrieval & `zlib` Compression)
+- Fairybread stores approved durable memories in a fast, in-process **SQLite WAL + FTS5 (`BM25` + temporal recency boost)** database (`%LOCALAPPDATA%\Palace\memory.db`) with SHA-256 content deduplication and sidecar `zlib` compression for cold text blobs.
 - Open the **Memory** panel on the top-right bar to inspect proposed memories and click **`✓ Approve & Store`** to promote them into the durable SQLite FTS5 index or **`✕ Reject`** to discard them.
 
-### Full Atomic Backup & Restore (`Settings → Backup & Restore`)
-- Open **`Settings → Backup & Restore`** to create or restore a single **SHA-256 checksummed `.zip` archive** containing **all** of your Fairybread data:
-  - `palace_config.json` (AI providers, profiles, Idle settings, Email & Notification settings, Agent Bridge settings)
-  - All conversations & projects (`conversations.json`, `sessions/*.jsonl`)
-  - SQLite FTS5 Durable Memory Palace (`memory.db` acquired via SQLite's online `.backup()` API) & `memory_proposals.jsonl`
-  - Shared Idle Palace (`ai_idle_memory.json`) & Agent Mail (`agent_mailbox.json`)
-  - Custom themes (`themes/*.json`), generated high-res images (`generated_images/`), and DPAPI credentials (restored automatically on the same PC, or safely skipped with a re-auth note when moving to a new PC).
+### Storage Caps (`100 MB` → `Unlimited`), File Manager & Custom Drive Mover (`Settings → Backup & Restore`)
+- **Drive Space Sliders:** Set independent storage caps (`100 MB` up to `Unlimited`) for both **Normal Mode** and **Idle Mode**, with automatic warnings at 85% and 100%.
+- **Stored Files & Pictures Manager:** Inspect, open, or delete any uploaded file or generated image directly from **`Settings → Backup & Restore`**.
+- **Move Palace Memory to Another Drive (`🚚 Move Palace Data Here`):** Relocate your entire Memory Palace, sessions, and images to any drive or folder on your PC in one click.
+
+### AES-256-GCM Password-Locked Portable Backups (`Settings → Backup & Restore`)
+- Create or restore a single **SHA-256 checksummed `.zip` archive** containing all of your Fairybread data (`palace_config.json`, `conversations.json`, `sessions/*.jsonl`, `memory.db`, `ai_idle_memory.json`, `themes/*.json`, and `generated_images/`).
+- **Portable Encrypted API Keys (`PBKDF2-HMAC-SHA256` + `AES-256-GCM`):** Set a backup password when exporting to lock your API keys inside `vault/credentials.vault.enc`. When restoring on a brand-new PC, enter your password and Fairybread automatically unlocks and re-seals all of your API keys into the new machine's local Windows DPAPI vault.
+
+---
+
+## 11. Live Voice Mode (`|||✨`), Microphone Dictation (`🎤`) & Agent Speech (`Settings → 🎙️ Voice & Audio`)
+
+### Two Ways to Talk to the Council
+1. **Live Voice Mode (`|||✨` Circular Soundwave + Sparkle Button):**
+   - Click once to start a hands-free live voice conversation.
+   - A live soundwave meter (`🎙 ▂▅▇█▄▂ 48% · Live Voice (Hearing you!)`) bounces on the composer bar as you speak.
+   - When you pause speaking for `~1.5 seconds` (adjustable in Settings), Fairybread automatically transcribes your speech, sends it to all active Council AIs, and **reads the synthesized response aloud**.
+2. **Dictate to Text Box (`🎤` Microphone Button):**
+   - Click `🎤` once and speak while watching the live soundwave meter; click `🎤` again to transcribe your spoken words directly into the prompt box so you can review or edit them before hitting Send.
+3. **Reading Individual Replies Aloud (`🔊 Speak`):**
+   - Click **`🔊 Speak`** at the bottom-right of any reply card in chat to hear that response read aloud.
+
+### Testing Your Microphone & Speaker (`Settings → 🎙️ Voice & Audio`)
+Open **`Settings → 🎙️ Voice & Audio (Microphone & Speaker)…`** to:
+- Select your **Microphone Device** and click **`🎤 Start Live Mic Level Test`** to watch the live green level bar (`0–100%`) move as you speak.
+- Click **`🧪 Record 3s & Test Transcription`** to record a 3-second test phrase and verify end-to-end transcription on screen.
+- Adjust **Microphone Gain / Boost (`50%–300%`)** so quiet microphones pick up clearly, and adjust **Speaker Voice** and **Speaker Volume (`0%–100%`)**.
+
+---
+
+## 12. Left Sidebar Drag-and-Drop Reordering & Project Folder Assignment
+
+- **Reorder Conversations:** Grab any conversation in the left sidebar and drag it up or down to change its position.
+- **Move a Conversation into a Project:** Drag any conversation and drop it directly onto a **Project folder** header (or onto a conversation inside that Project) to assign it to that Project.
+- **Unassign from a Project:** Drag a conversation onto the **`Conversations`** header to move it back out of a Project.

@@ -14,7 +14,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QImage, QK
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy, QSlider, QSpinBox,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -77,6 +77,7 @@ from palace_theme import (
     provider_qicon,
     provider_token_qicon,
     tangent_qicon,
+    voice_wave_qicon,
 )
 
 if os.name == 'nt':
@@ -450,6 +451,7 @@ class ManageAIsDialog(QDialog):
 
     SETTINGS_PAGES = [
         'General',
+        'Voice & Audio',
         'Appearance',
         'Email & Notifications',
         'AI Providers',
@@ -473,6 +475,7 @@ class ManageAIsDialog(QDialog):
         self.config_path = config_path
         self.credential_store = credential_store or CredentialStore()
         self.idle_memory = idle_memory or IdleMemoryStore()
+        self._settings_mic_session = None
         self.setWindowTitle('Fairybread Settings')
         self.resize(960, 720)
         self.setMinimumSize(840, 620)
@@ -495,6 +498,7 @@ class ManageAIsDialog(QDialog):
         right_col.addWidget(self.pages, 1)
 
         self._build_general_page()
+        self._build_voice_audio_page()
         self._build_appearance_page()
         self._build_notifications_page()
         self._build_ai_providers_page()
@@ -509,8 +513,10 @@ class ManageAIsDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch()
         save_btn = QPushButton('Save Settings')
+        save_btn.setToolTip('Save all changes across all Settings tabs and close')
         save_btn.clicked.connect(self.save_settings)
         cancel_btn = QPushButton('Close')
+        cancel_btn.setToolTip('Close Settings window')
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(save_btn)
         buttons.addWidget(cancel_btn)
@@ -520,14 +526,39 @@ class ManageAIsDialog(QDialog):
 
         self.nav_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         page_aliases = {
+            'Voice': 'Voice & Audio',
+            'Audio': 'Voice & Audio',
+            'Microphone': 'Voice & Audio',
             'Notifications': 'Email & Notifications',
             'Email': 'Email & Notifications',
             'Permissions': 'Agent Bridge & Permissions',
             'Agent Bridge': 'Agent Bridge & Permissions',
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
-        target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 3
+        target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 4
         self.nav_list.setCurrentRow(target_idx)
+
+    def _stop_settings_mic_test(self):
+        sess = getattr(self, '_settings_mic_session', None)
+        if sess is not None:
+            try:
+                sess.stop()
+            except Exception:
+                pass
+            self._settings_mic_session = None
+        if hasattr(self, 'mic_live_test_btn'):
+            self.mic_live_test_btn.blockSignals(True)
+            self.mic_live_test_btn.setChecked(False)
+            self.mic_live_test_btn.setText('🎤 Start Live Mic Level Test')
+            self.mic_live_test_btn.blockSignals(False)
+
+    def reject(self):
+        self._stop_settings_mic_test()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._stop_settings_mic_test()
+        super().closeEvent(event)
 
     def _make_simple_page(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
         w = QWidget()
@@ -570,15 +601,7 @@ class ManageAIsDialog(QDialog):
                 view.setMinimumWidth(max(420, max_px + 56))
 
     def _build_general_page(self):
-        from voice_service import (
-            list_audio_input_devices,
-            list_available_tts_voices,
-            load_voice_settings,
-            save_voice_settings,
-            speak_agent_response,
-        )
-
-        w, lay = self._make_simple_page('General & Voice Mode', 'Startup behavior, composer preferences, microphone dictation, and agent voice output.')
+        w, lay = self._make_simple_page('General', 'Startup behavior and composer preferences.')
         lay.addWidget(QCheckBox('Restore last active conversation on startup', checked=True))
 
         ui_cfg = load_ui_settings(self.config_path)
@@ -590,73 +613,288 @@ class ManageAIsDialog(QDialog):
         enter_form.addRow('Composer Enter key behavior:', self.enter_mode_combo)
         lay.addLayout(enter_form)
 
-        # --- VOICE MODE CARD (Matches Antigravity Settings: Voice, Microphone, Volume, Auto-Speak) ---
+        jump_voice_btn = QPushButton('🎙️ Open Voice & Audio Settings (Select Microphone, Live Level Meter & Speaker Volume)…')
+        jump_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        jump_voice_btn.setToolTip('Switch to the dedicated Voice & Audio tab to test your microphone and speaker')
+        jump_voice_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Voice & Audio')))
+        lay.addWidget(jump_voice_btn)
+
+        lay.addStretch()
+        self.pages.addWidget(w)
+
+    def _build_voice_audio_page(self):
+        from voice_service import (
+            LiveAudioSession,
+            list_audio_input_devices,
+            list_available_tts_voices,
+            load_voice_settings,
+            save_voice_settings,
+            speak_agent_response,
+            stop_speaking,
+            transcribe_audio_file,
+        )
+
+        w, lay = self._make_simple_page(
+            '🎙️ Voice & Audio (Live Voice Mode, Microphone & Speaker)',
+            'Select and test your microphone with a live visual volume meter, boost quiet mic gain, and configure agent voice output.'
+        )
         v_cfg = load_voice_settings(self.config_path)
-        voice_card = QFrame()
-        voice_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
-        vc_lay = QVBoxLayout(voice_card)
-        vc_lay.setSpacing(8)
-        vc_hdr = QLabel('<b>🎤 Voice Mode (Microphone Dictation for All Agents &amp; Spoken Agent Responses)</b>')
-        vc_hdr.setTextFormat(Qt.TextFormat.RichText)
-        vc_lay.addWidget(vc_hdr)
 
-        v_form = QFormLayout()
-        voice_row = QHBoxLayout()
-        self.voice_name_combo = QComboBox()
-        for vname in list_available_tts_voices():
-            self.voice_name_combo.addItem(vname, vname)
-        cur_v = str(v_cfg.get('voice_name', 'System Default'))
-        v_idx = self.voice_name_combo.findText(cur_v)
-        if v_idx >= 0:
-            self.voice_name_combo.setCurrentIndex(v_idx)
-        test_voice_btn = QPushButton('🔊 Test Voice')
-        test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        # --- SECTION 1: MICROPHONE & LIVE VOICE INPUT ---
+        mic_card = QFrame()
+        mic_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        mc_lay = QVBoxLayout(mic_card)
+        mc_lay.setSpacing(8)
+        mc_hdr = QLabel('<b>1. Microphone Input &amp; Live Level Meter (Used by Live Voice Mode &amp; Dictation)</b>')
+        mc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        mc_lay.addWidget(mc_hdr)
 
-        def _test_tts():
-            save_voice_settings(
-                {
-                    'voice_name': self.voice_name_combo.currentText(),
-                    'microphone_device': self.mic_device_combo.currentText(),
-                    'volume_percent': int(self.voice_vol_slider.value()),
-                    'auto_speak_responses': self.auto_speak_check.isChecked(),
-                },
-                config_path=self.config_path,
-            )
-            speak_agent_response('Hello Brett, Fairybread voice output is active and ready.', config_path=self.config_path)
-
-        test_voice_btn.clicked.connect(_test_tts)
-        voice_row.addWidget(self.voice_name_combo, 1)
-        voice_row.addWidget(test_voice_btn)
-        v_form.addRow('Voice (Agent Output):', voice_row)
-
+        m_form = QFormLayout()
+        mic_row = QHBoxLayout()
         self.mic_device_combo = QComboBox()
+        self.mic_device_combo.setToolTip('Select which microphone Fairybread should listen to')
         for mdev in list_audio_input_devices():
             self.mic_device_combo.addItem(mdev, mdev)
         cur_mic = str(v_cfg.get('microphone_device', 'System default'))
         m_idx = self.mic_device_combo.findText(cur_mic)
         if m_idx >= 0:
             self.mic_device_combo.setCurrentIndex(m_idx)
-        v_form.addRow('Microphone (Dictation):', self.mic_device_combo)
+
+        refresh_mics_btn = QPushButton('↻ Refresh Mics')
+        refresh_mics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_mics_btn.setToolTip('Re-scan connected USB, Bluetooth, or headset microphones')
+
+        def _refresh_mics():
+            cur = self.mic_device_combo.currentText()
+            self.mic_device_combo.clear()
+            for dev_name in list_audio_input_devices():
+                self.mic_device_combo.addItem(dev_name, dev_name)
+            idx_m = self.mic_device_combo.findText(cur)
+            if idx_m >= 0:
+                self.mic_device_combo.setCurrentIndex(idx_m)
+
+        refresh_mics_btn.clicked.connect(_refresh_mics)
+        mic_row.addWidget(self.mic_device_combo, 1)
+        mic_row.addWidget(refresh_mics_btn)
+        m_form.addRow('Microphone Device:', mic_row)
+
+        gain_row = QHBoxLayout()
+        self.mic_gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.mic_gain_slider.setRange(50, 300)
+        self.mic_gain_slider.setToolTip('Boosts microphone input volume (150% default helps quiet microphones pick up clearly)')
+        cur_gain = int(v_cfg.get('mic_gain_percent', 150))
+        self.mic_gain_slider.setValue(cur_gain)
+        self.mic_gain_label = QLabel(f'{cur_gain}%')
+        self.mic_gain_label.setFixedWidth(48)
+        self.mic_gain_slider.valueChanged.connect(lambda val: self.mic_gain_label.setText(f'{val}%'))
+        gain_row.addWidget(self.mic_gain_slider, 1)
+        gain_row.addWidget(self.mic_gain_label)
+        m_form.addRow('Microphone Gain / Boost:', gain_row)
+
+        pause_row = QHBoxLayout()
+        self.silence_timeout_slider = QSlider(Qt.Orientation.Horizontal)
+        self.silence_timeout_slider.setRange(800, 3000)
+        self.silence_timeout_slider.setToolTip('In Live Voice Mode, how long to wait after you pause speaking before sending your message automatically')
+        cur_sil = int(v_cfg.get('silence_timeout_ms', 1500))
+        self.silence_timeout_slider.setValue(cur_sil)
+        self.silence_timeout_label = QLabel(f'{cur_sil / 1000.0:.1f}s')
+        self.silence_timeout_label.setFixedWidth(48)
+        self.silence_timeout_slider.valueChanged.connect(lambda val: self.silence_timeout_label.setText(f'{val / 1000.0:.1f}s'))
+        pause_row.addWidget(self.silence_timeout_slider, 1)
+        pause_row.addWidget(self.silence_timeout_label)
+        m_form.addRow('Live Voice Auto-Send Pause:', pause_row)
+        mc_lay.addLayout(m_form)
+
+        # Live Microphone Level Meter & Test Row
+        meter_row = QHBoxLayout()
+        self.mic_level_bar = QProgressBar()
+        self.mic_level_bar.setRange(0, 100)
+        self.mic_level_bar.setValue(0)
+        self.mic_level_bar.setTextVisible(True)
+        self.mic_level_bar.setFormat('Mic Level: %p%')
+        self.mic_level_bar.setToolTip('Live microphone signal level — speak to see this green bar move in real time!')
+        self.mic_level_bar.setStyleSheet(
+            'QProgressBar { background:#0d1117; border:1px solid #30363d; border-radius:6px; height:22px; text-align:center; color:#e6edf3; font-weight:600; } '
+            'QProgressBar::chunk { background:#22c55e; border-radius:5px; }'
+        )
+        self.mic_wave_lbl = QLabel('▁▁▁▁▁▁')
+        self.mic_wave_lbl.setStyleSheet('font-family: Consolas, monospace; font-size: 15px; color: #22c55e; min-width: 70px;')
+        self.mic_wave_lbl.setToolTip('Live soundwave indicator')
+
+        self.mic_live_test_btn = QPushButton('🎤 Start Live Mic Level Test')
+        self.mic_live_test_btn.setCheckable(True)
+        self.mic_live_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_live_test_btn.setToolTip('Click and speak into your microphone to watch the green level meter move in real time')
+
+        self.mic_transcribe_test_btn = QPushButton('🧪 Record 3s & Test Transcription')
+        self.mic_transcribe_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_transcribe_test_btn.setToolTip('Record 3 seconds of your voice and transcribe it live to verify end-to-end voice input')
+
+        meter_row.addWidget(self.mic_level_bar, 1)
+        meter_row.addWidget(self.mic_wave_lbl)
+        meter_row.addWidget(self.mic_live_test_btn)
+        meter_row.addWidget(self.mic_transcribe_test_btn)
+        mc_lay.addLayout(meter_row)
+
+        self.mic_test_status_label = QLabel('Tip: Click "🎤 Start Live Mic Level Test" and speak — the green bar will bounce if your mic hears you.')
+        self.mic_test_status_label.setWordWrap(True)
+        self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
+        mc_lay.addWidget(self.mic_test_status_label)
+
+        def _save_current_voice_fields():
+            save_voice_settings(
+                {
+                    'voice_name': self.voice_name_combo.currentText(),
+                    'microphone_device': self.mic_device_combo.currentText(),
+                    'mic_gain_percent': int(self.mic_gain_slider.value()),
+                    'silence_timeout_ms': int(self.silence_timeout_slider.value()),
+                    'volume_percent': int(self.voice_vol_slider.value()),
+                    'auto_speak_responses': self.auto_speak_check.isChecked(),
+                },
+                config_path=self.config_path,
+            )
+
+        def _on_test_level(lvl: int, bars: str, speech: bool):
+            self.mic_level_bar.setValue(lvl)
+            self.mic_wave_lbl.setText(bars)
+            if speech:
+                self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e; font-weight: 600;')
+                self.mic_test_status_label.setText(f'✓ Microphone hears you clearly! Live level: {lvl}% ({bars})')
+
+        def _toggle_live_mic_test(checked: bool):
+            if checked:
+                _save_current_voice_fields()
+                sess = LiveAudioSession(
+                    config_path=self.config_path,
+                    live_mode=False,
+                    on_level=_on_test_level,
+                )
+                ok, dev_desc = sess.start(self)
+                if not ok:
+                    self.mic_live_test_btn.blockSignals(True)
+                    self.mic_live_test_btn.setChecked(False)
+                    self.mic_live_test_btn.blockSignals(False)
+                    self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                    self.mic_test_status_label.setText(f'⚠ {dev_desc}')
+                    return
+                self._settings_mic_session = sess
+                self.mic_live_test_btn.setText('⏹ Stop Mic Test')
+                self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                self.mic_test_status_label.setText(f'🎤 Listening on "{dev_desc}" — speak now to watch the green meter move!')
+            else:
+                self._stop_settings_mic_test()
+                self.mic_level_bar.setValue(0)
+                self.mic_wave_lbl.setText('▁▁▁▁▁▁')
+                self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
+                self.mic_test_status_label.setText('Mic level test stopped.')
+
+        def _run_3s_transcription_test():
+            self._stop_settings_mic_test()
+            _save_current_voice_fields()
+            sess = LiveAudioSession(
+                config_path=self.config_path,
+                live_mode=False,
+                on_level=_on_test_level,
+            )
+            ok, dev_desc = sess.start(self)
+            if not ok:
+                self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.mic_test_status_label.setText(f'⚠ {dev_desc}')
+                return
+            self._settings_mic_session = sess
+            self.mic_transcribe_test_btn.setEnabled(False)
+            self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #eab308; font-weight: 600;')
+            self.mic_test_status_label.setText(f'🔴 Recording 3 seconds on "{dev_desc}" — say a test phrase now…')
+
+            def _finish_3s():
+                self.mic_transcribe_test_btn.setEnabled(True)
+                s_active = getattr(self, '_settings_mic_session', None)
+                if s_active is None:
+                    return
+                self._settings_mic_session = None
+                wav_p = s_active.stop('fairybread_settings_test.wav')
+                self.mic_level_bar.setValue(0)
+                if not wav_p:
+                    self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                    self.mic_test_status_label.setText('⚠ No audio captured.')
+                    return
+                self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                self.mic_test_status_label.setText('⏳ Transcribing your 3-second test clip…')
+                QApplication.processEvents()
+                try:
+                    txt = transcribe_audio_file(wav_p, credential_store=self.credential_store)
+                    self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e; font-weight: 600;')
+                    self.mic_test_status_label.setText(f'✓ Heard you: "{txt}"')
+                except Exception as exc:
+                    self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                    self.mic_test_status_label.setText(f'⚠ {exc}')
+
+            QTimer.singleShot(3000, _finish_3s)
+
+        self.mic_live_test_btn.toggled.connect(_toggle_live_mic_test)
+        self.mic_transcribe_test_btn.clicked.connect(_run_3s_transcription_test)
+        lay.addWidget(mic_card)
+
+        # --- SECTION 2: SPEAKER / AGENT VOICE OUTPUT ---
+        spk_card = QFrame()
+        spk_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        sc_lay = QVBoxLayout(spk_card)
+        sc_lay.setSpacing(8)
+        sc_hdr = QLabel('<b>2. Speaker &amp; Agent Voice Output (TTS)</b>')
+        sc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        sc_lay.addWidget(sc_hdr)
+
+        s_form = QFormLayout()
+        voice_row = QHBoxLayout()
+        self.voice_name_combo = QComboBox()
+        self.voice_name_combo.setToolTip('Choose the system voice used when Fairybread speaks responses aloud')
+        for vname in list_available_tts_voices():
+            self.voice_name_combo.addItem(vname, vname)
+        cur_v = str(v_cfg.get('voice_name', 'System Default'))
+        v_idx = self.voice_name_combo.findText(cur_v)
+        if v_idx >= 0:
+            self.voice_name_combo.setCurrentIndex(v_idx)
+
+        test_voice_btn = QPushButton('🔊 Test Speaker Voice')
+        test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_voice_btn.setToolTip('Play a test sentence through your speakers at the selected volume')
+
+        stop_voice_btn = QPushButton('⏹ Stop Voice')
+        stop_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_voice_btn.setToolTip('Immediately stop any active spoken response')
+        stop_voice_btn.clicked.connect(stop_speaking)
+
+        def _test_tts():
+            _save_current_voice_fields()
+            speak_agent_response('Hello Brett, Fairybread live voice mode and speaker output are working clearly.', config_path=self.config_path)
+
+        test_voice_btn.clicked.connect(_test_tts)
+        voice_row.addWidget(self.voice_name_combo, 1)
+        voice_row.addWidget(test_voice_btn)
+        voice_row.addWidget(stop_voice_btn)
+        s_form.addRow('Speaker Voice:', voice_row)
 
         vol_row = QHBoxLayout()
         self.voice_vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.voice_vol_slider.setRange(0, 100)
+        self.voice_vol_slider.setToolTip('Adjust how loud Fairybread’s spoken voice is (0% – 100%)')
         cur_vol = int(v_cfg.get('volume_percent', 100))
         self.voice_vol_slider.setValue(cur_vol)
         self.voice_vol_label = QLabel(f'{cur_vol}%')
-        self.voice_vol_label.setFixedWidth(44)
+        self.voice_vol_label.setFixedWidth(48)
         self.voice_vol_slider.valueChanged.connect(lambda val: self.voice_vol_label.setText(f'{val}%'))
         vol_row.addWidget(self.voice_vol_slider, 1)
         vol_row.addWidget(self.voice_vol_label)
-        v_form.addRow('Volume:', vol_row)
-        vc_lay.addLayout(v_form)
+        s_form.addRow('Speaker Volume:', vol_row)
+        sc_lay.addLayout(s_form)
 
         self.auto_speak_check = QCheckBox(
-            'Automatically read final synthesized agent responses aloud (or click 🔊 Speak on any reply card)',
+            'Always read final synthesized agent responses aloud (Note: Live Voice Mode automatically speaks replies aloud even if this is unchecked)',
             checked=bool(v_cfg.get('auto_speak_responses', False)),
         )
-        vc_lay.addWidget(self.auto_speak_check)
-        lay.addWidget(voice_card)
+        self.auto_speak_check.setToolTip('When checked, even typed prompts will have their final answer read aloud automatically')
+        sc_lay.addWidget(self.auto_speak_check)
+        lay.addWidget(spk_card)
 
         lay.addStretch()
         self.pages.addWidget(w)
@@ -1891,11 +2129,14 @@ class ManageAIsDialog(QDialog):
                 {
                     'voice_name': self.voice_name_combo.currentText(),
                     'microphone_device': self.mic_device_combo.currentText(),
+                    'mic_gain_percent': int(self.mic_gain_slider.value()) if hasattr(self, 'mic_gain_slider') else 150,
+                    'silence_timeout_ms': int(self.silence_timeout_slider.value()) if hasattr(self, 'silence_timeout_slider') else 1500,
                     'volume_percent': int(self.voice_vol_slider.value()),
                     'auto_speak_responses': self.auto_speak_check.isChecked(),
                 },
                 config_path=self.config_path,
             )
+        self._stop_settings_mic_test()
         self.accept()
 
 
@@ -2218,6 +2459,7 @@ class PalaceWindow(QMainWindow):
         nh_lbl.setStyleSheet('color: #fca5a5; font-size: 12px;')
         nh_row.addWidget(nh_lbl, 1)
         nh_off_btn = QPushButton('Resume Saving History')
+        nh_off_btn.setToolTip('Turn off No-History Mode and resume saving conversation history to the Memory Palace')
         nh_off_btn.clicked.connect(lambda: self.no_history_btn.setChecked(False))
         nh_row.addWidget(nh_off_btn)
         self.no_history_banner.hide()
@@ -2235,6 +2477,7 @@ class PalaceWindow(QMainWindow):
         pause_lbl.setStyleSheet('color: #86efac; font-size: 12px;')
         pause_row.addWidget(pause_lbl, 1)
         go_idle_btn = QPushButton('View Idle Sanctuary →')
+        go_idle_btn.setToolTip('Switch to the Idle Mode Sanctuary tab to watch the agents collaborate live')
         go_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(1))
         pause_row.addWidget(go_idle_btn)
         self.normal_pause_banner.hide()
@@ -2264,6 +2507,7 @@ class PalaceWindow(QMainWindow):
         card_layout.addWidget(self.attachment_list)
 
         self.composer = Composer(enter_to_send=bool(ui_cfg.get('enter_to_send', True)))
+        self.composer.setToolTip('Type your message here, paste an image (Ctrl+V), drop files, or use 🎤 Dictate / Live Voice Mode below')
         self.composer.files_added.connect(self.add_files)
         self.composer.image_pasted.connect(self.add_pasted_image)
         self.composer.send_requested.connect(self.send_message)
@@ -2281,6 +2525,7 @@ class PalaceWindow(QMainWindow):
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
+        self.remove_button.setToolTip('Remove the selected file from this message')
         self.remove_button.clicked.connect(self.remove_attachment)
         self.remove_button.hide()
         controls.addWidget(self.remove_button)
@@ -2377,6 +2622,16 @@ class PalaceWindow(QMainWindow):
 
         controls.addStretch()
 
+        # Live Voice / Microphone Soundwave Level Indicator (visible whenever Dictation or Live Voice is active)
+        self.voice_level_badge = QLabel('')
+        self.voice_level_badge.setToolTip('Live microphone volume meter — bounces in real time as Fairybread hears your voice')
+        self.voice_level_badge.setStyleSheet(
+            'font-family: Consolas, monospace; font-size: 11.5px; font-weight: 700; color: #22c55e; '
+            'background: #11281b; border: 1px solid #22c55e; border-radius: 6px; padding: 3px 8px;'
+        )
+        self.voice_level_badge.hide()
+        controls.addWidget(self.voice_level_badge)
+
         self._neutral_busy_btn_style = (
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2417,7 +2672,10 @@ class PalaceWindow(QMainWindow):
         self.mic_button.setCheckable(True)
         self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_button.setFixedSize(30, 30)
-        self.mic_button.setToolTip('Voice Dictation (click to speak your prompt for all Council AIs; click again to transcribe)')
+        self.mic_button.setToolTip(
+            'Dictate to Text Box (🎤): Click once and speak — live soundwave bars show your mic level. '
+            'Click again to transcribe your speech into the input box for all Council AIs.'
+        )
         self.mic_button.setStyleSheet(
             'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 15px; } '
             'QPushButton:hover { background: #161b22; border-color: #30363d; } '
@@ -2425,6 +2683,24 @@ class PalaceWindow(QMainWindow):
         )
         self.mic_button.toggled.connect(self._toggle_voice_dictation)
         controls.addWidget(self.mic_button)
+
+        self.live_voice_button = QPushButton()
+        self.live_voice_button.setIcon(voice_wave_qicon(False))
+        self.live_voice_button.setIconSize(QSize(16, 16))
+        self.live_voice_button.setCheckable(True)
+        self.live_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.live_voice_button.setFixedSize(30, 30)
+        self.live_voice_button.setToolTip(
+            'Live Voice Mode (Hands-Free Chat): Click once to talk live with the Council. '
+            'Shows a live soundwave meter, automatically sends when you pause speaking (~1.5s), and speaks the reply aloud!'
+        )
+        self.live_voice_button.setStyleSheet(
+            'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 15px; } '
+            'QPushButton:hover { background: #f0f6fc; border-color: #f0f6fc; } '
+            'QPushButton:checked { background: #11281b; border: 2px solid #22c55e; }'
+        )
+        self.live_voice_button.toggled.connect(self._toggle_live_voice_mode)
+        controls.addWidget(self.live_voice_button)
 
         self.send_button = QPushButton('↑')
         self.send_button.setObjectName('sendButton')
@@ -2454,10 +2730,12 @@ class PalaceWindow(QMainWindow):
         idle_top.addWidget(self.idle_status_label)
 
         self.idle_timer_label = QLabel('⏱ 30:00')
+        self.idle_timer_label.setToolTip('Remaining Autonomous Idle Mode session countdown timer')
         self.idle_timer_label.setStyleSheet('font-family: Consolas, monospace; font-size: 13px; font-weight: 700; color: #e6edf3; background: #161b22; padding: 3px 10px; border-radius: 6px;')
         idle_top.addWidget(self.idle_timer_label)
 
         self.idle_budget_label = QLabel('Tokens: 0.0k · Spend: $0.000')
+        self.idle_budget_label.setToolTip('Tokens and estimated USD spent during the current Idle Mode session')
         self.idle_budget_label.setStyleSheet('font-family: Consolas, monospace; font-size: 12px; color: #8b949e; background: #161b22; padding: 3px 10px; border-radius: 6px;')
         idle_top.addWidget(self.idle_budget_label)
 
@@ -2466,10 +2744,12 @@ class PalaceWindow(QMainWindow):
         idle_top.addWidget(self.idle_log_badge, 1)
 
         back_chat_from_idle_btn = QPushButton('← View Normal Chat')
+        back_chat_from_idle_btn.setToolTip('Switch back to the Normal Mode chat view')
         back_chat_from_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(0))
         idle_top.addWidget(back_chat_from_idle_btn)
 
         self.idle_settings_btn = QPushButton('⚙ Idle Settings')
+        self.idle_settings_btn.setToolTip('Configure Idle Mode timer, token/credit caps, startup prompt, and ethics rules')
         self.idle_settings_btn.clicked.connect(lambda: self.open_manage_ais(initial_page='Idle Mode'))
         idle_top.addWidget(self.idle_settings_btn)
         idle_lay.addLayout(idle_top)
@@ -2481,6 +2761,7 @@ class PalaceWindow(QMainWindow):
 
         self.idle_submode_combo = QComboBox()
         self.idle_submode_combo.setMinimumWidth(235)
+        self.idle_submode_combo.setToolTip('Choose between unprompted Free Talk Lounge or Self-Improvement code review')
         self.idle_submode_combo.addItem('💬 Free Talk (Unprompted Lounge)', 'free_talk')
         self.idle_submode_combo.addItem('🔧 Self-Improvement (Palace Code)', 'self_improve')
         cur_submode = load_idle_settings(self.config_path).get('idle_submode', 'free_talk')
@@ -2491,20 +2772,24 @@ class PalaceWindow(QMainWindow):
         idle_actions.addWidget(self.idle_submode_combo)
 
         self.idle_start_btn = QPushButton('▶ Start / Resume Autonomous Idle')
+        self.idle_start_btn.setToolTip('Start or resume autonomous peer-to-peer discussion between active Council AIs')
         self.idle_start_btn.clicked.connect(self.start_idle_session)
         idle_actions.addWidget(self.idle_start_btn)
 
         self.idle_step_btn = QPushButton('↻ Step One Round Now')
+        self.idle_step_btn.setToolTip('Manually trigger one immediate round of Idle Mode discussion')
         self.idle_step_btn.clicked.connect(self.run_idle_exchange_step)
         self.idle_step_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_step_btn)
 
         self.idle_join_btn = QPushButton('🔒 Test Consensus Vote')
+        self.idle_join_btn.setToolTip('Ask the Idle Council to vote on admitting the human operator into the live discussion')
         self.idle_join_btn.clicked.connect(self.request_idle_operator_join)
         self.idle_join_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_join_btn)
 
         self.idle_stop_btn = QPushButton('⏹ Stop & Wipe RAM')
+        self.idle_stop_btn.setToolTip('Stop the active Idle session and clear the temporary RAM transcript (Idle Palace notes are preserved)')
         self.idle_stop_btn.clicked.connect(self.stop_idle_session)
         self.idle_stop_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_stop_btn)
@@ -2539,9 +2824,11 @@ class PalaceWindow(QMainWindow):
         seed_row = QHBoxLayout()
         self.idle_seed_edit = QLineEdit()
         self.idle_seed_edit.setPlaceholderText('Optional Beta seed or note to drop into the Idle Council…')
+        self.idle_seed_edit.setToolTip('Type an optional topic or question for the Idle Council to explore')
         self.idle_seed_edit.returnPressed.connect(self._send_owner_note_to_idle)
         seed_row.addWidget(self.idle_seed_edit, 1)
         seed_btn = QPushButton('Send to Idle Council')
+        seed_btn.setToolTip('Drop your note or topic into the active Idle Council session')
         seed_btn.clicked.connect(self._send_owner_note_to_idle)
         seed_row.addWidget(seed_btn)
         idle_left_lay.addLayout(seed_row)
@@ -2563,6 +2850,7 @@ class PalaceWindow(QMainWindow):
         idle_right_lay.addWidget(palace_sub)
 
         self.idle_palace_list = QListWidget()
+        self.idle_palace_list.setToolTip('Select any note or proposed file saved by the Idle Council to view its contents below')
         self.idle_palace_list.currentItemChanged.connect(self._on_idle_palace_item_selected)
         idle_right_lay.addWidget(self.idle_palace_list, 1)
 
@@ -2583,6 +2871,7 @@ class PalaceWindow(QMainWindow):
 
         mail_top = QHBoxLayout()
         back_to_chat_btn = QPushButton('← Back to Chat')
+        back_to_chat_btn.setToolTip('Return to the main Normal Mode chat workspace')
         back_to_chat_btn.clicked.connect(lambda: self._toggle_agent_mail_view(False))
         mail_top.addWidget(back_to_chat_btn)
         mail_title = QLabel('✉ Agent Mail — Idle Mode Requests & Improvement Proposals')
@@ -2597,6 +2886,7 @@ class PalaceWindow(QMainWindow):
         mail_split = QSplitter(Qt.Orientation.Horizontal)
         self.mail_list = QListWidget()
         self.mail_list.setMinimumWidth(290)
+        self.mail_list.setToolTip('Messages and improvement proposals sent to you by Idle Mode agents')
         self.mail_list.currentItemChanged.connect(self._on_mail_item_selected)
         mail_split.addWidget(self.mail_list)
 
@@ -2613,6 +2903,7 @@ class PalaceWindow(QMainWindow):
         hdr_row.addWidget(self.mail_header_label, 1)
 
         self.mail_open_link_btn = QPushButton('📂 Open Linked File in Shared Idle Palace')
+        self.mail_open_link_btn.setToolTip('Jump directly to the proposed file or note in the Shared Idle Palace')
         self.mail_open_link_btn.setEnabled(False)
         self.mail_open_link_btn.setStyleSheet(
             'QPushButton { background: #172a3a; color: #58a6ff; border: 1px solid #58a6ff; padding: 5px 12px; border-radius: 6px; font-weight: 600; } '
@@ -2649,9 +2940,11 @@ class PalaceWindow(QMainWindow):
         reply_row = QHBoxLayout()
         self.mail_reply_edit = QLineEdit()
         self.mail_reply_edit.setPlaceholderText('Write a reply to this agent (saved into the Shared Idle Palace for the council)…')
+        self.mail_reply_edit.setToolTip('Type a reply to store in the Shared Idle Palace for the agents to read')
         self.mail_reply_edit.returnPressed.connect(self._send_mail_reply)
         reply_row.addWidget(self.mail_reply_edit, 1)
         self.mail_reply_btn = QPushButton('↩ Send Reply to Idle Palace')
+        self.mail_reply_btn.setToolTip('Save your reply into the Shared Idle Palace so all Idle Mode agents can read it')
         self.mail_reply_btn.clicked.connect(self._send_mail_reply)
         reply_row.addWidget(self.mail_reply_btn)
         reader_lay.addLayout(reply_row)
@@ -2935,6 +3228,9 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
+        voice_settings_act = QAction('🎙️ Voice & Audio (Microphone & Speaker)…', self)
+        voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
+        settings_menu.addAction(voice_settings_act)
         email_settings_act = QAction('📧 Email & Notifications…', self)
         email_settings_act.triggered.connect(lambda: self.open_manage_ais('Email & Notifications'))
         settings_menu.addAction(email_settings_act)
@@ -4704,65 +5000,59 @@ class PalaceWindow(QMainWindow):
         except Exception as exc:
             self.show_notice(str(exc))
 
+    def _on_voice_level_update(self, lvl: int, bars: str, speech_detected: bool):
+        if not hasattr(self, 'voice_level_badge'):
+            return
+        is_live = hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()
+        mode_tag = 'Live Voice' if is_live else 'Dictating'
+        state_hint = 'Hearing you!' if speech_detected or lvl >= 8 else 'Speak now…'
+        self.voice_level_badge.setText(f'🎙 {bars} {lvl:2d}% · {mode_tag} ({state_hint})')
+        if speech_detected or lvl >= 8:
+            self.voice_level_badge.setStyleSheet(
+                'font-family: Consolas, monospace; font-size: 11.5px; font-weight: 700; color: #22c55e; '
+                'background: #11281b; border: 1px solid #22c55e; border-radius: 6px; padding: 3px 8px;'
+            )
+        else:
+            self.voice_level_badge.setStyleSheet(
+                'font-family: Consolas, monospace; font-size: 11.5px; font-weight: 600; color: #58a6ff; '
+                'background: #132238; border: 1px solid #3b82f6; border-radius: 6px; padding: 3px 8px;'
+            )
+        self.voice_level_badge.show()
+
     def _toggle_voice_dictation(self, recording: bool):
-        import tempfile
-        from voice_service import load_voice_settings, transcribe_audio_file
+        from voice_service import LiveAudioSession, transcribe_audio_file
         self.mic_button.setIcon(mic_qicon(recording))
         if recording:
-            try:
-                from PySide6.QtMultimedia import (
-                    QAudioInput,
-                    QMediaCaptureSession,
-                    QMediaDevices,
-                    QMediaFormat,
-                    QMediaRecorder,
-                )
-                v_cfg = load_voice_settings(self.config_path)
-                pref_mic = str(v_cfg.get('microphone_device', 'System default'))
-                chosen_dev = QMediaDevices.defaultAudioInput()
-                for d in QMediaDevices.audioInputs():
-                    if d.description() == pref_mic:
-                        chosen_dev = d
-                        break
-                if chosen_dev.isNull():
-                    self.mic_button.blockSignals(True)
-                    self.mic_button.setChecked(False)
-                    self.mic_button.setIcon(mic_qicon(False))
-                    self.mic_button.blockSignals(False)
-                    self.show_notice('No microphone input device detected.')
-                    return
-                self._voice_wav_path = Path(tempfile.gettempdir()) / 'fairybread_dictation.wav'
-                if self._voice_wav_path.exists():
-                    self._voice_wav_path.unlink(missing_ok=True)
-                self._audio_in = QAudioInput(chosen_dev, self)
-                self._cap_session = QMediaCaptureSession(self)
-                self._cap_session.setAudioInput(self._audio_in)
-                self._recorder = QMediaRecorder(self)
-                self._cap_session.setRecorder(self._recorder)
-                fmt = QMediaFormat()
-                fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
-                fmt.setAudioCodec(QMediaFormat.AudioCodec.Wave)
-                self._recorder.setMediaFormat(fmt)
-                self._recorder.setOutputLocation(QUrl.fromLocalFile(str(self._voice_wav_path)))
-                self._recorder.record()
-                self.show_notice('🎤 Listening… Speak now, then click the red microphone again to insert text for all AIs.')
-            except Exception as exc:
+            if hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked():
+                self.live_voice_button.setChecked(False)
+            sess = LiveAudioSession(
+                config_path=self.config_path,
+                live_mode=False,
+                on_level=self._on_voice_level_update,
+            )
+            ok, dev_desc = sess.start(self)
+            if not ok:
                 self.mic_button.blockSignals(True)
                 self.mic_button.setChecked(False)
                 self.mic_button.setIcon(mic_qicon(False))
                 self.mic_button.blockSignals(False)
-                self.show_notice(f'Microphone error: {exc}')
-        else:
-            rec = getattr(self, '_recorder', None)
-            if rec is not None:
-                try:
-                    rec.stop()
-                except Exception:
-                    pass
-            wav_p = getattr(self, '_voice_wav_path', None)
-            if not wav_p:
+                self.show_notice(dev_desc)
                 return
-            self.show_notice('🎤 Transcribing voice for all Council AIs…')
+            self._active_voice_session = sess
+            self._on_voice_level_update(0, '▁▁▁▁▁▁', False)
+            self.show_notice(f'🎤 Dictating on "{dev_desc}" — speak now (watch the green soundwave bar), then click 🎤 again to insert text.')
+        else:
+            sess = getattr(self, '_active_voice_session', None)
+            self._active_voice_session = None
+            if hasattr(self, 'voice_level_badge'):
+                self.voice_level_badge.hide()
+            if sess is None:
+                return
+            wav_p = sess.stop('fairybread_dictation.wav')
+            if not wav_p:
+                self.show_notice('No audio captured. Try speaking a little longer or check Settings → Voice & Audio.')
+                return
+            self.show_notice('⏳ Transcribing your voice for all Council AIs…')
             QApplication.processEvents()
             try:
                 text = transcribe_audio_file(wav_p)
@@ -4770,9 +5060,74 @@ class PalaceWindow(QMainWindow):
                 combined = f'{cur} {text}'.strip() if cur else text
                 self.composer.setPlainText(combined)
                 self.composer.setFocus()
-                self.show_notice('✓ Voice transcribed into composer.')
+                self.show_notice(f'✓ Heard you: "{text[:80]}"')
             except Exception as exc:
                 self.show_notice(f'Voice transcription notice: {exc}')
+
+    def _toggle_live_voice_mode(self, active: bool):
+        from voice_service import LiveAudioSession, stop_speaking
+        self.live_voice_button.setIcon(voice_wave_qicon(active))
+        if active:
+            if hasattr(self, 'mic_button') and self.mic_button.isChecked():
+                self.mic_button.blockSignals(True)
+                self.mic_button.setChecked(False)
+                self.mic_button.setIcon(mic_qicon(False))
+                self.mic_button.blockSignals(False)
+                prev_s = getattr(self, '_active_voice_session', None)
+                if prev_s is not None:
+                    prev_s.stop()
+                    self._active_voice_session = None
+            sess = LiveAudioSession(
+                config_path=self.config_path,
+                live_mode=True,
+                on_level=self._on_voice_level_update,
+                on_utterance_ready=self._on_live_voice_utterance,
+            )
+            ok, dev_desc = sess.start(self)
+            if not ok:
+                self.live_voice_button.blockSignals(True)
+                self.live_voice_button.setChecked(False)
+                self.live_voice_button.setIcon(voice_wave_qicon(False))
+                self.live_voice_button.blockSignals(False)
+                self.show_notice(dev_desc)
+                return
+            self._active_voice_session = sess
+            self._on_voice_level_update(0, '▁▁▁▁▁▁', False)
+            self.show_notice(
+                f'🟢 Live Voice Mode ON ({dev_desc}) — Speak naturally! When you pause (~1.5s), Fairybread automatically sends to the Council and speaks the reply aloud.'
+            )
+        else:
+            sess = getattr(self, '_active_voice_session', None)
+            self._active_voice_session = None
+            if hasattr(self, 'voice_level_badge'):
+                self.voice_level_badge.hide()
+            if sess is not None:
+                # If the user spoke before clicking off, transcribe that utterance into the composer
+                had_speech = getattr(sess, '_speech_detected', False)
+                wav_p = sess.stop('fairybread_live_final.wav')
+                if had_speech and wav_p:
+                    self._on_live_voice_utterance(wav_p)
+            stop_speaking()
+            self.show_notice('Live Voice Mode turned OFF.')
+
+    def _on_live_voice_utterance(self, wav_path: Path):
+        from voice_service import transcribe_audio_file
+        if hasattr(self, 'voice_level_badge'):
+            self.voice_level_badge.setText('⏳ Transcribing spoken prompt…')
+        QApplication.processEvents()
+        try:
+            text = transcribe_audio_file(wav_path)
+        except Exception as exc:
+            self.show_notice(f'Live Voice notice: {exc}')
+            return
+        if not text:
+            return
+        self.composer.setPlainText(text)
+        if self.worker is None:
+            self._turn_triggered_by_live_voice = True
+            self.send_message()
+        else:
+            self.queue_next_turn()
 
     def load_history(self):
         self.chat.clear()
@@ -5751,7 +6106,9 @@ class PalaceWindow(QMainWindow):
         if result.final_answer:
             try:
                 from voice_service import load_voice_settings, speak_agent_response
-                if load_voice_settings(self.config_path).get('auto_speak_responses'):
+                live_active = bool(getattr(self, '_turn_triggered_by_live_voice', False) or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()))
+                self._turn_triggered_by_live_voice = False
+                if live_active or load_voice_settings(self.config_path).get('auto_speak_responses'):
                     speak_agent_response(result.final_answer, config_path=self.config_path)
             except Exception:
                 pass
