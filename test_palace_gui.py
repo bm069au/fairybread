@@ -1226,6 +1226,25 @@ class WindowTests(unittest.TestCase):
         st_stats = compute_palace_storage_stats(test_cfg_path)
         self.assertEqual(Path(st_stats['data_root']), moved_dir.resolve())
 
+        # 9. Verify Sidebar Drag-and-Drop Reordering & Project Drop Assignment + Voice Service
+        from voice_service import clean_text_for_speech, load_voice_settings, save_voice_settings
+        proj_a = self.window.store.create_project('Drag Target Project')
+        s_one = self.window.store.create(project_id=None)
+        s_two = self.window.store.create(project_id=None)
+        # Simulate dragging s_one into proj_a and placing s_two after it in Recents
+        self.window._on_sidebar_sessions_reordered([(s_one, proj_a), (s_two, None)])
+        s_map = {s['id']: s for s in self.window.store.sessions}
+        self.assertEqual(s_map[s_one]['project_id'], proj_a)
+        self.assertIsNone(s_map[s_two]['project_id'])
+        self.assertEqual(self.window.store.sessions[0]['id'], s_one)
+
+        save_voice_settings({'volume_percent': 85, 'auto_speak_responses': True}, config_path=test_cfg_path)
+        v_loaded = load_voice_settings(test_cfg_path)
+        self.assertEqual(v_loaded['volume_percent'], 85)
+        self.assertTrue(v_loaded['auto_speak_responses'])
+        cleaned_tts = clean_text_for_speech('### Hello **Brett**! `[GENERATE_IMAGE prompt="x"]` Visit https://example.com')
+        self.assertEqual(cleaned_tts, 'Hello Brett ! Visit')
+
 
 if __name__ == '__main__':
     unittest.main()

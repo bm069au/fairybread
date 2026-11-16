@@ -302,6 +302,24 @@ def mail_grey_qicon(has_unread: bool = False) -> QIcon:
     return QIcon(pix)
 
 
+def mic_qicon(recording: bool = False) -> QIcon:
+    """Clean vector microphone icon for voice dictation (Grey when idle, Red #ef4444 when recording)."""
+    pix = QPixmap(16, 16)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    col = QColor("#ef4444" if recording else NEUTRAL_GREY)
+    painter.setPen(QPen(col, 1.4))
+    painter.setBrush(col if recording else Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(5, 2, 6, 7, 3, 3)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawArc(3, 4, 10, 7, 0, -180 * 16)
+    painter.drawLine(8, 11, 8, 14)
+    painter.drawLine(5, 14, 11, 14)
+    painter.end()
+    return QIcon(pix)
+
+
 # --- AI DRAWING & IMAGE GENERATION TOOLS ---
 
 _SVG_FENCE_PATTERN = re.compile(
@@ -1260,8 +1278,8 @@ QComboBox#profilePicker {{ background: {bg_card}; border: 1px solid {border}; bo
 QPushButton#pinnedHeaderButton, QPushButton#sectionToggleButton {{ background: transparent; border: none; border-radius: 6px; padding: 6px 8px; text-align: left; color: {txt_muted}; font-weight: 600; font-size: 12px; }}
 QPushButton#pinnedHeaderButton:hover, QPushButton#sectionToggleButton:hover {{ background: {bg_hover}; color: {txt}; }}
 QListWidget#pinnedList {{ background: transparent; border: none; border-left: 1px solid {border}; margin-left: 8px; padding-left: 4px; outline: none; }}
-QListWidget#pinnedList::item, QListWidget#sidebarList::item {{ color: {txt_sec}; padding: 6px 8px; border-radius: 6px; margin-bottom: 2px; }}
-QListWidget#sidebarList {{ background: transparent; border: none; padding: 2px; outline: none; }}
+QListWidget#pinnedList::item, QListWidget#sidebarList::item {{ color: {txt_sec}; padding: 2px 6px; border-radius: 5px; margin-bottom: 0px; }}
+QListWidget#sidebarList {{ background: transparent; border: none; padding: 1px; outline: none; font-size: 12.5px; }}
 QListWidget#sidebarList::item:hover {{ background: {bg_hover}; }}
 QListWidget#pinnedList::item:selected, QListWidget#sidebarList::item:selected {{ background: {bg_card}; color: {txt}; font-weight: 600; }}
 QTextBrowser#chatView {{ background: {bg_main}; color: {txt}; border: none; padding: 4px 0px; font-size: 13px; }}

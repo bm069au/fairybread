@@ -12,7 +12,7 @@ import webbrowser
 from PySide6.QtCore import QBuffer, QIODevice, QPoint, QRect, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
@@ -68,6 +68,7 @@ from palace_theme import (
     list_available_themes,
     load_theme_dict,
     mail_grey_qicon,
+    mic_qicon,
     no_history_qicon,
     provider_bg_color,
     provider_color,
@@ -84,6 +85,56 @@ if os.name == 'nt':
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('Fairybread.Palace.Desktop.1')
     except Exception:
         pass
+
+
+class SidebarSessionList(QListWidget):
+    """QListWidget supporting drag-and-drop conversation reordering and dropping conversations onto Projects."""
+    sessions_reordered = Signal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+
+    def dropEvent(self, event):
+        dragged_item = self.currentItem()
+        dragged_key = str(dragged_item.data(Qt.ItemDataRole.UserRole) or '') if dragged_item else ''
+        if not dragged_key or dragged_key.startswith('proj:'):
+            event.ignore()
+            return
+
+        target_item = self.itemAt(event.position().toPoint())
+        target_key = str(target_item.data(Qt.ItemDataRole.UserRole) or '') if target_item else ''
+
+        # If dropped directly onto a Project header (or "No conversations yet" under a project),
+        # assign that project immediately before letting InternalMove reorder the list.
+        explicit_proj: str | None = None
+        has_explicit_proj = False
+        if target_key.startswith('proj:'):
+            explicit_proj = target_key.split(':', 1)[1] or None
+            has_explicit_proj = True
+
+        super().dropEvent(event)
+
+        # Walk the list top-to-bottom to infer each conversation's new project_id and order
+        ordered: list[tuple[str, str | None]] = []
+        active_proj: str | None = None
+        for i in range(self.count()):
+            it = self.item(i)
+            if it is None:
+                continue
+            k = str(it.data(Qt.ItemDataRole.UserRole) or '')
+            if k.startswith('proj:'):
+                p_val = k.split(':', 1)[1]
+                active_proj = p_val if p_val else None
+            elif k:
+                assigned = explicit_proj if (has_explicit_proj and k == dragged_key) else active_proj
+                ordered.append((k, assigned))
+
+        self.sessions_reordered.emit(ordered)
 
 
 class ResponsiveBarLabel(QLabel):
@@ -519,7 +570,15 @@ class ManageAIsDialog(QDialog):
                 view.setMinimumWidth(max(420, max_px + 56))
 
     def _build_general_page(self):
-        w, lay = self._make_simple_page('General', 'Startup behavior, default workspace, and composer preferences.')
+        from voice_service import (
+            list_audio_input_devices,
+            list_available_tts_voices,
+            load_voice_settings,
+            save_voice_settings,
+            speak_agent_response,
+        )
+
+        w, lay = self._make_simple_page('General & Voice Mode', 'Startup behavior, composer preferences, microphone dictation, and agent voice output.')
         lay.addWidget(QCheckBox('Restore last active conversation on startup', checked=True))
 
         ui_cfg = load_ui_settings(self.config_path)
@@ -530,6 +589,74 @@ class ManageAIsDialog(QDialog):
         self.enter_mode_combo.setCurrentIndex(0 if ui_cfg.get('enter_to_send', True) else 1)
         enter_form.addRow('Composer Enter key behavior:', self.enter_mode_combo)
         lay.addLayout(enter_form)
+
+        # --- VOICE MODE CARD (Matches Antigravity Settings: Voice, Microphone, Volume, Auto-Speak) ---
+        v_cfg = load_voice_settings(self.config_path)
+        voice_card = QFrame()
+        voice_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        vc_lay = QVBoxLayout(voice_card)
+        vc_lay.setSpacing(8)
+        vc_hdr = QLabel('<b>🎤 Voice Mode (Microphone Dictation for All Agents &amp; Spoken Agent Responses)</b>')
+        vc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        vc_lay.addWidget(vc_hdr)
+
+        v_form = QFormLayout()
+        voice_row = QHBoxLayout()
+        self.voice_name_combo = QComboBox()
+        for vname in list_available_tts_voices():
+            self.voice_name_combo.addItem(vname, vname)
+        cur_v = str(v_cfg.get('voice_name', 'System Default'))
+        v_idx = self.voice_name_combo.findText(cur_v)
+        if v_idx >= 0:
+            self.voice_name_combo.setCurrentIndex(v_idx)
+        test_voice_btn = QPushButton('🔊 Test Voice')
+        test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        def _test_tts():
+            save_voice_settings(
+                {
+                    'voice_name': self.voice_name_combo.currentText(),
+                    'microphone_device': self.mic_device_combo.currentText(),
+                    'volume_percent': int(self.voice_vol_slider.value()),
+                    'auto_speak_responses': self.auto_speak_check.isChecked(),
+                },
+                config_path=self.config_path,
+            )
+            speak_agent_response('Hello Brett, Fairybread voice output is active and ready.', config_path=self.config_path)
+
+        test_voice_btn.clicked.connect(_test_tts)
+        voice_row.addWidget(self.voice_name_combo, 1)
+        voice_row.addWidget(test_voice_btn)
+        v_form.addRow('Voice (Agent Output):', voice_row)
+
+        self.mic_device_combo = QComboBox()
+        for mdev in list_audio_input_devices():
+            self.mic_device_combo.addItem(mdev, mdev)
+        cur_mic = str(v_cfg.get('microphone_device', 'System default'))
+        m_idx = self.mic_device_combo.findText(cur_mic)
+        if m_idx >= 0:
+            self.mic_device_combo.setCurrentIndex(m_idx)
+        v_form.addRow('Microphone (Dictation):', self.mic_device_combo)
+
+        vol_row = QHBoxLayout()
+        self.voice_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.voice_vol_slider.setRange(0, 100)
+        cur_vol = int(v_cfg.get('volume_percent', 100))
+        self.voice_vol_slider.setValue(cur_vol)
+        self.voice_vol_label = QLabel(f'{cur_vol}%')
+        self.voice_vol_label.setFixedWidth(44)
+        self.voice_vol_slider.valueChanged.connect(lambda val: self.voice_vol_label.setText(f'{val}%'))
+        vol_row.addWidget(self.voice_vol_slider, 1)
+        vol_row.addWidget(self.voice_vol_label)
+        v_form.addRow('Volume:', vol_row)
+        vc_lay.addLayout(v_form)
+
+        self.auto_speak_check = QCheckBox(
+            'Automatically read final synthesized agent responses aloud (or click 🔊 Speak on any reply card)',
+            checked=bool(v_cfg.get('auto_speak_responses', False)),
+        )
+        vc_lay.addWidget(self.auto_speak_check)
+        lay.addWidget(voice_card)
 
         lay.addStretch()
         self.pages.addWidget(w)
@@ -1758,6 +1885,17 @@ class ManageAIsDialog(QDialog):
             {k: chk.isChecked() for k, chk in self.tool_checks.items()},
             config_path=self.config_path,
         )
+        if hasattr(self, 'voice_name_combo'):
+            from voice_service import save_voice_settings
+            save_voice_settings(
+                {
+                    'voice_name': self.voice_name_combo.currentText(),
+                    'microphone_device': self.mic_device_combo.currentText(),
+                    'volume_percent': int(self.voice_vol_slider.value()),
+                    'auto_speak_responses': self.auto_speak_check.isChecked(),
+                },
+                config_path=self.config_path,
+            )
         self.accept()
 
 
@@ -1842,11 +1980,11 @@ class PalaceWindow(QMainWindow):
         # --- LEFT SIDEBAR (Matches GPT/Antigravity mockup) ---
         sidebar = QWidget()
         sidebar.setObjectName('sidebar')
-        sidebar.setMinimumWidth(240)
-        sidebar.setMaximumWidth(280)
+        sidebar.setMinimumWidth(250)
+        sidebar.setMaximumWidth(285)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(12, 12, 12, 10)
-        side.setSpacing(6)
+        side.setContentsMargins(10, 10, 10, 8)
+        side.setSpacing(2)
 
         self.new_button = QPushButton('+ New Conversation')
         self.new_button.setObjectName('newConvoButton')
@@ -1892,7 +2030,7 @@ class PalaceWindow(QMainWindow):
 
         # Antigravity-style unified Projects & Conversations section header
         proj_header = QHBoxLayout()
-        proj_header.setContentsMargins(4, 8, 4, 2)
+        proj_header.setContentsMargins(4, 4, 4, 0)
         proj_label = QLabel('Projects')
         proj_label.setObjectName('sidebarHeading')
         proj_header.addWidget(proj_label)
@@ -1930,13 +2068,16 @@ class PalaceWindow(QMainWindow):
         self.discussions_toggle_btn.hide()
         side.addWidget(self.discussions_toggle_btn)
 
-        self.session_list = QListWidget()
+        self.session_list = SidebarSessionList()
         self.session_list.setObjectName('sidebarList')
         self.session_list.setAccessibleName('Conversations')
+        self.session_list.setIconSize(QSize(15, 15))
+        self.session_list.setSpacing(0)
         self.session_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.session_list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.session_list.currentItemChanged.connect(self.change_session)
         self.session_list.itemClicked.connect(self._on_sidebar_item_clicked)
+        self.session_list.sessions_reordered.connect(self._on_sidebar_sessions_reordered)
         self.session_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.session_list.customContextMenuRequested.connect(lambda pos: self._show_session_context_menu(self.session_list, pos))
         side.addWidget(self.session_list, 1)
@@ -2269,6 +2410,21 @@ class PalaceWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_active_turn)
         self.stop_button.hide()
         controls.addWidget(self.stop_button)
+
+        self.mic_button = QPushButton()
+        self.mic_button.setIcon(mic_qicon(False))
+        self.mic_button.setIconSize(QSize(15, 15))
+        self.mic_button.setCheckable(True)
+        self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_button.setFixedSize(30, 30)
+        self.mic_button.setToolTip('Voice Dictation (click to speak your prompt for all Council AIs; click again to transcribe)')
+        self.mic_button.setStyleSheet(
+            'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 15px; } '
+            'QPushButton:hover { background: #161b22; border-color: #30363d; } '
+            'QPushButton:checked { background: #2c1517; border: 1px solid #ef4444; }'
+        )
+        self.mic_button.toggled.connect(self._toggle_voice_dictation)
+        controls.addWidget(self.mic_button)
 
         self.send_button = QPushButton('↑')
         self.send_button.setObjectName('sendButton')
@@ -4444,12 +4600,18 @@ class PalaceWindow(QMainWindow):
         def _add_session_row(sess: dict, indented: bool = False):
             age = self.store.session_relative_age(sess['id']) if hasattr(self.store, 'session_relative_age') else ''
             raw_title = str(sess.get('title') or 'New conversation')
-            short_title = raw_title if len(raw_title) <= 26 else raw_title[:25] + '…'
-            prefix = '   ' if indented else ''
+            short_title = raw_title if len(raw_title) <= 27 else raw_title[:26] + '…'
+            prefix = '  ' if indented else ''
             display = f'{prefix}{short_title}   {age}' if age else f'{prefix}{short_title}'
             row = QListWidgetItem(display)
             row.setData(Qt.ItemDataRole.UserRole, sess['id'])
-            row.setToolTip(raw_title)
+            row.setToolTip(f'{raw_title}\n(Drag to reorder or drop onto a Project folder)')
+            row.setSizeHint(QSize(0, 23))
+            row.setFlags(
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsDragEnabled
+            )
             self.session_list.addItem(row)
             if sess['id'] == self.session_id:
                 self.session_list.setCurrentItem(row)
@@ -4465,11 +4627,18 @@ class PalaceWindow(QMainWindow):
                 pid = proj['id']
                 folder = str(proj.get('folder') or '').strip()
                 folder_tag = f'  [{Path(folder).name}]' if folder else ''
-                hdr = QListWidgetItem(f'📁  {proj["name"]}{folder_tag}')
+                hdr = QListWidgetItem(f'{proj["name"]}{folder_tag}')
+                hdr.setIcon(folder_grey_qicon(pid == selected_proj))
                 hdr.setData(Qt.ItemDataRole.UserRole, f'proj:{pid}')
                 hdr.setFont(bold_font)
+                hdr.setSizeHint(QSize(0, 24))
                 hdr.setForeground(QColor('#c9d1d9' if pid == selected_proj else '#8b949e'))
-                tip = f'Project: {proj["name"]}\nRight-click to start a conversation here or attach a local folder.'
+                hdr.setFlags(
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsSelectable
+                    | Qt.ItemFlag.ItemIsDropEnabled
+                )
+                tip = f'Project: {proj["name"]}\nDrag any conversation onto this folder to move it here, or right-click for options.'
                 if folder:
                     tip += f'\nAttached folder: {folder}'
                 hdr.setToolTip(tip)
@@ -4477,10 +4646,12 @@ class PalaceWindow(QMainWindow):
 
                 proj_sessions = [s for s in all_sessions if s.get('project_id') == pid]
                 if not proj_sessions:
-                    empty_row = QListWidgetItem('   No conversations yet')
+                    empty_row = QListWidgetItem('  No conversations yet')
                     empty_row.setData(Qt.ItemDataRole.UserRole, f'proj:{pid}')
                     empty_row.setFont(italic_font)
+                    empty_row.setSizeHint(QSize(0, 21))
                     empty_row.setForeground(QColor('#484f58'))
+                    empty_row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     self.session_list.addItem(empty_row)
                 else:
                     for s in proj_sessions:
@@ -4488,10 +4659,12 @@ class PalaceWindow(QMainWindow):
 
             unassigned = [s for s in all_sessions if not s.get('project_id')]
             if unassigned:
-                gen_hdr = QListWidgetItem('Recents')
+                gen_hdr = QListWidgetItem('Conversations')
                 gen_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
                 gen_hdr.setFont(bold_font)
+                gen_hdr.setSizeHint(QSize(0, 24))
                 gen_hdr.setForeground(QColor('#6e7681'))
+                gen_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 self.session_list.addItem(gen_hdr)
                 for s in unassigned:
                     _add_session_row(s, indented=False)
@@ -4500,21 +4673,106 @@ class PalaceWindow(QMainWindow):
             bold_font.setBold(True)
             italic_font = QFont('Segoe UI', 9)
             italic_font.setItalic(True)
-            empty_proj = QListWidgetItem('   No projects yet')
+            empty_proj = QListWidgetItem('No projects yet (click +)')
+            empty_proj.setIcon(folder_grey_qicon(False))
             empty_proj.setData(Qt.ItemDataRole.UserRole, 'proj:')
             empty_proj.setFont(italic_font)
+            empty_proj.setSizeHint(QSize(0, 22))
             empty_proj.setForeground(QColor('#484f58'))
             self.session_list.addItem(empty_proj)
 
-            rec_hdr = QListWidgetItem('Recents')
+            rec_hdr = QListWidgetItem('Conversations')
             rec_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
             rec_hdr.setFont(bold_font)
+            rec_hdr.setSizeHint(QSize(0, 24))
             rec_hdr.setForeground(QColor('#6e7681'))
+            rec_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.session_list.addItem(rec_hdr)
             for s in all_sessions:
                 _add_session_row(s, indented=False)
 
         self.session_list.blockSignals(False)
+
+    def _on_sidebar_sessions_reordered(self, ordered_entries: list[tuple[str, str | None]]):
+        if not hasattr(self.store, 'reorder_and_assign_sessions'):
+            return
+        try:
+            self.store.reorder_and_assign_sessions(ordered_entries)
+            self.refresh_projects()
+            self.refresh_sessions()
+            self.status_label.setText('Conversation order updated')
+        except Exception as exc:
+            self.show_notice(str(exc))
+
+    def _toggle_voice_dictation(self, recording: bool):
+        import tempfile
+        from voice_service import load_voice_settings, transcribe_audio_file
+        self.mic_button.setIcon(mic_qicon(recording))
+        if recording:
+            try:
+                from PySide6.QtMultimedia import (
+                    QAudioInput,
+                    QMediaCaptureSession,
+                    QMediaDevices,
+                    QMediaFormat,
+                    QMediaRecorder,
+                )
+                v_cfg = load_voice_settings(self.config_path)
+                pref_mic = str(v_cfg.get('microphone_device', 'System default'))
+                chosen_dev = QMediaDevices.defaultAudioInput()
+                for d in QMediaDevices.audioInputs():
+                    if d.description() == pref_mic:
+                        chosen_dev = d
+                        break
+                if chosen_dev.isNull():
+                    self.mic_button.blockSignals(True)
+                    self.mic_button.setChecked(False)
+                    self.mic_button.setIcon(mic_qicon(False))
+                    self.mic_button.blockSignals(False)
+                    self.show_notice('No microphone input device detected.')
+                    return
+                self._voice_wav_path = Path(tempfile.gettempdir()) / 'fairybread_dictation.wav'
+                if self._voice_wav_path.exists():
+                    self._voice_wav_path.unlink(missing_ok=True)
+                self._audio_in = QAudioInput(chosen_dev, self)
+                self._cap_session = QMediaCaptureSession(self)
+                self._cap_session.setAudioInput(self._audio_in)
+                self._recorder = QMediaRecorder(self)
+                self._cap_session.setRecorder(self._recorder)
+                fmt = QMediaFormat()
+                fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
+                fmt.setAudioCodec(QMediaFormat.AudioCodec.Wave)
+                self._recorder.setMediaFormat(fmt)
+                self._recorder.setOutputLocation(QUrl.fromLocalFile(str(self._voice_wav_path)))
+                self._recorder.record()
+                self.show_notice('🎤 Listening… Speak now, then click the red microphone again to insert text for all AIs.')
+            except Exception as exc:
+                self.mic_button.blockSignals(True)
+                self.mic_button.setChecked(False)
+                self.mic_button.setIcon(mic_qicon(False))
+                self.mic_button.blockSignals(False)
+                self.show_notice(f'Microphone error: {exc}')
+        else:
+            rec = getattr(self, '_recorder', None)
+            if rec is not None:
+                try:
+                    rec.stop()
+                except Exception:
+                    pass
+            wav_p = getattr(self, '_voice_wav_path', None)
+            if not wav_p:
+                return
+            self.show_notice('🎤 Transcribing voice for all Council AIs…')
+            QApplication.processEvents()
+            try:
+                text = transcribe_audio_file(wav_p)
+                cur = self.composer.toPlainText().strip()
+                combined = f'{cur} {text}'.strip() if cur else text
+                self.composer.setPlainText(combined)
+                self.composer.setFocus()
+                self.show_notice('✓ Voice transcribed into composer.')
+            except Exception as exc:
+                self.show_notice(f'Voice transcription notice: {exc}')
 
     def load_history(self):
         self.chat.clear()
@@ -4736,6 +4994,8 @@ class PalaceWindow(QMainWindow):
             f'<tr>'
             f'<td align="left" style="vertical-align:middle;">{badges_html}</td>'
             f'<td align="right" style="vertical-align:middle; margin-right:6px; color:#6e7681; font-size:11.5px;">'
+            f'<a href="speak:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Read response aloud">🔊 Speak</a>'
+            f'&nbsp;&nbsp;&nbsp;&nbsp;'
             f'<a href="copy:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Copy reply">⧉ Copy</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
             f'<a href="up:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Helpful">↑ Helpful</a>'
@@ -4843,6 +5103,16 @@ class PalaceWindow(QMainWindow):
         elif raw.startswith('delete-file:'):
             file_path = urllib.parse.unquote(raw.split('delete-file:', 1)[1])
             self._delete_stored_file(file_path)
+        elif raw.startswith('speak:'):
+            from voice_service import speak_agent_response
+            try:
+                idx = int(raw.split(':', 1)[1])
+                text = self.reply_archive[idx]
+            except (ValueError, IndexError):
+                text = self.last_answer
+            if text:
+                speak_agent_response(text, config_path=self.config_path)
+                self.status_label.setText('🔊 Reading response aloud…')
         elif raw.startswith('copy:'):
             try:
                 idx = int(raw.split(':', 1)[1])
@@ -5479,6 +5749,12 @@ class PalaceWindow(QMainWindow):
             if c and c not in self.conversation_contributors:
                 self.conversation_contributors.append(c)
         if result.final_answer:
+            try:
+                from voice_service import load_voice_settings, speak_agent_response
+                if load_voice_settings(self.config_path).get('auto_speak_responses'):
+                    speak_agent_response(result.final_answer, config_path=self.config_path)
+            except Exception:
+                pass
             # Render ONE combined reply card with an inline collapsible "› Peer deliberation" dropdown
             self.append_message(
                 'assistant',
@@ -5629,6 +5905,7 @@ class PalaceWindow(QMainWindow):
             self.deliberate_pill_btn,
             self.tangent_btn,
             self.search_depth_btn,
+            self.mic_button,
             self.send_button,
         ):
             setup_w.setVisible(not busy)

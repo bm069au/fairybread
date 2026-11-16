@@ -183,6 +183,24 @@ class SessionStore:
                 return
         raise ValueError('Unknown conversation.')
 
+    def reorder_and_assign_sessions(self, ordered_entries: list[tuple[str, str | None]]) -> None:
+        """Persist a new conversation order and project_id assignments from sidebar drag-and-drop."""
+        valid_proj_ids = {p['id'] for p in self.projects}
+        by_id = {item['id']: item for item in self.sessions}
+        new_list: list[dict] = []
+        seen: set[str] = set()
+        for sid, pid in ordered_entries:
+            if sid in by_id and sid not in seen:
+                entry = by_id[sid]
+                entry['project_id'] = pid if (pid and pid in valid_proj_ids) else None
+                new_list.append(entry)
+                seen.add(sid)
+        for item in self.sessions:
+            if item['id'] not in seen:
+                new_list.append(item)
+        self.data['sessions'] = new_list
+        self.save()
+
     def save(self):
         self.root.mkdir(parents=True, exist_ok=True)
         temporary = self.index_path.with_name(f'.conversations-{uuid4().hex}.tmp')
