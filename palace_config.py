@@ -153,7 +153,7 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "billing_note": "Strict prepaid top-up balance ($2/$5/$10) — never auto-charges past your balance.",
     },
     "qwen": {
-        "display_name": "Qwen (DeepInfra / DashScope)",
+        "display_name": "Qwen",
         "icon": "✦",
         "color": "#eab308",       # Bright Yellow / Gold
         "bg_color": "#29230f",

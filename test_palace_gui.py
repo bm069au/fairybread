@@ -1128,7 +1128,16 @@ class WindowTests(unittest.TestCase):
         stopped_worker = self.window.worker
         self.assertFalse(self.window.stop_button.isHidden())
         self.assertFalse(self.window.steer_button.isHidden())
-        self.assertFalse(self.window.queue_button.isHidden())
+        self.assertIn('Steer / Queue', self.window.steer_button.text())
+        self.assertTrue(self.window.queue_button.isHidden())
+        self.assertEqual(
+            classify_drawing_request('I want you to decide what to give me, and make 3 different banners and let me choose the best one. Surprise me.'),
+            'council_draw',
+        )
+        self.assertEqual(
+            classify_drawing_request('Make 3 different banners for my Facebook group'),
+            'direct_draw',
+        )
         self.window.stop_active_turn()
         self.assertEqual(self.window.composer.toPlainText(), 'Forgot to toggle Fairybread Code before hitting send')
         self.assertTrue(self.window.stop_button.isHidden())

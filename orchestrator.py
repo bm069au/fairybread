@@ -13,13 +13,18 @@ from synthesizer import PalaceSynthesizer, SynthesisResult
 
 _DIRECT_DRAW_VERB_RE = re.compile(
     r"\b(?:"
-    r"draw\s+(?:me\s+)?(?:a|an|the|some)?|"
-    r"paint\s+(?:me\s+)?(?:a|an|the|some)?|"
-    r"illustrate\s+(?:me\s+)?(?:a|an|the|some)?|"
-    r"render\s+(?:me\s+)?(?:a|an|the)?\s*(?:realistic|photorealistic|hyperrealistic|high[- ]res|hd|picture|image|photo|portrait|scene|cat|dog|[a-z]+\s+(?:cat|dog|portrait|landscape|banner|wallpaper))|"
-    r"(?:generate|create|make|render|design)\s+(?:me\s+)?(?:a|an|the)?\s*(?:[a-z0-9_-]+\s+){0,3}"
-    r"(?:image|picture|photo|photograph|portrait|drawing|painting|illustration|wallpaper|banner|cover|thumbnail|poster)"
+    r"draw\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
+    r"paint\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
+    r"illustrate\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
+    r"render\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:realistic|photorealistic|hyperrealistic|high[- ]res|hd|pictures?|images?|photos?|portraits?|scenes?|cats?|dogs?|[a-z]+\s+(?:cats?|dogs?|portraits?|landscapes?|banners?|wallpapers?))|"
+    r"(?:generate|create|make|render|design|give\s+me|want|like|need|requested)\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:[a-z0-9_-]+\s+){0,4}"
+    r"(?:images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?)"
     r")\b",
+    re.IGNORECASE,
+)
+
+_VISUAL_TOPIC_RE = re.compile(
+    r"\b(?:images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?)\b",
     re.IGNORECASE,
 )
 
@@ -28,7 +33,8 @@ _COUNCIL_COLLAB_RE = re.compile(
     r"all\s+agents|all\s+ais|all\s+of\s+you|everyone\s+help|everyone\s+work|"
     r"council\s+(?:help|work|brainstorm|deliberate|design)|"
     r"work\s+on\s+the\s+prompt|brainstorm\s+the\s+prompt|collaborate\s+on|"
-    r"help\s+with\s+the\s+prompt|together\s+on\s+the\s+prompt"
+    r"help\s+with\s+the\s+prompt|together\s+on\s+the\s+prompt|"
+    r"come\s+up\s+with\s+some\s+ideas|decide\s+what\s+to\s+give\s+me|surprise\s+me"
     r")\b",
     re.IGNORECASE,
 )
@@ -127,15 +133,17 @@ class PalaceOrchestrator:
         if drawing_mode == "direct_draw":
             mode_rules = (
                 "- DIRECT DRAWING / PROMPT ARCHITECT MODE: You have been selected as the sole Prompt Architect for this image request. "
-                "Do NOT defer to another agent (`[DEFER EXECUTION TO: ...]`). Instead, immediately expand the user's request into a rich, "
-                "detailed photographic or artistic specification (lighting, composition, textures, background details, camera/lens cues or artistic medium) "
-                "inside a single `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag, accompanied by a brief 1–2 sentence caption."
+                "Do NOT defer to another agent (`[DEFER EXECUTION TO: ...]`) and NEVER return text descriptions asking the user to pick an option before drawing. "
+                "Instead, immediately expand the user's request into rich, detailed photographic or artistic specifications (lighting, composition, textures, background details, camera/lens cues) "
+                "and emit the `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag(s) directly (if the user asked for N images/banners/options, emit N separate `[GENERATE_IMAGE ...]` tags!). "
+                "Do NOT wrap `[GENERATE_IMAGE ...]` inside markdown code fences (` ``` `)."
             )
         elif drawing_mode == "council_draw":
             mode_rules = (
-                "- COUNCIL-ASSISTED PROMPT BRAINSTORM MODE: The user asked the council to collaborate on the visual prompt. "
-                "Contribute specific visual, lighting, anatomical, or compositional improvements to make the prompt extraordinary, "
-                "or reply with `[PASS]` if a peer already covered it. Only ONE final consolidated `[GENERATE_IMAGE ...]` tag will be executed in the final synthesis."
+                "- COUNCIL-ASSISTED PROMPT BRAINSTORM MODE: The user asked the council to collaborate on or design visual concepts/images. "
+                "Contribute specific visual, lighting, anatomical, or compositional improvements and emit the executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag(s) "
+                "(if the user asked for multiple images/banners/options, emit multiple `[GENERATE_IMAGE ...]` tags so every option is actually rendered for the user to see!). "
+                "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) and NEVER ask the user to copy-paste a prompt into another tool."
             )
         else:
             mode_rules = (
@@ -643,7 +651,13 @@ Instructions:
                     session_context=session_context
                 )
             )
-            if drawing_mode == "none" and synthesis and synthesis.text and "[GENERATE_IMAGE" in synthesis.text.upper():
+            if (
+                drawing_mode == "none"
+                and not _VISUAL_TOPIC_RE.search(effective_question)
+                and synthesis
+                and synthesis.text
+                and "[GENERATE_IMAGE" in synthesis.text.upper()
+            ):
                 synthesis.text = re.sub(r"\[GENERATE_IMAGE\s+[^\]]+\]", "", synthesis.text, flags=re.IGNORECASE).strip()
 
         result = PalaceRunResult(
@@ -659,14 +673,14 @@ Instructions:
             peer_rounds=peer_rounds
         )
         if (
-            drawing_mode != "none"
+            (drawing_mode != "none" or _VISUAL_TOPIC_RE.search(effective_question))
             and result.final_answer
             and "[GENERATE_IMAGE" in result.final_answer.upper()
             and not (cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set())
         ):
             if on_phase_status is not None:
                 try:
-                    on_phase_status({"event": "phase", "text": "Rendering High-Resolution Image…"})
+                    on_phase_status({"event": "phase", "text": "Rendering High-Resolution Image(s)…"})
                 except Exception:
                     pass
             try:

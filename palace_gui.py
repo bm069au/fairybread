@@ -1962,7 +1962,7 @@ class PalaceWindow(QMainWindow):
         top_strip.setContentsMargins(12, 5, 12, 5)
         top_strip.setSpacing(8)
 
-        self.conversation_title = QLabel('Fairybread  /  New conversation')
+        self.conversation_title = ResponsiveBarLabel('Fairybread  /  New conversation')
         self.conversation_title.setStyleSheet('color: #c9d1d9; font-size: 12.5px; font-weight: 600;')
         top_strip.addWidget(self.conversation_title)
 
@@ -2039,7 +2039,14 @@ class PalaceWindow(QMainWindow):
         self.memory_button = QPushButton('Memory')
         self.memory_button.setObjectName('topIconButton')
         self.memory_button.setCheckable(True)
+        self.memory_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.memory_button.setToolTip('Toggle proposed memories panel')
+        self.memory_button.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
+            'QPushButton:hover { color: #c9d1d9; } '
+            'QPushButton:checked { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; font-weight: 700; }'
+        )
         top_strip.addWidget(self.memory_button)
         layout.addWidget(loaded_frame)
 
@@ -2178,7 +2185,7 @@ class PalaceWindow(QMainWindow):
         self.tangent_btn.toggled.connect(lambda on: self.tangent_btn.setIcon(tangent_qicon(on)))
         controls.addWidget(self.tangent_btn)
 
-        self.palace_code_btn = QPushButton(' Fairybread Code')
+        self.palace_code_btn = QPushButton(' Code')
         self.palace_code_btn.setIcon(code_shield_qicon(False))
         self.palace_code_btn.setIconSize(QSize(15, 15))
         self.palace_code_btn.setCheckable(True)
@@ -2197,7 +2204,7 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.palace_code_btn)
 
         self.current_search_depth = 'default'
-        self.search_depth_btn = QPushButton('🔍 Search: Default ▾')
+        self.search_depth_btn = QPushButton('🔍 Default ▾')
         self.search_depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.search_depth_btn.setToolTip(
             'Search Depth (or type /search, /msearch, /deepsearch):\n'
@@ -2229,37 +2236,35 @@ class PalaceWindow(QMainWindow):
 
         controls.addStretch()
 
-        self.steer_button = QPushButton('🧭 Steer')
-        self.steer_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steer_button.setToolTip('Inject your typed instruction (or newly toggled Fairybread Code) directly into the active turn on the fly')
-        self.steer_button.setStyleSheet(
-            'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; } '
-            'QPushButton:hover { background: #1b3150; }'
+        self._neutral_busy_btn_style = (
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
         )
-        self.steer_button.clicked.connect(self.steer_active_turn)
+        self.steer_button = QPushButton('Steer / Queue ▾')
+        self.steer_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.steer_button.setToolTip(
+            'Choose how to apply a message while a turn is running:\n'
+            '• Steer Active Turn: Inject instruction into the current turn before synthesis\n'
+            '• Queue Next Turn: Run automatically as soon as the current turn finishes'
+        )
+        self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
+        self.steer_button.clicked.connect(self._show_busy_action_menu)
         self.steer_button.hide()
         controls.addWidget(self.steer_button)
 
-        self.queue_button = QPushButton('⏳ Queue')
-        self.queue_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.queue_button.setToolTip('Queue your typed message to run automatically as soon as the active turn finishes')
-        self.queue_button.setStyleSheet(
-            'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; } '
-            'QPushButton:hover { background: #383014; }'
-        )
+        # Keep queue_button reference for unit tests, hidden from layout so only one dropdown is shown
+        self.queue_button = QPushButton('Queue')
         self.queue_button.clicked.connect(self.queue_next_turn)
         self.queue_button.hide()
-        controls.addWidget(self.queue_button)
 
         self.stop_button = QPushButton('■ Stop')
         self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.stop_button.setToolTip('Stop the active turn immediately and restore your prompt into the input box (Esc)')
         self.stop_button.setStyleSheet(
-            'QPushButton { background: #2c1517; color: #f87171; border: 1px solid #ef4444; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; } '
-            'QPushButton:hover { background: #3f1d20; color: #ffffff; }'
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { background: #2c1517; color: #f87171; border: 1px solid #ef4444; }'
         )
         self.stop_button.clicked.connect(self.stop_active_turn)
         self.stop_button.hide()
@@ -2741,25 +2746,12 @@ class PalaceWindow(QMainWindow):
         new_proj_act.triggered.connect(lambda: self.new_project())
         proj_menu.addAction(new_proj_act)
 
-        ai_menu = menubar.addMenu('AIs')
-        manage_act = QAction('Choose / Manage AIs…', self)
-        manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
-        ai_menu.addAction(manage_act)
-
-        key_portals_menu = ai_menu.addMenu('🔑 Get API Keys (Provider Portals) ↗')
-        for p_id, meta in PROVIDER_CATALOG.items():
-            url = str(meta.get('key_url', '')).strip()
-            if not url:
-                continue
-            disp = str(meta.get('display_name', p_id.title()))
-            bill = str(meta.get('billing_note', ''))
-            act = QAction(provider_qicon(p_id, True), f'{disp}  —  {bill}', key_portals_menu)
-            act.triggered.connect(lambda _c=False, u=url: webbrowser.open(u))
-            key_portals_menu.addAction(act)
-
-        ai_menu.addSeparator()
-        idle_act = QAction('Switch to Idle Mode Sanctuary', self)
-        idle_act.triggered.connect(lambda: self.profile_combo.setCurrentText('Idle'))
+        ai_menu = menubar.addMenu('Mode')
+        normal_mode_act = QAction('Normal AI Mode', self)
+        normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
+        ai_menu.addAction(normal_mode_act)
+        idle_act = QAction('Idle Experimental Mode', self)
+        idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
         ai_menu.addAction(idle_act)
 
         view_menu = menubar.addMenu('View')
@@ -4061,9 +4053,7 @@ class PalaceWindow(QMainWindow):
         if not hasattr(self, 'agent_chips_grid') or not hasattr(self, 'agent_workbench_frame'):
             return
         while self.agent_chips_grid.count():
-            item = self.agent_chips_grid.takeAt(0)
-            if item and item.widget():
-                item.widget().setParent(None)
+            self.agent_chips_grid.takeAt(0)
 
         visible = [
             (name, btn)
@@ -4147,9 +4137,7 @@ class PalaceWindow(QMainWindow):
         # Layout right-side status_label + bottom_token_label using the exact same state rules
         if hasattr(self, 'right_status_grid') and hasattr(self, 'status_label') and hasattr(self, 'bottom_token_label'):
             while self.right_status_grid.count():
-                item = self.right_status_grid.takeAt(0)
-                if item and item.widget():
-                    item.widget().setParent(None)
+                self.right_status_grid.takeAt(0)
 
             lbl_h = 19 if compact else 22
             status_pad = '0px 4px' if compact else '1px 6px'
@@ -5220,11 +5208,11 @@ class PalaceWindow(QMainWindow):
     def _set_search_depth(self, depth_key: str):
         self.current_search_depth = depth_key
         labels = {
-            'default': '🔍 Search: Default ▾',
-            'moderate': '🔎 Search: Moderate ▾',
-            'deep': '🌐 Search: Deep ▾',
+            'default': '🔍 Default ▾',
+            'moderate': '🔎 Moderate ▾',
+            'deep': '🌐 Deep ▾',
         }
-        self.search_depth_btn.setText(labels.get(depth_key, '🔍 Search: Default ▾'))
+        self.search_depth_btn.setText(labels.get(depth_key, '🔍 Default ▾'))
         if depth_key == 'default':
             self.search_depth_btn.setStyleSheet(
                 'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
@@ -5241,6 +5229,16 @@ class PalaceWindow(QMainWindow):
                 'QPushButton { background: #221538; color: #c084fc; border: 1px solid #a855f7; '
                 'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
             )
+
+    def _show_busy_action_menu(self):
+        menu = QMenu(self)
+        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn)')
+        queue_act = menu.addAction('⏳ Queue for Next Turn (run after current turn)')
+        chosen = menu.exec(self.steer_button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+        if chosen == steer_act:
+            self.steer_active_turn()
+        elif chosen == queue_act:
+            self.queue_next_turn()
 
     @Slot()
     def stop_active_turn(self):
@@ -5284,6 +5282,11 @@ class PalaceWindow(QMainWindow):
         if note:
             self.active_steering_state.setdefault('notes', []).append(note)
             self.composer.clear()
+            self.steer_button.setText(f"🧭 Steer ({len(self.active_steering_state['notes'])}) ▾")
+            self.steer_button.setStyleSheet(
+                'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+                'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+            )
             self.show_notice(f'✓ Live Steering injected into active turn: "{note[:60]}"')
         else:
             self.show_notice('✓ Live Steering updated (Fairybread Code & tool flags synced to active turn).')
@@ -5292,12 +5295,17 @@ class PalaceWindow(QMainWindow):
     def queue_next_turn(self):
         question = self.composer.toPlainText().strip()
         if not question:
-            self.show_notice('Type a command in the composer first, then click ⏳ Queue.')
+            self.show_notice('Type a command in the composer first, then choose Queue.')
             return
         if not hasattr(self, 'queued_prompts'):
             self.queued_prompts = []
         self.queued_prompts.append(question)
         self.composer.clear()
+        self.steer_button.setText(f'⏳ Queued ({len(self.queued_prompts)}) ▾')
+        self.steer_button.setStyleSheet(
+            'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
+            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+        )
         self.show_notice(f'⏳ Queued ({len(self.queued_prompts)}): "{question[:55]}" — will run automatically next.')
 
     @Slot()
@@ -5452,8 +5460,6 @@ class PalaceWindow(QMainWindow):
                 )
             self.pending_status_text = f'Round {rnd}: {done_c}/{tot_c} AIs responded ({provider_display_name(prov)} finished)'
             self._update_inline_status_banner()
-            self.status_label.setTextFormat(Qt.TextFormat.PlainText)
-            self.status_label.setText(self.pending_status_text)
         elif kind == 'phase':
             txt = str(ev.get('text', '')).strip()
             for r_prov in ev.get('reset_working', []) or []:
@@ -5461,8 +5467,6 @@ class PalaceWindow(QMainWindow):
             if txt:
                 self.pending_status_text = txt
                 self._update_inline_status_banner()
-                self.status_label.setTextFormat(Qt.TextFormat.PlainText)
-                self.status_label.setText(txt)
 
     @Slot(object)
     def answer_ready(self, result):
@@ -5618,6 +5622,16 @@ class PalaceWindow(QMainWindow):
                        self.tangent_btn, self.no_history_btn,
                        self.ai_pill_button, self.profile_combo):
             widget.setEnabled(not busy)
+        # Hide pre-turn setup buttons while busy so the composer row never crowds or clips!
+        for setup_w in (
+            self.attach_button,
+            self.ai_pill_button,
+            self.deliberate_pill_btn,
+            self.tangent_btn,
+            self.search_depth_btn,
+            self.send_button,
+        ):
+            setup_w.setVisible(not busy)
         # Keep composer, Settings & AIs, and Fairybread Code toggle unlocked during work!
         self.manage_ais_button.setEnabled(True)
         self.composer.setEnabled(True)
@@ -5628,8 +5642,11 @@ class PalaceWindow(QMainWindow):
             self.stop_button.setVisible(bool(busy))
         if hasattr(self, 'steer_button'):
             self.steer_button.setVisible(bool(busy))
+            if not busy and hasattr(self, '_neutral_busy_btn_style') and not getattr(self, 'queued_prompts', None):
+                self.steer_button.setText('Steer / Queue ▾')
+                self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
         if hasattr(self, 'queue_button'):
-            self.queue_button.setVisible(bool(busy))
+            self.queue_button.hide()
         if self.current_profile == 'Idle':
             self.profile_combo.setEnabled(True)
             self.manage_ais_button.setEnabled(True)

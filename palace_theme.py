@@ -709,9 +709,38 @@ def generate_ai_image_to_png(
     return None
 
 
+def _unwrap_real_image_tags(text: str) -> str:
+    """Unwrap real [GENERATE_IMAGE prompt="..." ...] tags that an AI accidentally placed inside
+    ```text / ```markdown fences or standalone line backticks, while keeping short documentation
+    examples (like `Use `[GENERATE_IMAGE prompt="example" title="demo"]` to draw.`) untouched as code.
+    """
+    if not text or "[GENERATE_IMAGE" not in text.upper():
+        return text
+
+    def _unwrap_fence(m: re.Match) -> str:
+        inner = (m.group(2) or "").strip().strip("`").strip()
+        if inner.upper().startswith("[GENERATE_IMAGE") and inner.endswith("]"):
+            return inner
+        return m.group(0)
+
+    out = re.sub(r"```([a-zA-Z0-9_-]*)\s*\n(\s*`?\[GENERATE_IMAGE\b.*?\]`?\s*)\n```", _unwrap_fence, text, flags=re.DOTALL | re.IGNORECASE)
+
+    def _unwrap_standalone_backtick(m: re.Match) -> str:
+        tag = m.group(1)
+        attrs = _parse_generate_image_attrs(tag)
+        p = attrs.get("prompt", "").strip()
+        if len(p) >= 15 and p.lower() not in {"example", "..."}:
+            return tag
+        return m.group(0)
+
+    out = re.sub(r"(?m)^\s*`(\[GENERATE_IMAGE\b[^\n`]+?\])`\s*$", _unwrap_standalone_backtick, out)
+    return out
+
+
 def _strip_code_spans_for_tag_scan(text: str) -> str:
     """Remove fenced code blocks and inline backtick spans so example tags inside code never fire API calls."""
-    without_fenced = re.sub(r"```.*?```", "", text or "", flags=re.DOTALL)
+    unwrapped = _unwrap_real_image_tags(text or "")
+    without_fenced = re.sub(r"```.*?```", "", unwrapped, flags=re.DOTALL)
     return re.sub(r"`[^`\n]+`", "", without_fenced)
 
 
@@ -796,7 +825,7 @@ def format_markdown_and_drawings(content: str) -> str:
             return f"@@PALACE_IMG_{idx}@@"
         return match.group(0)
 
-    processed = _SVG_FENCE_PATTERN.sub(_replace_svg, raw)
+    processed = _SVG_FENCE_PATTERN.sub(_replace_svg, _unwrap_real_image_tags(raw))
 
     # 2. Extract fenced code blocks ```lang ... ``` and inline backticks `...` BEFORE matching [GENERATE_IMAGE]
     # so backticked documentation examples never trigger image rendering!
