@@ -225,9 +225,9 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#2b1422",
         "key_url": "https://cloud.cerebras.ai/",
         "default_base_url": "",
-        "default_model": "llama3.1-8b",
-        "suggested_models": ["llama3.1-8b", "llama-3.3-70b"],
-        "billing_note": "Free tier & developer wafer-scale inference.",
+        "default_model": "gpt-oss-120b",
+        "suggested_models": ["gpt-oss-120b", "qwen-3.8-27b"],
+        "billing_note": "Wafer-scale inference: gpt-oss-120b (120B, 5 req/min) with automatic failover to qwen-3.8-27b (450 req/min).",
     },
     "together": {
         "display_name": "Together AI",
@@ -515,6 +515,65 @@ def set_provider_enabled(
         enabled=enabled,
         config_path=config_path
     )
+
+
+def fetch_live_provider_models(
+    provider_name: str,
+    api_key: str,
+    base_url: str = "",
+) -> list[str]:
+    """Query the provider's live /models endpoint so users never have to wait for code updates when models change."""
+    clean = (provider_name or "").strip().lower()
+    cat = PROVIDER_CATALOG.get(clean, {})
+    fallback = list(cat.get("suggested_models", []))
+    key = (api_key or "").strip()
+    if not key and clean != "ollama":
+        return fallback
+
+    discovered: list[str] = []
+    try:
+        if clean == "cerebras":
+            from cerebras.cloud.sdk import Cerebras
+            c = Cerebras(api_key=key)
+            discovered = [str(m.id) for m in c.models.list().data if getattr(m, "id", None)]
+        elif clean == "gemini":
+            from google import genai
+            client = genai.Client(api_key=key)
+            for m in client.models.list():
+                mname = str(getattr(m, "name", "") or "").replace("models/", "")
+                if mname and ("gemini" in mname or "imagen" in mname):
+                    discovered.append(mname)
+        elif clean == "cohere":
+            import cohere
+            client = cohere.ClientV2(api_key=key)
+            resp = client.models.list()
+            for m in getattr(resp, "models", []) or []:
+                mname = str(getattr(m, "name", "") or "")
+                if mname:
+                    discovered.append(mname)
+        else:
+            import urllib.request
+            eff_url = (base_url or str(cat.get("default_base_url") or "")).strip().rstrip("/")
+            if not eff_url and clean == "openai":
+                eff_url = "https://api.openai.com/v1"
+            elif not eff_url and clean == "mistral":
+                eff_url = "https://api.mistral.ai/v1"
+            if eff_url:
+                req = urllib.request.Request(
+                    f"{eff_url}/models",
+                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                    data_list = payload.get("data", []) if isinstance(payload, dict) else []
+                    for item in data_list:
+                        if isinstance(item, dict) and item.get("id"):
+                            discovered.append(str(item["id"]))
+    except Exception:
+        pass
+
+    merged = list(dict.fromkeys([*discovered, *fallback]))
+    return merged[:60]
 
 
 def load_idle_settings(

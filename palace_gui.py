@@ -864,24 +864,54 @@ class ManageAIsDialog(QDialog):
         self.enabled_check.toggled.connect(self._auto_save_current_provider)
         form.addRow('', self.enabled_check)
 
+        key_row = QHBoxLayout()
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_edit.setPlaceholderText('Paste API key — saves & encrypts automatically (Windows DPAPI)')
         self.api_key_edit.textEdited.connect(self._auto_save_current_provider)
         self.api_key_edit.editingFinished.connect(self._auto_save_current_provider)
-        form.addRow('API Key:', self.api_key_edit)
+        show_key_btn = QPushButton('👁 Show')
+        show_key_btn.setCheckable(True)
+        show_key_btn.toggled.connect(
+            lambda checked: (
+                self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password),
+                show_key_btn.setText('🙈 Hide' if checked else '👁 Show'),
+            )
+        )
+        key_row.addWidget(self.api_key_edit, 1)
+        key_row.addWidget(show_key_btn)
+        form.addRow('1. API Key:', key_row)
 
-        self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText('Model ID (auto-filled per provider, or type custom)')
-        self.model_edit.textEdited.connect(self._auto_save_current_provider)
-        self.model_edit.editingFinished.connect(self._auto_save_current_provider)
-        form.addRow('Model:', self.model_edit)
+        model_row = QHBoxLayout()
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_edit = self.model_combo.lineEdit()
+        self.model_edit.setPlaceholderText('Select a model from the dropdown or click Fetch Live Models')
+        self.model_combo.currentTextChanged.connect(self._auto_save_current_provider)
+        self.fetch_models_btn = QPushButton('↻ Fetch Live Models')
+        self.fetch_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fetch_models_btn.setToolTip('Query this provider’s live API using your API key to list all currently available models.')
+        self.fetch_models_btn.clicked.connect(self._fetch_live_models_for_current_provider)
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(self.fetch_models_btn)
+        form.addRow('2. Model:', model_row)
 
+        self.adv_url_check = QCheckBox('▸ Show Advanced Custom Base URL (Not needed for Cerebras, OpenAI, Gemini, etc.)')
+        form.addRow('', self.adv_url_check)
+
+        self.base_url_label = QLabel('Base URL:')
         self.base_url_edit = QLineEdit()
-        self.base_url_edit.setPlaceholderText('OpenAI-compatible Base URL (auto-filled when needed)')
+        self.base_url_edit.setPlaceholderText('Leave blank for official cloud endpoint (only used for custom proxies / Ollama)')
         self.base_url_edit.textEdited.connect(self._auto_save_current_provider)
         self.base_url_edit.editingFinished.connect(self._auto_save_current_provider)
-        form.addRow('Base URL:', self.base_url_edit)
+        form.addRow(self.base_url_label, self.base_url_edit)
+
+        def _toggle_adv_url(checked: bool):
+            self.base_url_label.setVisible(checked)
+            self.base_url_edit.setVisible(checked)
+
+        self.adv_url_check.toggled.connect(_toggle_adv_url)
+        _toggle_adv_url(False)
 
         self.auto_save_status_label = QLabel('🔒 Protected by Windows DPAPI · Auto-save enabled')
         self.auto_save_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px; font-weight: 600;')
@@ -1602,6 +1632,35 @@ class ManageAIsDialog(QDialog):
         except Exception:
             pass
 
+    def _fetch_live_models_for_current_provider(self):
+        from palace_config import fetch_live_provider_models
+        clean = (getattr(self, '_active_provider_slug', '') or self.provider_combo.currentText()).strip().lower()
+        if not clean:
+            return
+        key = self.api_key_edit.text().strip()
+        if not key:
+            try:
+                key = self.credential_store.get_api_key(clean) or ''
+            except Exception:
+                key = ''
+        models = fetch_live_provider_models(clean, key, self.base_url_edit.text().strip())
+        if models and hasattr(self, 'model_combo'):
+            cur_text = self.model_edit.text().strip()
+            self._loading_provider_fields = True
+            try:
+                self.model_combo.clear()
+                for m in models:
+                    self.model_combo.addItem(m)
+                if cur_text and cur_text in models:
+                    self.model_combo.setCurrentText(cur_text)
+                elif models:
+                    self.model_combo.setCurrentText(models[0])
+            finally:
+                self._loading_provider_fields = False
+            self._auto_save_current_provider()
+            if hasattr(self, 'auto_save_status_label'):
+                self.auto_save_status_label.setText(f'✓ Loaded {len(models)} live models from {clean.capitalize()} API')
+
     def _load_selected_provider(self, name: str):
         clean = name.strip().lower()
         self._loading_provider_fields = True
@@ -1613,8 +1672,9 @@ class ManageAIsDialog(QDialog):
 
             disp = cat.get('display_name', clean.capitalize())
             billing = cat.get('billing_note', 'Custom OpenAI-compatible provider.')
-            sugg = ', '.join(cat.get('suggested_models', [])[:3])
-            info_txt = f'{disp} — {billing}' + (f'  (Suggested models: {sugg})' if sugg else '')
+            sugg = list(cat.get('suggested_models', []))
+            sugg_txt = ', '.join(sugg[:3])
+            info_txt = f'{disp} — {billing}' + (f'  (Models: {sugg_txt})' if sugg_txt else '')
             if hasattr(self, 'provider_billing_label'):
                 self.provider_billing_label.setText(info_txt)
             if hasattr(self, 'get_key_portal_btn'):
@@ -1628,8 +1688,24 @@ class ManageAIsDialog(QDialog):
 
             default_en = bool(cfg.get('enabled', has_key))
             self.enabled_check.setChecked(default_en)
-            self.model_edit.setText(str(cfg.get('model') or cat.get('default_model') or ''))
+
+            saved_model = str(cfg.get('model') or cat.get('default_model') or '').strip()
+            if clean == 'cerebras' and saved_model.lower() in {'llama3.1-8b', 'llama-3.1-8b', 'llama-3.3-70b'}:
+                saved_model = 'gpt-oss-120b'
+
+            if hasattr(self, 'model_combo'):
+                self.model_combo.clear()
+                all_choices = list(dict.fromkeys([m for m in ([saved_model] + sugg) if m]))
+                for m in all_choices:
+                    self.model_combo.addItem(m)
+                self.model_combo.setCurrentText(saved_model)
+            else:
+                self.model_edit.setText(saved_model)
+
             self.base_url_edit.setText(str(cfg.get('base_url') or cat.get('default_base_url') or ''))
+            if hasattr(self, 'adv_url_check'):
+                needs_url = clean not in PROVIDER_CATALOG or clean == 'ollama'
+                self.adv_url_check.setChecked(needs_url)
             self.api_key_edit.clear()
             if has_key:
                 self.api_key_edit.setPlaceholderText('✓ Encrypted in Windows DPAPI Vault (paste new key to replace)')
