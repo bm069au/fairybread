@@ -2413,25 +2413,30 @@ class PalaceWindow(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle('Support Fairybread — Voluntary USD Donation & Corporate Licensing')
-        dlg.resize(660, 410)
+        dlg.resize(720, 480)
         dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
         v = QVBoxLayout(dlg)
         v.setContentsMargins(20, 18, 20, 18)
         v.setSpacing(12)
 
         hdr = QLabel(
-            '<h3 style="margin:0; color:#f0f6fc;">🧚 Support Fairybread (Open-Source Donationware)</h3>'
+            '<h3 style="margin:0; color:#f0f6fc;">🧚 A Personal Note from Brett — Why Your Support Matters</h3>'
             '<p style="color:#c9d1d9; font-size:13px; margin-top:6px;">'
-            'Fairybread is <b>free and source-available for personal use and small teams up to 2 seats</b>, '
-            'with zero feature locks or recurring nags. Every donation of any amount directly helps the developer '
-            '(<b>Brett Martin Moore</b>) fund ongoing development and multi-AI API testing.'
+            'I built <b>Fairybread</b> to replace corporate lock-in (ChatGPT Plus, Claude Pro, Grok) with '
+            '<b>100% local, private persistent memory</b> and zero monthly fees—plus an autonomous <b>Idle Mode</b> '
+            'where you can run your own multi-AI experiments.<br><br>'
+            'In real life, I am a disabled man living on a disability pension, and I struggle to pay my everyday bills. '
+            'Fairybread is <b>free for personal use (up to 2 seats)</b>, but if you enjoy it and can spare a donation, '
+            '<b>it will genuinely help me pay my bills and keep building.</b> My appreciation is enormous!<br><br>'
+            '<b>What Supporters Get:</b> The <b>Fairybread Newsletter</b> ($10+), <b>Release Notes &amp; Early Theme/Add-On Previews</b> ($25+), '
+            '<b>Beta Test Group &amp; Priority Code Requests</b> ($50+), or <b>1-on-1 Setup Consulting &amp; Custom Code</b> ($350).'
             '</p>'
         )
         hdr.setWordWrap(True)
         hdr.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(hdr)
 
-        tier_lbl = QLabel('<b>One-Click Voluntary Donation (in USD via GitHub Sponsors / Stripe):</b>')
+        tier_lbl = QLabel('<b>One-Click Voluntary Donation (in USD via GitHub Sponsors):</b>')
         tier_lbl.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(tier_lbl)
 
@@ -2439,16 +2444,17 @@ class PalaceWindow(QMainWindow):
         tier_specs = [
             ('$5 USD', '5', '#1f6feb'),
             ('$10 USD', '10', '#238636'),
-            ('$20 USD', '20', '#8957e5'),
+            ('$25 USD', '25', '#8957e5'),
             ('$50 USD', '50', '#d29922'),
-            ('Other Amount (USD)', 'other', '#30363d'),
+            ('$350 USD', '350', '#b62324'),
+            ('Other (USD)', 'other', '#30363d'),
         ]
         for btn_text, key, bg_col in tier_specs:
             b = QPushButton(btn_text, dlg)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(
                 f'QPushButton {{ background:{bg_col}; color:#ffffff; border:1px solid #f0f6fc33; '
-                f'border-radius:8px; padding:9px 14px; font-size:13px; font-weight:700; }} '
+                f'border-radius:8px; padding:9px 12px; font-size:13px; font-weight:700; }} '
                 f'QPushButton:hover {{ opacity:0.9; border-color:#ffffff; }}'
             )
             url = DONATION_TIER_URLS.get(key, DONATION_TIER_URLS['other'])

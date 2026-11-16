@@ -26,8 +26,9 @@ UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERS
 DONATION_URLS = {
     "5": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=5",
     "10": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=10",
-    "20": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=20",
+    "25": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=25",
     "50": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=50",
+    "350": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=350",
     "other": "https://github.com/sponsors/bm069au?frequency=one-time",
 }
 CORP_MAILTO = "mailto:bm069au@gmail.com?subject=Fairybread%20Corporate%20License%20Inquiry%20(%3E2%20Seats)"
@@ -235,10 +236,12 @@ def run_gui_installer() -> int:
     don_frame.setStyleSheet("background:#161b22; border:1px solid #30363d; border-radius:8px; padding:10px;")
     don_lay = QVBoxLayout(don_frame)
     don_lbl = QLabel(
-        "<b>❤️ Open-Source Donationware (USD) &amp; Corporate Licensing:</b><br>"
-        "<span style='color:#8b949e; font-size:12px;'>"
-        "Fairybread is free for personal use and up to 2 seats. A voluntary donation of any amount helps the developer! "
-        "For businesses using more than 2 seats, a corporate license fee is negotiable."
+        "<b>❤️ A Personal Note from Brett (USD Donations &amp; Corporate Licensing):</b><br>"
+        "<span style='color:#c9d1d9; font-size:12px;'>"
+        "In real life I am a disabled man on a disability pension struggling to pay my bills. "
+        "Fairybread is free for personal use (up to 2 seats), and any donation genuinely helps me pay my bills and keep building! "
+        "Supporters get our <b>Newsletter</b>, <b>Beta Test Group</b>, <b>Priority Code Requests</b>, <b>Themes</b> &amp; <b>Idle Mode Add-Ons</b>. "
+        "For businesses using &gt;2 seats, a corporate license is negotiable."
         "</span>"
     )
     don_lbl.setWordWrap(True)
@@ -249,8 +252,9 @@ def run_gui_installer() -> int:
     for label, key, col in [
         ("$5 USD", "5", "#1f6feb"),
         ("$10 USD", "10", "#238636"),
-        ("$20 USD", "20", "#8957e5"),
+        ("$25 USD", "25", "#8957e5"),
         ("$50 USD", "50", "#d29922"),
+        ("$350 USD", "350", "#b62324"),
         ("Other USD", "other", "#30363d"),
     ]:
         b = QPushButton(label, don_frame)

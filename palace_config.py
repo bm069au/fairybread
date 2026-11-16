@@ -26,7 +26,9 @@ DONATION_TIER_URLS: dict[str, str] = {
     "5": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=5",
     "10": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=10",
     "20": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=20",
+    "25": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=25",
     "50": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=50",
+    "350": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=350",
     "other": "https://github.com/sponsors/bm069au?frequency=one-time",
 }
 
