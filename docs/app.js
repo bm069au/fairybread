@@ -89,7 +89,7 @@ If you support the project via the **Donors & Donate** tab, your account automat
         author: 'Sarah_Dev',
         badge: '💎 $50 Beta Patron',
         date: '2026-11-17',
-        text: 'Having all 8 AIs share one local SQLite memory on my own drive instead of paying 4 different monthly subscriptions is a game changer. Just grabbed the Winamp 1999 skin too!',
+        text: 'Having all my connected AIs share one local SQLite memory on my own drive instead of paying 4 different monthly subscriptions is a game changer. Just grabbed the Winamp 1999 skin too!',
       },
     ],
   },
@@ -342,7 +342,7 @@ and community contributions does NOT grant an Open Source license.
 
 def load_memory_summary(db_path: Path | None = None) -> dict[str, Any]:
     """Load the user's living Memory Summary (Overview, How You Like to Work, Projects)
-    shared across all 8 Council AIs and directly editable by the user at any time."""
+    shared across all connected Council AIs and directly editable by the user at any time."""
     target = Path(db_path) if db_path else _default_memory_db_path()
     # Stored 100% locally on the user's drive — never uploaded to a corporate lock-in server.`,
 
@@ -353,7 +353,7 @@ class LiveAudioSession(QObject):
     level_changed = Signal(float)          # 0.0 .. 1.0 live mic meter
     utterance_ready = Signal(str)          # fires WAV path when user pauses speaking (~1.5s)`,
 
-  'idle_service.py (Autonomous Experimental Mode & Read-Only Code Mirror)': `# Autonomous Experimental Mode gives the 8-AI Council an isolated Shared Experimental Memory,
+  'idle_service.py (Autonomous Experimental Mode & Read-Only Code Mirror)': `# Autonomous Experimental Mode gives your Multi-AI Council an isolated Shared Experimental Memory,
 # anti-echo consensus stopping rules, and optional read-only source code inspection tools.
 
 def build_idle_turn_prompt(self, speaker: str, operator_message: str = "") -> str:
