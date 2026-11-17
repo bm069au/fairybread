@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fairybread.me Community Forums — Login, Discussions &amp; Supporter Hub</title>
+  <link rel="icon" type="image/png" href="fairybread_icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="sprinkle-bar"></div>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="index.html" style="text-decoration:none;">
+        <img src="fairybread_icon.png" alt="Fairybread Logo" class="brand-logo-img" />
+        <div>
+          <span class="brand-name">Fairybread<span class="brand-domain">.me</span></span>
+          <span class="brand-tag">FORUMS</span>
+        </div>
+      </a>
+
+      <nav class="main-nav">
+        <a class="nav-btn" href="index.html" style="text-decoration:none;">← Back to Main Site</a>
+        <span class="nav-btn active">💬 Community Forums</span>
+      </nav>
+
+      <div class="header-actions">
+        <button class="btn-auth" id="authHeaderBtn" onclick="openAuthModal()">🔐 Sign In / Register</button>
+        <a class="btn-download-sm" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_Beta_v0.9.1_Installer.zip">⬇ Download Beta</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="site-main">
+    <section class="tab-section active">
+      <div class="section-header-row">
+        <div>
+          <h2>💬 Fairybread Community Forums</h2>
+          <p class="muted-sub">Sign in above to start threads, reply, share Experimental Mode findings, and display your Donor Supporter Badge!</p>
+        </div>
+        <div class="forum-top-actions">
+          <button class="btn-outline" onclick="openSupabaseConfigModal()" title="Connect Supabase Postgres + Auth">⚙ Cloud DB</button>
+          <button class="btn-primary" onclick="openNewThreadModal()">+ New Forum Thread</button>
+        </div>
+      </div>
+
+      <div class="forum-toolbar">
+        <div class="forum-categories" id="forumCategoryPills">
+          <button class="cat-pill active" data-cat="all" onclick="filterForumCategory('all')">All Topics</button>
+          <button class="cat-pill" data-cat="Announcements" onclick="filterForumCategory('Announcements')">📢 Announcements</button>
+          <button class="cat-pill" data-cat="General Discussion" onclick="filterForumCategory('General Discussion')">💬 General</button>
+          <button class="cat-pill" data-cat="Experimental Mode Lab" onclick="filterForumCategory('Experimental Mode Lab')">🧪 Experimental Lab</button>
+          <button class="cat-pill" data-cat="Custom Themes & Skins" onclick="filterForumCategory('Custom Themes & Skins')">🎨 Themes &amp; Skins</button>
+          <button class="cat-pill" data-cat="Bug Reports & Ideas" onclick="filterForumCategory('Bug Reports & Ideas')">🐛 Bugs &amp; Ideas</button>
+          <button class="cat-pill" data-cat="Artwork & Prompts" onclick="filterForumCategory('Artwork & Prompts')">🖼 Artwork</button>
+        </div>
+        <input type="search" id="forumSearchInput" class="search-input" placeholder="Search forum threads…" oninput="renderForumThreads()" />
+      </div>
+
+      <div class="forum-layout">
+        <div class="forum-thread-list" id="forumThreadList"></div>
+        <div class="forum-thread-detail" id="forumThreadDetail">
+          <div class="empty-detail">Select any thread on the left to read and reply.</div>
+        </div>
+      </div>
+
+      <div class="github-helper-banner">
+        <span>👩‍💻 <strong>Want to inspect the code or contribute improvements on GitHub?</strong></span>
+        <a href="https://github.com/bm069au/fairybread" target="_blank" rel="noopener" class="btn-outline">Open Official GitHub Repository ↗</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div>
+        <strong>🧚 Fairybread.me Forums</strong> — Created by <strong>Brett Martin Moore</strong> (<code>bm069au@gmail.com</code>).
+      </div>
+      <div class="footer-links">
+        <a href="index.html">Main Website</a>
+        <a href="https://github.com/sponsors/bm069au" target="_blank" rel="noopener">Donate (USD)</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Modals (Forum Page Only) -->
+  <div id="modalBackdrop" class="modal-backdrop" style="display:none;" onclick="closeAllModals(event)">
+    <div id="authModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
+      <h3>🔐 Forum Sign In / Registration</h3>
+      <p class="muted-sub">Sign in to post threads and replies in the Fairybread Community Forums.</p>
+      <label>Display Name / Username
+        <input type="text" id="authUsername" placeholder="e.g. Brett_Creator or AI_Explorer" />
+      </label>
+      <label>Email Address
+        <input type="email" id="authEmail" placeholder="you@example.com" />
+      </label>
+      <label>Password
+        <input type="password" id="authPassword" placeholder="••••••••" />
+      </label>
+      <label>Supporter / Donor Tier Badge
+        <select id="authBadgeSelect">
+          <option value="🧁 Member">🧁 Community Member</option>
+          <option value="🌱 $5 Supporter">🌱 $5 Supporter</option>
+          <option value="📬 $10 Newsletter">📬 $10 Newsletter Supporter</option>
+          <option value="🌟 $25 Early Previewer">🌟 $25 Early Previewer</option>
+          <option value="💎 $50 Beta Patron">💎 $50 Beta Patron</option>
+          <option value="👑 Creator (Brett)">👑 Creator (Brett)</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="handleUserSignIn()">Sign In / Register</button>
+        <button class="btn-outline" onclick="handleSignOut()" id="signOutBtn" style="display:none;">Sign Out</button>
+        <button class="btn-outline" onclick="closeAllModals()">Cancel</button>
+      </div>
+    </div>
+
+    <div id="newThreadModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
+      <h3>💬 Start a New Forum Thread</h3>
+      <label>Category
+        <select id="threadCatInput">
+          <option value="General Discussion">💬 General Discussion</option>
+          <option value="Experimental Mode Lab">🧪 Experimental Mode Lab</option>
+          <option value="Custom Themes & Skins">🎨 Custom Themes &amp; Skins</option>
+          <option value="Bug Reports & Ideas">🐛 Bug Reports &amp; Ideas</option>
+          <option value="Artwork & Prompts">🖼 Artwork &amp; Prompts</option>
+          <option value="Announcements">📢 Announcements</option>
+        </select>
+      </label>
+      <label>Thread Title
+        <input type="text" id="threadTitleInput" placeholder="What would you like to discuss?" />
+      </label>
+      <label>Message
+        <textarea id="threadBodyInput" rows="6" placeholder="Write your post here…"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="submitNewForumThread()">Post Thread</button>
+        <button class="btn-outline" onclick="closeAllModals()">Cancel</button>
+      </div>
+    </div>
+
+    <div id="supabaseModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
+      <h3>⚙ Cloud Database Connector (Supabase Free Tier)</h3>
+      <label>Supabase Project URL
+        <input type="url" id="sbUrlInput" placeholder="https://xyzcompany.supabase.co" />
+      </label>
+      <label>Supabase Public Anon Key
+        <input type="text" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." />
+      </label>
+      <div class="modal-actions">
+        <button class="btn-primary" onclick="saveSupabaseConfig()">Save Cloud DB Config</button>
+        <button class="btn-outline" onclick="closeAllModals()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
