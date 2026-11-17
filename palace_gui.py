@@ -3334,15 +3334,8 @@ class PalaceWindow(QMainWindow):
         ai_menu.addAction(idle_act)
 
         view_menu = menubar.addMenu('View')
-        theme_menu = view_menu.addMenu('🎨 Theme')
-        for t_id, t_name in list_available_themes():
-            t_act = QAction(t_name, theme_menu)
-            t_act.triggered.connect(lambda _c=False, tid=t_id: self._switch_theme_and_persist(tid))
-            theme_menu.addAction(t_act)
-        theme_menu.addSeparator()
-        open_themes_act = QAction('📂 Open Custom Themes Folder…', theme_menu)
-        open_themes_act.triggered.connect(lambda: os.startfile(str(get_themes_dir())) if hasattr(os, 'startfile') else None)
-        theme_menu.addAction(open_themes_act)
+        self.theme_menu = view_menu.addMenu('🎨 Theme')
+        self._rebuild_theme_menu()
         view_menu.addSeparator()
         mem_sum_act = QAction('📝 Memory Summary (View && Edit)…', self)
         mem_sum_act.triggered.connect(self.show_memory_summary_dialog)
@@ -3379,6 +3372,9 @@ class PalaceWindow(QMainWindow):
         guide_act.setShortcut(QKeySequence('F1'))
         guide_act.triggered.connect(self.show_user_guide_dialog)
         help_menu.addAction(guide_act)
+        web_act = QAction('🌐 Fairybread.me (Community Forums, Skins && News) ↗', self)
+        web_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
+        help_menu.addAction(web_act)
         donate_act = QAction('❤️ Donate (USD) / Corporate License…', self)
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
@@ -3386,6 +3382,50 @@ class PalaceWindow(QMainWindow):
         about_act = QAction('About Fairybread', self)
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+
+    def _rebuild_theme_menu(self):
+        if not hasattr(self, 'theme_menu'):
+            return
+        self.theme_menu.clear()
+        for t_id, t_name in list_available_themes():
+            t_act = QAction(t_name, self.theme_menu)
+            t_act.triggered.connect(lambda _c=False, tid=t_id: self._switch_theme_and_persist(tid))
+            self.theme_menu.addAction(t_act)
+        self.theme_menu.addSeparator()
+        import_theme_act = QAction('📥 Import Custom Theme (.json)…', self.theme_menu)
+        import_theme_act.triggered.connect(self.import_custom_theme_file)
+        self.theme_menu.addAction(import_theme_act)
+        get_skins_act = QAction('🌐 Get More Skins on Fairybread.me ↗', self.theme_menu)
+        get_skins_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
+        self.theme_menu.addAction(get_skins_act)
+        open_themes_act = QAction('📂 Open Custom Themes Folder…', self.theme_menu)
+        open_themes_act.triggered.connect(lambda: os.startfile(str(get_themes_dir())) if hasattr(os, 'startfile') else None)
+        self.theme_menu.addAction(open_themes_act)
+
+    def import_custom_theme_file(self):
+        path_str, _ = QFileDialog.getOpenFileName(
+            self,
+            'Import Fairybread Theme (.json)',
+            '',
+            'Fairybread Theme JSON (*.json)',
+        )
+        if not path_str:
+            return
+        try:
+            src = Path(path_str)
+            data = json.loads(src.read_text(encoding='utf-8'))
+            if not isinstance(data, dict) or 'bg_main' not in data:
+                self.show_notice('Invalid theme file: expected a JSON dictionary containing "bg_main".')
+                return
+            slug = re.sub(r'[^a-z0-9_]+', '_', str(data.get('id') or src.stem).lower()).strip('_') or 'custom_theme'
+            data['id'] = slug
+            dest = get_themes_dir() / f'{slug}.json'
+            dest.write_text(json.dumps(data, indent=2) + '\n', encoding='utf-8')
+            self._rebuild_theme_menu()
+            self._switch_theme_and_persist(slug)
+            self.show_notice(f'✓ Imported and activated theme: {data.get("name", slug)}')
+        except Exception as exc:
+            self.show_notice(f'Could not import theme: {exc}')
 
     def show_donation_license_dialog(self):
         from palace_config import CORPORATE_LICENSE_MAILTO, DONATION_TIER_URLS

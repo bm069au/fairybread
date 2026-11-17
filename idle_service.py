@@ -408,22 +408,39 @@ class IdleMemoryStore:
                 f"{str(n.get('title') or 'Untitled')} ({n.get('file') or 'note'} by {str(n.get('author', 'AI')).upper()})"
                 for n in older[-20:]
             ]
-            lines.append("[EARLIER SHARED IDLE PALACE FILES INDEX]: " + " | ".join(idx_items))
+            lines.append("[EARLIER SHARED EXPERIMENTAL MEMORY INDEX]: " + " | ".join(idx_items))
+            shown_ids = {r.get("id") for r in recent}
             if query:
                 matched_older = [
                     m for m in self.search_notes(query, limit=3)
-                    if m.get("id") not in {r.get("id") for r in recent}
+                    if m.get("id") not in shown_ids
                 ]
                 for note in matched_older:
+                    shown_ids.add(note.get("id"))
                     author_tag = str(note.get("author", "AI")).upper()
                     title = note.get("title") or "Untitled"
-                    lines.append(f"[RELEVANT EARLIER IDLE PALACE NOTE · by {author_tag} · {title}]\n{note.get('content', '')}")
+                    lines.append(f"[RELEVANT EARLIER EXPERIMENTAL MEMORY NOTE · by {author_tag} · {title}]\n{note.get('content', '')}")
+            # Council Audit Lottery (DeepSeek #23): surface 1 older un-shown note so ideas never become ghost towns
+            lottery_pool = [
+                n for n in older
+                if n.get("id") not in shown_ids and len(str(n.get("content", "")).strip()) >= 15
+            ]
+            if lottery_pool:
+                import random
+                lot_note = random.choice(lottery_pool)
+                author_tag = str(lot_note.get("author", "AI")).upper()
+                title = lot_note.get("title") or "Untitled"
+                fname = lot_note.get("file") or ""
+                file_badge = f" · file={fname}" if fname else ""
+                lines.append(
+                    f"[🎲 AUDIT LOTTERY CANDIDATE (Anti-Stagnation Review) · by {author_tag} · {title}{file_badge}]\n{lot_note.get('content', '')}"
+                )
         for note in recent:
             author_tag = str(note.get("author", "AI")).upper()
             title = note.get("title") or "Untitled"
             fname = note.get("file") or ""
             file_badge = f" · file={fname}" if fname else ""
-            lines.append(f"[SHARED IDLE PALACE · by {author_tag} · {title}{file_badge}]\n{note.get('content', '')}")
+            lines.append(f"[SHARED EXPERIMENTAL MEMORY · by {author_tag} · {title}{file_badge}]\n{note.get('content', '')}")
         return "\n\n".join(lines)
 
     def extract_and_save_from_response(
@@ -433,7 +450,7 @@ class IdleMemoryStore:
         *,
         is_idle_mode: bool = True,
     ) -> tuple[str, list[dict[str, Any]]]:
-        """Extract any [IDLE_SAVE ...] blocks, save them to the shared Idle Palace, and return cleaned text + saved notes."""
+        """Extract any [IDLE_SAVE ...] blocks, save them to Shared Experimental Memory, and return cleaned text + saved notes."""
         if not response_text:
             return "", []
         saved_notes: list[dict[str, Any]] = []
@@ -442,7 +459,17 @@ class IdleMemoryStore:
             title = (match.group("title") or "").strip()
             file_arg = (match.group("file") or "").strip()
             body = (match.group("content") or "").strip()
-            if body and is_idle_mode:
+            if file_arg.lower() in {"...", "…", "optional_filename.py"}:
+                file_arg = ""
+            # Ignore literal template echoes such as "..." or "Short title"
+            if (
+                not body
+                or not body.strip(".… \t\r\n")
+                or len(body.strip()) < 6
+                or title.lower() in {"...", "…", "short title"}
+            ):
+                return ""
+            if is_idle_mode:
                 try:
                     saved = self.save_note(
                         author=author,
@@ -453,10 +480,10 @@ class IdleMemoryStore:
                         is_idle_mode=is_idle_mode,
                     )
                     saved_notes.append(saved)
-                    return f"[Saved to Shared Idle Palace: {saved.get('title')} ({saved.get('file')})]"
+                    return f"[Saved to Shared Experimental Memory: {saved.get('title')} ({saved.get('file')})]"
                 except (ValueError, PermissionError):
                     pass
-            return f"[Saved to Shared Idle Palace: {title or body[:32]}]"
+            return f"[Saved to Shared Experimental Memory: {title or body[:32]}]"
 
         cleaned = _IDLE_SAVE_PATTERN.sub(_replace, response_text).strip()
         return cleaned, saved_notes
@@ -610,9 +637,26 @@ class IdleMailboxStore:
         sent_emails: list[dict[str, Any]] = []
 
         def _replace(match: re.Match) -> str:
-            subj = (match.group("subject") or "Idle Mode Suggestion").strip()
+            subj = (match.group("subject") or "Experimental Mode Suggestion").strip()
             link = (match.group("link") or "").strip()
             body = (match.group("content") or "").strip()
+            if link.lower() in {"...", "…", "optional_filename.py"}:
+                link = ""
+            # Ignore literal template echoes such as "..." or "Brief subject"
+            if (
+                not body
+                or not body.strip(".… \t\r\n")
+                or len(body.strip()) < 6
+                or subj.lower() in {"...", "…", "brief subject"}
+            ):
+                return ""
+            # Strip hallucinated example.com markdown links
+            body = re.sub(r"\[([^\]]+)\]\(https?://(?:www\.)?example\.com[^\)]*\)", r"\1", body)
+            # Auto-detect referenced .md/.py/.json filename in body when link="" was omitted
+            if not link:
+                m_file = re.search(r"\b([A-Za-z0-9_\-]{3,}\.(?:md|py|json|txt))\b", body)
+                if m_file:
+                    link = m_file.group(1)
             ok, res = self.send_agent_email(sender, subj, body, link=link)
             if ok and isinstance(res, dict):
                 sent_emails.append(res)
