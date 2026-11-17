@@ -818,6 +818,102 @@ def save_ui_settings(
     return load_ui_settings(config_path)
 
 
+DEFAULT_PERSONALIZATION_SETTINGS: dict[str, Any] = {
+    "auto_evolve_profile": True,
+    "base_style": "Friendly",           # "Friendly" | "Candid & Direct (No Flattery)" | "Technical & Concise" | "Casual & Witty" | "Professional"
+    "warmth": "Default",                # "Less" | "Default" | "More"
+    "enthusiasm": "Less",               # "Less" | "Default" | "More"
+    "emoji": "Less",                    # "None" | "Less" | "Default" | "More"
+    "visual_answers": "Default",        # "Less" | "Default" | "More"
+    "headers_and_lists": "More",        # "Less" | "Default" | "More"
+    "custom_instructions_general": "",
+    "custom_instructions_coding": "",
+    "reference_photo_face": "",
+    "reference_photo_body": "",
+}
+
+
+def load_personalization_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("personalization_settings", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(DEFAULT_PERSONALIZATION_SETTINGS)
+    for k in (
+        "base_style",
+        "warmth",
+        "enthusiasm",
+        "emoji",
+        "visual_answers",
+        "headers_and_lists",
+        "custom_instructions_general",
+        "custom_instructions_coding",
+        "reference_photo_face",
+        "reference_photo_body",
+    ):
+        if isinstance(raw.get(k), str):
+            merged[k] = raw[k].strip()
+    if "auto_evolve_profile" in raw:
+        merged["auto_evolve_profile"] = bool(raw["auto_evolve_profile"])
+    return merged
+
+
+def save_personalization_settings(
+    updates: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    current = load_personalization_settings(config_path)
+    current.update(updates or {})
+    current["auto_evolve_profile"] = bool(current.get("auto_evolve_profile", True))
+    for k in (
+        "base_style",
+        "warmth",
+        "enthusiasm",
+        "emoji",
+        "visual_answers",
+        "headers_and_lists",
+        "custom_instructions_general",
+        "custom_instructions_coding",
+        "reference_photo_face",
+        "reference_photo_body",
+    ):
+        val = str(current.get(k) or "").strip()
+        if k.startswith("reference_photo_") and val.upper().startswith("M:"):
+            val = ""
+        current[k] = val
+    data["personalization_settings"] = current
+    _write_raw_config(data, config_path)
+    return load_personalization_settings(config_path)
+
+
+def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
+    """Compile the user's Tone, Formatting, Custom Instructions, and Reference Photo status into a compact prompt block."""
+    p = load_personalization_settings(config_path)
+    lines = [
+        "[USER PERSONALIZATION & TONE PREFERENCES]:",
+        f"- Base Style & Tone: {p.get('base_style', 'Friendly')} | Warmth: {p.get('warmth', 'Default')} | Enthusiasm: {p.get('enthusiasm', 'Less')}",
+        f"- Formatting: Emoji={p.get('emoji', 'Less')} | Visual Answers={p.get('visual_answers', 'Default')} | Headers & Lists={p.get('headers_and_lists', 'More')}",
+    ]
+    gen_inst = (p.get("custom_instructions_general") or "").strip()
+    if gen_inst:
+        lines.append(f"- General Custom Instructions: {gen_inst}")
+    code_inst = (p.get("custom_instructions_coding") or "").strip()
+    if code_inst:
+        lines.append(f"- Coding & Technical Instructions: {code_inst}")
+    face_ref = (p.get("reference_photo_face") or "").strip()
+    body_ref = (p.get("reference_photo_body") or "").strip()
+    if face_ref or body_ref:
+        refs = []
+        if face_ref and Path(face_ref).exists():
+            refs.append(f"Face reference photo: {face_ref}")
+        if body_ref and Path(body_ref).exists():
+            refs.append(f"Full-body reference photo: {body_ref}")
+        if refs:
+            lines.append("- Reference Photos Available (use when creating/editing images of the user): " + " ; ".join(refs))
+    return "\n".join(lines)
+
+
 def get_palace_data_root(config_path: Path = CONFIG_PATH) -> Path:
     """Resolve the active Palace data directory (custom drive/folder if set, otherwise %LOCALAPPDATA%\\Palace)."""
     try:

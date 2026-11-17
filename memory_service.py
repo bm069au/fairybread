@@ -548,6 +548,133 @@ def ai_update_memory_summary(
     return save_memory_summary(updated_md, db_path=db_path)
 
 
+def auto_evolve_user_profile_from_turn(
+    user_message: str,
+    *,
+    db_path: Path | None = None,
+    credential_store: Any = None,
+) -> list[dict[str, str]]:
+    """Zero-latency background profile extractor with Council Verbatim-Evidence Anti-Hallucination Gate."""
+    clean_msg = (user_message or "").strip()
+    if len(clean_msg) < 18:
+        return []
+    lower_msg = clean_msg.lower()
+    personal_signals = (
+        "i ", "i'm", "im ", "my ", "we ", "prefer", "working on", "building",
+        "always ", "never ", "like to", "live in", "years old", "project", "hobby",
+    )
+    if not any(sig in lower_msg for sig in personal_signals):
+        return []
+
+    try:
+        from palace_config import load_personalization_settings
+        if not load_personalization_settings().get("auto_evolve_profile", True):
+            return []
+    except Exception:
+        pass
+
+    sys_prompt = (
+        "You are Fairybread's Rich User Profile Extractor. Analyze the user's message and extract ONLY "
+        "explicit, durable personal facts, preferences, skills, workflow rules, or project details stated by the user.\n"
+        "STRICT ANTI-HALLUCINATION RULES:\n"
+        "1. NEVER guess, infer, or extrapolate traits from general questions.\n"
+        "2. Every extracted item MUST include 'evidence': an exact verbatim substring copied directly from the user's message.\n"
+        "3. Output ONLY a valid JSON array (or [] if no durable personal fact was stated):\n"
+        '[{"category": "Overview|How You Like to Work|Software & Creative Projects", "fact": "Concise second-person fact (You...)", "evidence": "exact verbatim quote"}]'
+    )
+
+    try:
+        from credential_store import CredentialStore
+        store = credential_store or CredentialStore()
+    except Exception:
+        return []
+
+    raw_json = ""
+    # 1. Try Groq fast model first
+    g_key = store.get_api_key("groq") if store else ""
+    if g_key and not raw_json:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1")
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": clean_msg[:2000]},
+                ],
+                temperature=0.1,
+            )
+            raw_json = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            pass
+
+    # 2. Fallback to OpenAI gpt-4o-mini
+    o_key = store.get_api_key("openai") if store else ""
+    if o_key and not raw_json:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=o_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": clean_msg[:2000]},
+                ],
+                temperature=0.1,
+            )
+            raw_json = (resp.choices[0].message.content or "").strip()
+        except Exception:
+            pass
+
+    if not raw_json:
+        return []
+
+    # Extract JSON array
+    m_arr = re.search(r"\[.*\]", raw_json, flags=re.DOTALL)
+    if not m_arr:
+        return []
+    try:
+        items = json.loads(m_arr.group(0))
+    except Exception:
+        return []
+    if not isinstance(items, list) or not items:
+        return []
+
+    verified: list[dict[str, str]] = []
+    cur_summary = load_memory_summary(db_path).get("text", "")
+    updated_summary = cur_summary
+    idx = SQLiteMemoryIndex(db_path=db_path)
+
+    for it in items[:4]:
+        if not isinstance(it, dict):
+            continue
+        fact = str(it.get("fact") or "").strip()
+        ev = str(it.get("evidence") or "").strip()
+        cat = str(it.get("category") or "Overview").strip()
+        # Verbatim Evidence Gate: quote must actually appear in the user's message
+        if not fact or not ev or len(ev) < 5 or ev.lower() not in lower_msg:
+            continue
+        if fact.lower() in updated_summary.lower():
+            continue
+        verified.append({"category": cat, "fact": fact, "evidence": ev})
+        bullet = f"- {fact} *(from: \"{ev[:80]}\")*"
+        heading = f"### {cat}"
+        if heading in updated_summary:
+            updated_summary = updated_summary.replace(heading, f"{heading}\n{bullet}", 1)
+        else:
+            updated_summary = updated_summary.rstrip() + f"\n\n### {cat}\n{bullet}"
+        idx.upsert(
+            summary=fact[:120],
+            body=f"{fact}\nVerbatim evidence: \"{ev}\"",
+            memory_type="standing",
+            source={"kind": "auto_profile_fact", "category": cat, "evidence": ev},
+        )
+
+    if verified and updated_summary != cur_summary:
+        save_memory_summary(updated_summary, db_path=db_path)
+    return verified
+
+
 class MemoryService:
     def __init__(
         self,
@@ -664,6 +791,13 @@ class MemoryService:
                             merged.append(item)
 
                 blocks: list[str] = []
+                try:
+                    from palace_config import format_personalization_prompt_block
+                    pers_block = format_personalization_prompt_block()
+                    if pers_block:
+                        blocks.append(pers_block)
+                except Exception:
+                    pass
                 if summary_md:
                     blocks.append(f"[USER & PROJECT MEMORY SUMMARY — SHARED ACROSS ALL COUNCIL AIs]:\n{summary_md}")
                 for h in merged[:10]:

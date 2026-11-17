@@ -37,12 +37,14 @@ from palace_config import (
     load_ai_squads,
     load_idle_settings,
     load_mission_ethics,
+    load_personalization_settings,
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
     save_ai_squads,
     save_idle_settings,
     save_mission_ethics,
+    save_personalization_settings,
     save_provider_config,
     save_tool_settings,
     save_ui_settings,
@@ -459,7 +461,7 @@ class ManageAIsDialog(QDialog):
         'AI Providers',
         'Profiles',
         'Work Mode & Tools',
-        'Memory & History',
+        'Memory & Personalization',
         'Experimental Mode',
         'Agent Bridge & Permissions',
         'Backup & Restore',
@@ -538,6 +540,9 @@ class ManageAIsDialog(QDialog):
             'Idle Mode': 'Experimental Mode',
             'Idle': 'Experimental Mode',
             'Experimental': 'Experimental Mode',
+            'Memory & History': 'Memory & Personalization',
+            'Personalization': 'Memory & Personalization',
+            'Memory': 'Memory & Personalization',
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
         target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 4
@@ -1514,37 +1519,40 @@ class ManageAIsDialog(QDialog):
     def _build_memory_history_page(self):
         w, lay = self._make_simple_page(
             'Memory & Personalization',
-            'Configure how Fairybread manages shared contextual memory across all Council AIs (like ChatGPT & Antigravity).'
+            'Configure your Rich User Profile, Reference Photos, Tone & Style sliders, and Custom Instructions across all Council AIs.'
         )
+        p_cfg = load_personalization_settings(self.config_path)
+
+        # 1. MEMORY & AUTO-EVOLVING RICH PROFILE CARD
         mem_card = QFrame()
-        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         mc_lay = QVBoxLayout(mem_card)
-        mc_lay.setSpacing(10)
+        mc_lay.setSpacing(8)
 
         row1 = QHBoxLayout()
         lbl1 = QLabel(
-            '<b>Enable memory</b><br>'
-            '<span style="color:#8b949e; font-size:12px;">Let all Council AIs personalize your experience based on your chats, files, and connected apps.</span>'
+            '<b>Enable Shared Memory &amp; Rich User Profile</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">Automatically remember facts, preferences, skills, and project context across all connected AIs.</span>'
         )
         lbl1.setWordWrap(True)
         lbl1.setTextFormat(Qt.TextFormat.RichText)
         self.enable_shared_mem_check = QCheckBox('Enabled')
-        self.enable_shared_mem_check.setChecked(True)
-        self.enable_shared_mem_check.setToolTip('Toggle Shared Memory across conversations')
+        self.enable_shared_mem_check.setChecked(bool(p_cfg.get('auto_evolve_profile', True)))
+        self.enable_shared_mem_check.setToolTip('Automatically learn and update your Rich User Profile from chats')
         row1.addWidget(lbl1, 1)
         row1.addWidget(self.enable_shared_mem_check)
         mc_lay.addLayout(row1)
 
         row2 = QHBoxLayout()
         lbl2 = QLabel(
-            '<b>Memory summary</b><br>'
-            '<span style="color:#8b949e; font-size:12px;">View and directly edit the overview of what Fairybread has learned about you (Overview, How You Like to Work, Software Projects).</span>'
+            '<b>Living User Profile &amp; Memory Summary</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">View and directly edit what Fairybread knows about you (Overview, How You Like to Work, Projects).</span>'
         )
         lbl2.setWordWrap(True)
         lbl2.setTextFormat(Qt.TextFormat.RichText)
-        manage_sum_btn = QPushButton('Manage')
+        manage_sum_btn = QPushButton('Manage Profile…')
         manage_sum_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage_sum_btn.setToolTip('View & edit Memory summary')
+        manage_sum_btn.setToolTip('View & edit your Living User Profile')
 
         def _open_summary():
             parent = self.parent()
@@ -1557,8 +1565,134 @@ class ManageAIsDialog(QDialog):
         mc_lay.addLayout(row2)
         lay.addWidget(mem_card)
 
-        lay.addWidget(QCheckBox('Save standard chat transcripts locally per conversation', checked=True))
-        lay.addStretch()
+        # 2. REFERENCE PHOTOS CARD (Face + Full-Body)
+        ref_card = QFrame()
+        ref_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        ref_lay = QVBoxLayout(ref_card)
+        ref_lay.setSpacing(6)
+        ref_lay.addWidget(QLabel('<b>Reference photos</b> <span style="color:#8b949e; font-size:11.5px;">(Stored 100% locally — used when you ask to generate or edit an image of yourself)</span>'))
+
+        self.ref_face_path = str(p_cfg.get('reference_photo_face') or '')
+        self.ref_body_path = str(p_cfg.get('reference_photo_body') or '')
+
+        face_row = QHBoxLayout()
+        self.ref_face_lbl = QLabel()
+        face_add_btn = QPushButton('Add / Change…')
+        face_clr_btn = QPushButton('Clear')
+        face_row.addWidget(self.ref_face_lbl, 1)
+        face_row.addWidget(face_add_btn)
+        face_row.addWidget(face_clr_btn)
+        ref_lay.addLayout(face_row)
+
+        body_row = QHBoxLayout()
+        self.ref_body_lbl = QLabel()
+        body_add_btn = QPushButton('Add / Change…')
+        body_clr_btn = QPushButton('Clear')
+        body_row.addWidget(self.ref_body_lbl, 1)
+        body_row.addWidget(body_add_btn)
+        body_row.addWidget(body_clr_btn)
+        ref_lay.addLayout(body_row)
+
+        def _refresh_ref_labels():
+            f_name = Path(self.ref_face_path).name if self.ref_face_path else 'Not set'
+            b_name = Path(self.ref_body_path).name if self.ref_body_path else 'Not set'
+            self.ref_face_lbl.setText(f'<b>Reference photo (Face / Portrait):</b> <span style="color:#58a6ff;">{html.escape(f_name)}</span>')
+            self.ref_body_lbl.setText(f'<b>Full-body reference photo:</b> <span style="color:#58a6ff;">{html.escape(b_name)}</span>')
+
+        def _pick_ref_photo(kind: str):
+            p_str, _ = QFileDialog.getOpenFileName(
+                self,
+                'Select Reference Photo',
+                '',
+                'Images (*.png *.jpg *.jpeg *.webp *.bmp)',
+            )
+            if not p_str or p_str.upper().startswith('M:'):
+                return
+            import shutil
+            ref_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'Palace' / 'reference_photos'
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            src = Path(p_str)
+            dst = ref_dir / f'{kind}_{src.name}'
+            try:
+                shutil.copy2(src, dst)
+                if kind == 'face':
+                    self.ref_face_path = str(dst)
+                else:
+                    self.ref_body_path = str(dst)
+                _refresh_ref_labels()
+            except Exception:
+                pass
+
+        face_add_btn.clicked.connect(lambda: _pick_ref_photo('face'))
+        face_clr_btn.clicked.connect(lambda: (setattr(self, 'ref_face_path', ''), _refresh_ref_labels()))
+        body_add_btn.clicked.connect(lambda: _pick_ref_photo('body'))
+        body_clr_btn.clicked.connect(lambda: (setattr(self, 'ref_body_path', ''), _refresh_ref_labels()))
+        _refresh_ref_labels()
+        lay.addWidget(ref_card)
+
+        # 3. STYLE, TONE & FORMATTING CONTROLS CARD
+        tone_card = QFrame()
+        tone_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        tone_grid = QGridLayout(tone_card)
+        tone_grid.setSpacing(8)
+
+        self.pers_base_style_combo = QComboBox()
+        for opt in ('Friendly', 'Candid & Direct (No Flattery)', 'Technical & Concise', 'Casual & Witty', 'Professional'):
+            self.pers_base_style_combo.addItem(opt, opt)
+        self.pers_base_style_combo.setCurrentText(str(p_cfg.get('base_style') or 'Friendly'))
+
+        def _make_level_combo(cur_val: str, choices=('Less', 'Default', 'More')) -> QComboBox:
+            cb = QComboBox()
+            for ch in choices:
+                cb.addItem(ch, ch)
+            cb.setCurrentText(cur_val if cur_val in choices else 'Default')
+            return cb
+
+        self.pers_warmth_combo = _make_level_combo(str(p_cfg.get('warmth') or 'Default'))
+        self.pers_enthusiasm_combo = _make_level_combo(str(p_cfg.get('enthusiasm') or 'Less'))
+        self.pers_emoji_combo = _make_level_combo(str(p_cfg.get('emoji') or 'Less'), choices=('None', 'Less', 'Default', 'More'))
+        self.pers_visual_combo = _make_level_combo(str(p_cfg.get('visual_answers') or 'Default'))
+        self.pers_headers_combo = _make_level_combo(str(p_cfg.get('headers_and_lists') or 'More'))
+
+        tone_grid.addWidget(QLabel('<b>Base style and tone:</b>'), 0, 0)
+        tone_grid.addWidget(self.pers_base_style_combo, 0, 1)
+        tone_grid.addWidget(QLabel('<b>Warmth:</b>'), 0, 2)
+        tone_grid.addWidget(self.pers_warmth_combo, 0, 3)
+
+        tone_grid.addWidget(QLabel('<b>Enthusiasm:</b>'), 1, 0)
+        tone_grid.addWidget(self.pers_enthusiasm_combo, 1, 1)
+        tone_grid.addWidget(QLabel('<b>Emoji:</b>'), 1, 2)
+        tone_grid.addWidget(self.pers_emoji_combo, 1, 3)
+
+        tone_grid.addWidget(QLabel('<b>Visual answers:</b>'), 2, 0)
+        tone_grid.addWidget(self.pers_visual_combo, 2, 1)
+        tone_grid.addWidget(QLabel('<b>Headers and lists:</b>'), 2, 2)
+        tone_grid.addWidget(self.pers_headers_combo, 2, 3)
+        lay.addWidget(tone_card)
+
+        # 4. CUSTOM INSTRUCTIONS (General Chat + Coding / Work)
+        inst_card = QFrame()
+        inst_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        inst_lay = QVBoxLayout(inst_card)
+        inst_lay.setSpacing(6)
+        inst_lay.addWidget(QLabel('<b>Custom instructions (General Chat — applies to all Council AIs):</b>'))
+        self.pers_general_inst_edit = QTextEdit()
+        self.pers_general_inst_edit.setAcceptRichText(False)
+        self.pers_general_inst_edit.setPlaceholderText('Give your Council AIs extra instructions and context for everyday chats…')
+        self.pers_general_inst_edit.setMaximumHeight(68)
+        self.pers_general_inst_edit.setPlainText(str(p_cfg.get('custom_instructions_general') or ''))
+        inst_lay.addWidget(self.pers_general_inst_edit)
+
+        inst_lay.addWidget(QLabel('<b>Coding &amp; Technical Work instructions (like Codex — applies to code/work tasks):</b>'))
+        self.pers_coding_inst_edit = QTextEdit()
+        self.pers_coding_inst_edit.setAcceptRichText(False)
+        self.pers_coding_inst_edit.setPlaceholderText('Specify coding conventions, languages, drive rules, or review workflow…')
+        self.pers_coding_inst_edit.setMaximumHeight(68)
+        self.pers_coding_inst_edit.setPlainText(str(p_cfg.get('custom_instructions_coding') or ''))
+        inst_lay.addWidget(self.pers_coding_inst_edit)
+        lay.addWidget(inst_card)
+
+        lay.addStretch(1)
         self.pages.addWidget(w)
 
     def _build_idle_mode_page(self):
@@ -2318,6 +2452,23 @@ class ManageAIsDialog(QDialog):
             self._flush_squad_editor()
         if hasattr(self, '_squads_data'):
             save_ai_squads(self._squads_data, config_path=self.config_path)
+        if hasattr(self, 'pers_base_style_combo'):
+            save_personalization_settings(
+                {
+                    'auto_evolve_profile': bool(self.enable_shared_mem_check.isChecked()) if hasattr(self, 'enable_shared_mem_check') else True,
+                    'base_style': self.pers_base_style_combo.currentText(),
+                    'warmth': self.pers_warmth_combo.currentText(),
+                    'enthusiasm': self.pers_enthusiasm_combo.currentText(),
+                    'emoji': self.pers_emoji_combo.currentText(),
+                    'visual_answers': self.pers_visual_combo.currentText(),
+                    'headers_and_lists': self.pers_headers_combo.currentText(),
+                    'custom_instructions_general': self.pers_general_inst_edit.toPlainText().strip(),
+                    'custom_instructions_coding': self.pers_coding_inst_edit.toPlainText().strip(),
+                    'reference_photo_face': getattr(self, 'ref_face_path', ''),
+                    'reference_photo_body': getattr(self, 'ref_body_path', ''),
+                },
+                config_path=self.config_path,
+            )
         self._save_email_and_notification_fields()
         self._save_bridge_fields()
         from palace_config import parse_storage_mb_text
@@ -6842,6 +6993,15 @@ class PalaceWindow(QMainWindow):
                         self.refresh_memory_review(True)
                     else:
                         self._update_durable_memory_count()
+                    if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                        import threading
+                        from memory_service import auto_evolve_user_profile_from_turn
+                        q_snap = str(self.last_question or '')
+                        db_snap = self._memory_db_path()
+                        threading.Thread(
+                            target=lambda: auto_evolve_user_profile_from_turn(q_snap, db_path=db_snap),
+                            daemon=True,
+                        ).start()
                 except Exception:
                     pass
             saved = 'Saved locally' if self.pending_history and not result.context_error else 'Not saved (No-History)'
