@@ -703,4 +703,15 @@ Instructions:
                 )
             except (OSError, ValueError) as exc:
                 result.context_error = f"Session history could not be saved: {exc}"
+            try:
+                if hasattr(self, "memory_service") and hasattr(self.memory_service, "remember_exchange"):
+                    sess_id = str(getattr(write_context, "session_id", "") or "")
+                    self.memory_service.remember_exchange(
+                        question,
+                        result.final_answer,
+                        session_id=sess_id,
+                        contributors=result.contributors,
+                    )
+            except Exception:
+                pass
         return result

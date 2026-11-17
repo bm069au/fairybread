@@ -1340,10 +1340,10 @@ class ManageAIsDialog(QDialog):
     def _build_memory_history_page(self):
         w, lay = self._make_simple_page(
             'Memory & History',
-            'Control local session history and Palace memory proposal review.'
+            'Contextual memory is automatically stored and shared across all Council AIs (like ChatGPT & Antigravity).'
         )
         lay.addWidget(QCheckBox('Save standard chat transcripts locally per conversation', checked=True))
-        lay.addWidget(QCheckBox('Require explicit confirmation before promoting proposals to Palace memory', checked=True))
+        lay.addWidget(QCheckBox('Automatically store contextual memories across conversations so all Council AIs share context', checked=True))
         lay.addStretch()
         self.pages.addWidget(w)
 
@@ -2229,7 +2229,7 @@ class PalaceWindow(QMainWindow):
 
         self.new_button = QPushButton('+ New Conversation')
         self.new_button.setObjectName('newConvoButton')
-        self.new_button.setToolTip('Start a new conversation (Ctrl+N)')
+        self.new_button.setToolTip('New conversation (Ctrl+N)')
         self.new_button.clicked.connect(self.new_conversation)
         side.addWidget(self.new_button)
 
@@ -2238,7 +2238,7 @@ class PalaceWindow(QMainWindow):
         self.sidebar_mail_btn.setIconSize(QSize(16, 16))
         self.sidebar_mail_btn.setCheckable(True)
         self.sidebar_mail_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sidebar_mail_btn.setToolTip('Open Agent Mail inbox (Idle Mode agent requests & linked Idle Palace files)')
+        self.sidebar_mail_btn.setToolTip('Idle Mode agent inbox')
         self.sidebar_mail_btn.setStyleSheet(
             'QPushButton { background: transparent; color: #8b949e; border: 1px solid transparent; '
             'padding: 6px 10px; border-radius: 6px; text-align: left; font-weight: 600; font-size: 12px; } '
@@ -2280,12 +2280,12 @@ class PalaceWindow(QMainWindow):
         self.attach_project_folder_btn.setIcon(folder_grey_qicon(False))
         self.attach_project_folder_btn.setIconSize(QSize(15, 15))
         self.attach_project_folder_btn.setObjectName('iconButton')
-        self.attach_project_folder_btn.setToolTip('Attach or change local workspace folder for the selected Project (no folder required at creation)')
+        self.attach_project_folder_btn.setToolTip('Attach folder to Project')
         self.attach_project_folder_btn.clicked.connect(self.attach_folder_to_current_project)
         proj_header.addWidget(self.attach_project_folder_btn)
         self.new_project_button = QPushButton('+')
         self.new_project_button.setObjectName('iconButton')
-        self.new_project_button.setToolTip('New Project (no disk folder required)')
+        self.new_project_button.setToolTip('Create new Project')
         self.new_project_button.clicked.connect(lambda: self.new_project())
         proj_header.addWidget(self.new_project_button)
         side.addLayout(proj_header)
@@ -2325,7 +2325,7 @@ class PalaceWindow(QMainWindow):
 
         self.manage_ais_button = QPushButton('⚙ Settings && AIs')
         self.manage_ais_button.setObjectName('settingsButton')
-        self.manage_ais_button.setToolTip('Open Palace Settings & Manage AI Providers')
+        self.manage_ais_button.setToolTip('Settings & AI Providers')
         self.manage_ais_button.clicked.connect(self.open_manage_ais)
         side.addWidget(self.manage_ais_button)
         splitter.addWidget(sidebar)
@@ -2352,7 +2352,7 @@ class PalaceWindow(QMainWindow):
         self.attached_folder_chip.setIcon(folder_grey_qicon(True))
         self.attached_folder_chip.setIconSize(QSize(14, 14))
         self.attached_folder_chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.attached_folder_chip.setToolTip('Attached Project Folder (click to change or right-click Project to detach)')
+        self.attached_folder_chip.setToolTip('Change attached Project folder')
         self.attached_folder_chip.setStyleSheet(
             'QPushButton { background: #0f2930; color: #06b6d4; border: 1px solid #06b6d4; '
             'padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }'
@@ -2388,10 +2388,7 @@ class PalaceWindow(QMainWindow):
         self.no_history_btn.setIconSize(QSize(16, 16))
         self.no_history_btn.setCheckable(True)
         self.no_history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.no_history_btn.setToolTip(
-            'No-History Mode (Brain with Slash): Grey when OFF (history saves automatically). '
-            'Red when ON (conversations are NOT saved to the Memory Palace).'
-        )
+        self.no_history_btn.setToolTip("Don't save chat history (ephemeral)")
         self.no_history_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 9px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
@@ -2406,9 +2403,7 @@ class PalaceWindow(QMainWindow):
         self.idle_switch_btn.setIconSize(QSize(15, 15))
         self.idle_switch_btn.setCheckable(True)
         self.idle_switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.idle_switch_btn.setToolTip(
-            'Idle Mode Sanctuary Switch: Grey when OFF. Green when ON (pauses Normal Mode and opens the autonomous Idle Sanctuary).'
-        )
+        self.idle_switch_btn.setToolTip('Toggle Autonomous Idle Mode')
         self.idle_switch_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
@@ -2422,7 +2417,7 @@ class PalaceWindow(QMainWindow):
         self.memory_button.setObjectName('topIconButton')
         self.memory_button.setCheckable(True)
         self.memory_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.memory_button.setToolTip('Toggle proposed memories panel')
+        self.memory_button.setToolTip('View & manage Shared Memory Palace')
         self.memory_button.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
@@ -2459,7 +2454,7 @@ class PalaceWindow(QMainWindow):
         nh_lbl.setStyleSheet('color: #fca5a5; font-size: 12px;')
         nh_row.addWidget(nh_lbl, 1)
         nh_off_btn = QPushButton('Resume Saving History')
-        nh_off_btn.setToolTip('Turn off No-History Mode and resume saving conversation history to the Memory Palace')
+        nh_off_btn.setToolTip('Turn off No-History Mode')
         nh_off_btn.clicked.connect(lambda: self.no_history_btn.setChecked(False))
         nh_row.addWidget(nh_off_btn)
         self.no_history_banner.hide()
@@ -2477,7 +2472,7 @@ class PalaceWindow(QMainWindow):
         pause_lbl.setStyleSheet('color: #86efac; font-size: 12px;')
         pause_row.addWidget(pause_lbl, 1)
         go_idle_btn = QPushButton('View Idle Sanctuary →')
-        go_idle_btn.setToolTip('Switch to the Idle Mode Sanctuary tab to watch the agents collaborate live')
+        go_idle_btn.setToolTip('Switch to Idle Sanctuary tab')
         go_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(1))
         pause_row.addWidget(go_idle_btn)
         self.normal_pause_banner.hide()
@@ -2507,7 +2502,7 @@ class PalaceWindow(QMainWindow):
         card_layout.addWidget(self.attachment_list)
 
         self.composer = Composer(enter_to_send=bool(ui_cfg.get('enter_to_send', True)))
-        self.composer.setToolTip('Type your message here, paste an image (Ctrl+V), drop files, or use 🎤 Dictate / Live Voice Mode below')
+        self.composer.setToolTip('Type message, paste image (Ctrl+V), or drop files')
         self.composer.files_added.connect(self.add_files)
         self.composer.image_pasted.connect(self.add_pasted_image)
         self.composer.send_requested.connect(self.send_message)
@@ -2519,13 +2514,13 @@ class PalaceWindow(QMainWindow):
         controls.setSpacing(6)
         self.attach_button = QPushButton('+')
         self.attach_button.setObjectName('plusAttachButton')
-        self.attach_button.setToolTip('Attach documents or pictures (Ctrl+O)')
+        self.attach_button.setToolTip('Attach files or pictures (Ctrl+O)')
         self.attach_button.clicked.connect(self.choose_files)
         controls.addWidget(self.attach_button)
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
-        self.remove_button.setToolTip('Remove the selected file from this message')
+        self.remove_button.setToolTip('Remove selected attachment')
         self.remove_button.clicked.connect(self.remove_attachment)
         self.remove_button.hide()
         controls.addWidget(self.remove_button)
@@ -2533,7 +2528,7 @@ class PalaceWindow(QMainWindow):
         self.ai_pill_button = QPushButton('Choose AIs  ▾')
         self.ai_pill_button.setObjectName('aiPillButton')
         self.ai_pill_button.setMinimumWidth(126)
-        self.ai_pill_button.setToolTip('Select an AI Squad preset (Code, Light Chat, Generalist, Graphics, Work Mode), a single AI, or Custom Selection…')
+        self.ai_pill_button.setToolTip('Select active AIs or Squad')
         self.ai_pill_button.clicked.connect(self._show_choose_ais_menu)
         controls.addWidget(self.ai_pill_button)
 
@@ -2543,7 +2538,7 @@ class PalaceWindow(QMainWindow):
         self.deliberate_pill_btn.setCheckable(True)
         self.deliberate_pill_btn.setChecked(True)
         self.deliberate_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.deliberate_pill_btn.setToolTip('Toggle Peer Deliberation: Purple (Council 2-round review) when ON · Grey (Direct 1-round) when OFF')
+        self.deliberate_pill_btn.setToolTip('2-round peer review (ON) / Direct (OFF)')
         self.deliberate_pill_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2558,10 +2553,7 @@ class PalaceWindow(QMainWindow):
         self.tangent_btn.setIconSize(QSize(15, 15))
         self.tangent_btn.setCheckable(True)
         self.tangent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tangent_btn.setToolTip(
-            'Tangent Mode (ADHD / Absurdityverse friendly): Grey when OFF · Yellow when ON. '
-            'Skips pulling prior code turns into the prompt while STILL saving this exchange to the Memory Palace!'
-        )
+        self.tangent_btn.setToolTip('Side question (ignores prior chat context)')
         self.tangent_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2576,10 +2568,7 @@ class PalaceWindow(QMainWindow):
         self.palace_code_btn.setIconSize(QSize(15, 15))
         self.palace_code_btn.setCheckable(True)
         self.palace_code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.palace_code_btn.setToolTip(
-            'Fairybread Source Code Tool: Grey when OFF · Cyan when ON. '
-            'Gives active AIs read-only access to Fairybread source code so they can inspect and improve Fairybread.'
-        )
+        self.palace_code_btn.setToolTip('Let AIs read Fairybread source code')
         self.palace_code_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2592,12 +2581,7 @@ class PalaceWindow(QMainWindow):
         self.current_search_depth = 'default'
         self.search_depth_btn = QPushButton('🔍 Default ▾')
         self.search_depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.search_depth_btn.setToolTip(
-            'Search Depth (or type /search, /msearch, /deepsearch):\n'
-            '• Default (Light Search): Fast 1-query web lookup (/search)\n'
-            '• Moderate (/msearch): Sharded multi-angle search + reads top 6 pages\n'
-            '• Deep (/deepsearch): Sharded exhaustive research across 15–25 sites'
-        )
+        self.search_depth_btn.setToolTip('Web search depth (Default / Moderate / Deep)')
         self.search_depth_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
             'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2608,14 +2592,14 @@ class PalaceWindow(QMainWindow):
 
         self.history_toggle = QCheckBox('History')
         self.history_toggle.setChecked(True)
-        self.history_toggle.setToolTip('Use & save session history for this turn')
+        self.history_toggle.setToolTip('Use & save session history')
         self.history_toggle.toggled.connect(self._on_history_toggle_changed)
         self.history_toggle.hide()
         controls.addWidget(self.history_toggle)
 
         self.peer_rounds_toggle = QCheckBox('Peer deliberation')
         self.peer_rounds_toggle.setChecked(True)
-        self.peer_rounds_toggle.setToolTip('When multiple AIs are enabled, let them review each other’s initial answers before synthesizing consensus.')
+        self.peer_rounds_toggle.setToolTip('2-round peer review')
         self.peer_rounds_toggle.toggled.connect(self._on_peer_rounds_toggle_changed)
         self.peer_rounds_toggle.hide()
         controls.addWidget(self.peer_rounds_toggle)
@@ -2624,7 +2608,7 @@ class PalaceWindow(QMainWindow):
 
         # Live Voice / Microphone Soundwave Level Indicator (visible whenever Dictation or Live Voice is active)
         self.voice_level_badge = QLabel('')
-        self.voice_level_badge.setToolTip('Live microphone volume meter — bounces in real time as Fairybread hears your voice')
+        self.voice_level_badge.setToolTip('Live microphone volume meter')
         self.voice_level_badge.setStyleSheet(
             'font-family: Consolas, monospace; font-size: 11.5px; font-weight: 700; color: #22c55e; '
             'background: #11281b; border: 1px solid #22c55e; border-radius: 6px; padding: 3px 8px;'
@@ -2639,11 +2623,7 @@ class PalaceWindow(QMainWindow):
         )
         self.steer_button = QPushButton('Steer / Queue ▾')
         self.steer_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steer_button.setToolTip(
-            'Choose how to apply a message while a turn is running:\n'
-            '• Steer Active Turn: Inject instruction into the current turn before synthesis\n'
-            '• Queue Next Turn: Run automatically as soon as the current turn finishes'
-        )
+        self.steer_button.setToolTip('Steer active turn or queue next')
         self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
         self.steer_button.clicked.connect(self._show_busy_action_menu)
         self.steer_button.hide()
@@ -2656,7 +2636,7 @@ class PalaceWindow(QMainWindow):
 
         self.stop_button = QPushButton('■ Stop')
         self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.stop_button.setToolTip('Stop the active turn immediately and restore your prompt into the input box (Esc)')
+        self.stop_button.setToolTip('Stop turn (Esc)')
         self.stop_button.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
@@ -2672,10 +2652,7 @@ class PalaceWindow(QMainWindow):
         self.mic_button.setCheckable(True)
         self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_button.setFixedSize(30, 30)
-        self.mic_button.setToolTip(
-            'Dictate to Text Box (🎤): Click once and speak — live soundwave bars show your mic level. '
-            'Click again to transcribe your speech into the input box for all Council AIs.'
-        )
+        self.mic_button.setToolTip('Dictate voice into text box')
         self.mic_button.setStyleSheet(
             'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 15px; } '
             'QPushButton:hover { background: #161b22; border-color: #30363d; } '
@@ -2690,10 +2667,7 @@ class PalaceWindow(QMainWindow):
         self.live_voice_button.setCheckable(True)
         self.live_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.live_voice_button.setFixedSize(30, 30)
-        self.live_voice_button.setToolTip(
-            'Live Voice Mode (Hands-Free Chat): Click once to talk live with the Council. '
-            'Shows a live soundwave meter, automatically sends when you pause speaking (~1.5s), and speaks the reply aloud!'
-        )
+        self.live_voice_button.setToolTip('Live hands-free voice chat')
         self.live_voice_button.setStyleSheet(
             'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 15px; } '
             'QPushButton:hover { background: #f0f6fc; border-color: #f0f6fc; } '
@@ -2704,7 +2678,7 @@ class PalaceWindow(QMainWindow):
 
         self.send_button = QPushButton('↑')
         self.send_button.setObjectName('sendButton')
-        self.send_button.setToolTip('Send message (Enter to submit · Shift+Enter for new line)')
+        self.send_button.setToolTip('Send message (Enter)')
         self.send_button.setFixedSize(30, 30)
         self.send_button.clicked.connect(self.send_message)
         controls.addWidget(self.send_button)
@@ -3063,46 +3037,66 @@ class PalaceWindow(QMainWindow):
         layout.addWidget(agent_workbench_frame)
         splitter.addWidget(panel)
 
-        # --- RIGHT SIDEBAR: MEMORY REVIEW ---
+        # --- RIGHT SIDEBAR: SHARED MEMORY PALACE (Auto-Indexed Contextual Memory for All AIs) ---
         self.memory_panel = QFrame()
         self.memory_panel.setObjectName('memoryPanel')
-        self.memory_panel.setMinimumWidth(280)
+        self.memory_panel.setMinimumWidth(295)
         memory_layout = QVBoxLayout(self.memory_panel)
-        memory_title = QLabel('Memory review')
+        memory_title = QLabel('Shared Memory Palace')
         memory_title.setObjectName('sectionTitle')
         memory_layout.addWidget(memory_title)
-        memory_note = QLabel('Proposed memories appear here for inspection before they become durable memory.')
+        memory_note = QLabel('Contextual memories automatically saved & shared across all Council AIs (like ChatGPT & Antigravity).')
         memory_note.setWordWrap(True)
         memory_note.setObjectName('muted')
         memory_layout.addWidget(memory_note)
 
+        self.memory_search_edit = QLineEdit()
+        self.memory_search_edit.setPlaceholderText('🔍 Search shared memories…')
+        self.memory_search_edit.setToolTip('Filter stored memories')
+        self.memory_search_edit.textChanged.connect(lambda _t: self.refresh_memory_review(True))
+        memory_layout.addWidget(self.memory_search_edit)
+
         self.proposal_list = QListWidget()
         self.proposal_list.setAccessibleName('Proposed memories')
+        self.proposal_list.setToolTip('Click any stored memory to inspect')
         self.proposal_list.currentItemChanged.connect(self.show_memory_proposal)
         memory_layout.addWidget(self.proposal_list, 1)
 
-        detail_title = QLabel('Selected memory')
+        detail_title = QLabel('Memory detail')
         detail_title.setObjectName('sectionTitle')
         memory_layout.addWidget(detail_title)
 
         self.proposal_detail = QTextBrowser()
         self.proposal_detail.setAccessibleName('Selected memory proposal detail')
-        self.proposal_detail.setPlaceholderText('Select a proposed memory to inspect its full detail.')
-        self.proposal_detail.setMaximumHeight(220)
+        self.proposal_detail.setPlaceholderText('Select any memory above to inspect what all Council AIs see.')
+        self.proposal_detail.setMaximumHeight(210)
         memory_layout.addWidget(self.proposal_detail)
+
+        mem_act_row = QHBoxLayout()
+        self.add_memory_btn = QPushButton('+ Add Memory')
+        self.add_memory_btn.setToolTip('Add standing fact or rule for all AIs')
+        self.add_memory_btn.clicked.connect(self.add_standing_memory)
+        self.delete_memory_btn = QPushButton('🗑 Forget Selected')
+        self.delete_memory_btn.setToolTip('Delete selected memory from Palace')
+        self.delete_memory_btn.clicked.connect(self.delete_selected_memory)
+        mem_act_row.addWidget(self.add_memory_btn)
+        mem_act_row.addWidget(self.delete_memory_btn)
+        memory_layout.addLayout(mem_act_row)
 
         prop_btn_row = QHBoxLayout()
         self.approve_proposal_btn = QPushButton('✓ Approve & Store')
-        self.approve_proposal_btn.setToolTip('Promote this proposal into the SQLite FTS5 Durable Memory Palace')
+        self.approve_proposal_btn.setToolTip('Approve proposal')
         self.approve_proposal_btn.clicked.connect(self.approve_selected_proposal)
+        self.approve_proposal_btn.hide()
         self.reject_proposal_btn = QPushButton('✕ Reject')
-        self.reject_proposal_btn.setToolTip('Reject and remove this proposal')
+        self.reject_proposal_btn.setToolTip('Reject proposal')
         self.reject_proposal_btn.clicked.connect(self.reject_selected_proposal)
+        self.reject_proposal_btn.hide()
         prop_btn_row.addWidget(self.approve_proposal_btn)
         prop_btn_row.addWidget(self.reject_proposal_btn)
         memory_layout.addLayout(prop_btn_row)
 
-        self.durable_mem_count_label = QLabel('Durable Palace Memories (SQLite FTS5): 0')
+        self.durable_mem_count_label = QLabel('Shared Contextual Memories (All AIs): 0')
         self.durable_mem_count_label.setObjectName('muted')
         self.durable_mem_count_label.setWordWrap(True)
         memory_layout.addWidget(self.durable_mem_count_label)
@@ -3111,7 +3105,7 @@ class PalaceWindow(QMainWindow):
         self.memory_panel.hide()
         splitter.addWidget(self.memory_panel)
         self.memory_button.toggled.connect(self.memory_panel.setVisible)
-        self.memory_button.toggled.connect(lambda visible: splitter.setSizes([240, 620, 280]) if visible else None)
+        self.memory_button.toggled.connect(lambda visible: splitter.setSizes([240, 620, 295]) if visible else None)
         self.memory_button.toggled.connect(self.refresh_memory_review)
         splitter.setSizes([240, 860])
         splitter.setCollapsible(0, False)
@@ -3131,6 +3125,7 @@ class PalaceWindow(QMainWindow):
         self.refresh_sessions()
         self.load_history()
         self._refresh_idle_view()
+        self._backfill_shared_memory_once()
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
 
     def _on_ouroboros_startup_ready(self):
@@ -4633,6 +4628,19 @@ class PalaceWindow(QMainWindow):
             text = 'History off · Turn will not read or save session history'
         self.privacy_label.setText(text)
 
+    def _memory_db_path(self) -> Path:
+        return self.proposal_service.path.parent / 'memory.db'
+
+    def _backfill_shared_memory_once(self):
+        try:
+            from memory_service import MemoryService
+            ms = MemoryService(db_path=self._memory_db_path())
+            if ms.index.count() == 0 and hasattr(self, 'store') and hasattr(self.store, 'root'):
+                ms.backfill_from_sessions(self.store.root)
+            self._update_durable_memory_count()
+        except Exception:
+            pass
+
     @Slot(bool)
     def refresh_memory_review(self, visible):
         if not visible:
@@ -4640,16 +4648,13 @@ class PalaceWindow(QMainWindow):
 
         self.proposal_list.clear()
         self.proposal_detail.clear()
+        self._backfill_shared_memory_once()
 
+        proposals = []
         try:
             proposals = self.proposal_service.list_proposals()
         except (OSError, ValueError) as exc:
             self.show_notice(f'Could not load memory proposals: {exc}')
-            return
-
-        if not proposals:
-            self.proposal_list.addItem('No proposed memories yet.')
-            return
 
         for proposal in proposals:
             item = QListWidgetItem(
@@ -4658,10 +4663,33 @@ class PalaceWindow(QMainWindow):
                 f'{proposal["summary"]}'
             )
             item.setData(Qt.ItemDataRole.UserRole, proposal['id'])
-            item.setToolTip(
-                f'Source entry: {proposal["source"]["entry_id"]}'
-            )
+            item.setToolTip(f'Pending proposal: {proposal["summary"]}')
             self.proposal_list.addItem(item)
+
+        try:
+            from memory_service import SQLiteMemoryIndex
+            idx = SQLiteMemoryIndex(self._memory_db_path())
+            q_filter = self.memory_search_edit.text().strip() if hasattr(self, 'memory_search_edit') else ''
+            if q_filter:
+                memories = idx.search(q_filter, limit=100)
+            else:
+                memories = idx.list_memories(limit=100)
+        except Exception:
+            memories = []
+
+        self._cached_memories_map = {str(m['id']): m for m in memories}
+        for mem in memories:
+            mtype = str(mem.get('memory_type') or 'contextual').title()
+            proj = str(mem.get('project') or '').strip()
+            tag = f'{mtype} · {proj}' if proj else mtype
+            item = QListWidgetItem(f'✓ Shared ({tag})\n{mem["summary"]}')
+            item.setData(Qt.ItemDataRole.UserRole, f'mem:{mem["id"]}')
+            item.setToolTip(mem['summary'])
+            self.proposal_list.addItem(item)
+
+        self._update_durable_memory_count()
+        if self.proposal_list.count() == 0:
+            self.proposal_list.addItem('No shared memories yet — chat normally or click + Add Memory.')
 
     @Slot(QListWidgetItem, QListWidgetItem)
     def show_memory_proposal(self, current, previous):
@@ -4669,13 +4697,43 @@ class PalaceWindow(QMainWindow):
             self.proposal_detail.clear()
             return
 
-        proposal_id = current.data(Qt.ItemDataRole.UserRole)
-        if not proposal_id:
+        raw_key = str(current.data(Qt.ItemDataRole.UserRole) or '')
+        if not raw_key:
             self.proposal_detail.clear()
             return
 
+        if raw_key.startswith('mem:'):
+            if hasattr(self, 'approve_proposal_btn'):
+                self.approve_proposal_btn.hide()
+                self.reject_proposal_btn.hide()
+            mid = raw_key.split(':', 1)[1]
+            mem = getattr(self, '_cached_memories_map', {}).get(mid)
+            if not mem:
+                try:
+                    from memory_service import SQLiteMemoryIndex
+                    for m in SQLiteMemoryIndex(self._memory_db_path()).list_memories(limit=250):
+                        if str(m.get('id')) == mid:
+                            mem = m
+                            break
+                except Exception:
+                    mem = None
+            if not mem:
+                self.proposal_detail.clear()
+                return
+            proj = str(mem.get('project') or 'General').strip()
+            self.proposal_detail.setPlainText(
+                f'Summary:\n{mem["summary"]}\n\n'
+                f'Shared Context (Read by All Council AIs):\n{mem["body"]}\n\n'
+                f'Project / Scope: {proj}'
+            )
+            return
+
+        if hasattr(self, 'approve_proposal_btn'):
+            self.approve_proposal_btn.show()
+            self.reject_proposal_btn.show()
+
         try:
-            proposal = self.proposal_service.read_proposal(proposal_id)
+            proposal = self.proposal_service.read_proposal(raw_key)
         except (OSError, ValueError) as exc:
             self.proposal_detail.clear()
             self.show_notice(f'Could not load memory proposal: {exc}')
@@ -4693,14 +4751,59 @@ class PalaceWindow(QMainWindow):
             f'Source entry:\n{source["entry_id"]}'
         )
 
+    def add_standing_memory(self):
+        text, ok = QInputDialog.getMultiLineText(
+            self,
+            'Add Standing Memory for All Council AIs',
+            'Enter a fact, preference, or standing instruction that all Council AIs should always remember:',
+            '',
+        )
+        if not ok or not text.strip():
+            return
+        clean = text.strip()
+        first_line = clean.splitlines()[0].strip()
+        summary = first_line[:120] if len(first_line) > 3 else clean[:120]
+        try:
+            from memory_service import SQLiteMemoryIndex
+            idx = SQLiteMemoryIndex(self._memory_db_path())
+            idx.upsert(
+                summary=summary,
+                body=clean,
+                project=self._current_project_name(),
+                memory_type='standing',
+                source={'kind': 'user_added'},
+            )
+            self.refresh_memory_review(True)
+            self.show_notice('✓ Added standing memory to Shared Memory Palace.')
+        except Exception as exc:
+            self.show_notice(f'Could not save memory: {exc}')
+
+    def delete_selected_memory(self):
+        current = self.proposal_list.currentItem()
+        if current is None:
+            return
+        raw_key = str(current.data(Qt.ItemDataRole.UserRole) or '')
+        if not raw_key:
+            return
+        if raw_key.startswith('mem:'):
+            mid = raw_key.split(':', 1)[1]
+            try:
+                from memory_service import SQLiteMemoryIndex
+                SQLiteMemoryIndex(self._memory_db_path()).delete_memory(mid)
+                self.refresh_memory_review(True)
+                self.show_notice('🗑 Memory forgotten from Shared Memory Palace.')
+            except Exception as exc:
+                self.show_notice(f'Could not delete memory: {exc}')
+        else:
+            self.reject_selected_proposal()
+
     def _update_durable_memory_count(self):
         if not hasattr(self, 'durable_mem_count_label'):
             return
         try:
             from memory_service import SQLiteMemoryIndex
-            db_p = self.proposal_service.path.parent / 'memory.db'
-            cnt = SQLiteMemoryIndex(db_p).count()
-            self.durable_mem_count_label.setText(f'Durable Palace Memories (SQLite FTS5): {cnt}')
+            cnt = SQLiteMemoryIndex(self._memory_db_path()).count()
+            self.durable_mem_count_label.setText(f'Shared Contextual Memories (All AIs): {cnt}')
         except Exception:
             pass
 
@@ -6031,6 +6134,7 @@ class PalaceWindow(QMainWindow):
                 return palace.run(
                     prompt,
                     provider_names=selected_providers if selected_providers else None,
+                    include_memory=use_history,
                     include_context=use_history,
                     save_to_context=save_history,
                     max_rounds=rounds,
@@ -6128,6 +6232,21 @@ class PalaceWindow(QMainWindow):
                     self.refresh_sessions()
                 except OSError as exc:
                     self.show_notice(f'Answer saved, but conversation title could not be saved: {exc}')
+                try:
+                    from memory_service import MemoryService
+                    MemoryService(db_path=self._memory_db_path()).remember_exchange(
+                        self.last_question,
+                        result.final_answer,
+                        session_id=self.session_id,
+                        project=self._current_project_name(),
+                        contributors=turn_contributors,
+                    )
+                    if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+                        self.refresh_memory_review(True)
+                    else:
+                        self._update_durable_memory_count()
+                except Exception:
+                    pass
             saved = 'Saved locally' if self.pending_history and not result.context_error else 'Not saved (No-History)'
             if self.tangent_btn.isChecked() and self.pending_history and not result.context_error:
                 saved = 'Tangent saved to Palace (clean context)'

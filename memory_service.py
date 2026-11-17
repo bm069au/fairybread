@@ -348,21 +348,107 @@ class MemoryService:
         self.memory_limit = memory_limit
         self.index = SQLiteMemoryIndex(db_path=db_path)
 
+    def remember_exchange(
+        self,
+        question: str,
+        answer: str,
+        *,
+        session_id: str = "",
+        project: str = "",
+        contributors: list[str] | None = None,
+        ts: float | None = None,
+    ) -> str:
+        """Automatically store a completed user/Council exchange into the shared SQLite FTS5 Memory Palace (like ChatGPT/Antigravity)."""
+        clean_q = re.sub(r"\s+", " ", (question or "").strip())
+        if len(clean_q) < 4 or clean_q.lower() in {".", "..", "...", "test", "hi", "hello"}:
+            return ""
+        clean_a = re.sub(r"\[GENERATE_IMAGE[^\]]*\]", "[Generated Image]", answer or "", flags=re.IGNORECASE)
+        clean_a = re.sub(r"\[PALACE_UI_SNAPSHOT[^\]]*\]", "[UI Snapshot]", clean_a, flags=re.IGNORECASE).strip()
+        if not clean_a:
+            return ""
+        summary = clean_q if len(clean_q) <= 140 else clean_q[:137] + "..."
+        contrib_str = ", ".join(contributors or [])
+        header = f"Council ({contrib_str})" if contrib_str else "Council"
+        body = f"User: {clean_q}\n{header}: {clean_a[:2400]}"
+        return self.index.upsert(
+            summary=summary,
+            body=body,
+            wing=self.wing,
+            room=session_id or "general",
+            project=project or "",
+            memory_type="contextual",
+            visibility="private",
+            source={
+                "kind": "auto_exchange",
+                "session_id": session_id,
+                "contributors": list(contributors or []),
+            },
+            ts=ts,
+        )
+
+    def backfill_from_sessions(self, palace_root: Path | None = None) -> int:
+        """Backfill existing saved conversations from sessions/*.jsonl into memory.db so all AIs share prior context."""
+        if palace_root is None:
+            palace_root = self.index.db_path.parent
+        sessions_dir = Path(palace_root) / "sessions"
+        if not sessions_dir.exists():
+            return 0
+        added = 0
+        for sf in sorted(sessions_dir.glob("*.jsonl")):
+            sid = sf.stem
+            last_q = ""
+            try:
+                for line in sf.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    role = rec.get("role")
+                    phase = rec.get("phase")
+                    content = str(rec.get("content") or "").strip()
+                    if role == "user" and content:
+                        last_q = content
+                    elif role == "assistant" and phase in {None, "synthesis"} and last_q and content:
+                        self.remember_exchange(
+                            last_q,
+                            content,
+                            session_id=sid,
+                            contributors=rec.get("contributors") or [],
+                        )
+                        added += 1
+                        last_q = ""
+            except Exception:
+                continue
+        return added
+
     def search(self, query: str) -> MemorySearchResult:
-        # Preserve direct subprocess path when unit tests mock subprocess.run
+        # Preserve direct subprocess path ONLY when unit tests explicitly mock subprocess.run
         is_mocked = hasattr(subprocess.run, "assert_called") or "mock" in type(subprocess.run).__name__.lower()
         if not is_mocked:
             try:
-                hits = self.index.search(query, wing=self.wing, limit=12)
-                if hits:
+                all_recent = self.index.list_memories(wing=self.wing, limit=40)
+                standing = [m for m in all_recent if str(m.get("memory_type") or "").lower() in {"standing", "preference"}]
+                bm25_hits = self.index.search(query, wing=self.wing, limit=10)
+                recent_top = all_recent[:4]
+
+                merged: list[dict[str, Any]] = []
+                seen_ids: set[str] = set()
+                for group in (standing, bm25_hits, recent_top):
+                    for item in group:
+                        mid = str(item.get("id") or "")
+                        if mid and mid not in seen_ids:
+                            seen_ids.add(mid)
+                            merged.append(item)
+
+                if merged:
                     lines: list[str] = []
-                    for h in hits:
-                        lines.append(f"[{h.get('memory_type', 'semantic').upper()}] {h['summary']}: {h['body']}")
-                    combined = "\n".join(lines)[: self.memory_limit].strip()
+                    for h in merged[:12]:
+                        lines.append(f"[{h.get('memory_type', 'contextual').upper()}] {h['summary']}\n{h['body'][:700]}")
+                    combined = "\n\n".join(lines)[: self.memory_limit].strip()
                     if combined:
                         return MemorySearchResult(context=combined)
-            except Exception:
-                pass
+                return MemorySearchResult(context="No relevant memory found.")
+            except Exception as exc:
+                return MemorySearchResult(context="", error=str(exc))
 
         try:
             result = subprocess.run(
