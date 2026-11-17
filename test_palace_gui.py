@@ -1283,6 +1283,13 @@ class WindowTests(unittest.TestCase):
         ):
             self.assertTrue(bool(btn.toolTip().strip()), f'Missing tooltip on {btn}')
 
+        from memory_service import load_memory_summary, save_memory_summary
+        sum_init = load_memory_summary(mem_db_path)
+        self.assertIn('### Overview', sum_init['text'])
+        saved_sum = save_memory_summary('### Overview\nCustom profile summary for Brett.', db_path=mem_db_path)
+        self.assertIn('Custom profile summary for Brett.', saved_sum['text'])
+        self.assertIn('Custom profile summary for Brett.', fast_mem_svc.search('anything').context)
+
 
 if __name__ == '__main__':
     unittest.main()

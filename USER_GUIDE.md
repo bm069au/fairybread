@@ -216,9 +216,13 @@ While a turn is running, the composer input box and **`{} Code`** toggle remain 
 
 ## 10. Durable Memory Palace (SQLite FTS5), Storage Sliders, Drive Mover & AES-256 Password-Locked Backups
 
-### SQLite FTS5 Durable Memory Engine (With Phase-Aware Retrieval & `zlib` Compression)
-- Fairybread stores approved durable memories in a fast, in-process **SQLite WAL + FTS5 (`BM25` + temporal recency boost)** database (`%LOCALAPPDATA%\Palace\memory.db`) with SHA-256 content deduplication and sidecar `zlib` compression for cold text blobs.
-- Open the **Memory** panel on the top-right bar to inspect proposed memories and click **`✓ Approve & Store`** to promote them into the durable SQLite FTS5 index or **`✕ Reject`** to discard them.
+### Living `Memory summary` & Automatic Cross-Agent SQLite FTS5 Memory Palace
+- **Automatic Contextual Memory (Like ChatGPT & Antigravity, Shared Across All 8 AIs):** Every conversation turn (when `No-History` is OFF) is automatically indexed into `%LOCALAPPDATA%\Palace\memory.db` (`BM25` + temporal recency + `zlib` compression) and shared across **all active Council AIs**.
+- **Living `Memory summary` (`Memory` button → `📝 Memory Summary (View & Edit)…` or `Settings → Memory & Personalization → Manage`):**
+  - Maintains a personal overview divided into **`Overview`**, **`How You Like to Work`**, and **`Software & Creative Projects`**, injected at the top of `MEMORY CONTEXT` for every Council AI.
+  - **Direct Keyboard Editing (`✎ Edit Directly` / `💾 Save Edits`):** Unlike read-only AI summaries, you can click **`✎ Edit Directly`** to edit or delete any word yourself at any time.
+  - **AI-Assisted `Ask or update` (`↑`) Bar & `↻ Auto-Update from Chats`:** Type a plain-English instruction into the **`Ask or update`** bar at the bottom (or click **`↻ Auto-Update from Chats`**) to have the AI update your profile summary automatically.
+- **Search & Forget Individual Memories:** Open the **`Memory`** panel on the top-right bar to search stored memories, add a standing fact (`+ Add Memory`), or delete any specific memory (`🗑 Forget Selected`).
 
 ### Storage Caps (`100 MB` → `Unlimited`), File Manager & Custom Drive Mover (`Settings → Backup & Restore`)
 - **Drive Space Sliders:** Set independent storage caps (`100 MB` up to `Unlimited`) for both **Normal Mode** and **Idle Mode**, with automatic warnings at 85% and 100%.

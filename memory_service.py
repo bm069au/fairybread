@@ -337,6 +337,220 @@ class MemorySearchResult:
         return self.error is None
 
 
+DEFAULT_MEMORY_SUMMARY_MARKDOWN = (
+    "### Overview\n"
+    "You're an Australian Gen X creator and systems builder, around 60 (`bm069au`). You bring a practical, "
+    "pattern-focused approach to technology and creative work, and prefer useful specifics and candid technical "
+    "pushback over generic reassurance or flattery. Your main interests include building software and multi-AI tools, "
+    "making music and animated comedy, health and gut-microbiome wellness, and hands-on projects such as brewing ginger beer.\n\n"
+    "### How You Like to Work\n"
+    "You prefer concise, personable answers with an optional deeper technical layer when needed. You value direct options "
+    "and risks, dislike canned reassurance and a policing tone, and are comfortable with banter when the subject is light. "
+    "For development, you want a clear summary and plan before implementation steps or code changes. You edit in Notepad++ "
+    "or Visual Studio and use Git savepoints. Your drive conventions are `G:` for notes and checkpoints, `E:` for active "
+    "projects (`E:\\Visual_studio\\Palace`), and `M:` for private backups/media (strictly off-limits unless explicitly authorized).\n\n"
+    "### Software & Creative Projects\n"
+    "- **Fairybread (formerly Palace, `E:\\Visual_studio\\Palace`):** Your source-available donationware multi-AI council "
+    "desktop workspace (`https://github.com/bm069au/fairybread`) where 8 AI providers (`Gemini`, `OpenAI`, `DeepSeek`, `Groq`, "
+    "`Qwen`, `Cohere`, `Mistral`, `Cerebras`) collaborate, share a 100% local SQLite FTS5 Memory Palace, render 300-DPI artwork "
+    "and banners, use Live Voice Mode, and run autonomous multi-agent experiments in Idle Mode.\n"
+    "- **EvidenceBench (`E:\\Visual_studio\\EvidenceBenchDesktop`):** Your local-first evidence workspace with imports, metadata, "
+    "graphing, exhaustive email search, and backups.\n"
+    "- **Creative & Community Work:** Your upcoming animated comedy series and your Facebook wellness / gut-microbiome community group."
+)
+
+
+def _format_relative_age(ts: float) -> str:
+    if not ts or ts <= 0:
+        return "Updated recently"
+    delta = max(0.0, time.time() - float(ts))
+    if delta < 90:
+        return "Updated just now"
+    mins = int(delta // 60)
+    if mins < 60:
+        return f"Updated {mins}m ago"
+    hrs = int(mins // 60)
+    if hrs < 24:
+        return f"Updated {hrs} hour{'s' if hrs != 1 else ''} ago"
+    days = int(hrs // 24)
+    return f"Updated {days} day{'s' if days != 1 else ''} ago"
+
+
+def _summary_json_path(db_path: Path | None = None) -> Path:
+    resolved_db = Path(db_path) if db_path is not None else get_default_memory_db_path()
+    return resolved_db.parent / "memory_summary.json"
+
+
+def load_memory_summary(db_path: Path | None = None) -> dict[str, Any]:
+    """Load the user's living Memory Summary (or initialize with the default profile summary)."""
+    p = _summary_json_path(db_path)
+    if p.exists():
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(raw, dict) and str(raw.get("text") or "").strip():
+                ts = float(raw.get("updated_ts") or time.time())
+                return {
+                    "text": str(raw["text"]).strip(),
+                    "updated_ts": ts,
+                    "updated_relative": _format_relative_age(ts),
+                    "turn_counter": int(raw.get("turn_counter") or 0),
+                }
+        except Exception:
+            pass
+    now_ts = time.time()
+    initial = {
+        "text": DEFAULT_MEMORY_SUMMARY_MARKDOWN,
+        "updated_ts": now_ts,
+        "updated_relative": _format_relative_age(now_ts),
+        "turn_counter": 0,
+    }
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(initial, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    return initial
+
+
+def save_memory_summary(
+    markdown_text: str,
+    *,
+    db_path: Path | None = None,
+    turn_counter: int | None = None,
+) -> dict[str, Any]:
+    """Save edited or AI-updated Memory Summary to disk and mirror into memory.db as a top standing record."""
+    clean = (markdown_text or "").strip() or DEFAULT_MEMORY_SUMMARY_MARKDOWN
+    cur = load_memory_summary(db_path)
+    now_ts = time.time()
+    payload = {
+        "text": clean,
+        "updated_ts": now_ts,
+        "updated_relative": _format_relative_age(now_ts),
+        "turn_counter": int(turn_counter if turn_counter is not None else cur.get("turn_counter", 0)),
+    }
+    p = _summary_json_path(db_path)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+    try:
+        idx = SQLiteMemoryIndex(db_path=db_path)
+        idx.upsert(
+            summary="Master Memory Summary (Overview, How You Like to Work & Projects)",
+            body=clean,
+            memory_id="palace_master_memory_summary",
+            memory_type="standing",
+            source={"kind": "memory_summary"},
+            ts=now_ts,
+        )
+    except Exception:
+        pass
+    return payload
+
+
+def ai_update_memory_summary(
+    instruction: str = "",
+    *,
+    db_path: Path | None = None,
+    credential_store: Any = None,
+) -> dict[str, Any]:
+    """Update the living Memory Summary using an AI instruction ('Ask or update') or recent chat memories."""
+    cur_data = load_memory_summary(db_path)
+    cur_text = cur_data["text"]
+    idx = SQLiteMemoryIndex(db_path=db_path)
+    recent_mems = [
+        m for m in idx.list_memories(limit=15)
+        if str(m.get("id")) != "palace_master_memory_summary"
+    ]
+    recent_block = "\n".join(
+        f"- {m.get('summary', '')}: {str(m.get('body', ''))[:240]}"
+        for m in recent_mems[:10]
+    )
+    req_note = (instruction or "").strip()
+    sys_prompt = (
+        "You maintain the user's living 'Memory summary' for Fairybread (shared across all Council AIs), "
+        "formatted exactly like ChatGPT's Memory summary with clear Markdown headings:\n"
+        "### Overview\n"
+        "### How You Like to Work\n"
+        "### Software & Creative Projects\n\n"
+        "Rules:\n"
+        "- Preserve existing accurate details unless the user asks to change or remove them.\n"
+        "- Write in warm, direct second-person ('You're...', 'You prefer...').\n"
+        "- Output ONLY the updated Markdown sections (no preamble or code fences)."
+    )
+    user_prompt = (
+        f"CURRENT MEMORY SUMMARY:\n{cur_text}\n\n"
+        f"RECENT CONVERSATION MEMORIES:\n{recent_block or '(None)'}\n\n"
+        f"USER UPDATE REQUEST:\n{req_note or 'Refresh and refine the Memory summary incorporating any new project milestones or preferences from recent conversations.'}"
+    )
+
+    try:
+        from credential_store import CredentialStore
+        store = credential_store or CredentialStore()
+    except Exception:
+        store = None
+
+    updated_md = ""
+    if store is not None:
+        # 1. Try Groq fast model
+        g_key = store.get_api_key("groq")
+        if g_key and not updated_md:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1")
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                )
+                updated_md = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                pass
+        # 2. Try OpenAI
+        o_key = store.get_api_key("openai")
+        if o_key and not updated_md:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=o_key)
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                )
+                updated_md = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                pass
+        # 3. Try Gemini
+        gem_key = store.get_api_key("gemini")
+        if gem_key and not updated_md:
+            try:
+                from google import genai
+                client = genai.Client(api_key=gem_key)
+                resp = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=f"{sys_prompt}\n\n{user_prompt}",
+                )
+                updated_md = (getattr(resp, "text", "") or "").strip()
+            except Exception:
+                pass
+
+    if not updated_md:
+        # Offline fallback: append user's update note cleanly
+        if req_note:
+            updated_md = f"{cur_text}\n\n- **Update:** {req_note}"
+        else:
+            updated_md = cur_text
+
+    return save_memory_summary(updated_md, db_path=db_path)
+
+
 class MemoryService:
     def __init__(
         self,
@@ -425,10 +639,23 @@ class MemoryService:
         is_mocked = hasattr(subprocess.run, "assert_called") or "mock" in type(subprocess.run).__name__.lower()
         if not is_mocked:
             try:
+                summary_data = load_memory_summary(self.index.db_path)
+                summary_md = (summary_data.get("text") or "").strip()
+
                 all_recent = self.index.list_memories(wing=self.wing, limit=40)
-                standing = [m for m in all_recent if str(m.get("memory_type") or "").lower() in {"standing", "preference"}]
-                bm25_hits = self.index.search(query, wing=self.wing, limit=10)
-                recent_top = all_recent[:4]
+                standing = [
+                    m for m in all_recent
+                    if str(m.get("memory_type") or "").lower() in {"standing", "preference"}
+                    and str(m.get("id")) != "palace_master_memory_summary"
+                ]
+                bm25_hits = [
+                    m for m in self.index.search(query, wing=self.wing, limit=10)
+                    if str(m.get("id")) != "palace_master_memory_summary"
+                ]
+                recent_top = [
+                    m for m in all_recent[:4]
+                    if str(m.get("id")) != "palace_master_memory_summary"
+                ]
 
                 merged: list[dict[str, Any]] = []
                 seen_ids: set[str] = set()
@@ -439,13 +666,14 @@ class MemoryService:
                             seen_ids.add(mid)
                             merged.append(item)
 
-                if merged:
-                    lines: list[str] = []
-                    for h in merged[:12]:
-                        lines.append(f"[{h.get('memory_type', 'contextual').upper()}] {h['summary']}\n{h['body'][:700]}")
-                    combined = "\n\n".join(lines)[: self.memory_limit].strip()
-                    if combined:
-                        return MemorySearchResult(context=combined)
+                blocks: list[str] = []
+                if summary_md:
+                    blocks.append(f"[USER & PROJECT MEMORY SUMMARY — SHARED ACROSS ALL COUNCIL AIs]:\n{summary_md}")
+                for h in merged[:10]:
+                    blocks.append(f"[{h.get('memory_type', 'contextual').upper()}] {h['summary']}\n{h['body'][:700]}")
+                combined = "\n\n".join(blocks)[: self.memory_limit].strip()
+                if combined:
+                    return MemorySearchResult(context=combined)
                 return MemorySearchResult(context="No relevant memory found.")
             except Exception as exc:
                 return MemorySearchResult(context="", error=str(exc))

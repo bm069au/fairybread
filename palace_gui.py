@@ -1339,11 +1339,51 @@ class ManageAIsDialog(QDialog):
 
     def _build_memory_history_page(self):
         w, lay = self._make_simple_page(
-            'Memory & History',
-            'Contextual memory is automatically stored and shared across all Council AIs (like ChatGPT & Antigravity).'
+            'Memory & Personalization',
+            'Configure how Fairybread manages shared contextual memory across all Council AIs (like ChatGPT & Antigravity).'
         )
+        mem_card = QFrame()
+        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        mc_lay = QVBoxLayout(mem_card)
+        mc_lay.setSpacing(10)
+
+        row1 = QHBoxLayout()
+        lbl1 = QLabel(
+            '<b>Enable memory</b><br>'
+            '<span style="color:#8b949e; font-size:12px;">Let all Council AIs personalize your experience based on your chats, files, and connected apps.</span>'
+        )
+        lbl1.setWordWrap(True)
+        lbl1.setTextFormat(Qt.TextFormat.RichText)
+        self.enable_shared_mem_check = QCheckBox('Enabled')
+        self.enable_shared_mem_check.setChecked(True)
+        self.enable_shared_mem_check.setToolTip('Toggle Shared Memory Palace across conversations')
+        row1.addWidget(lbl1, 1)
+        row1.addWidget(self.enable_shared_mem_check)
+        mc_lay.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        lbl2 = QLabel(
+            '<b>Memory summary</b><br>'
+            '<span style="color:#8b949e; font-size:12px;">View and directly edit the overview of what Fairybread has learned about you (Overview, How You Like to Work, Software Projects).</span>'
+        )
+        lbl2.setWordWrap(True)
+        lbl2.setTextFormat(Qt.TextFormat.RichText)
+        manage_sum_btn = QPushButton('Manage')
+        manage_sum_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        manage_sum_btn.setToolTip('View & edit Memory summary')
+
+        def _open_summary():
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'show_memory_summary_dialog'):
+                parent.show_memory_summary_dialog()
+
+        manage_sum_btn.clicked.connect(_open_summary)
+        row2.addWidget(lbl2, 1)
+        row2.addWidget(manage_sum_btn)
+        mc_lay.addLayout(row2)
+        lay.addWidget(mem_card)
+
         lay.addWidget(QCheckBox('Save standard chat transcripts locally per conversation', checked=True))
-        lay.addWidget(QCheckBox('Automatically store contextual memories across conversations so all Council AIs share context', checked=True))
         lay.addStretch()
         self.pages.addWidget(w)
 
@@ -3050,6 +3090,17 @@ class PalaceWindow(QMainWindow):
         memory_note.setObjectName('muted')
         memory_layout.addWidget(memory_note)
 
+        self.open_memory_summary_btn = QPushButton('📝 Memory Summary (View & Edit)…')
+        self.open_memory_summary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.open_memory_summary_btn.setToolTip('View & edit your personal Memory summary')
+        self.open_memory_summary_btn.setStyleSheet(
+            'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+            'padding: 6px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; } '
+            'QPushButton:hover { background: #1f365c; }'
+        )
+        self.open_memory_summary_btn.clicked.connect(self.show_memory_summary_dialog)
+        memory_layout.addWidget(self.open_memory_summary_btn)
+
         self.memory_search_edit = QLineEdit()
         self.memory_search_edit.setPlaceholderText('🔍 Search shared memories…')
         self.memory_search_edit.setToolTip('Filter stored memories')
@@ -3209,7 +3260,10 @@ class PalaceWindow(QMainWindow):
         open_themes_act.triggered.connect(lambda: os.startfile(str(get_themes_dir())) if hasattr(os, 'startfile') else None)
         theme_menu.addAction(open_themes_act)
         view_menu.addSeparator()
-        mem_act = QAction('Toggle Memory Review Panel', self)
+        mem_sum_act = QAction('📝 Memory Summary (View & Edit)…', self)
+        mem_sum_act.triggered.connect(self.show_memory_summary_dialog)
+        view_menu.addAction(mem_sum_act)
+        mem_act = QAction('Toggle Shared Memory Palace Panel', self)
         mem_act.triggered.connect(lambda: self.memory_button.click())
         view_menu.addAction(mem_act)
         peer_act = QAction('Expand / Collapse All Peer Deliberations', self)
@@ -4690,6 +4744,12 @@ class PalaceWindow(QMainWindow):
         self._update_durable_memory_count()
         if self.proposal_list.count() == 0:
             self.proposal_list.addItem('No shared memories yet — chat normally or click + Add Memory.')
+        try:
+            from memory_service import load_memory_summary
+            sum_data = load_memory_summary(self._memory_db_path())
+            self.proposal_detail.setMarkdown(sum_data.get('text', ''))
+        except Exception:
+            pass
 
     @Slot(QListWidgetItem, QListWidgetItem)
     def show_memory_proposal(self, current, previous):
@@ -4750,6 +4810,159 @@ class PalaceWindow(QMainWindow):
             f'Detail:\n{proposal["detail"]}\n\n'
             f'Source entry:\n{source["entry_id"]}'
         )
+
+    def show_memory_summary_dialog(self):
+        from memory_service import ai_update_memory_summary, load_memory_summary, save_memory_summary
+
+        db_p = self._memory_db_path()
+        sum_data = load_memory_summary(db_p)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Fairybread — Memory Summary (Shared Across All Council AIs)')
+        dlg.resize(720, 660)
+        dlg.setStyleSheet('background:#131720; color:#e6edf3;')
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
+
+        hdr_row = QHBoxLayout()
+        title_lbl = QLabel('<b>Memory summary</b>')
+        title_lbl.setStyleSheet('font-size: 16px; color: #f0f6fc;')
+        age_lbl = QLabel(str(sum_data.get('updated_relative', 'Updated just now')))
+        age_lbl.setStyleSheet('font-size: 12.5px; color: #8b949e; margin-left: 8px;')
+        hdr_row.addWidget(title_lbl)
+        hdr_row.addWidget(age_lbl)
+        hdr_row.addStretch()
+
+        edit_toggle_btn = QPushButton('✎ Edit Directly')
+        edit_toggle_btn.setCheckable(True)
+        edit_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        edit_toggle_btn.setToolTip('Switch between formatted view and direct text editing')
+        edit_toggle_btn.setStyleSheet(
+            'QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:5px 12px; font-weight:600; } '
+            'QPushButton:checked { background:#132238; color:#58a6ff; border:1px solid #3b82f6; }'
+        )
+
+        save_direct_btn = QPushButton('💾 Save Edits')
+        save_direct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_direct_btn.setToolTip('Save your direct text changes')
+        save_direct_btn.setStyleSheet(
+            'QPushButton { background:#11281b; color:#22c55e; border:1px solid #22c55e; border-radius:6px; padding:5px 12px; font-weight:700; }'
+        )
+        save_direct_btn.hide()
+
+        refresh_ai_btn = QPushButton('↻ Auto-Update from Chats')
+        refresh_ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_ai_btn.setToolTip('Have the AI refresh your Memory summary from recent conversations')
+        refresh_ai_btn.setStyleSheet(
+            'QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:5px 12px; font-weight:600; }'
+        )
+
+        close_x_btn = QPushButton('✕')
+        close_x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_x_btn.setToolTip('Close')
+        close_x_btn.setFixedSize(30, 30)
+        close_x_btn.setStyleSheet('QPushButton { background:transparent; color:#8b949e; border:none; font-size:15px; font-weight:700; } QPushButton:hover { color:#f0f6fc; }')
+        close_x_btn.clicked.connect(dlg.accept)
+
+        hdr_row.addWidget(edit_toggle_btn)
+        hdr_row.addWidget(save_direct_btn)
+        hdr_row.addWidget(refresh_ai_btn)
+        hdr_row.addWidget(close_x_btn)
+        v.addLayout(hdr_row)
+
+        stack = QStackedWidget(dlg)
+        reader = QTextBrowser(dlg)
+        reader.setOpenExternalLinks(True)
+        reader.setStyleSheet(
+            'background:#0d1117; color:#e6edf3; border:1px solid #262c3a; border-radius:10px; padding:16px; font-size:13.5px; line-height:1.55;'
+        )
+        reader.setMarkdown(sum_data.get('text', ''))
+
+        editor = QTextEdit(dlg)
+        editor.setAcceptRichText(False)
+        editor.setStyleSheet(
+            'background:#0d1117; color:#f0f6fc; border:1px solid #3b82f6; border-radius:10px; padding:16px; font-family: "Segoe UI", Consolas; font-size:13.5px;'
+        )
+        editor.setPlainText(sum_data.get('text', ''))
+
+        stack.addWidget(reader)
+        stack.addWidget(editor)
+        v.addWidget(stack, 1)
+
+        status_lbl = QLabel('Shared with all 8 Council AIs on every turn · Click "✎ Edit Directly" to edit by hand or use "Ask or update" below.')
+        status_lbl.setStyleSheet('font-size: 11.5px; color: #8b949e;')
+        v.addWidget(status_lbl)
+
+        # Bottom rounded 'Ask or update' bar (matching ChatGPT screenshot)
+        ask_bar = QFrame(dlg)
+        ask_bar.setStyleSheet('background:#1c212b; border:1px solid #30363d; border-radius:20px; padding:4px 8px;')
+        ask_lay = QHBoxLayout(ask_bar)
+        ask_lay.setContentsMargins(10, 2, 4, 2)
+        ask_edit = QLineEdit(ask_bar)
+        ask_edit.setPlaceholderText('Ask or update (e.g. "Add that Palace is now called Fairybread on GitHub")')
+        ask_edit.setStyleSheet('background:transparent; border:none; color:#f0f6fc; font-size:13px;')
+        ask_send_btn = QPushButton('↑', ask_bar)
+        ask_send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ask_send_btn.setToolTip('Update Memory summary')
+        ask_send_btn.setFixedSize(30, 30)
+        ask_send_btn.setStyleSheet(
+            'QPushButton { background:#58a6ff; color:#0d1117; border:none; border-radius:15px; font-size:14px; font-weight:700; }'
+        )
+        ask_lay.addWidget(ask_edit, 1)
+        ask_lay.addWidget(ask_send_btn)
+        v.addWidget(ask_bar)
+
+        def _toggle_edit(editing: bool):
+            if editing:
+                editor.setPlainText(load_memory_summary(db_p).get('text', ''))
+                stack.setCurrentIndex(1)
+                save_direct_btn.show()
+                edit_toggle_btn.setText('👁 Preview')
+                editor.setFocus()
+            else:
+                saved = save_memory_summary(editor.toPlainText(), db_path=db_p)
+                reader.setMarkdown(saved['text'])
+                age_lbl.setText(saved['updated_relative'])
+                stack.setCurrentIndex(0)
+                save_direct_btn.hide()
+                edit_toggle_btn.setText('✎ Edit Directly')
+                status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
+                status_lbl.setText('✓ Memory summary saved and synced to all Council AIs.')
+                if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+                    self.refresh_memory_review(True)
+
+        def _save_direct():
+            saved = save_memory_summary(editor.toPlainText(), db_path=db_p)
+            reader.setMarkdown(saved['text'])
+            age_lbl.setText(saved['updated_relative'])
+            edit_toggle_btn.setChecked(False)
+            status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
+            status_lbl.setText('✓ Direct edits saved to Shared Memory Palace.')
+            if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+                self.refresh_memory_review(True)
+
+        def _run_ai_update(custom_note: str = ''):
+            note = (custom_note or ask_edit.text()).strip()
+            status_lbl.setStyleSheet('font-size: 11.5px; color: #58a6ff;')
+            status_lbl.setText('⏳ Updating Memory summary with AI…')
+            QApplication.processEvents()
+            updated = ai_update_memory_summary(note, db_path=db_p)
+            reader.setMarkdown(updated['text'])
+            editor.setPlainText(updated['text'])
+            age_lbl.setText(updated['updated_relative'])
+            ask_edit.clear()
+            status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
+            status_lbl.setText('✓ Memory summary updated by AI and shared with all Council agents.')
+            if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+                self.refresh_memory_review(True)
+
+        edit_toggle_btn.toggled.connect(_toggle_edit)
+        save_direct_btn.clicked.connect(_save_direct)
+        refresh_ai_btn.clicked.connect(lambda: _run_ai_update('Refresh and refine from recent conversations'))
+        ask_send_btn.clicked.connect(lambda: _run_ai_update(ask_edit.text()))
+        ask_edit.returnPressed.connect(lambda: _run_ai_update(ask_edit.text()))
+        dlg.exec()
 
     def add_standing_memory(self):
         text, ok = QInputDialog.getMultiLineText(
