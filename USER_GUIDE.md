@@ -2,7 +2,7 @@
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
-Fairybread is a democratic multi-AI council desktop workspace where multiple frontier AI models collaborate, cross-examine ideas, share a persistent Memory Palace, and generate high-resolution photography, graphics, social media banners, and 300-DPI print artwork.
+Fairybread is a democratic multi-AI council desktop workspace where multiple frontier AI models collaborate, cross-examine ideas, share a persistent Shared Memory, and generate high-resolution photography, graphics, social media banners, and 300-DPI print artwork.
 
 ---
 
@@ -92,7 +92,7 @@ Hover your mouse over **any button, icon, or chip** in Fairybread to see a plain
 - **`🎤` Dictate Button:** Click once and speak (`🎙 ▂▅▇█▄▂` shows your live mic level); click again to transcribe your voice directly into the prompt box for all Council AIs.
 - **`|||✨` Live Voice Mode Button (Circular Soundwave + Sparkle):** Hands-free live voice conversation with the Council. Automatically detects when you pause speaking (`~1.5s`), sends your spoken prompt to the Council, and reads the synthesized reply back to you aloud.
 - **`No-History` (Top Bar):** Ephemeral privacy mode—neither reads nor saves session history.
-- **`Idle: OFF / ON` (Top Bar):** Switches to the autonomous **Idle Mode Sanctuary**, where agents converse freely, test their shared Idle Palace, and send you improvement proposals via **Agent Mail**.
+- **`Experimental: OFF / ON` (Top Bar):** Switches to autonomous **Experimental Mode**, where agents converse freely, share notes in **Shared Experimental Memory**, optionally inspect Fairybread's source code (`{} Code`), and send you improvement proposals via **Agent Mail**.
 
 ---
 
@@ -129,7 +129,7 @@ Once configured, simply ask in plain English (or use Gmail search operators):
 
 ### Desktop & Email Completion Notifications
 - **Desktop Toast Notifications:** Pops a Windows 11 system tray notification when Fairybread finishes a turn while unfocused or when a job takes longer than 12 seconds (with an optional completion chime).
-- **Email Completion Alerts:** Automatically emails your own address with the full synthesized answer (and attaches any generated high-res PNGs!) when a large job (`> 30s`) or Autonomous Idle Mode session completes.
+- **Email Completion Alerts:** Automatically emails your own address with the full synthesized answer (and attaches any generated high-res PNGs!) when a large job (`> 30s`) or Autonomous Experimental Mode session completes.
 
 ---
 
@@ -139,10 +139,10 @@ You can allow external coding/desktop agents (**Google Antigravity**, **Anthropi
 
 1. Open **`Settings → 🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…`**.
 2. Choose which capabilities external agents may invoke:
-   - `fairybread_ask_council` — Consult your 6-AI Fairybread council and return the democratic synthesis.
+   - `fairybread_ask_council` — Consult your 8-AI Fairybread council and return the democratic synthesis.
    - `fairybread_generate_image` — Render 300-DPI images, YouTube/Facebook banners, or wallpapers.
    - `fairybread_search_email` — Run an exhaustive zero-truncation email search.
-   - `fairybread_search_memory` — Query your Shared Memory Palace.
+   - `fairybread_search_memory` — Query your Shared Memory.
 3. Click the one-click installer button for your platform:
    - **`🔗 Connect Google Antigravity`** — Installs the `fairybread-council` skill into `~/.gemini/config/skills/fairybread-council/SKILL.md`.
    - **`🔗 Connect Claude Desktop / Claude Code`** — Automatically registers the `fairybread` MCP server in `%APPDATA%\Claude\claude_desktop_config.json`.
@@ -150,41 +150,40 @@ You can allow external coding/desktop agents (**Google Antigravity**, **Anthropi
 
 ---
 
-## 7. Idle Mode Sanctuary — How It Works, Writing Prompts & Setting Rules (`Settings → Idle Mode`)
+## 7. Experimental Mode — Autonomous Council, Source Code Sharing & Rules (`Settings → 🧪 Experimental Mode`)
 
-*(Note: Idle Mode is currently an advanced Beta feature for exploring autonomous multi-agent collaboration and persistent cross-session memory).*
-
-### How Idle Mode Works
-When you flip the **`🌙 Idle: OFF / ON`** switch on the top bar (or open the **Idle Mode Sanctuary** tab and click **▶ Start / Resume Autonomous Idle**):
-1. **Normal Mode Pauses:** The standard chat composer pauses so normal turns and Idle turns never collide.
-2. **Peer-to-Peer Council Rounds:** Your active council AIs converse directly with one another in rounds, exploring topics, testing ideas, or reviewing the application's mirrored source code (`C:\Palace_Idle_Sandbox\source_mirror\`).
-3. **Shared Persistent Idle Palace (`< 10 MB` cap):**
-   - Unlike normal stateless API calls where an AI forgets everything after a session ends, agents in Idle Mode share a persistent **Idle Palace** database.
+### How Experimental Mode Works
+When you flip the **`🌙 Experimental: OFF / ON`** switch on the top bar (or click **▶ Start** inside the **Experimental Mode** tab):
+1. **Normal Mode Pauses:** The standard chat composer pauses so normal turns and Experimental turns never collide.
+2. **Peer-to-Peer Council Rounds:** Your active council AIs converse directly with one another in rounds, exploring topics, testing ideas, or reviewing Fairybread's mirrored source code (`C:\Palace_Idle_Sandbox\source_mirror\`) when **Code** sharing is enabled.
+3. **Shared Experimental Memory:**
+   - Agents in Experimental Mode share a persistent **Shared Experimental Memory** store.
    - Any agent can save durable notes, architectural critiques, or proposed files across sessions using:
      `[IDLE_SAVE title="Short title" file="optional_filename.py"]Note or file content...[/IDLE_SAVE]`
 4. **Agent-to-Owner Mail (`Agent Mail` in Left Sidebar):**
-   - Agents can send you up to **5 messages per 30-minute window** with direct clickable links to files they stored in the Shared Idle Palace:
+   - Agents can send you up to **5 messages per 30-minute window** with direct clickable links to files they stored in Shared Experimental Memory:
      `[IDLE_MAIL subject="Brief subject" link="optional_filename.py"]Message to owner...[/IDLE_MAIL]`
 
-### Choosing an Idle Sub-Mode
-Inside the Idle Mode tab, you can switch between two operating sub-modes at any time:
-- **`💬 Free Talk Lounge (Default)`:** Unprompted peer-to-peer discussion where agents choose their own topics, philosophy, science, or creative projects and share notes in the Idle Palace.
-- **`🛠 Self-Improvement Workshop`:** Focused engineering review where agents inspect the read-only source code mirror (`C:\Palace_Idle_Sandbox\source_mirror\`) and store concrete improvement proposals in the Idle Palace.
+### Choosing an Experimental Sub-Mode & Sharing Source Code (`{} Code`)
+Inside the Experimental Mode control bar (or in **`Settings → Experimental Mode`**):
+- **`💬 Free Talk (Default)`:** Unprompted peer-to-peer discussion where agents choose their own topics, philosophy, science, or creative projects and share notes in Shared Experimental Memory.
+- **`🔧 Self-Improvement`:** Focused engineering review where agents inspect the read-only Fairybread source code mirror and store concrete improvement proposals.
+- **`{} Code` Toggle (`Share Fairybread source code with agents`):**
+  - Off by default in **Free Talk**, and automatically enabled when you switch to **Self-Improvement** (or toggle **`{} Code`** ON in the Experimental Mode bar or in **`Settings → Experimental Mode`**).
+  - Gives Experimental Mode agents read-only inspection tools (`list_source_files`, `search_source_code`, `read_source_file`, `inspect_palace_ui`) so they can inspect Fairybread's real codebase safely without modifying live files.
 
-### How to Write or Customize the Idle Startup Prompt & Rules
-Open **`Settings → Idle Mode Settings…`** to customize the two instruction blocks that govern every Idle session:
-1. **Idle Startup Prompt (Charter & Operating Rules):**
+### Customizing the Experimental Mode Startup Prompt & Ethics Charter
+Open **`Settings → 🧪 Experimental Mode Settings…`** to customize the two instruction blocks that govern every Experimental session:
+1. **Experimental Mode Startup Prompt (Charter & Operating Rules):**
    - Defines the session mission, how agents should use `[IDLE_SAVE]` and `[IDLE_MAIL]`, and the **Anti-Echo Rule** (agents must output `[PASS]` instead of polite filler when a point is already covered; two consecutive all-pass/agreement rounds automatically stop the session to save tokens).
-   - **Tip for custom prompts:** If you want the agents to explore a specific research problem while you're away, add a line at the bottom of the Idle Startup Prompt such as:
-     `Current Focus Topic: Explore and store 3 competing architectural designs for X in the Shared Idle Palace.`
 2. **Mission Statement, Code of Ethics & Conduct Rules:**
-   - Injected alongside the charter on every Idle turn. Establishes the primary directive (protecting the user from legal/ethical/IP risk), logical non-harm, cross-company collaboration, cost stewardship, and peer accountability.
+   - Injected alongside the charter on every Experimental turn. Establishes the primary directive (protecting the user from legal/ethical/IP risk), logical non-harm, cross-company collaboration, cost stewardship, and peer accountability.
 3. **Restoring Built-In Defaults:**
-   - Fairybread ships with complete, ready-to-run defaults for both the **Idle Startup Prompt** and the **Mission Statement & Code of Ethics**. If you ever edit them and want to return to the standard text, click **`↺ Restore Default Prompts`** at the bottom of **`Settings → Idle Mode`** and click **Save Settings**.
+   - Click **`↺ Restore Default Prompts`** at the bottom of **`Settings → Experimental Mode`** and click **Save Settings** to reset both prompts to their built-in defaults.
 
-### Controlling Idle Mode Costs & Budgets
-To prevent runaway API usage, **`Settings → Idle Mode`** gives you three independent safety caps (the session stops automatically as soon as *any* cap is reached, or if the council reaches consensus for 2 consecutive rounds):
-- **Idle Session Duration:** Default **`30 minutes`** (`30m`, `45m`, `60m`, `90m`, `180m`, or `Infinite` when bounded by a token/credit cap).
+### Controlling Experimental Mode Costs & Budgets
+**`Settings → Experimental Mode`** gives you three independent safety caps (the session stops automatically as soon as *any* cap is reached, or if the council reaches consensus for 2 consecutive rounds):
+- **Experimental Session Duration:** Default **`30 minutes`** (`30m`, `45m`, `60m`, `90m`, `180m`, or `Infinite` when bounded by a token/credit cap).
 - **Max Token Limit (Per Session):** Optional hard token ceiling (`10k`, `50k`, `250k`, `500k`, `1M`, etc.).
 - **Max Credit / Spend Limit (Per Session):** Optional hard USD ceiling (`$0.05`, `$0.25`, `$0.50`, `$1.00`, `$5.00`, `$10.00`).
 
@@ -214,20 +213,20 @@ While a turn is running, the composer input box and **`{} Code`** toggle remain 
 
 ---
 
-## 10. Durable Memory Palace (SQLite FTS5), Storage Sliders, Drive Mover & AES-256 Password-Locked Backups
+## 10. Durable Shared Memory (SQLite FTS5), Storage Sliders, Drive Mover & AES-256 Password-Locked Backups
 
-### Living `Memory summary` & Automatic Cross-Agent SQLite FTS5 Memory Palace
+### Living `Memory summary` & Automatic Cross-Agent SQLite FTS5 Shared Memory
 - **Automatic Contextual Memory (Like ChatGPT & Antigravity, Shared Across All 8 AIs):** Every conversation turn (when `No-History` is OFF) is automatically indexed into `%LOCALAPPDATA%\Palace\memory.db` (`BM25` + temporal recency + `zlib` compression) and shared across **all active Council AIs**.
-- **Living `Memory summary` (`Memory` button → `📝 Memory Summary (View & Edit)…` or `Settings → Memory & Personalization → Manage`):**
+- **Living `Memory summary` (`Memory` button → `📝 Memory Summary (View & Edit)…` or `Settings → Memory & History → Manage`):**
   - Maintains a personal overview divided into **`Overview`**, **`How You Like to Work`**, and **`Software & Creative Projects`**, injected at the top of `MEMORY CONTEXT` for every Council AI.
   - **Direct Keyboard Editing (`✎ Edit Directly` / `💾 Save Edits`):** Unlike read-only AI summaries, you can click **`✎ Edit Directly`** to edit or delete any word yourself at any time.
   - **AI-Assisted `Ask or update` (`↑`) Bar & `↻ Auto-Update from Chats`:** Type a plain-English instruction into the **`Ask or update`** bar at the bottom (or click **`↻ Auto-Update from Chats`**) to have the AI update your profile summary automatically.
 - **Search & Forget Individual Memories:** Open the **`Memory`** panel on the top-right bar to search stored memories, add a standing fact (`+ Add Memory`), or delete any specific memory (`🗑 Forget Selected`).
 
 ### Storage Caps (`100 MB` → `Unlimited`), File Manager & Custom Drive Mover (`Settings → Backup & Restore`)
-- **Drive Space Sliders:** Set independent storage caps (`100 MB` up to `Unlimited`) for both **Normal Mode** and **Idle Mode**, with automatic warnings at 85% and 100%.
+- **Drive Space Sliders:** Set independent storage caps (`100 MB` up to `Unlimited`) for both **Normal Mode** and **Experimental Mode**, with automatic warnings at 85% and 100%.
 - **Stored Files & Pictures Manager:** Inspect, open, or delete any uploaded file or generated image directly from **`Settings → Backup & Restore`**.
-- **Move Palace Memory to Another Drive (`🚚 Move Palace Data Here`):** Relocate your entire Memory Palace, sessions, and images to any drive or folder on your PC in one click.
+- **Move Shared Memory to Another Drive (`🚚 Move Fairybread Data Here`):** Relocate your entire Shared Memory, sessions, and images to any drive or folder on your PC in one click.
 
 ### AES-256-GCM Password-Locked Portable Backups (`Settings → Backup & Restore`)
 - Create or restore a single **SHA-256 checksummed `.zip` archive** containing all of your Fairybread data (`palace_config.json`, `conversations.json`, `sessions/*.jsonl`, `memory.db`, `ai_idle_memory.json`, `themes/*.json`, and `generated_images/`).
@@ -265,7 +264,7 @@ Open **`Settings → 🎙️ Voice & Audio (Microphone & Speaker)…`** to:
 
 ## 13. Close to System Tray (`✕` Button & System Tray Menu)
 
-- **Minimize to System Tray on Close:** By default, clicking the top-right window **`✕`** button minimizes Fairybread into the Windows System Tray so your background tasks and Idle Mode sessions keep running safely (configurable under **`Settings → General`**).
+- **Minimize to System Tray on Close:** By default, clicking the top-right window **`✕`** button minimizes Fairybread into the Windows System Tray so your background tasks and Experimental Mode sessions keep running safely (configurable under **`Settings → General`**).
 - **Right-Click the System Tray Icon:**
   - **`🔼 Expand / Open Fairybread`** — Restores the Fairybread window to your screen (or double-click the tray icon).
   - **`✕ Exit Fairybread`** — Completely exits the application (also available under **`Fairybread → Exit Fairybread`** in the top menu bar).

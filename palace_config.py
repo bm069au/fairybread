@@ -335,7 +335,8 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "max_tokens_limit": 0,           # 0 = Rely on 30-minute timer (no hard token cap unless set > 0)
     "max_credit_usd": 0.0,           # 0.0 = Rely on 30-minute timer (no hard USD cap unless set > 0)
     "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
-    "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Palace code & UI improvement)
+    "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Fairybread code & UI improvement)
+    "share_source_code": False,      # Read-only Fairybread source code access in Experimental Mode
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
@@ -610,6 +611,8 @@ def load_idle_settings(
             pass
     if raw_idle.get("idle_submode") in {"free_talk", "self_improve"}:
         merged["idle_submode"] = raw_idle["idle_submode"]
+    if "share_source_code" in raw_idle:
+        merged["share_source_code"] = bool(raw_idle["share_source_code"])
     if "pause_when_joined" in raw_idle:
         merged["pause_when_joined"] = bool(raw_idle["pause_when_joined"])
     if raw_idle.get("memory_access_mode") in {"isolated", "non_project", "full"}:
@@ -636,6 +639,7 @@ def save_idle_settings(
     current["max_storage_mb"] = 0 if st_val <= 0 else max(100, min(1_048_576, st_val))
     if current.get("idle_submode") not in {"free_talk", "self_improve"}:
         current["idle_submode"] = "free_talk"
+    current["share_source_code"] = bool(current.get("share_source_code", False))
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
     if current.get("memory_access_mode") not in {"isolated", "non_project", "full"}:
         current["memory_access_mode"] = "isolated"

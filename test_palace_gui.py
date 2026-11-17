@@ -809,7 +809,7 @@ class WindowTests(unittest.TestCase):
             self.window.provider_labels['test'].isVisible(),
             'Enabled agent chip button should remain visible in Idle Mode tab',
         )
-        self.assertIn('Active Idle Council', self.window.idle_agents_roster_label.text())
+        self.assertIn('Active Experimental Council', self.window.idle_agents_roster_label.text())
 
         # Start Idle session and verify live turn streaming updates idle_live_chat
         self.window.start_idle_session()

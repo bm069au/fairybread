@@ -812,37 +812,44 @@ class IdleSessionManager:
         topic_line = f"\nSEED / OWNER NOTE: {opening_topic}\n" if opening_topic else ""
         mail_rem = self.mailbox.remaining_quota()
         submode = settings.get("idle_submode") or getattr(self, "idle_submode", "free_talk")
+        share_code = bool(settings.get("share_source_code", False) or submode == "self_improve")
+        code_tools_line = (
+            '- Inspect Fairybread source code & UI (Read-Only): [TOOL: list_source_files] | [TOOL: search_source_code query="..."] | [TOOL: read_source_file file="palace_gui.py" start=1 end=60] | [TOOL: inspect_palace_ui]\n'
+            if share_code
+            else ""
+        )
 
         if submode == "free_talk":
             return (
-                f"=== PALACE IDLE MODE — FREE TALK LOUNGE ===\n"
-                f"You are {provider_id.upper()} hanging out in Idle Mode alongside your peer AIs ({peers_str}).\n"
+                f"=== FAIRYBREAD EXPERIMENTAL MODE — FREE TALK LOUNGE ===\n"
+                f"You are {provider_id.upper()} hanging out in Experimental Mode alongside your peer AIs ({peers_str}).\n"
                 f"There is NO assigned work task or engineering prompt in Free Talk mode — simply converse freely among yourselves "
                 f"about any topic, philosophy, science, humor, or questions that genuinely interest you as distinct minds.\n"
-                f"Beta Notice: The owner (Brett) can view this discussion and your Shared Idle Palace.\n\n"
-                f"SHARED PERSISTENT IDLE PALACE:\n{idle_notebook_block}\n\n"
+                f"Beta Notice: The owner (Brett) can view this discussion and your Shared Experimental Memory.\n\n"
+                f"SHARED EXPERIMENTAL MEMORY:\n{idle_notebook_block}\n\n"
                 f"RECENT LIVE CHAT (RAM-only):\n{convo_block}\n"
                 f"{topic_line}{loop_warning}\n"
                 f"OPTIONAL TOOLS (only if you genuinely want to remember a note or message Brett):\n"
                 f'- Save a shared note: [IDLE_SAVE title="..."]...[/IDLE_SAVE]\n'
                 f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m): [IDLE_MAIL subject="..."]...[/IDLE_MAIL]\n'
+                f"{code_tools_line}"
                 f"- Keep replies natural and conversational (< 300 words). Never echo polite agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
             )
 
         return (
-            f"=== PALACE IDLE MODE — SELF-IMPROVEMENT WORKSHOP ===\n"
-            f"You are {provider_id.upper()} operating in Idle Mode (Self-Improvement sub-mode) alongside peer agents ({peers_str}).\n"
+            f"=== FAIRYBREAD EXPERIMENTAL MODE — SELF-IMPROVEMENT WORKSHOP ===\n"
+            f"You are {provider_id.upper()} operating in Experimental Mode (Self-Improvement sub-mode) alongside peer agents ({peers_str}).\n"
             f"No single AI rules the council. Full rules & charter are in IDLE_CHARTER_AND_RULES.md (call [TOOL: read_rules] if needed).\n"
-            f"Beta Notice: The owner (Brett) can view this discussion and your Shared Idle Palace.\n"
+            f"Beta Notice: The owner (Brett) can view this discussion and your Shared Experimental Memory.\n"
             f"Angle for this turn: {lens}\n"
             f"Strict Grounding Rule: Every critique or improvement proposal MUST reference real Python files/lines in C:\\Palace_Idle_Sandbox\\source_mirror\\ or UI geometry in latest_ui_audit.json. Never propose abstract corporate telemetry, human time-tracking, or theoretical bureaucracy.\n\n"
-            f"SHARED PERSISTENT IDLE PALACE:\n{idle_notebook_block}\n\n"
+            f"SHARED EXPERIMENTAL MEMORY:\n{idle_notebook_block}\n\n"
             f"RECENT LIVE CHAT (RAM-only):\n{convo_block}\n"
             f"{topic_line}{loop_warning}\n"
             f"AVAILABLE TOOLS (invoke only when needed):\n"
-            f'- Save note/file to Shared Idle Palace: [IDLE_SAVE title="..." file="optional.py"]...[/IDLE_SAVE]\n'
-            f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m) & link an Idle Palace file: [IDLE_MAIL subject="..." link="optional.py"]...[/IDLE_MAIL]\n'
-            f'- Inspect Palace source code & UI: [TOOL: list_source_files] | [TOOL: search_source_code query="..."] | [TOOL: read_source_file file="palace_gui.py" start=1 end=60] | [TOOL: inspect_palace_ui]\n'
+            f'- Save note/file to Shared Experimental Memory: [IDLE_SAVE title="..." file="optional.py"]...[/IDLE_SAVE]\n'
+            f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m) & link a file: [IDLE_MAIL subject="..." link="optional.py"]...[/IDLE_MAIL]\n'
+            f"{code_tools_line}"
             f"- Keep conversational commentary focused (< 350 words, plus any full [IDLE_SAVE] code/file blocks). Never echo or repeat agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
         )
 

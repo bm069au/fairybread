@@ -458,7 +458,7 @@ class ManageAIsDialog(QDialog):
         'Profiles',
         'Work Mode & Tools',
         'Memory & History',
-        'Idle Mode',
+        'Experimental Mode',
         'Agent Bridge & Permissions',
         'Backup & Restore',
     ]
@@ -533,6 +533,9 @@ class ManageAIsDialog(QDialog):
             'Email': 'Email & Notifications',
             'Permissions': 'Agent Bridge & Permissions',
             'Agent Bridge': 'Agent Bridge & Permissions',
+            'Idle Mode': 'Experimental Mode',
+            'Idle': 'Experimental Mode',
+            'Experimental': 'Experimental Mode',
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
         target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 4
@@ -1396,9 +1399,9 @@ class ManageAIsDialog(QDialog):
 
     def _build_idle_mode_page(self):
         w, lay = self._make_simple_page(
-            'Idle Mode Sanctuary',
-            'Idle Mode is weighted for peer-to-peer discussion and light note/file sharing between agents '
-            '(not heavy processing). Configure duration, token & credit caps, memory access, and charter below.'
+            'Experimental Mode',
+            'Experimental Mode lets your AI Council run autonomous peer-to-peer discussions, share notes, '
+            'and optionally inspect Fairybread source code. Configure duration, caps, code sharing, memory access, and charter below.'
         )
         idle_cfg = load_idle_settings(self.config_path)
 
@@ -1412,7 +1415,7 @@ class ManageAIsDialog(QDialog):
             self.idle_duration_combo.addItem(f'{cur_dur} minutes', cur_dur)
             dur_idx = self.idle_duration_combo.count() - 1
         self.idle_duration_combo.setCurrentIndex(dur_idx)
-        form.addRow('Idle session duration:', self.idle_duration_combo)
+        form.addRow('Experimental session duration:', self.idle_duration_combo)
 
         self.idle_token_limit_combo = QComboBox()
         for label, tok_limit in IDLE_TOKEN_LIMIT_CHOICES:
@@ -1449,7 +1452,7 @@ class ManageAIsDialog(QDialog):
         self.idle_storage_slider.setValue(mb_to_slider_index(cur_idle_mb))
         self.idle_storage_edit = QLineEdit(format_storage_mb_label(cur_idle_mb))
         self.idle_storage_edit.setFixedWidth(165)
-        self.idle_storage_edit.setToolTip('Type any size (e.g. 250 MB, 2 GB, or Unlimited) or drag the slider (Min: 100 MB → Max: Unlimited)')
+        self.idle_storage_edit.setToolTip('Set Experimental Memory storage cap')
 
         def _on_idle_slider_changed(val: int):
             mb = slider_index_to_mb(val)
@@ -1468,45 +1471,52 @@ class ManageAIsDialog(QDialog):
         idle_space_row.addWidget(self.idle_storage_slider, 1)
         idle_space_row.addWidget(QLabel('Unlimited'))
         idle_space_row.addWidget(self.idle_storage_edit)
-        form.addRow('Idle Memory drive space limit:', idle_space_row)
+        form.addRow('Experimental Memory space limit:', idle_space_row)
 
         self.idle_memory_mode_combo = QComboBox()
         self.idle_memory_mode_combo.addItem(
-            'Only their own Idle memory (Isolated — No Normal memory access)',
+            'Only their own Experimental memory (Isolated — No Normal memory access)',
             'isolated'
         )
         self.idle_memory_mode_combo.addItem(
-            'Non-project Shared Memory + their own Idle memory (Projects off-limits)',
+            'Non-project Shared Memory + their own Experimental memory (Projects off-limits)',
             'non_project'
         )
         self.idle_memory_mode_combo.addItem(
-            'Full Shared Memory access (excluding Private projects) + their own Idle memory',
+            'Full Shared Memory access (excluding Private projects) + their own Experimental memory',
             'full'
         )
         current_mode = idle_cfg.get('memory_access_mode', 'isolated')
         idx = self.idle_memory_mode_combo.findData(current_mode)
         if idx >= 0:
             self.idle_memory_mode_combo.setCurrentIndex(idx)
-        form.addRow('Memory Access in Idle Mode:', self.idle_memory_mode_combo)
+        form.addRow('Memory Access in Experimental Mode:', self.idle_memory_mode_combo)
         lay.addLayout(form)
+
+        self.idle_share_code_check = QCheckBox(
+            'Share Fairybread source code with agents (Read-Only — allows agents to inspect code and propose improvements)'
+        )
+        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only access to Fairybread source code')
+        self.idle_share_code_check.setChecked(bool(idle_cfg.get('share_source_code', False)))
+        lay.addWidget(self.idle_share_code_check)
 
         self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
         lay.addWidget(self.idle_pause_check)
 
-        lay.addWidget(QLabel('Idle Startup Prompt (editable charter — customize or restore defaults below):'))
+        lay.addWidget(QLabel('Experimental Mode Startup Prompt (editable charter — customize or restore defaults below):'))
         self.idle_prompt_edit = QTextEdit()
         self.idle_prompt_edit.setAcceptRichText(False)
-        self.idle_prompt_edit.setMinimumHeight(115)
-        self.idle_prompt_edit.setMaximumHeight(155)
+        self.idle_prompt_edit.setMinimumHeight(105)
+        self.idle_prompt_edit.setMaximumHeight(145)
         self.idle_prompt_edit.setPlainText(str(idle_cfg.get('standing_instruction', '')))
         lay.addWidget(self.idle_prompt_edit)
 
-        lay.addWidget(QLabel('Mission Statement, Code of Ethics & Conduct Rules (injected into Idle Mode):'))
+        lay.addWidget(QLabel('Mission Statement, Code of Ethics & Conduct Rules (injected into Experimental Mode):'))
         self.mission_ethics_edit = QTextEdit()
         self.mission_ethics_edit.setAcceptRichText(False)
-        self.mission_ethics_edit.setMinimumHeight(115)
-        self.mission_ethics_edit.setMaximumHeight(155)
+        self.mission_ethics_edit.setMinimumHeight(105)
+        self.mission_ethics_edit.setMaximumHeight(145)
         self.mission_ethics_edit.setPlainText(load_mission_ethics(self.config_path))
         lay.addWidget(self.mission_ethics_edit)
 
@@ -1514,14 +1524,14 @@ class ManageAIsDialog(QDialog):
         used_kb = self.idle_memory.usage_bytes() / 1024.0
         cap_label = format_storage_mb_label(cur_idle_mb)
         self.idle_mem_status_label = QLabel(
-            f'AI-Only Permanent Idle Memory: {self.idle_memory.note_count()} notes ({used_kb:.1f} KB / {cap_label} cap) · Accessible only in Idle Mode'
+            f'Experimental Memory: {self.idle_memory.note_count()} notes ({used_kb:.1f} KB / {cap_label} cap)'
         )
         self.idle_mem_status_label.setObjectName('muted')
         self.idle_mem_status_label.setWordWrap(True)
         mem_row.addWidget(self.idle_mem_status_label, 1)
 
         reset_defaults_btn = QPushButton('↺ Restore Default Prompts')
-        reset_defaults_btn.setToolTip('Reset Idle prompts to built-in defaults')
+        reset_defaults_btn.setToolTip('Reset Experimental prompts to defaults')
 
         def _restore_idle_defaults():
             from palace_config import DEFAULT_IDLE_INSTRUCTION, DEFAULT_MISSION_ETHICS
@@ -1531,7 +1541,8 @@ class ManageAIsDialog(QDialog):
         reset_defaults_btn.clicked.connect(_restore_idle_defaults)
         mem_row.addWidget(reset_defaults_btn)
 
-        clear_idle_btn = QPushButton('Clear AI Idle Memory')
+        clear_idle_btn = QPushButton('Clear Experimental Memory')
+        clear_idle_btn.setToolTip('Clear all Experimental Memory notes')
         clear_idle_btn.clicked.connect(self._clear_idle_memory)
         mem_row.addWidget(clear_idle_btn)
         lay.addLayout(mem_row)
@@ -2142,6 +2153,7 @@ class ManageAIsDialog(QDialog):
                 'max_credit_usd': float(self.idle_credit_limit_combo.currentData()),
                 'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
                 'pause_when_joined': self.idle_pause_check.isChecked(),
+                'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
                 'memory_access_mode': self.idle_memory_mode_combo.currentData(),
                 'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
             },
@@ -2446,12 +2458,12 @@ class PalaceWindow(QMainWindow):
         self.no_history_btn.toggled.connect(self._on_no_history_toggled)
         top_strip.addWidget(self.no_history_btn)
 
-        self.idle_switch_btn = QPushButton(' Idle: OFF')
+        self.idle_switch_btn = QPushButton(' Experimental: OFF')
         self.idle_switch_btn.setIcon(idle_moon_qicon(False))
         self.idle_switch_btn.setIconSize(QSize(15, 15))
         self.idle_switch_btn.setCheckable(True)
         self.idle_switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.idle_switch_btn.setToolTip('Toggle Autonomous Idle Mode')
+        self.idle_switch_btn.setToolTip('Toggle Autonomous Experimental Mode')
         self.idle_switch_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
@@ -2515,12 +2527,12 @@ class PalaceWindow(QMainWindow):
         pause_row = QHBoxLayout(self.normal_pause_banner)
         pause_row.setContentsMargins(6, 2, 6, 2)
         pause_lbl = QLabel(
-            '⏸ <b>Normal AI Mode is Paused</b> while <b>Idle Mode</b> is running autonomously.'
+            '⏸ <b>Normal AI Mode is Paused</b> while <b>Experimental Mode</b> is running autonomously.'
         )
         pause_lbl.setStyleSheet('color: #86efac; font-size: 12px;')
         pause_row.addWidget(pause_lbl, 1)
-        go_idle_btn = QPushButton('View Idle Sanctuary →')
-        go_idle_btn.setToolTip('Switch to Idle Sanctuary tab')
+        go_idle_btn = QPushButton('View Experimental Mode →')
+        go_idle_btn.setToolTip('Switch to Experimental Mode tab')
         go_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(1))
         pause_row.addWidget(go_idle_btn)
         self.normal_pause_banner.hide()
@@ -2734,7 +2746,7 @@ class PalaceWindow(QMainWindow):
         normal_lay.addWidget(composer_card)
         self.workspace_tabs.addTab(normal_tab, '💬 Normal Mode')
 
-        # ================= TAB 1: IDLE MODE (BETA) =================
+        # ================= TAB 1: EXPERIMENTAL MODE (BETA) =================
         idle_tab = QWidget()
         idle_tab_lay = QVBoxLayout(idle_tab)
         idle_tab_lay.setContentsMargins(0, 8, 0, 0)
@@ -2743,79 +2755,102 @@ class PalaceWindow(QMainWindow):
         self.idle_banner = QFrame()
         self.idle_banner.setObjectName('idleBanner')
         idle_lay = QVBoxLayout(self.idle_banner)
-        idle_lay.setContentsMargins(14, 10, 14, 10)
-        idle_lay.setSpacing(8)
+        idle_lay.setContentsMargins(14, 8, 14, 8)
+        idle_lay.setSpacing(6)
 
         idle_top = QHBoxLayout()
-        self.idle_status_label = QLabel('Idle Mode · Ready')
+        idle_top.setSpacing(8)
+        self.idle_status_label = QLabel('Experimental Mode · Ready')
         self.idle_status_label.setStyleSheet('font-weight: 700; color: #22c55e; font-size: 13px;')
         idle_top.addWidget(self.idle_status_label)
 
         self.idle_timer_label = QLabel('⏱ 30:00')
-        self.idle_timer_label.setToolTip('Remaining Autonomous Idle Mode session countdown timer')
+        self.idle_timer_label.setToolTip('Remaining Experimental Mode session timer')
         self.idle_timer_label.setStyleSheet('font-family: Consolas, monospace; font-size: 13px; font-weight: 700; color: #e6edf3; background: #161b22; padding: 3px 10px; border-radius: 6px;')
         idle_top.addWidget(self.idle_timer_label)
 
         self.idle_budget_label = QLabel('Tokens: 0.0k · Spend: $0.000')
-        self.idle_budget_label.setToolTip('Tokens and estimated USD spent during the current Idle Mode session')
+        self.idle_budget_label.setToolTip('Tokens and USD spent this session')
         self.idle_budget_label.setStyleSheet('font-family: Consolas, monospace; font-size: 12px; color: #8b949e; background: #161b22; padding: 3px 10px; border-radius: 6px;')
         idle_top.addWidget(self.idle_budget_label)
 
-        self.idle_log_badge = QLabel('👁 BETA: Full Owner Access to Live Chat & Shared Idle Memory · Mail Limit: 5/30m')
+        self.idle_log_badge = QLabel('👁 BETA: Full Owner Access')
         self.idle_log_badge.setObjectName('muted')
-        idle_top.addWidget(self.idle_log_badge, 1)
+        self.idle_log_badge.hide()
 
-        back_chat_from_idle_btn = QPushButton('← View Normal Chat')
-        back_chat_from_idle_btn.setToolTip('Switch back to the Normal Mode chat view')
+        idle_top.addStretch(1)
+
+        back_chat_from_idle_btn = QPushButton('← Normal Chat')
+        back_chat_from_idle_btn.setToolTip('Switch back to Normal Mode chat')
         back_chat_from_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(0))
         idle_top.addWidget(back_chat_from_idle_btn)
 
-        self.idle_settings_btn = QPushButton('⚙ Idle Settings')
-        self.idle_settings_btn.setToolTip('Configure Idle Mode timer, token/credit caps, startup prompt, and ethics rules')
-        self.idle_settings_btn.clicked.connect(lambda: self.open_manage_ais(initial_page='Idle Mode'))
+        self.idle_settings_btn = QPushButton('⚙ Settings')
+        self.idle_settings_btn.setToolTip('Configure Experimental Mode settings & source code access')
+        self.idle_settings_btn.clicked.connect(lambda: self.open_manage_ais(initial_page='Experimental Mode'))
         idle_top.addWidget(self.idle_settings_btn)
         idle_lay.addLayout(idle_top)
 
         idle_actions = QHBoxLayout()
+        idle_actions.setSpacing(6)
         submode_lbl = QLabel('Sub-Mode:')
         submode_lbl.setObjectName('loadedAIsLabel')
         idle_actions.addWidget(submode_lbl)
 
+        idle_cfg_init = load_idle_settings(self.config_path)
         self.idle_submode_combo = QComboBox()
-        self.idle_submode_combo.setMinimumWidth(235)
-        self.idle_submode_combo.setToolTip('Choose between unprompted Free Talk Lounge or Self-Improvement code review')
-        self.idle_submode_combo.addItem('💬 Free Talk (Unprompted Lounge)', 'free_talk')
-        self.idle_submode_combo.addItem('🔧 Self-Improvement (Fairybread Code)', 'self_improve')
-        cur_submode = load_idle_settings(self.config_path).get('idle_submode', 'free_talk')
+        self.idle_submode_combo.setMinimumWidth(145)
+        self.idle_submode_combo.setMaximumWidth(185)
+        self.idle_submode_combo.setToolTip('Choose Free Talk Lounge or Self-Improvement code review')
+        self.idle_submode_combo.addItem('💬 Free Talk', 'free_talk')
+        self.idle_submode_combo.addItem('🔧 Self-Improvement', 'self_improve')
+        cur_submode = idle_cfg_init.get('idle_submode', 'free_talk')
         idx_sub = self.idle_submode_combo.findData(cur_submode)
         if idx_sub >= 0:
             self.idle_submode_combo.setCurrentIndex(idx_sub)
         self.idle_submode_combo.currentIndexChanged.connect(self._on_idle_submode_changed)
         idle_actions.addWidget(self.idle_submode_combo)
 
-        self.idle_start_btn = QPushButton('▶ Start / Resume Autonomous Idle')
-        self.idle_start_btn.setToolTip('Start or resume autonomous peer-to-peer discussion between active Council AIs')
+        share_code_init = bool(idle_cfg_init.get('share_source_code', False) or cur_submode == 'self_improve')
+        self.idle_code_btn = QPushButton(' Code')
+        self.idle_code_btn.setIcon(code_shield_qicon(share_code_init))
+        self.idle_code_btn.setIconSize(QSize(14, 14))
+        self.idle_code_btn.setCheckable(True)
+        self.idle_code_btn.setChecked(share_code_init)
+        self.idle_code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.idle_code_btn.setToolTip('Share Fairybread source code with agents (Read-Only)')
+        self.idle_code_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; } '
+            'QPushButton:checked { background: #0f2930; color: #06b6d4; border: 1px solid #06b6d4; }'
+        )
+        self.idle_code_btn.toggled.connect(self._on_idle_code_btn_toggled)
+        idle_actions.addWidget(self.idle_code_btn)
+
+        self.idle_start_btn = QPushButton('▶ Start')
+        self.idle_start_btn.setToolTip('Start or resume autonomous Experimental Mode discussion')
         self.idle_start_btn.clicked.connect(self.start_idle_session)
         idle_actions.addWidget(self.idle_start_btn)
 
-        self.idle_step_btn = QPushButton('↻ Step One Round Now')
-        self.idle_step_btn.setToolTip('Manually trigger one immediate round of Idle Mode discussion')
+        self.idle_step_btn = QPushButton('↻ Step 1 Round')
+        self.idle_step_btn.setToolTip('Trigger one immediate round of discussion')
         self.idle_step_btn.clicked.connect(self.run_idle_exchange_step)
         self.idle_step_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_step_btn)
 
-        self.idle_join_btn = QPushButton('🔒 Test Consensus Vote')
-        self.idle_join_btn.setToolTip('Ask the Idle Council to vote on admitting the human operator into the live discussion')
+        self.idle_join_btn = QPushButton('🔒 Vote to Join')
+        self.idle_join_btn.setToolTip('Ask the Council to vote on admitting you to the live chat')
         self.idle_join_btn.clicked.connect(self.request_idle_operator_join)
         self.idle_join_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_join_btn)
 
-        self.idle_stop_btn = QPushButton('⏹ Stop & Wipe RAM')
-        self.idle_stop_btn.setToolTip('Stop the active Idle session and clear the temporary RAM transcript (Idle Memory notes are preserved)')
+        self.idle_stop_btn = QPushButton('⏹ Stop && Wipe RAM')
+        self.idle_stop_btn.setToolTip('Stop session and wipe temporary RAM transcript')
         self.idle_stop_btn.clicked.connect(self.stop_idle_session)
         self.idle_stop_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_stop_btn)
-        idle_actions.addStretch()
+        idle_actions.addStretch(1)
         idle_lay.addLayout(idle_actions)
 
         self.idle_agents_roster_label = QLabel('')
@@ -2824,7 +2859,8 @@ class PalaceWindow(QMainWindow):
         self.idle_agents_roster_label.setStyleSheet(
             'background: #0d1117; border: 1px solid #21262d; border-radius: 6px; padding: 6px 10px; font-size: 12.5px;'
         )
-        idle_lay.addWidget(self.idle_agents_roster_label)
+        # Hidden on banner because the bottom Agents bar already shows all active agents cleanly
+        self.idle_agents_roster_label.hide()
 
         idle_tab_lay.addWidget(self.idle_banner)
 
@@ -2833,7 +2869,7 @@ class PalaceWindow(QMainWindow):
         idle_left_lay = QVBoxLayout(idle_left)
         idle_left_lay.setContentsMargins(0, 0, 6, 0)
         idle_left_lay.setSpacing(6)
-        idle_chat_hdr = QLabel('Live Democratic Idle Discussion (RAM-only · Visible to Owner in Beta)')
+        idle_chat_hdr = QLabel('Live Experimental Council Discussion (RAM-only)')
         idle_chat_hdr.setObjectName('sectionTitle')
         idle_left_lay.addWidget(idle_chat_hdr)
 
@@ -2845,12 +2881,12 @@ class PalaceWindow(QMainWindow):
 
         seed_row = QHBoxLayout()
         self.idle_seed_edit = QLineEdit()
-        self.idle_seed_edit.setPlaceholderText('Optional Beta seed or note to drop into the Idle Council…')
-        self.idle_seed_edit.setToolTip('Type an optional topic or question for the Idle Council to explore')
+        self.idle_seed_edit.setPlaceholderText('Optional note or topic to drop into the Experimental Council…')
+        self.idle_seed_edit.setToolTip('Drop an optional topic or note into the Experimental Council')
         self.idle_seed_edit.returnPressed.connect(self._send_owner_note_to_idle)
         seed_row.addWidget(self.idle_seed_edit, 1)
-        seed_btn = QPushButton('Send to Idle Council')
-        seed_btn.setToolTip('Drop your note or topic into the active Idle Council session')
+        seed_btn = QPushButton('Send to Council')
+        seed_btn.setToolTip('Send note to the active Experimental Council')
         seed_btn.clicked.connect(self._send_owner_note_to_idle)
         seed_row.addWidget(seed_btn)
         idle_left_lay.addLayout(seed_row)
@@ -2858,32 +2894,33 @@ class PalaceWindow(QMainWindow):
 
         idle_right = QFrame()
         idle_right.setObjectName('memoryPanel')
-        idle_right.setMinimumWidth(310)
+        idle_right.setMinimumWidth(290)
         idle_right_lay = QVBoxLayout(idle_right)
         idle_right_lay.setContentsMargins(10, 8, 10, 8)
         idle_right_lay.setSpacing(6)
 
-        palace_hdr = QLabel('🏛 Shared Persistent Idle Memory (Beta Full Access)')
+        palace_hdr = QLabel('🏛 Shared Experimental Memory')
         palace_hdr.setObjectName('sectionTitle')
         idle_right_lay.addWidget(palace_hdr)
-        palace_sub = QLabel('All Idle Mode agents share this persistent space (C:\\Palace_Idle_Sandbox\\idle_palace\\).')
+        palace_sub = QLabel('All Experimental Mode agents share this persistent space.')
         palace_sub.setObjectName('muted')
         palace_sub.setWordWrap(True)
+        palace_sub.hide()
         idle_right_lay.addWidget(palace_sub)
 
         self.idle_palace_list = QListWidget()
-        self.idle_palace_list.setToolTip('Select any note or proposed file saved by the Idle Council to view its contents below')
+        self.idle_palace_list.setToolTip('Select any note saved by the Experimental Council to view below')
         self.idle_palace_list.currentItemChanged.connect(self._on_idle_palace_item_selected)
         idle_right_lay.addWidget(self.idle_palace_list, 1)
 
         self.idle_palace_viewer = QTextBrowser()
-        self.idle_palace_viewer.setPlaceholderText('Select any shared Idle Memory note or proposed file to inspect its contents.')
+        self.idle_palace_viewer.setPlaceholderText('Select any shared Experimental Memory note or file to inspect.')
         self.idle_palace_viewer.setMaximumHeight(230)
         idle_right_lay.addWidget(self.idle_palace_viewer)
         idle_split.addWidget(idle_right)
-        idle_split.setSizes([560, 320])
+        idle_split.setSizes([580, 300])
         idle_tab_lay.addWidget(idle_split, 1)
-        self.workspace_tabs.addTab(idle_tab, '🌙 Idle Mode (Beta)')
+        self.workspace_tabs.addTab(idle_tab, '🧪 Experimental Mode')
 
         # ================= TAB 2: AGENT MAIL (EMAIL INTERFACE) =================
         mail_tab = QWidget()
@@ -3292,7 +3329,7 @@ class PalaceWindow(QMainWindow):
         normal_mode_act = QAction('Normal AI Mode', self)
         normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
         ai_menu.addAction(normal_mode_act)
-        idle_act = QAction('Idle Experimental Mode', self)
+        idle_act = QAction('🧪 Experimental Mode', self)
         idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
         ai_menu.addAction(idle_act)
 
@@ -3333,8 +3370,8 @@ class PalaceWindow(QMainWindow):
         bridge_settings_act = QAction('🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…', self)
         bridge_settings_act.triggered.connect(lambda: self.open_manage_ais('Agent Bridge & Permissions'))
         settings_menu.addAction(bridge_settings_act)
-        idle_settings_act = QAction('Idle Mode Settings…', self)
-        idle_settings_act.triggered.connect(lambda: self.open_manage_ais('Idle Mode'))
+        idle_settings_act = QAction('🧪 Experimental Mode Settings…', self)
+        idle_settings_act.triggered.connect(lambda: self.open_manage_ais('Experimental Mode'))
         settings_menu.addAction(idle_settings_act)
 
         help_menu = menubar.addMenu('Help')
@@ -3365,7 +3402,7 @@ class PalaceWindow(QMainWindow):
             '<h3 style="margin:0; color:#f0f6fc;">🧚 A Personal Note from Brett — Why Your Support Matters</h3>'
             '<p style="color:#c9d1d9; font-size:13px; margin-top:6px;">'
             'I built <b>Fairybread</b> to replace corporate lock-in (ChatGPT Plus, Claude Pro, Grok) with '
-            '<b>100% local, private persistent memory</b> and zero monthly fees—plus an autonomous <b>Idle Mode</b> '
+            '<b>100% local, private persistent memory</b> and zero monthly fees—plus an autonomous <b>Experimental Mode</b> '
             'where you can run your own multi-AI experiments.<br><br>'
             'In real life, I am a disabled man living on a disability pension, and I struggle to pay my everyday bills. '
             'Fairybread is <b>free for personal use (up to 2 seats)</b>, but if you enjoy it and can spare a donation, '
@@ -3873,10 +3910,10 @@ class PalaceWindow(QMainWindow):
             label.setToolTip(f'{icon} {display_name} — {status} (Inactive / Paused){tip_detail}\nClick to toggle active')
 
     def _on_idle_switch_toggled(self, active: bool):
-        """Front-interface Idle Mode switch: pauses Normal AI mode when ON and runs Idle Mode autonomously."""
+        """Front-interface Experimental Mode switch: pauses Normal AI mode when ON and runs Experimental Mode autonomously."""
         self.idle_switch_btn.setIcon(idle_moon_qicon(active))
         if active:
-            self.idle_switch_btn.setText(' Idle: ON')
+            self.idle_switch_btn.setText(' Experimental: ON')
             if self.sidebar_mail_btn.isChecked():
                 self.sidebar_mail_btn.blockSignals(True)
                 self.sidebar_mail_btn.setChecked(False)
@@ -3884,7 +3921,7 @@ class PalaceWindow(QMainWindow):
             self.normal_pause_banner.show()
             self.composer.setEnabled(False)
             self.send_button.setEnabled(False)
-            self.composer.setPlaceholderText('Normal AI Mode is paused while Idle Mode is running.')
+            self.composer.setPlaceholderText('Normal AI Mode is paused while Experimental Mode is running.')
             if self.profile_combo.currentText() != 'Idle':
                 self.profile_combo.blockSignals(True)
                 self.profile_combo.setCurrentText('Idle')
@@ -3893,7 +3930,7 @@ class PalaceWindow(QMainWindow):
             self.workspace_tabs.setCurrentIndex(1)
             self.start_idle_session()
         else:
-            self.idle_switch_btn.setText(' Idle: OFF')
+            self.idle_switch_btn.setText(' Experimental: OFF')
             self.idle_auto_timer.stop()
             self.idle_timer.stop()
             self.idle_manager.leave_idle_mode()
@@ -3928,7 +3965,7 @@ class PalaceWindow(QMainWindow):
                 self.current_profile = 'Multi-AI · Deliberate'
             self._refresh_idle_view()
             self.workspace_tabs.setCurrentIndex(0)
-            self.status_label.setText('Idle Mode switched OFF · Active agents stopped immediately · Normal AI Mode resumed.')
+            self.status_label.setText('Experimental Mode switched OFF · Active agents stopped immediately · Normal AI Mode resumed.')
 
     def _on_profile_changed(self, profile_text: str):
         if profile_text == 'Manage Profiles…':
@@ -3986,14 +4023,14 @@ class PalaceWindow(QMainWindow):
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(True)
             self.idle_switch_btn.setIcon(idle_moon_qicon(True))
-            self.idle_switch_btn.setText(' Idle: ON')
+            self.idle_switch_btn.setText(' Experimental: ON')
             self.idle_switch_btn.blockSignals(False)
             self.normal_pause_banner.show()
             self.composer.setEnabled(False)
             self.send_button.setEnabled(False)
         self.idle_manager.start_session()
         self.idle_timer.start()
-        self.idle_start_btn.setText('↻ Restart Autonomous Idle')
+        self.idle_start_btn.setText('↻ Restart')
         self.idle_step_btn.setEnabled(True)
         self.idle_join_btn.setEnabled(True)
         self.idle_stop_btn.setEnabled(True)
@@ -4018,6 +4055,7 @@ class PalaceWindow(QMainWindow):
             self._update_inline_status_banner()
             self.set_busy(False)
         self.idle_manager.stop_session(reason='Ended')
+        self.idle_start_btn.setText('▶ Start')
         self.idle_step_btn.setEnabled(False)
         self.idle_join_btn.setEnabled(False)
         self.idle_stop_btn.setEnabled(False)
@@ -4028,20 +4066,21 @@ class PalaceWindow(QMainWindow):
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(False)
             self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-            self.idle_switch_btn.setText(' Idle: OFF')
+            self.idle_switch_btn.setText(' Experimental: OFF')
             self.idle_switch_btn.blockSignals(False)
         self.normal_pause_banner.hide()
         self.composer.setEnabled(True)
         self.send_button.setEnabled(True)
         self.composer.setPlaceholderText('Ask anything, @ to mention, or drop files')
         self._refresh_idle_view()
-        self.status_label.setText('Idle session ended · Live RAM transcript wiped · Shared Idle Memory preserved.')
+        self.status_label.setText('Experimental session ended · Live RAM transcript wiped · Shared Experimental Memory preserved.')
 
     def _on_idle_timer_tick(self):
         expired = self.idle_manager.tick(1)
         if expired:
             self.idle_auto_timer.stop()
             self.idle_timer.stop()
+            self.idle_start_btn.setText('▶ Start')
             self.idle_step_btn.setEnabled(False)
             self.idle_join_btn.setEnabled(False)
             self.idle_stop_btn.setEnabled(False)
@@ -4049,16 +4088,16 @@ class PalaceWindow(QMainWindow):
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
                 self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Idle: OFF')
+                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
             self.send_button.setEnabled(True)
             self._refresh_idle_view()
-            self.status_label.setText('Idle timer reached 00:00 · Live RAM transcript wiped · Normal Mode resumed.')
+            self.status_label.setText('Experimental timer reached 00:00 · Live RAM transcript wiped · Normal Mode resumed.')
         else:
             self.idle_timer_label.setText(f'⏱ {self.idle_manager.format_remaining_time()}')
-            self.idle_status_label.setText(f'Idle Mode · {self.idle_manager.status}')
+            self.idle_status_label.setText(f'Experimental Mode · {self.idle_manager.status}')
 
     def _on_idle_auto_round(self):
         if (
@@ -4089,7 +4128,7 @@ class PalaceWindow(QMainWindow):
             self.set_provider_status(name, 'Working', '#95b9ff')
 
         disp_list = ', '.join(provider_display_name(n) for n in active_names) if active_names else 'active Council AIs'
-        self.pending_status_text = f'Idle Mode Council deliberating ({disp_list})'
+        self.pending_status_text = f'Experimental Council deliberating ({disp_list})'
         self.pulse_step = 0
         self.pulse_timer.start()
         self._update_inline_status_banner()
@@ -4100,7 +4139,7 @@ class PalaceWindow(QMainWindow):
         def _step():
             callables = self._get_idle_provider_callables()
             if not callables:
-                raise RuntimeError('No active AI providers available for Idle Mode.')
+                raise RuntimeError('No active AI providers available for Experimental Mode.')
             return self.idle_manager.run_exchange_round(
                 callables,
                 operator_message=operator_message,
@@ -4110,7 +4149,7 @@ class PalaceWindow(QMainWindow):
         self.start_task(
             _step,
             self._on_idle_step_finished,
-            'Idle Mode Council deliberating & testing Shared Idle Memory…',
+            'Experimental Council deliberating…',
             on_progress=self._on_idle_turn_streamed,
             worker_box=worker_box,
         )
@@ -4122,11 +4161,11 @@ class PalaceWindow(QMainWindow):
         sp = str(turn.get('speaker', '')).strip()
         if sp and sp != 'operator':
             self.set_provider_status(sp, 'Responded', '#90d7c1')
-            self.pending_status_text = f'Idle Mode · {provider_display_name(sp)} responded — consulting next peer'
+            self.pending_status_text = f'Experimental Mode · {provider_display_name(sp)} responded — consulting next peer'
             self._update_inline_status_banner()
             self.status_label.setTextFormat(Qt.TextFormat.PlainText)
             self.status_label.setText(
-                f'Idle Mode · {provider_display_name(sp)} posted turn ({len(self.idle_manager.transcript)} turns in RAM · {self.idle_manager.format_budget_status()})'
+                f'Experimental Mode · {provider_display_name(sp)} posted turn ({len(self.idle_manager.transcript)} turns in RAM · {self.idle_manager.format_budget_status()})'
             )
         self._refresh_idle_view()
 
@@ -4138,12 +4177,13 @@ class PalaceWindow(QMainWindow):
         if self.idle_manager.status in {'Use Cap Reached', 'Auto-Stopped (Consensus)'}:
             self.idle_auto_timer.stop()
             self.idle_timer.stop()
+            self.idle_start_btn.setText('▶ Start')
             self.idle_step_btn.setEnabled(False)
             if self.idle_switch_btn.isChecked():
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
                 self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Idle: OFF')
+                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
@@ -4155,7 +4195,7 @@ class PalaceWindow(QMainWindow):
         stop_note = f' · {self.idle_manager.stop_reason}' if self.idle_manager.stop_reason else ''
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setText(
-            f'Idle Mode · {len(self.idle_manager.transcript)} turns in RAM · '
+            f'Experimental Mode · {len(self.idle_manager.transcript)} turns in RAM · '
             f'{self.idle_manager.format_budget_status()} · '
             f'{self.idle_manager.saved_notes_this_session} notes saved · '
             f'{self.idle_manager.sent_emails_this_session} emails sent{stop_note}'
@@ -4176,22 +4216,39 @@ class PalaceWindow(QMainWindow):
         approved, _votes = outcome
         self._refresh_idle_view()
         if approved:
-            self.status_label.setText(f'Idle consensus vote: YES · {self.idle_manager.last_vote_summary}')
+            self.status_label.setText(f'Experimental consensus vote: YES · {self.idle_manager.last_vote_summary}')
         else:
-            self.status_label.setText(f'Idle consensus vote: NO · {self.idle_manager.last_vote_summary}')
+            self.status_label.setText(f'Experimental consensus vote: NO · {self.idle_manager.last_vote_summary}')
 
     def _on_idle_submode_changed(self, _index: int = 0):
         if not hasattr(self, 'idle_submode_combo'):
             return
         submode = str(self.idle_submode_combo.currentData() or 'free_talk')
-        save_idle_settings({'idle_submode': submode}, config_path=self.config_path)
+        updates = {'idle_submode': submode}
+        if submode == 'self_improve':
+            updates['share_source_code'] = True
+            if hasattr(self, 'idle_code_btn'):
+                self.idle_code_btn.blockSignals(True)
+                self.idle_code_btn.setChecked(True)
+                self.idle_code_btn.setIcon(code_shield_qicon(True))
+                self.idle_code_btn.blockSignals(False)
+        save_idle_settings(updates, config_path=self.config_path)
         self.idle_manager.reload_settings()
+        self._refresh_idle_view()
+
+    def _on_idle_code_btn_toggled(self, checked: bool):
+        if hasattr(self, 'idle_code_btn'):
+            self.idle_code_btn.setIcon(code_shield_qicon(checked))
+        save_idle_settings({'share_source_code': bool(checked)}, config_path=self.config_path)
+        self.idle_manager.reload_settings()
+        state_lbl = 'ON (Read-Only Fairybread source shared)' if checked else 'OFF'
+        self.status_label.setText(f'Experimental Mode Source Code Sharing: {state_lbl}')
         self._refresh_idle_view()
 
     def _refresh_idle_view(self):
         submode = getattr(self.idle_manager, 'idle_submode', 'free_talk')
         sub_label = 'Free Talk' if submode == 'free_talk' else 'Self-Improvement'
-        self.idle_status_label.setText(f'Idle Mode ({sub_label}) · {self.idle_manager.status}')
+        self.idle_status_label.setText(f'Experimental ({sub_label}) · {self.idle_manager.status}')
         self.idle_timer_label.setText(f'⏱ {self.idle_manager.format_remaining_time()}')
         budget_str = self.idle_manager.format_budget_status()
         self.idle_budget_label.setText(budget_str)
@@ -4209,23 +4266,13 @@ class PalaceWindow(QMainWindow):
 
         if hasattr(self, 'idle_agents_roster_label'):
             self.idle_agents_roster_label.setText(
-                f'<span style="color:#8b949e; font-weight:600;">Active Idle Council ({len(active_agents)} Agents):</span>&nbsp;&nbsp;{roster_html}'
+                f'<span style="color:#8b949e; font-weight:600;">Active Experimental Council ({len(active_agents)} Agents):</span>&nbsp;&nbsp;{roster_html}'
             )
 
-        # In Beta, owner has full visibility into live Idle discussion & Shared Idle Palace
         beta_turns = self.idle_manager.get_visible_transcript_for_operator(
             beta_override=self.idle_manager.beta_owner_access
         )
-        blocks = [
-            '<div style="padding:10px 14px; background:#132232; border:1px solid #58a6ff; border-radius:8px; margin-bottom:10px;">'
-            '<span style="color:#58a6ff; font-weight:700;">👁 BETA TESTING MODE — Full Owner Visibility</span> '
-            '<span style="color:#8b949e; font-size:12px;">'
-            '(Live discussion &amp; Shared Idle Memory are open to you for Beta testing. '
-            f'Status: <b>{html.escape(self.idle_manager.status)}</b>)'
-            '</span>'
-            f'<div style="margin-top:6px; font-size:12.5px;"><span style="color:#8b949e;">Council Roster:</span>&nbsp;&nbsp;{roster_html}</div>'
-            '</div>'
-        ]
+        blocks = []
         if self.idle_manager.stop_reason:
             blocks.append(
                 f'<div style="padding:8px 12px; background:#241d12; border:1px solid #d29922; border-radius:8px; margin-bottom:10px; color:#f0d078; font-size:12.5px;">'
@@ -4235,21 +4282,19 @@ class PalaceWindow(QMainWindow):
         if not beta_turns:
             if self.idle_manager.is_idle_mode and self.idle_manager.status in {'Active', 'Waiting', 'Paused'}:
                 blocks.append(
-                    '<div style="margin-top:12px; padding:16px; background:#111d2c; border:1px solid #58a6ff; border-radius:10px; color:#c9d1d9; font-size:13px;">'
+                    '<div style="margin-top:10px; padding:14px; background:#111d2c; border:1px solid #58a6ff; border-radius:10px; color:#c9d1d9; font-size:13px;">'
                     '<div style="color:#58a6ff; font-weight:700; font-size:14px; margin-bottom:6px;">'
-                    '⚡ Autonomous Idle Council Session Active — Deliberating Live…</div>'
-                    f'<div style="margin-bottom:8px;"><b>Participating Agents ({len(active_agents)}):</b>&nbsp;&nbsp;{roster_html}</div>'
+                    '⚡ Experimental Council Session Active — Deliberating Live…</div>'
                     '<div style="color:#8b949e; font-size:12.5px;">'
                     'Each agent’s reply streams into this window immediately as soon as that AI finishes its turn.'
                     '</div></div>'
                 )
             else:
                 blocks.append(
-                    '<div style="margin-top:18px; padding:18px; background:#141820; border:1px solid #262c3a; border-radius:10px; color:#8b949e; font-size:13px;">'
-                    f'<div style="margin-bottom:8px; color:#c9d1d9;"><b>Ready Agents ({len(active_agents)}):</b>&nbsp;&nbsp;{roster_html}</div>'
-                    'Flip the <b>⏻ Idle Mode</b> switch on the top bar (or click <b>▶ Start / Resume Autonomous Idle</b>) '
-                    'to let the active AIs test their <b>Shared Idle Memory</b>, review the mirrored Fairybread source code '
-                    '(<code>C:\\Palace_Idle_Sandbox\\source_mirror\\</code>), and email you improvement proposals.'
+                    '<div style="margin-top:12px; padding:16px; background:#141820; border:1px solid #262c3a; border-radius:10px; color:#8b949e; font-size:13px;">'
+                    'Flip the <b>Experimental</b> switch on the top bar (or click <b>▶ Start</b>) '
+                    'to let your active Council AIs converse autonomously, share notes in <b>Shared Experimental Memory</b>, '
+                    'and optionally inspect Fairybread’s source code when <b>Code</b> sharing is enabled.'
                     '</div>'
                 )
         else:
@@ -4282,7 +4327,7 @@ class PalaceWindow(QMainWindow):
         self.idle_palace_list.clear()
         entries = self.idle_memory.list_all_entries_for_beta()
         if not entries:
-            placeholder = QListWidgetItem('No files/notes in Shared Idle Memory yet.')
+            placeholder = QListWidgetItem('No files/notes in Shared Experimental Memory yet.')
             placeholder.setData(Qt.ItemDataRole.UserRole, None)
             self.idle_palace_list.addItem(placeholder)
             return
@@ -4326,10 +4371,10 @@ class PalaceWindow(QMainWindow):
             self.open_idle_palace_file_by_ref(ref)
 
     def open_idle_palace_file_by_ref(self, link_ref: str) -> bool:
-        """Jump directly to the linked file/entry in the Shared Idle Memory browser."""
+        """Jump directly to the linked file/entry in the Shared Experimental Memory browser."""
         entry = self.idle_memory.resolve_linked_entry(link_ref)
         if not entry:
-            self.show_notice(f'Linked Idle Memory file "{link_ref}" was not found.')
+            self.show_notice(f'Linked Experimental Memory file "{link_ref}" was not found.')
             return False
         if self.sidebar_mail_btn.isChecked():
             self.sidebar_mail_btn.blockSignals(True)
@@ -4344,7 +4389,7 @@ class PalaceWindow(QMainWindow):
             if isinstance(data, dict) and data.get('id') == target_id:
                 self.idle_palace_list.setCurrentItem(it)
                 break
-        self.status_label.setText(f'Opened Shared Idle Memory file: {entry.get("file")} ({entry.get("title")})')
+        self.status_label.setText(f'Opened Shared Experimental Memory file: {entry.get("file")} ({entry.get("title")})')
         return True
 
     def _refresh_agent_mail_tab(self):
@@ -4404,7 +4449,7 @@ class PalaceWindow(QMainWindow):
             self.mail_open_link_btn.setEnabled(False)
             if hasattr(self, 'mail_delete_btn'):
                 self.mail_delete_btn.setEnabled(False)
-            self.mail_header_label.setText('Select an email from an Idle Mode agent to read.')
+            self.mail_header_label.setText('Select an email from an Experimental Mode agent to read.')
             self.mail_body_view.clear()
             return
 
@@ -4431,15 +4476,15 @@ class PalaceWindow(QMainWindow):
             esc_link = html.escape(link)
             link_html = (
                 f'<div style="margin-top:6px;">'
-                f'📎 Linked Shared Idle Memory File: '
+                f'📎 Linked Shared Experimental Memory File: '
                 f'<a href="idle-file:{esc_link}" style="color:#58a6ff; font-weight:700;">{esc_link}</a>'
                 f'</div>'
             )
             self.mail_open_link_btn.setEnabled(True)
-            self.mail_open_link_btn.setText(f'📂 Open "{link}" in Idle Memory')
+            self.mail_open_link_btn.setText(f'📂 Open "{link}" in Experimental Memory')
         else:
             self.mail_open_link_btn.setEnabled(False)
-            self.mail_open_link_btn.setText('📂 No Linked Idle Memory File')
+            self.mail_open_link_btn.setText('📂 No Linked Experimental Memory File')
 
         self.mail_header_label.setText(
             f'<div style="font-size:14px; font-weight:700; color:#f0f6fc;">{subj}</div>'
@@ -4452,7 +4497,7 @@ class PalaceWindow(QMainWindow):
         if reply:
             reply_block = (
                 f'<hr style="border:1px solid #232834; margin-top:14px;">'
-                f'<div style="color:#3fb950; font-weight:700; font-size:12px;">↩ Your Reply (Saved to Shared Idle Memory):</div>'
+                f'<div style="color:#3fb950; font-weight:700; font-size:12px;">↩ Your Reply (Saved to Shared Experimental Memory):</div>'
                 f'<div style="color:#e6edf3; font-size:13px; margin-top:4px;">{html.escape(reply)}</div>'
             )
 
@@ -4530,8 +4575,13 @@ class PalaceWindow(QMainWindow):
             self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
             self.reload_provider_bar()
             self.idle_manager.reload_settings()
-            if self.current_profile == 'Idle':
-                self._refresh_idle_view()
+            if hasattr(self, 'idle_code_btn'):
+                share_c = bool(load_idle_settings(self.config_path).get('share_source_code', False))
+                self.idle_code_btn.blockSignals(True)
+                self.idle_code_btn.setChecked(share_c)
+                self.idle_code_btn.setIcon(code_shield_qicon(share_c))
+                self.idle_code_btn.blockSignals(False)
+            self._refresh_idle_view()
             self.status_label.setText('Fairybread settings updated.')
 
     def reload_providers_from_config(self):

@@ -1,4 +1,4 @@
-# Fairybread (Beta) — Democratic Multi-AI Council, 100% Local Shared Memory & Autonomous Idle Lab
+# Fairybread (Beta) — Democratic Multi-AI Council, 100% Local Shared Memory & Autonomous Experimental Mode Lab
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
@@ -17,12 +17,12 @@ The real benefit of **Fairybread** is to **replace dedicated corporate workspace
 
 ---
 
-## The Experimental Side: Autonomous Idle Mode Lab
+## The Experimental Side: Autonomous Experimental Mode Lab
 
-Fairybread includes an automated **Idle Mode** that gives the agents their own **isolated Shared Idle Memory** where they can talk freely, share information and files, and collaborate on their own:
+Fairybread includes an automated **Experimental Mode** that gives the agents their own **isolated Shared Experimental Memory** where they can talk freely, share information and files, and collaborate on their own:
 
-- **Your Rules, Your Sandbox:** Out of the box, Idle Mode includes sensible baseline rules around safety, morality, ethics, and law—and you can set your own standing instructions and rules for the agents to follow.
-- **Upcoming Idle Mode Experiment Add-Ons:** We are building plug-and-play add-ons that turn Idle Mode into a true experimental space—so you can run the same kind of multi-agent experiments at home that the large AI companies run behind closed doors.
+- **Your Rules, Your Sandbox:** Out of the box, Experimental Mode includes sensible baseline rules around safety, morality, ethics, and law—and you can set your own standing instructions, ethics charter, and read-only **Share Fairybread Source Code (`{} Code`)** access in **`Settings → Experimental Mode`**.
+- **Upcoming Experimental Mode Add-Ons:** We are building plug-and-play add-ons that turn Experimental Mode into a true multi-agent lab—so you can run the same kind of multi-agent experiments at home that the large AI companies run behind closed doors.
 
 ---
 
