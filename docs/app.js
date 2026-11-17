@@ -3,11 +3,12 @@
 const STORAGE_KEYS = {
   user: 'fb_current_user_v1',
   news: 'fb_news_posts_v2',
-  threads: 'fb_forum_threads_v1',
+  threads: 'fb_forum_threads_v2',
   skins: 'fb_theme_skins_v1',
   donors: 'fb_donor_wall_v1',
   portrait: 'fb_brett_portrait_v1',
   sbConfig: 'fb_supabase_config_v1',
+  modQueue: 'fb_badge_review_queue_v1',
 };
 
 const DEFAULT_NEWS = [
@@ -70,11 +71,24 @@ And back to Fairybread—feel free to set up experiments, build themes, and shar
 
 const DEFAULT_THREADS = [
   {
+    id: 'th-0',
+    category: 'Announcements',
+    title: 'First pre release bug noticed in my sleep.',
+    author: 'Brett Moore',
+    badge: '👑 Creator',
+    date: '2026-11-18',
+    upvotes: 12,
+    body: `I accidentally removed the AI selector yesterday prior to release. This is the "Squad" selector so users can quickly select the right agent groups for the right tasks. For example graphics, or light chat etc. No need to pay a premium for chat.. that is often free (for example). No matter what is selected, it still feels like it's just one AI and it personalizes to you like GPT does.
+
+In fact the personalization is the next thing I am going to focus on so people can have this help them in their normal lives and the AIs get to know the user and build a rich profile.`,
+    replies: [],
+  },
+  {
     id: 'th-1',
     category: 'Announcements',
     title: 'Welcome to Fairybread.me! How to get started, share skins, and join the Beta Group',
-    author: 'Brett_Creator',
-    badge: '👑 Creator (Brett)',
+    author: 'Brett Moore',
+    badge: '👑 Creator',
     date: '2026-11-17',
     upvotes: 24,
     body: `Welcome to the official Fairybread.me community hub!
@@ -369,7 +383,7 @@ def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
 };
 
 let activeForumCategory = 'all';
-let selectedThreadId = 'th-1';
+let selectedThreadId = 'th-0';
 
 function loadState(key, fallback) {
   try {
@@ -386,6 +400,29 @@ function saveState(key, val) {
   } catch (_) {}
 }
 
+function migrateLegacyThreads() {
+  try {
+    const oldRaw = localStorage.getItem('fb_forum_threads_v1');
+    const curRaw = localStorage.getItem(STORAGE_KEYS.threads);
+    if (oldRaw && !curRaw) {
+      const oldList = JSON.parse(oldRaw);
+      if (Array.isArray(oldList)) {
+        oldList.forEach((t) => {
+          if (t.author === 'Community_Member' || (t.title && t.title.toLowerCase().includes('in my sleep'))) {
+            t.author = 'Brett Moore';
+            t.badge = '👑 Creator';
+          }
+          if (t.author === 'Brett_Creator') {
+            t.author = 'Brett Moore';
+            t.badge = '👑 Creator';
+          }
+        });
+        saveState(STORAGE_KEYS.threads, oldList);
+      }
+    }
+  } catch (_) {}
+}
+
 function switchTab(tabId) {
   document.querySelectorAll('.tab-section').forEach((sec) => {
     sec.classList.toggle('active', sec.id === `tab-${tabId}`);
@@ -396,48 +433,186 @@ function switchTab(tabId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// ================= AUTH =================
+// ================= AUTH & MODERATOR REVIEW QUEUE =================
+const RESERVED_OWNER_NAMES = ['brett', 'brett moore', 'brett_creator', 'bm069au', 'admin', 'owner', 'creator', 'moderator'];
+
 function getCurrentUser() {
   return loadState(STORAGE_KEYS.user, null);
+}
+
+function isOwnerOrMod(user) {
+  if (!user) return false;
+  return Boolean(user.isAdmin || (user.badge && (user.badge.includes('Creator') || user.badge.includes('Moderator'))));
 }
 
 function updateAuthUI() {
   const user = getCurrentUser();
   const btn = document.getElementById('authHeaderBtn');
+  const modBtn = document.getElementById('modQueueBtn');
   if (!btn) return;
   const signOutBtn = document.getElementById('signOutBtn');
   if (user && user.username) {
-    btn.textContent = `${user.badge.split(' ')[0]} ${user.username}`;
+    const pendingTag = user.requestedBadge ? ' (Review Pending)' : '';
+    btn.textContent = `${user.badge.split(' ')[0]} ${user.username}${pendingTag}`;
     if (signOutBtn) signOutBtn.style.display = 'inline-block';
   } else {
     btn.textContent = '🔐 Sign In / Register';
     if (signOutBtn) signOutBtn.style.display = 'none';
   }
+  if (modBtn) {
+    const queue = loadState(STORAGE_KEYS.modQueue, []);
+    if (isOwnerOrMod(user)) {
+      modBtn.style.display = 'inline-block';
+      modBtn.textContent = `🛡️ Review Queue (${queue.length})`;
+    } else {
+      modBtn.style.display = 'none';
+    }
+  }
 }
 
 function openAuthModal() {
   const user = getCurrentUser();
+  const errEl = document.getElementById('authErrorMsg');
+  if (errEl) errEl.style.display = 'none';
   if (user) {
     document.getElementById('authUsername').value = user.username || '';
     document.getElementById('authEmail').value = user.email || '';
-    document.getElementById('authBadgeSelect').value = user.badge || '🧁 Member';
+    const reqSel = document.getElementById('authBadgeRequestSelect');
+    if (reqSel) reqSel.value = user.requestedBadge || '';
   }
   showModal('authModal');
 }
 
 function handleUserSignIn() {
-  const username = document.getElementById('authUsername').value.trim() || 'Fairybread_User';
-  const email = document.getElementById('authEmail').value.trim();
-  const badge = document.getElementById('authBadgeSelect').value;
-  saveState(STORAGE_KEYS.user, { username, email, badge });
+  const username = (document.getElementById('authUsername').value || '').trim();
+  const email = (document.getElementById('authEmail').value || '').trim();
+  const ownerKey = (document.getElementById('authOwnerKey')?.value || '').trim();
+  const requestedBadge = document.getElementById('authBadgeRequestSelect')?.value || '';
+  const errEl = document.getElementById('authErrorMsg');
+
+  if (!username || username.length < 2) {
+    if (errEl) {
+      errEl.textContent = 'Please enter a valid username (at least 2 characters).';
+      errEl.style.display = 'block';
+    }
+    return;
+  }
+
+  const lowerName = username.toLowerCase();
+  const isReserved = RESERVED_OWNER_NAMES.some((r) => lowerName === r || lowerName.includes('brett') || lowerName.includes('bm069au'));
+  const validOwnerPass = ownerKey === 'bm069au' || ownerKey === 'fairybread-admin' || email.toLowerCase() === 'bm069au@gmail.com';
+
+  if (isReserved && !validOwnerPass) {
+    if (errEl) {
+      errEl.textContent = '🔒 That username is reserved for the Creator/Admin. Please choose your own handle (or enter the Owner Passkey if you are Brett).';
+      errEl.style.display = 'block';
+    }
+    return;
+  }
+
+  let badge = '👤 User';
+  let isAdmin = false;
+  let pendingReq = '';
+
+  if (validOwnerPass && (lowerName.includes('brett') || lowerName.includes('bm069au') || ownerKey)) {
+    badge = '👑 Creator';
+    isAdmin = true;
+  } else if (requestedBadge) {
+    // Keep public badge as "👤 User" and place request into Owner/Moderator Review Queue
+    badge = '👤 User';
+    pendingReq = requestedBadge;
+    const queue = loadState(STORAGE_KEYS.modQueue, []);
+    if (!queue.some((q) => q.username.toLowerCase() === lowerName)) {
+      queue.push({
+        id: 'req-' + Date.now(),
+        username,
+        email,
+        requestedBadge,
+        date: new Date().toISOString().slice(0, 10),
+      });
+      saveState(STORAGE_KEYS.modQueue, queue);
+    }
+  }
+
+  saveState(STORAGE_KEYS.user, { username, email, badge, requestedBadge: pendingReq, isAdmin });
   updateAuthUI();
+  renderForumThreads();
   closeAllModals();
+  if (pendingReq) {
+    alert(`Signed in as "${username}" (👤 User).\nYour request for "${pendingReq}" has been placed in the Moderator Review Queue for Brett to verify!`);
+  }
 }
 
 function handleSignOut() {
   localStorage.removeItem(STORAGE_KEYS.user);
   updateAuthUI();
+  renderForumThreads();
   closeAllModals();
+}
+
+function openModQueueModal() {
+  renderModQueueList();
+  showModal('modQueueModal');
+}
+
+function renderModQueueList() {
+  const listEl = document.getElementById('modQueueList');
+  if (!listEl) return;
+  const queue = loadState(STORAGE_KEYS.modQueue, []);
+  if (queue.length === 0) {
+    listEl.innerHTML = `<div class="muted-sub">No pending badge requests in the review queue.</div>`;
+    return;
+  }
+  listEl.innerHTML = queue
+    .map(
+      (q) => `
+    <div class="reply-card" style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <div>
+        <strong>${escapeHtml(q.username)}</strong> <span class="muted-sub">(${escapeHtml(q.email || 'no email')})</span><br />
+        <span style="font-size:12.5px; color:var(--accent-blue);">Requested: <strong>${escapeHtml(q.requestedBadge)}</strong> on ${escapeHtml(q.date)}</span>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="resolveBadgeRequest('${q.id}', true)">✔ Approve</button>
+        <button class="btn-outline" style="padding:5px 10px; font-size:12px;" onclick="resolveBadgeRequest('${q.id}', false)">✕ Deny</button>
+      </div>
+    </div>
+  `
+    )
+    .join('');
+}
+
+function resolveBadgeRequest(reqId, approve) {
+  let queue = loadState(STORAGE_KEYS.modQueue, []);
+  const item = queue.find((q) => q.id === reqId);
+  if (!item) return;
+  queue = queue.filter((q) => q.id !== reqId);
+  saveState(STORAGE_KEYS.modQueue, queue);
+
+  if (approve) {
+    // Update threads & replies by that user to show their newly approved badge
+    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
+    threads.forEach((t) => {
+      if (t.author.toLowerCase() === item.username.toLowerCase()) {
+        t.badge = item.requestedBadge;
+      }
+      (t.replies || []).forEach((r) => {
+        if (r.author.toLowerCase() === item.username.toLowerCase()) {
+          r.badge = item.requestedBadge;
+        }
+      });
+    });
+    saveState(STORAGE_KEYS.threads, threads);
+
+    const curUser = getCurrentUser();
+    if (curUser && curUser.username.toLowerCase() === item.username.toLowerCase()) {
+      curUser.badge = item.requestedBadge;
+      curUser.requestedBadge = '';
+      saveState(STORAGE_KEYS.user, curUser);
+    }
+  }
+  updateAuthUI();
+  renderModQueueList();
+  renderForumThreads();
 }
 
 // ================= NEWS =================
@@ -489,13 +664,17 @@ function submitNewNewsPost() {
 // ================= FORUMS =================
 function filterForumCategory(cat) {
   activeForumCategory = cat;
-  document.querySelectorAll('#forumCategoryPills .cat-pill').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.cat === cat);
-  });
+  const sel = document.getElementById('forumCategorySelect');
+  if (sel && sel.value !== cat) sel.value = cat;
   renderForumThreads();
 }
 
+function formatBadgeClass(badgeStr) {
+  return String(badgeStr || '').includes('Creator') || String(badgeStr || '').includes('$') ? 'badge-donor creator' : 'badge-donor';
+}
+
 function renderForumThreads() {
+  migrateLegacyThreads();
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const q = (document.getElementById('forumSearchInput')?.value || '').toLowerCase().trim();
   const filtered = threads.filter((t) => {
@@ -511,7 +690,7 @@ function renderForumThreads() {
   const listEl = document.getElementById('forumThreadList');
   if (!listEl) return;
   if (filtered.length === 0) {
-    listEl.innerHTML = `<div class="thread-item">No matching threads yet. Click "+ New Forum Thread" to start one!</div>`;
+    listEl.innerHTML = `<div class="thread-item">No matching threads yet. Click "+ New Thread" to start one!</div>`;
     return;
   }
   if (!filtered.some((t) => t.id === selectedThreadId)) {
@@ -524,8 +703,8 @@ function renderForumThreads() {
     <div class="thread-item ${t.id === selectedThreadId ? 'active' : ''}" onclick="selectForumThread('${t.id}')">
       <div class="thread-item-title">${escapeHtml(t.title)}</div>
       <div class="thread-item-meta">
-        <span><strong>${escapeHtml(t.author)}</strong> <span class="badge-donor">${escapeHtml(t.badge)}</span></span>
-        <span>💬 ${(t.replies || []).length} · ▲ ${t.upvotes || 1}</span>
+        <span><strong>${escapeHtml(t.author)}</strong> <span class="${formatBadgeClass(t.badge)}">${escapeHtml(t.badge || '👤 User')}</span></span>
+        <span style="white-space:nowrap;">💬 ${(t.replies || []).length} · ▲ ${t.upvotes || 1}</span>
       </div>
     </div>
   `
@@ -545,14 +724,19 @@ function renderSelectedThreadDetail() {
   const t = threads.find((item) => item.id === selectedThreadId);
   const detailEl = document.getElementById('forumThreadDetail');
   if (!detailEl || !t) return;
+  const user = getCurrentUser();
+  const canMod = isOwnerOrMod(user);
 
   const repliesHtml = (t.replies || [])
     .map(
-      (r) => `
+      (r, rIdx) => `
     <div class="reply-card">
       <div class="thread-item-meta" style="margin-bottom: 6px;">
-        <span><strong>${escapeHtml(r.author)}</strong> <span class="badge-donor">${escapeHtml(r.badge)}</span></span>
-        <span>${escapeHtml(r.date)}</span>
+        <span><strong>${escapeHtml(r.author)}</strong> <span class="${formatBadgeClass(r.badge)}">${escapeHtml(r.badge || '👤 User')}</span></span>
+        <span>
+          ${escapeHtml(r.date)}
+          ${canMod ? `<button class="btn-outline" style="padding:1px 6px; font-size:11px; margin-left:6px;" onclick="deleteForumReply('${t.id}', ${rIdx})">🗑</button>` : ''}
+        </span>
       </div>
       <div style="white-space: pre-line; font-size: 13.5px;">${escapeHtml(r.text)}</div>
     </div>
@@ -560,26 +744,58 @@ function renderSelectedThreadDetail() {
     )
     .join('');
 
+  const replyControlHtml = user
+    ? `
+    <div class="reply-box">
+      <input type="text" id="replyInputBox" placeholder="Reply as ${escapeHtml(user.username)} (${escapeHtml(user.badge)})…" onkeydown="if(event.key==='Enter') submitThreadReply('${t.id}')" />
+      <button class="btn-primary" onclick="submitThreadReply('${t.id}')">Reply</button>
+    </div>`
+    : `
+    <div class="reply-box" style="justify-content:space-between; align-items:center; background:var(--bg-main); border:1px solid var(--border); padding:10px 14px; border-radius:8px;">
+      <span class="muted-sub">🔒 You must be signed in to post a reply.</span>
+      <button class="btn-primary" style="padding:6px 14px; font-size:12.5px;" onclick="openAuthModal()">🔐 Sign In / Register to Reply</button>
+    </div>`;
+
   detailEl.innerHTML = `
     <div>
-      <div class="news-meta">
-        <span class="news-tag">${escapeHtml(t.category)}</span>
-        <span>Posted by <strong>${escapeHtml(t.author)}</strong> <span class="badge-donor">${escapeHtml(t.badge)}</span></span>
-        <span>${escapeHtml(t.date)}</span>
-        <button class="btn-outline" style="padding:2px 8px; font-size:12px;" onclick="upvoteThread('${t.id}')">▲ Upvote (${t.upvotes || 1})</button>
+      <div class="detail-header-row">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <span class="news-tag">${escapeHtml(t.category)}</span>
+          <span>Posted by <strong>${escapeHtml(t.author)}</strong> <span class="${formatBadgeClass(t.badge)}">${escapeHtml(t.badge || '👤 User')}</span></span>
+          <span>· ${escapeHtml(t.date)}</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn-outline" style="padding:4px 10px; font-size:12px;" onclick="upvoteThread('${t.id}')">▲ Upvote (${t.upvotes || 1})</button>
+          ${canMod ? `<button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="deleteForumThread('${t.id}')">🗑 Delete</button>` : ''}
+        </div>
       </div>
-      <h3 style="margin: 6px 0 10px;">${escapeHtml(t.title)}</h3>
-      <div style="white-space: pre-line; color: var(--text-secondary); font-size: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--border);">${escapeHtml(t.body)}</div>
+      <h3 style="margin: 6px 0 12px; font-size: 18px;">${escapeHtml(t.title)}</h3>
+      <div style="white-space: pre-line; color: var(--text-secondary); font-size: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border);">${escapeHtml(t.body)}</div>
     </div>
     <div style="display:flex; flex-direction:column; gap:10px;">
       <strong style="font-size:13px; color:var(--text-muted);">Replies (${(t.replies || []).length})</strong>
-      ${repliesHtml || '<div class="muted-sub">No replies yet — be the first to reply below!</div>'}
+      ${repliesHtml || '<div class="muted-sub">No replies yet — sign in below to be the first to reply!</div>'}
     </div>
-    <div class="reply-box">
-      <input type="text" id="replyInputBox" placeholder="Write a reply… (Press Enter or click Reply)" onkeydown="if(event.key==='Enter') submitThreadReply('${t.id}')" />
-      <button class="btn-primary" onclick="submitThreadReply('${t.id}')">Reply</button>
-    </div>
+    ${replyControlHtml}
   `;
+}
+
+function deleteForumThread(id) {
+  if (!isOwnerOrMod(getCurrentUser())) return;
+  let threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
+  threads = threads.filter((t) => t.id !== id);
+  saveState(STORAGE_KEYS.threads, threads);
+  renderForumThreads();
+}
+
+function deleteForumReply(threadId, replyIdx) {
+  if (!isOwnerOrMod(getCurrentUser())) return;
+  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
+  const t = threads.find((item) => item.id === threadId);
+  if (!t || !Array.isArray(t.replies)) return;
+  t.replies.splice(replyIdx, 1);
+  saveState(STORAGE_KEYS.threads, threads);
+  renderForumThreads();
 }
 
 function upvoteThread(id) {
@@ -593,16 +809,20 @@ function upvoteThread(id) {
 }
 
 function submitThreadReply(id) {
+  const user = getCurrentUser();
+  if (!user || !user.username) {
+    openAuthModal();
+    return;
+  }
   const inp = document.getElementById('replyInputBox');
   if (!inp || !inp.value.trim()) return;
-  const user = getCurrentUser() || { username: 'Community_Member', badge: '🧁 Member' };
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const t = threads.find((item) => item.id === id);
   if (!t) return;
   t.replies = t.replies || [];
   t.replies.push({
     author: user.username,
-    badge: user.badge,
+    badge: user.badge || '👤 User',
     date: new Date().toISOString().slice(0, 10),
     text: inp.value.trim(),
   });
@@ -611,15 +831,24 @@ function submitThreadReply(id) {
 }
 
 function openNewThreadModal() {
+  const user = getCurrentUser();
+  if (!user || !user.username) {
+    openAuthModal();
+    return;
+  }
   showModal('newThreadModal');
 }
 
 function submitNewForumThread() {
+  const user = getCurrentUser();
+  if (!user || !user.username) {
+    openAuthModal();
+    return;
+  }
   const cat = document.getElementById('threadCatInput').value;
   const title = document.getElementById('threadTitleInput').value.trim();
   const body = document.getElementById('threadBodyInput').value.trim();
   if (!title || !body) return;
-  const user = getCurrentUser() || { username: 'Community_Member', badge: '🧁 Member' };
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const newId = 'th-' + Date.now();
   threads.unshift({
@@ -627,7 +856,7 @@ function submitNewForumThread() {
     category: cat,
     title,
     author: user.username,
-    badge: user.badge,
+    badge: user.badge || '👤 User',
     date: new Date().toISOString().slice(0, 10),
     upvotes: 1,
     body,

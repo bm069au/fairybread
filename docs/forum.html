@@ -26,6 +26,7 @@
       </nav>
 
       <div class="header-actions">
+        <button class="btn-outline" id="modQueueBtn" style="display:none; padding:6px 11px; font-size:12.5px;" onclick="openModQueueModal()">🛡️ Review Queue (0)</button>
         <button class="btn-auth" id="authHeaderBtn" onclick="openAuthModal()">🔐 Sign In / Register</button>
         <a class="btn-download-sm" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_Beta_v0.9.1_Installer.zip">⬇ Download Beta</a>
       </div>
@@ -34,28 +35,25 @@
 
   <main class="site-main">
     <section class="tab-section active">
-      <div class="section-header-row">
-        <div>
-          <h2>💬 Fairybread Community Forums</h2>
-          <p class="muted-sub">Sign in above to start threads, reply, share Experimental Mode findings, and display your Donor Supporter Badge!</p>
+      <!-- Clean Single-Row Forum Control Bar -->
+      <div class="forum-unified-bar">
+        <div class="forum-bar-left">
+          <h2 style="margin:0; font-size:20px;">💬 Community Forums</h2>
+          <select id="forumCategorySelect" class="forum-cat-select" onchange="filterForumCategory(this.value)">
+            <option value="all">📂 All Topics</option>
+            <option value="Announcements">📢 Announcements</option>
+            <option value="General Discussion">💬 General Discussion</option>
+            <option value="Experimental Mode Lab">🧪 Experimental Mode Lab</option>
+            <option value="Custom Themes & Skins">🎨 Custom Themes &amp; Skins</option>
+            <option value="Bug Reports & Ideas">🐛 Bug Reports &amp; Ideas</option>
+            <option value="Artwork & Prompts">🖼 Artwork &amp; Prompts</option>
+          </select>
         </div>
-        <div class="forum-top-actions">
-          <button class="btn-outline" onclick="openSupabaseConfigModal()" title="Connect Supabase Postgres + Auth">⚙ Cloud DB</button>
-          <button class="btn-primary" onclick="openNewThreadModal()">+ New Forum Thread</button>
-        </div>
-      </div>
 
-      <div class="forum-toolbar">
-        <div class="forum-categories" id="forumCategoryPills">
-          <button class="cat-pill active" data-cat="all" onclick="filterForumCategory('all')">All Topics</button>
-          <button class="cat-pill" data-cat="Announcements" onclick="filterForumCategory('Announcements')">📢 Announcements</button>
-          <button class="cat-pill" data-cat="General Discussion" onclick="filterForumCategory('General Discussion')">💬 General</button>
-          <button class="cat-pill" data-cat="Experimental Mode Lab" onclick="filterForumCategory('Experimental Mode Lab')">🧪 Experimental Lab</button>
-          <button class="cat-pill" data-cat="Custom Themes & Skins" onclick="filterForumCategory('Custom Themes & Skins')">🎨 Themes &amp; Skins</button>
-          <button class="cat-pill" data-cat="Bug Reports & Ideas" onclick="filterForumCategory('Bug Reports & Ideas')">🐛 Bugs &amp; Ideas</button>
-          <button class="cat-pill" data-cat="Artwork & Prompts" onclick="filterForumCategory('Artwork & Prompts')">🖼 Artwork</button>
+        <div class="forum-bar-right">
+          <input type="search" id="forumSearchInput" class="search-input" placeholder="Search threads…" oninput="renderForumThreads()" />
+          <button class="btn-primary" onclick="openNewThreadModal()">+ New Thread</button>
         </div>
-        <input type="search" id="forumSearchInput" class="search-input" placeholder="Search forum threads…" oninput="renderForumThreads()" />
       </div>
 
       <div class="forum-layout">
@@ -86,11 +84,14 @@
 
   <!-- Modals (Forum Page Only) -->
   <div id="modalBackdrop" class="modal-backdrop" style="display:none;" onclick="closeAllModals(event)">
+    <!-- Auth / Registration Modal -->
     <div id="authModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
       <h3>🔐 Forum Sign In / Registration</h3>
-      <p class="muted-sub">Sign in to post threads and replies in the Fairybread Community Forums.</p>
-      <label>Display Name / Username
-        <input type="text" id="authUsername" placeholder="e.g. Brett_Creator or AI_Explorer" />
+      <p class="muted-sub">
+        All accounts default to <strong>👤 User</strong>. If you request a Donor or Moderator badge below, your profile remains <strong>👤 User</strong> until approved by Brett or a Moderator.
+      </p>
+      <label>Username / Handle
+        <input type="text" id="authUsername" placeholder="e.g. Alex_AU" />
       </label>
       <label>Email Address
         <input type="email" id="authEmail" placeholder="you@example.com" />
@@ -98,16 +99,22 @@
       <label>Password
         <input type="password" id="authPassword" placeholder="••••••••" />
       </label>
-      <label>Supporter / Donor Tier Badge
-        <select id="authBadgeSelect">
-          <option value="🧁 Member">🧁 Community Member</option>
-          <option value="🌱 $5 Supporter">🌱 $5 Supporter</option>
-          <option value="📬 $10 Newsletter">📬 $10 Newsletter Supporter</option>
-          <option value="🌟 $25 Early Previewer">🌟 $25 Early Previewer</option>
-          <option value="💎 $50 Beta Patron">💎 $50 Beta Patron</option>
-          <option value="👑 Creator (Brett)">👑 Creator (Brett)</option>
+      <label>Request Donor / Moderator Badge (Optional — Placed in Moderator Review Queue)
+        <select id="authBadgeRequestSelect">
+          <option value="">None (Standard 👤 User)</option>
+          <option value="🌱 $5 Supporter">Request: 🌱 $5 Supporter Badge (Requires Verification)</option>
+          <option value="📬 $10 Newsletter">Request: 📬 $10 Newsletter Badge (Requires Verification)</option>
+          <option value="🌟 $25 Early Previewer">Request: 🌟 $25 Early Previewer Badge (Requires Verification)</option>
+          <option value="💎 $50 Beta Patron">Request: 💎 $50 Beta Patron Badge (Requires Verification)</option>
+          <option value="👑 $350 VIP Patron">Request: 👑 $350 VIP Patron Badge (Requires Verification)</option>
+          <option value="🛡️ Moderator">Request: 🛡️ Forum Moderator Role (Requires Owner Approval)</option>
         </select>
       </label>
+      <details style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+        <summary style="cursor:pointer;">🔑 Owner / Moderator Passkey (Brett &amp; Approved Mods Only)</summary>
+        <input type="password" id="authOwnerKey" placeholder="Enter Owner/Moderator Passkey…" style="width:100%; margin-top:6px;" />
+      </details>
+      <div id="authErrorMsg" style="color:#f87171; font-size:12.5px; display:none;"></div>
       <div class="modal-actions">
         <button class="btn-primary" onclick="handleUserSignIn()">Sign In / Register</button>
         <button class="btn-outline" onclick="handleSignOut()" id="signOutBtn" style="display:none;">Sign Out</button>
@@ -115,6 +122,7 @@
       </div>
     </div>
 
+    <!-- New Thread Modal -->
     <div id="newThreadModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
       <h3>💬 Start a New Forum Thread</h3>
       <label>Category
@@ -139,16 +147,12 @@
       </div>
     </div>
 
-    <div id="supabaseModal" class="modal-card" style="display:none;" onclick="event.stopPropagation()">
-      <h3>⚙ Cloud Database Connector (Supabase Free Tier)</h3>
-      <label>Supabase Project URL
-        <input type="url" id="sbUrlInput" placeholder="https://xyzcompany.supabase.co" />
-      </label>
-      <label>Supabase Public Anon Key
-        <input type="text" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." />
-      </label>
+    <!-- Owner / Moderator Badge Review Queue Modal -->
+    <div id="modQueueModal" class="modal-card" style="display:none; max-width:600px;" onclick="event.stopPropagation()">
+      <h3>🛡️ Owner &amp; Moderator Badge Review Queue</h3>
+      <p class="muted-sub">Users listed below are currently shown as <strong>👤 User</strong> until you Approve or Reject their requested Donor/Moderator badge:</p>
+      <div id="modQueueList" style="display:flex; flex-direction:column; gap:10px; max-height:360px; overflow-y:auto;"></div>
       <div class="modal-actions">
-        <button class="btn-primary" onclick="saveSupabaseConfig()">Save Cloud DB Config</button>
         <button class="btn-outline" onclick="closeAllModals()">Close</button>
       </div>
     </div>
