@@ -34,11 +34,13 @@ from palace_config import (
     IDLE_DURATION_CHOICES,
     IDLE_TOKEN_LIMIT_CHOICES,
     PROVIDER_CATALOG,
+    load_ai_squads,
     load_idle_settings,
     load_mission_ethics,
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
+    save_ai_squads,
     save_idle_settings,
     save_mission_ethics,
     save_provider_config,
@@ -1305,19 +1307,181 @@ class ManageAIsDialog(QDialog):
 
     def _build_profiles_page(self):
         w, lay = self._make_simple_page(
-            'Profiles & Squads',
-            'Profiles and AI Squads let you switch between Code AIs, Light Chat, Generalist, Graphics, Work Mode, and Idle Mode.'
+            'Profiles & AI Squads',
+            'Customize which AI providers, how many AIs per turn, and which modes (Deliberation / Code access) belong to each Profile.'
         )
-        lay.addWidget(QLabel(
-            'Built-in Squads & Modes:\n'
-            '• 💻 Code AIs (DeepSeek, Mistral, Gemini · Deliberation ON)\n'
-            '• 💬 Light Chat (Groq, Qwen, Cohere · Direct 1-Round)\n'
-            '• 🧠 Generalist (Gemini, OpenAI, DeepSeek, Cohere · Deliberation ON)\n'
-            '• 🎨 Graphics & Vision (OpenAI, Gemini)\n'
-            '• 🛠 Work Mode (Code AIs + Fairybread Source & Project Folder Tools)\n'
-            '• 🌙 Idle Mode Sanctuary'
-        ))
-        lay.addStretch()
+        self._squads_data = load_ai_squads(self.config_path)
+        self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
+        self._loading_squad_ui = False
+
+        split_row = QHBoxLayout()
+        split_row.setSpacing(14)
+
+        left_col = QVBoxLayout()
+        left_col.addWidget(QLabel('<b>Profiles / Squads:</b>'))
+        self.squad_list_widget = QListWidget()
+        self.squad_list_widget.setFixedWidth(220)
+        self.squad_list_widget.setToolTip('Select a Profile to customize its AIs and settings')
+        left_col.addWidget(self.squad_list_widget, 1)
+
+        sq_btn_row = QHBoxLayout()
+        add_sq_btn = QPushButton('+ New')
+        add_sq_btn.setToolTip('Create a new custom Profile')
+        del_sq_btn = QPushButton('🗑 Delete')
+        del_sq_btn.setToolTip('Delete selected Profile')
+        reset_sq_btn = QPushButton('↺ Defaults')
+        reset_sq_btn.setToolTip('Restore built-in default Profiles')
+        sq_btn_row.addWidget(add_sq_btn)
+        sq_btn_row.addWidget(del_sq_btn)
+        sq_btn_row.addWidget(reset_sq_btn)
+        left_col.addLayout(sq_btn_row)
+        split_row.addLayout(left_col)
+
+        right_card = QFrame()
+        right_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        right_lay = QVBoxLayout(right_card)
+        right_lay.setSpacing(10)
+
+        form = QFormLayout()
+        self.squad_label_edit = QLineEdit()
+        self.squad_label_edit.setToolTip('Display name for this Profile')
+        form.addRow('Profile Name:', self.squad_label_edit)
+
+        self.squad_max_ais_combo = QComboBox()
+        self.squad_max_ais_combo.setToolTip('Maximum number of AIs to run per turn in this Profile')
+        self.squad_max_ais_combo.addItem('All Checked AIs (No Cap)', 0)
+        for n_cap in (1, 2, 3, 4, 5, 6, 8, 10, 12):
+            self.squad_max_ais_combo.addItem(f'Max {n_cap} AI{"s" if n_cap > 1 else ""} per turn', n_cap)
+        form.addRow('How Many AIs to Use:', self.squad_max_ais_combo)
+        right_lay.addLayout(form)
+
+        self.squad_delib_check = QCheckBox('Enable 2-Round Council Deliberation (Peer Review ON)')
+        self.squad_delib_check.setToolTip('Run 2-round peer review when this Profile is selected')
+        right_lay.addWidget(self.squad_delib_check)
+
+        self.squad_code_check = QCheckBox('Enable Fairybread Source Code Access ({} Code ON)')
+        self.squad_code_check.setToolTip('Automatically enable read-only source code sharing in this Profile')
+        right_lay.addWidget(self.squad_code_check)
+
+        right_lay.addWidget(QLabel('<b>Included AI Providers in this Profile:</b>'))
+        prov_grid = QGridLayout()
+        prov_grid.setSpacing(8)
+        self.squad_provider_checks: dict[str, QCheckBox] = {}
+        configs = load_provider_configs(self.config_path)
+        all_prov_names = list(dict.fromkeys([*PROVIDER_CATALOG.keys(), *configs.keys()]))
+        for idx, pname in enumerate(all_prov_names):
+            disp = provider_display_name(pname)
+            ic = provider_icon(pname)
+            chk = QCheckBox(f'{ic} {disp}')
+            chk.setToolTip(f'Include {disp} in this Profile')
+            self.squad_provider_checks[pname] = chk
+            prov_grid.addWidget(chk, idx // 3, idx % 3)
+        right_lay.addLayout(prov_grid)
+        right_lay.addStretch(1)
+        split_row.addWidget(right_card, 1)
+        lay.addLayout(split_row, 1)
+
+        def _save_current_squad_edits():
+            if self._loading_squad_ui or not self._active_squad_key:
+                return
+            if self._active_squad_key not in self._squads_data:
+                return
+            lbl = self.squad_label_edit.text().strip() or self._active_squad_key
+            provs = [p for p, c in self.squad_provider_checks.items() if c.isChecked()]
+            self._squads_data[self._active_squad_key] = {
+                'label': lbl,
+                'providers': provs,
+                'deliberate': self.squad_delib_check.isChecked(),
+                'code_access': self.squad_code_check.isChecked(),
+                'max_ais': int(self.squad_max_ais_combo.currentData() or 0),
+            }
+            cur_item = self.squad_list_widget.currentItem()
+            if cur_item and str(cur_item.data(Qt.ItemDataRole.UserRole)) == self._active_squad_key:
+                cur_item.setText(f'{lbl} ({len(provs)} AIs)')
+
+        def _populate_squad_list(select_key: str | None = None):
+            self._loading_squad_ui = True
+            self.squad_list_widget.clear()
+            target_row = 0
+            for idx, (k, v) in enumerate(self._squads_data.items()):
+                cnt = len(v.get('providers') or [])
+                it = QListWidgetItem(f'{v.get("label", k)} ({cnt} AIs)')
+                it.setData(Qt.ItemDataRole.UserRole, k)
+                self.squad_list_widget.addItem(it)
+                if select_key and k == select_key:
+                    target_row = idx
+            self._loading_squad_ui = False
+            if self.squad_list_widget.count() > 0:
+                self.squad_list_widget.setCurrentRow(target_row)
+
+        def _on_squad_selected(current: QListWidgetItem | None, _prev: QListWidgetItem | None = None):
+            if current is None:
+                return
+            _save_current_squad_edits()
+            key = str(current.data(Qt.ItemDataRole.UserRole) or '')
+            if key not in self._squads_data:
+                return
+            self._loading_squad_ui = True
+            self._active_squad_key = key
+            sq = self._squads_data[key]
+            self.squad_label_edit.setText(str(sq.get('label') or key))
+            max_idx = self.squad_max_ais_combo.findData(int(sq.get('max_ais') or 0))
+            self.squad_max_ais_combo.setCurrentIndex(max_idx if max_idx >= 0 else 0)
+            self.squad_delib_check.setChecked(bool(sq.get('deliberate', True)))
+            self.squad_code_check.setChecked(bool(sq.get('code_access', False)))
+            inc = set(sq.get('providers') or [])
+            for p, c in self.squad_provider_checks.items():
+                c.setChecked(p in inc)
+            self._loading_squad_ui = False
+
+        def _add_new_squad():
+            _save_current_squad_edits()
+            new_key = f'custom_{len(self._squads_data) + 1}'
+            while new_key in self._squads_data:
+                new_key += '_'
+            self._squads_data[new_key] = {
+                'label': '✨ Custom Profile',
+                'providers': ['gemini', 'openai'],
+                'deliberate': True,
+                'code_access': False,
+                'max_ais': 0,
+            }
+            _populate_squad_list(select_key=new_key)
+
+        def _del_selected_squad():
+            if len(self._squads_data) <= 1:
+                return
+            cur = self.squad_list_widget.currentItem()
+            if cur is None:
+                return
+            k = str(cur.data(Qt.ItemDataRole.UserRole) or '')
+            if k in self._squads_data:
+                self._loading_squad_ui = True
+                del self._squads_data[k]
+                self._active_squad_key = next(iter(self._squads_data.keys()), '')
+                self._loading_squad_ui = False
+                _populate_squad_list(select_key=self._active_squad_key)
+
+        def _restore_default_squads():
+            self._loading_squad_ui = True
+            self._squads_data = {k: dict(v, providers=list(v.get('providers', []))) for k, v in DEFAULT_AI_SQUADS.items()}
+            self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
+            self._loading_squad_ui = False
+            _populate_squad_list(select_key=self._active_squad_key)
+
+        self._flush_squad_editor = _save_current_squad_edits
+        self.squad_list_widget.currentItemChanged.connect(_on_squad_selected)
+        self.squad_label_edit.textEdited.connect(lambda _t: _save_current_squad_edits())
+        self.squad_max_ais_combo.currentIndexChanged.connect(lambda _i: _save_current_squad_edits())
+        self.squad_delib_check.toggled.connect(lambda _b: _save_current_squad_edits())
+        self.squad_code_check.toggled.connect(lambda _b: _save_current_squad_edits())
+        for chk in self.squad_provider_checks.values():
+            chk.toggled.connect(lambda _b: _save_current_squad_edits())
+        add_sq_btn.clicked.connect(_add_new_squad)
+        del_sq_btn.clicked.connect(_del_selected_squad)
+        reset_sq_btn.clicked.connect(_restore_default_squads)
+        _populate_squad_list(select_key=self._active_squad_key)
+
         self.pages.addWidget(w)
 
     def _build_work_tools_page(self):
@@ -1499,6 +1663,13 @@ class ManageAIsDialog(QDialog):
         self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only access to Fairybread source code')
         self.idle_share_code_check.setChecked(bool(idle_cfg.get('share_source_code', False)))
         lay.addWidget(self.idle_share_code_check)
+
+        self.idle_live_patch_check = QCheckBox(
+            '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
+        )
+        self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches, hot-reboot, and resume automatically')
+        self.idle_live_patch_check.setChecked(bool(idle_cfg.get('allow_live_self_modify', False)))
+        self.idle_live_patch_check.hide()
 
         self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
@@ -2143,6 +2314,10 @@ class ManageAIsDialog(QDialog):
             QMessageBox.warning(self, 'Missing Provider Name', 'Please enter a provider name.')
             return
         self._auto_save_current_provider()
+        if hasattr(self, '_flush_squad_editor') and callable(self._flush_squad_editor):
+            self._flush_squad_editor()
+        if hasattr(self, '_squads_data'):
+            save_ai_squads(self._squads_data, config_path=self.config_path)
         self._save_email_and_notification_fields()
         self._save_bridge_fields()
         from palace_config import parse_storage_mb_text
@@ -2154,6 +2329,7 @@ class ManageAIsDialog(QDialog):
                 'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
                 'pause_when_joined': self.idle_pause_check.isChecked(),
                 'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
+                'allow_live_self_modify': bool(self.idle_live_patch_check.isChecked()) if hasattr(self, 'idle_live_patch_check') else False,
                 'memory_access_mode': self.idle_memory_mode_combo.currentData(),
                 'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
             },
@@ -2828,6 +3004,21 @@ class PalaceWindow(QMainWindow):
         self.idle_code_btn.toggled.connect(self._on_idle_code_btn_toggled)
         idle_actions.addWidget(self.idle_code_btn)
 
+        live_patch_init = bool(idle_cfg_init.get('allow_live_self_modify', False))
+        self.idle_live_patch_btn = QPushButton('⚡ Live Patch')
+        self.idle_live_patch_btn.setCheckable(True)
+        self.idle_live_patch_btn.setChecked(live_patch_init)
+        self.idle_live_patch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.idle_live_patch_btn.setToolTip('Allow agents to apply live code patches & continue past reboot')
+        self.idle_live_patch_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; } '
+            'QPushButton:checked { background: #2c1e0f; color: #f59e0b; border: 1px solid #f59e0b; font-weight: 700; }'
+        )
+        self.idle_live_patch_btn.toggled.connect(self._on_idle_live_patch_btn_toggled)
+        self.idle_live_patch_btn.hide()
+
         self.idle_start_btn = QPushButton('▶ Start')
         self.idle_start_btn.setToolTip('Start or resume autonomous Experimental Mode discussion')
         self.idle_start_btn.clicked.connect(self.start_idle_session)
@@ -3289,6 +3480,22 @@ class PalaceWindow(QMainWindow):
                 )
                 if resume_prompt and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
                     self.composer.setPlainText(resume_prompt)
+                if continuity.get('auto_resume_idle') and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                    saved_turns = list(continuity.get('idle_transcript') or [])
+                    saved_turns.append({
+                        'speaker': 'operator',
+                        'content': f'⚡ **Ouroboros Hot-Reboot Complete** — Live patch applied (`{diff_sum}`). Continuing autonomous Experimental Mode session…',
+                        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                    })
+                    self.idle_manager.transcript = saved_turns
+                    rem_sec = int(continuity.get('idle_remaining_seconds') or 0)
+                    if rem_sec > 0:
+                        self.idle_manager.remaining_seconds = rem_sec
+                    self.idle_manager.tokens_used_this_session = int(continuity.get('idle_tokens_used') or 0)
+                    self.idle_manager.spend_usd_this_session = float(continuity.get('idle_spend_usd') or 0.0)
+                    self.workspace_tabs.setCurrentIndex(1)
+                    self._refresh_idle_view()
+                    QTimer.singleShot(900, lambda: self.idle_switch_btn.setChecked(True))
         except Exception:
             pass
 
@@ -3325,13 +3532,9 @@ class PalaceWindow(QMainWindow):
         exit_act.triggered.connect(self.exit_application)
         palace_menu.addAction(exit_act)
 
-        ai_menu = menubar.addMenu('Mode')
-        normal_mode_act = QAction('Normal AI Mode', self)
-        normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
-        ai_menu.addAction(normal_mode_act)
-        idle_act = QAction('🧪 Experimental Mode', self)
-        idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
-        ai_menu.addAction(idle_act)
+        self.mode_menu = menubar.addMenu('Mode')
+        self.mode_menu.aboutToShow.connect(self._rebuild_mode_menu)
+        self._rebuild_mode_menu()
 
         view_menu = menubar.addMenu('View')
         self.theme_menu = view_menu.addMenu('🎨 Theme')
@@ -3354,6 +3557,9 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
+        profiles_settings_act = QAction('🎛 Profiles && AI Squads…', self)
+        profiles_settings_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
+        settings_menu.addAction(profiles_settings_act)
         voice_settings_act = QAction('🎙️ Voice && Audio (Microphone && Speaker)…', self)
         voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
         settings_menu.addAction(voice_settings_act)
@@ -3382,6 +3588,19 @@ class PalaceWindow(QMainWindow):
         about_act = QAction('About Fairybread', self)
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+
+    def _rebuild_mode_menu(self):
+        if not hasattr(self, 'mode_menu'):
+            return
+        self.mode_menu.clear()
+        normal_mode_act = QAction('💬 Normal AI Mode', self.mode_menu)
+        normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
+        self.mode_menu.addAction(normal_mode_act)
+        idle_act = QAction('🧪 Experimental Mode', self.mode_menu)
+        idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
+        self.mode_menu.addAction(idle_act)
+        self.mode_menu.addSeparator()
+        self._populate_profiles_and_ais_menu(self.mode_menu)
 
     def _rebuild_theme_menu(self):
         if not hasattr(self, 'theme_menu'):
@@ -3652,6 +3871,89 @@ class PalaceWindow(QMainWindow):
         else:
             self.ai_pill_button.setText('Choose AIs  ▾')
 
+    def _populate_profiles_and_ais_menu(self, menu: QMenu, menu_style: str = ''):
+        configs = load_provider_configs(self.config_path)
+        prov_states = getattr(self, 'provider_states', {}) or {}
+        all_names = list(dict.fromkeys([
+            *prov_states.keys(),
+            *configs.keys(),
+        ]))
+        if not all_names:
+            all_names = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral']
+
+        squad_dict = load_ai_squads(self.config_path)
+        for _sq_key, sq_val in squad_dict.items():
+            squad_title = str(sq_val.get('label') or _sq_key)
+            members = list(sq_val.get('providers') or [])
+            default_delib = bool(sq_val.get('deliberate', True))
+            default_code = bool(sq_val.get('code_access', False))
+            max_cap = int(sq_val.get('max_ais') or 0)
+            avail_members = [m for m in members if m in all_names] or members
+            sub = menu.addMenu(f'{squad_title}')
+            if menu_style:
+                sub.setStyleSheet(menu_style)
+            joined_disp = ', '.join(provider_display_name(m) for m in avail_members)
+            cap_note = f' [Max {max_cap}]' if max_cap > 0 else ''
+            all_act = QAction(f'All {squad_title}{cap_note}: {joined_disp}', sub)
+            all_act.triggered.connect(
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc)
+            )
+            sub.addAction(all_act)
+            sub.addSeparator()
+            for m in avail_members:
+                single_act = QAction(
+                    provider_qicon(m, checked=(prov_states.get(m) is True)),
+                    f'Only {provider_display_name(m)} ({squad_title})',
+                    sub,
+                )
+                single_act.triggered.connect(
+                    lambda _c=False, m_name=m, dc=default_code:
+                    self._apply_squad_preset(
+                        f'{provider_icon(m_name)} {provider_display_name(m_name)}',
+                        [m_name],
+                        deliberate=False,
+                        palace_code=dc,
+                        max_ais=1,
+                    )
+                )
+                sub.addAction(single_act)
+
+        all_en_act = QAction('🌐  All Configured AIs', menu)
+        all_en_act.triggered.connect(
+            lambda: self._apply_squad_preset(
+                '🌐 All AIs',
+                all_names,
+                deliberate=True,
+                palace_code=bool(getattr(self, 'palace_code_btn', None) and self.palace_code_btn.isChecked()),
+                max_ais=0,
+            )
+        )
+        menu.addAction(all_en_act)
+
+        custom_act = QAction('✋  Custom Selection & How Many AIs…', menu)
+        custom_act.triggered.connect(self._open_custom_ai_picker)
+        menu.addAction(custom_act)
+
+        menu.addSeparator()
+        for name in all_names:
+            is_active = (prov_states.get(name) is True)
+            disp = provider_display_name(name)
+            model_hint = configs.get(name, {}).get('model', '')
+            label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
+            act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
+            act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
+            menu.addAction(act)
+
+        menu.addSeparator()
+        edit_prof_act = QAction('🎛  Customize Profiles & Squads…', menu)
+        edit_prof_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
+        menu.addAction(edit_prof_act)
+
+        manage_act = QAction('⚙  Manage AI Keys, Models & Tools…', menu)
+        manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
+        menu.addAction(manage_act)
+
     @Slot()
     def _show_choose_ais_menu(self):
         if self.worker is not None:
@@ -3663,94 +3965,18 @@ class PalaceWindow(QMainWindow):
         )
         menu = QMenu(self)
         menu.setStyleSheet(menu_style)
-        configs = load_provider_configs(self.config_path)
-        all_names = list(dict.fromkeys([
-            *self.provider_states.keys(),
-            *configs.keys(),
-        ]))
-        if not all_names:
-            all_names = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral']
-
-        # --- SQUAD PRESETS WITH FLYOUT SUBMENUS (All Squad OR Single AI in 1 Click) ---
-        squads = [
-            ('💻 Code AIs', ['deepseek', 'mistral', 'gemini'], True, True),
-            ('💬 Light Chat (Cheap)', ['groq', 'qwen', 'cohere'], False, False),
-            ('🧠 Generalist', ['gemini', 'openai', 'deepseek', 'cohere'], True, False),
-            ('🎨 Graphics & Vision', ['openai', 'gemini'], False, False),
-        ]
-        for squad_title, members, default_delib, default_code in squads:
-            avail_members = [m for m in members if m in all_names] or members
-            sub = menu.addMenu(f'{squad_title}')
-            sub.setStyleSheet(menu_style)
-            joined_disp = ', '.join(provider_display_name(m) for m in avail_members)
-            all_act = QAction(f'All {squad_title}: {joined_disp}', sub)
-            all_act.triggered.connect(
-                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code:
-                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc)
-            )
-            sub.addAction(all_act)
-            sub.addSeparator()
-            for m in avail_members:
-                single_act = QAction(
-                    provider_qicon(m, checked=(self.provider_states.get(m) is True)),
-                    f'Only {provider_display_name(m)} ({squad_title})',
-                    sub,
-                )
-                single_act.triggered.connect(
-                    lambda _c=False, m_name=m, dl=default_delib, dc=default_code:
-                    self._apply_squad_preset(
-                        f'{provider_icon(m_name)} {provider_display_name(m_name)}',
-                        [m_name],
-                        deliberate=False if len([m_name]) == 1 else dl,
-                        palace_code=dc,
-                    )
-                )
-                sub.addAction(single_act)
-
-        work_act = QAction('🛠  Work Mode (Code AIs + Deliberation + Palace & Folder Tools)', menu)
-        work_act.triggered.connect(
-            lambda: self._apply_squad_preset(
-                '🛠 Work Mode',
-                [m for m in ['deepseek', 'mistral', 'gemini'] if m in all_names] or ['deepseek', 'mistral', 'gemini'],
-                deliberate=True,
-                palace_code=True,
-            )
-        )
-        menu.addAction(work_act)
-
-        all_en_act = QAction('🌐  All Configured AIs', menu)
-        all_en_act.triggered.connect(
-            lambda: self._apply_squad_preset('🌐 All AIs', all_names, deliberate=True, palace_code=self.palace_code_btn.isChecked())
-        )
-        menu.addAction(all_en_act)
-
-        custom_act = QAction('✋  Custom Selection… (Pick AIs & Max Cap)', menu)
-        custom_act.triggered.connect(self._open_custom_ai_picker)
-        menu.addAction(custom_act)
-
-        menu.addSeparator()
-        for name in all_names:
-            is_active = (self.provider_states.get(name) is True)
-            disp = provider_display_name(name)
-            model_hint = configs.get(name, {}).get('model', '')
-            label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
-            act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
-            act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
-            menu.addAction(act)
-
-        menu.addSeparator()
-        manage_act = QAction('⚙  Manage AI Keys, Models & Tools…', menu)
-        manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
-        menu.addAction(manage_act)
+        self._populate_profiles_and_ais_menu(menu, menu_style=menu_style)
 
         pos = self.ai_pill_button.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4))
         if pos.y() < 40:
             pos = self.ai_pill_button.mapToGlobal(QPoint(0, self.ai_pill_button.height() + 4))
         menu.exec(pos)
 
-    def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False):
+    def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False, max_ais: int = 0):
         self.current_squad_label = label
-        self.max_ais_per_turn = 0
+        self.max_ais_per_turn = max(0, int(max_ais or 0))
+        if self.idle_switch_btn.isChecked():
+            self.idle_switch_btn.setChecked(False)
         all_known = list(dict.fromkeys([*self.provider_states.keys(), *active_list]))
         for name in all_known:
             en = name in active_list
@@ -4285,6 +4511,21 @@ class PalaceWindow(QMainWindow):
         self.status_label.setText(f'Experimental Mode Source Code Sharing: {state_lbl}')
         self._refresh_idle_view()
 
+    def _on_idle_live_patch_btn_toggled(self, checked: bool):
+        updates = {'allow_live_self_modify': bool(checked)}
+        if checked:
+            updates['share_source_code'] = True
+            if hasattr(self, 'idle_code_btn'):
+                self.idle_code_btn.blockSignals(True)
+                self.idle_code_btn.setChecked(True)
+                self.idle_code_btn.setIcon(code_shield_qicon(True))
+                self.idle_code_btn.blockSignals(False)
+        save_idle_settings(updates, config_path=self.config_path)
+        self.idle_manager.reload_settings()
+        state_lbl = 'ARMED (Agents can apply live patches, hot-reboot & auto-continue)' if checked else 'OFF'
+        self.status_label.setText(f'Experimental Live Patch & Auto-Reboot: {state_lbl}')
+        self._refresh_idle_view()
+
     def _refresh_idle_view(self):
         submode = getattr(self.idle_manager, 'idle_submode', 'free_talk')
         sub_label = 'Free Talk' if submode == 'free_talk' else 'Self-Improvement'
@@ -4616,11 +4857,16 @@ class PalaceWindow(QMainWindow):
             self.reload_provider_bar()
             self.idle_manager.reload_settings()
             if hasattr(self, 'idle_code_btn'):
-                share_c = bool(load_idle_settings(self.config_path).get('share_source_code', False))
+                idle_s = load_idle_settings(self.config_path)
+                share_c = bool(idle_s.get('share_source_code', False))
                 self.idle_code_btn.blockSignals(True)
                 self.idle_code_btn.setChecked(share_c)
                 self.idle_code_btn.setIcon(code_shield_qicon(share_c))
                 self.idle_code_btn.blockSignals(False)
+                if hasattr(self, 'idle_live_patch_btn'):
+                    self.idle_live_patch_btn.blockSignals(True)
+                    self.idle_live_patch_btn.setChecked(bool(idle_s.get('allow_live_self_modify', False)))
+                    self.idle_live_patch_btn.blockSignals(False)
             self._refresh_idle_view()
             self.status_label.setText('Fairybread settings updated.')
 

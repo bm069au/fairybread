@@ -337,6 +337,7 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
     "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Fairybread code & UI improvement)
     "share_source_code": False,      # Read-only Fairybread source code access in Experimental Mode
+    "allow_live_self_modify": False, # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
@@ -613,6 +614,8 @@ def load_idle_settings(
         merged["idle_submode"] = raw_idle["idle_submode"]
     if "share_source_code" in raw_idle:
         merged["share_source_code"] = bool(raw_idle["share_source_code"])
+    if "allow_live_self_modify" in raw_idle:
+        merged["allow_live_self_modify"] = bool(raw_idle["allow_live_self_modify"])
     if "pause_when_joined" in raw_idle:
         merged["pause_when_joined"] = bool(raw_idle["pause_when_joined"])
     if raw_idle.get("memory_access_mode") in {"isolated", "non_project", "full"}:
@@ -640,6 +643,7 @@ def save_idle_settings(
     if current.get("idle_submode") not in {"free_talk", "self_improve"}:
         current["idle_submode"] = "free_talk"
     current["share_source_code"] = bool(current.get("share_source_code", False))
+    current["allow_live_self_modify"] = bool(current.get("allow_live_self_modify", False))
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
     if current.get("memory_access_mode") not in {"isolated", "non_project", "full"}:
         current["memory_access_mode"] = "isolated"
@@ -669,26 +673,83 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "providers": ["deepseek", "mistral", "gemini"],
         "deliberate": True,
         "code_access": True,
+        "max_ais": 0,
     },
     "light_chat": {
         "label": "💬 Light Chat (Cheap)",
         "providers": ["groq", "qwen", "cohere"],
         "deliberate": False,
         "code_access": False,
+        "max_ais": 0,
     },
     "generalist": {
         "label": "🧠 Generalist",
         "providers": ["gemini", "openai", "deepseek", "cohere"],
         "deliberate": True,
         "code_access": False,
+        "max_ais": 0,
     },
     "graphics": {
-        "label": "🎨 Graphics & Vision",
+        "label": "🎨 Graphics & Vision (Pictures)",
         "providers": ["openai", "gemini"],
         "deliberate": False,
         "code_access": False,
+        "max_ais": 0,
+    },
+    "work_mode": {
+        "label": "🛠 Work Mode",
+        "providers": ["deepseek", "mistral", "gemini", "openai"],
+        "deliberate": True,
+        "code_access": True,
+        "max_ais": 0,
     },
 }
+
+
+def load_ai_squads(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]:
+    data = _read_raw_config(config_path)
+    raw = data.get("ai_squads")
+    if not isinstance(raw, dict) or not raw:
+        return {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for k, val in raw.items():
+        if not isinstance(val, dict):
+            continue
+        slug = str(k).strip()
+        if not slug:
+            continue
+        out[slug] = {
+            "label": str(val.get("label") or slug).strip(),
+            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
+            "deliberate": bool(val.get("deliberate", True)),
+            "code_access": bool(val.get("code_access", False)),
+            "max_ais": max(0, int(val.get("max_ais") or 0)),
+        }
+    return out or {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+
+
+def save_ai_squads(
+    squads: dict[str, dict[str, Any]],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    data = _read_raw_config(config_path)
+    cleaned: dict[str, dict[str, Any]] = {}
+    for k, val in (squads or {}).items():
+        if not isinstance(val, dict):
+            continue
+        slug = str(k).strip()
+        if not slug:
+            continue
+        cleaned[slug] = {
+            "label": str(val.get("label") or slug).strip(),
+            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
+            "deliberate": bool(val.get("deliberate", True)),
+            "code_access": bool(val.get("code_access", False)),
+            "max_ais": max(0, int(val.get("max_ais") or 0)),
+        }
+    data["ai_squads"] = cleaned or {k: dict(v) for k, v in DEFAULT_AI_SQUADS.items()}
+    _write_raw_config(data, config_path)
+    return load_ai_squads(config_path)
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "enter_to_send": True,  # True: Enter sends, Shift+Enter newline; False: Shift+Enter sends, Enter newline
