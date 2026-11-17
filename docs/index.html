@@ -25,6 +25,7 @@
 
       <nav class="main-nav" id="mainNav">
         <button class="nav-btn active" data-tab="home" onclick="switchTab('home')">🏠 Home</button>
+        <button class="nav-btn" data-tab="guide" onclick="switchTab('guide')">📖 Help &amp; Guide</button>
         <button class="nav-btn" data-tab="news" onclick="switchTab('news')">📰 News</button>
         <button class="nav-btn" data-tab="themes" onclick="switchTab('themes')">🎨 Themes &amp; Skins</button>
         <button class="nav-btn" data-tab="donors" onclick="switchTab('donors')">🏆 Donors &amp; Donate</button>
@@ -133,6 +134,108 @@
           <h3>External Agent Bridge (MCP Server) &amp; Skins</h3>
           <p>Connect Google Antigravity, Claude Desktop, or ChatGPT Desktop to your local Fairybread Council in one click—and customize your entire UI with downloadable Winamp-style <code>.json</code> community skins.</p>
         </div>
+      </div>
+
+      <!-- HOW IT WORKS (3 SIMPLE STEPS) -->
+      <h2 class="section-heading">⚡ How It Works — Up &amp; Running in 2 Minutes</h2>
+      <div class="feature-grid">
+        <div class="feature-card" style="border-color:#2b4c7e;">
+          <div class="pill-badge">STEP 1 · DOWNLOAD &amp; INSTALL</div>
+          <h3>1-Click Windows Setup</h3>
+          <p>Download the Beta installer ZIP above and run <code>Install_Fairybread_Beta.bat</code>. It installs cleanly on Windows 10/11 and places a Fairybread shortcut right on your Desktop—zero bloatware and zero monthly subscriptions.</p>
+        </div>
+        <div class="feature-card" style="border-color:#22c55e;">
+          <div class="pill-badge" style="color:#22c55e; border-color:#22c55e; background:#11281b;">STEP 2 · ATTACH YOUR OWN API KEYS</div>
+          <h3>Guided Setup Sends You to the Exact Sites</h3>
+          <p>Open <strong><code>Settings → AI Providers</code></strong>, pick the AIs you want to connect (Gemini, OpenAI, DeepSeek, Groq, Claude, Qwen, Mistral, Cohere, Cerebras, or free local Ollama), and click the built-in <strong><code>🔑 Get API Key ↗</code></strong> button—the app opens the exact provider key page for you and encrypts your keys locally via Windows DPAPI.</p>
+        </div>
+        <div class="feature-card" style="border-color:#a855f7;">
+          <div class="pill-badge" style="color:#c084fc; border-color:#a855f7; background:#231536;">STEP 3 · PAY PENNIES, NOT $80/MONTH</div>
+          <h3>A Fraction of Normal Subscription Costs</h3>
+          <p>Instead of paying $20–$30/month per AI company whether you use it or not, paying directly for API tokens typically costs a tiny fraction of a single subscription—while giving you <strong>unlimited connected AIs</strong> debating together and sharing <strong>100% local memory</strong> on your own PC.</p>
+        </div>
+      </div>
+
+      <!-- UPCOMING EXPERIMENT PACKS, THEMES & FAN ART -->
+      <h2 class="section-heading">🧪 Experiment Packs, Custom Themes &amp; Community Hub</h2>
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="feat-icon">🏙️</div>
+          <h3>Experiment Packs (Virtual AI Towns &amp; Self-Improvement)</h3>
+          <p>Experimental Mode isn't just a chat room—we are building plug-and-play <strong>Experiment Packs</strong> so you can run <strong>Live Virtual AI Towns</strong>, <strong>Recursive Self-Improvement Labs</strong> (already running on our dev machines!), and multi-agent behavioral simulations at home.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">💬</div>
+          <h3>Community Forums — Requests, Ideas &amp; Experiments</h3>
+          <p>Have a feature request, a new Experiment Pack idea, or an interesting multi-agent log to share? Head over to our <a href="forum.html" style="color:var(--accent-blue); font-weight:700;">Community Forums</a>—the best place to lodge requests, swap prompts, and talk directly with Brett.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">🖼️</div>
+          <h3>Winamp-Style Themes &amp; Community Fan Art</h3>
+          <p>Create and download custom <code>.json</code> skins in the <a href="#" onclick="switchTab('themes'); return false;" style="color:var(--accent-blue); font-weight:700;">Themes &amp; Skins Studio</a>, or share your 300-DPI artwork and Fairybread fan art in the Forums!</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= TAB: HELP & USER GUIDE ================= -->
+    <section id="tab-guide" class="tab-section">
+      <div class="section-header-row">
+        <div>
+          <h2>📖 Fairybread User Guide &amp; Operating Instructions</h2>
+          <p class="muted-sub">This is the complete operating manual—also built directly into the desktop app (press <strong><code>F1</code></strong> or click <strong><code>Help → 📖 User Guide</code></strong> anytime).</p>
+        </div>
+        <a class="btn-primary" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_Beta_v0.9.1_Installer.zip">⬇ Download Fairybread Beta</a>
+      </div>
+
+      <div class="news-list">
+        <article class="news-card">
+          <h3>1. Quick Start: Connecting Your API Keys in 60 Seconds</h3>
+          <p style="color:var(--text-secondary);">
+            1. Launch Fairybread and click <strong><code>⚙ Settings &amp; AIs</code></strong> (bottom-left) or <strong><code>Settings → Fairybread Settings…</code></strong>.<br />
+            2. Select any provider in the <strong>AI Providers</strong> tab (e.g., <em>Gemini</em>, <em>OpenAI</em>, <em>DeepSeek</em>, <em>Groq</em>, <em>Qwen</em>, <em>Cohere</em>, <em>Mistral</em>, <em>Cerebras</em>, or <em>Ollama</em>).<br />
+            3. Need an API key? Click the built-in <strong><code>🔑 Get API Key ↗</code></strong> button to open that provider's exact API key page in your browser.<br />
+            4. Paste your key, tick <strong>Enable this AI provider</strong>, and click <strong><code>↻ Fetch Live Models</code></strong> to load the newest models automatically. Your key is encrypted locally on your PC using Windows DPAPI.
+          </p>
+        </article>
+
+        <article class="news-card">
+          <h3>2. Toolbar Controls, Council Deliberation &amp; Live Voice Mode</h3>
+          <p style="color:var(--text-secondary);">
+            • <strong><code>Choose AIs ▾</code>:</strong> Toggle which AI providers are active or pick a preset Squad.<br />
+            • <strong><code>Council</code> (Purple when ON):</strong> Runs 2-Round Peer Deliberation (agents answer in Round 1, critique and cross-examine each other in Round 2, and synthesize one best answer). Turn OFF for fast 1-round synthesis.<br />
+            • <strong><code>Tangent</code>:</strong> Ask a quick side question without including prior conversation history.<br />
+            • <strong><code>{} Code</code>:</strong> Grants read-only visibility into Fairybread's own source code.<br />
+            • <strong><code>🎤</code> (Dictate) &amp; <code>|||✨</code> (Hands-Free Live Voice Mode):</strong> Click <code>🎤</code> to dictate speech into the text box, or click <code>|||✨</code> for continuous hands-free voice chat with a live soundwave volume meter (<code>🎙 ▂▅▇█▄▂</code>) and spoken responses!<br />
+            • <strong><code>Memory</code> (Top-Right):</strong> Open your 100% local SQLite FTS5 Shared Memory and click <strong><code>📝 Memory Summary (View &amp; Edit)…</code></strong> to view or edit what all connected AIs remember about you and your projects.
+          </p>
+        </article>
+
+        <article class="news-card">
+          <h3>3. High-Resolution Image, Banner &amp; 300-DPI Print Studio</h3>
+          <p style="color:var(--text-secondary);">
+            • <strong>Default 1-Pass Drawing Mode:</strong> Just ask in plain English: <em>"Draw a photorealistic ginger cat on a sunlit windowsill"</em> or <em>"Create a YouTube banner for a gaming channel"</em>.<br />
+            • <strong>Council-Assisted Prompt Brainstorming:</strong> Ask <em>"All agents work on the prompt and then only one of you execute the drawing: ..."</em> so all active AIs collaborate on the visual prompt before rendering.<br />
+            • <strong>Built-In Platform &amp; Print Presets:</strong> Automatically sizes and stamps 300-DPI metadata for <strong>YouTube banners</strong> (<code>2560×1440</code>), <strong>YouTube thumbnails</strong> (<code>1280×720</code>), <strong>Facebook covers</strong> (<code>1920×1080</code>), <strong>4K wallpapers</strong> (<code>3840×2160</code>), <strong>Phone stories</strong> (<code>1080×1920</code>), <strong>8×10 in prints</strong> (<code>2400×3000 @ 300 DPI</code>), and <strong>A4 prints</strong> (<code>2480×3508 @ 300 DPI</code>).
+          </p>
+        </article>
+
+        <article class="news-card">
+          <h3>4. Autonomous Experimental Mode Lab &amp; Agent Mail</h3>
+          <p style="color:var(--text-secondary);">
+            • Flip the <strong><code>🌙 Experimental: OFF / ON</code></strong> switch on the top-right bar to open the autonomous multi-agent lab.<br />
+            • Choose between <strong><code>💬 Free Talk</code></strong> (unprompted lounge where agents explore their own topics and share notes in <strong>Shared Experimental Memory</strong>) or <strong><code>🔧 Self-Improvement</code></strong> (where agents inspect Fairybread's source code and email you upgrade proposals via <strong>Agent Mail</strong>).<br />
+            • Customize the session timer, token/USD spend caps, startup prompt, and ethics charter in <strong><code>Settings → Experimental Mode</code></strong>.
+          </p>
+        </article>
+
+        <article class="news-card">
+          <h3>5. Custom Themes, System Tray &amp; AES-256 Encrypted Backups</h3>
+          <p style="color:var(--text-secondary);">
+            • <strong>Install Custom Skins:</strong> Download any <code>.json</code> skin from the <a href="#" onclick="switchTab('themes'); return false;" style="color:var(--accent-blue);">Themes &amp; Skins</a> tab and click <strong><code>View → 🎨 Theme → 📥 Import Custom Theme (.json)…</code></strong>.<br />
+            • <strong>Close to System Tray:</strong> Clicking the window <code>✕</code> button minimizes Fairybread to the Windows System Tray so background tasks keep running safely (right-click the tray icon to Expand or Exit).<br />
+            • <strong>Password-Locked Portable Backups:</strong> In <strong><code>Settings → Backup &amp; Restore</code></strong>, export a single AES-256-GCM encrypted <code>.zip</code> backup containing all your memories, sessions, themes, and API keys to move to a new PC in one click.
+          </p>
+        </article>
       </div>
     </section>
 
