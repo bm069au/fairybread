@@ -693,6 +693,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "theme": "dark",  # "dark" | "light" | "system" | "fairybread" | custom theme slug
     "normal_max_storage_mb": 0,  # 0 = Unlimited, or >= 100 MB (warns at 85% and 100%)
     "custom_data_dir": "",  # Empty = %LOCALAPPDATA%\Palace; or custom directory path on any drive
+    "close_to_tray": True,  # True: window X button minimizes Fairybread to system tray
 }
 
 
@@ -706,6 +707,8 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["enter_to_send"] = bool(raw["enter_to_send"])
     if "include_palace_code" in raw:
         merged["include_palace_code"] = bool(raw["include_palace_code"])
+    if "close_to_tray" in raw:
+        merged["close_to_tray"] = bool(raw["close_to_tray"])
     if raw.get("badge_display_mode") in {"icons_only", "icons_and_names", "names_only"}:
         merged["badge_display_mode"] = raw["badge_display_mode"]
     if isinstance(raw.get("theme"), str) and raw["theme"].strip():
@@ -732,6 +735,7 @@ def save_ui_settings(
     current.update(ui_settings)
     current["enter_to_send"] = bool(current.get("enter_to_send", True))
     current["include_palace_code"] = bool(current.get("include_palace_code", False))
+    current["close_to_tray"] = bool(current.get("close_to_tray", True))
     if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
         current["badge_display_mode"] = "icons_only"
     current["theme"] = str(current.get("theme") or "dark").strip().lower()

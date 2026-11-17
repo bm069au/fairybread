@@ -1,4 +1,4 @@
-# Fairybread (Beta) — Democratic Multi-AI Council, 100% Local Memory Palace & Autonomous Idle Lab
+# Fairybread (Beta) — Democratic Multi-AI Council, 100% Local Shared Memory & Autonomous Idle Lab
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
@@ -12,14 +12,14 @@
 The real benefit of **Fairybread** is to **replace dedicated corporate workspaces like ChatGPT Plus, Claude Pro, and Grok** with one platform that *you* own:
 
 - **No Lock-In & Zero Monthly Subscriptions:** Stop paying multiple \$20–\$30/month subscriptions across rival AI companies. With Fairybread, you connect your own API keys (**Gemini**, **OpenAI**, **DeepSeek**, **Qwen**, **Cohere**, **Mistral/Codestral**, **Anthropic**, **xAI**, **Groq**, **OpenRouter**, **DeepInfra**, **Cerebras**, or local **Ollama**) and only pay pennies for the exact API usage you actually consume—no monthly fees, no vendor lock-in, just freedom.
-- **100% Local & Private Persistent Memory:** Your data and Memory Palace live **100% locally on your own machine**. Even if you change AI providers tomorrow, all your history, context, and long-term memory stay privately with you.
-- **Everything You Do in GPT/Claude—And More:** Read and search your emails, access your local files and desktop, generate high-resolution photography and 300-DPI print graphics, bridge into external coding tools, and let multiple AIs debate and cross-examine answers together instead of trusting one company's model blindly.
+- **100% Local & Private Shared Memory + Living Memory Summary:** Your data and Shared Memory live **100% locally on your own machine**, including an editable **Memory summary** (`Overview`, `How You Like to Work`, `Software & Creative Projects`) shared across all 8 Council AIs. Even if you change AI providers tomorrow, all your history, context, and long-term memory stay privately with you.
+- **Everything You Do in GPT/Claude—And More:** Read and search your emails, access your local files and desktop, generate high-resolution photography and 300-DPI print graphics, talk hands-free with Live Voice Mode, bridge into external coding tools, and let multiple AIs debate and cross-examine answers together instead of trusting one company's model blindly.
 
 ---
 
 ## The Experimental Side: Autonomous Idle Mode Lab
 
-Fairybread includes an automated **Idle Mode** that gives the agents their own **isolated Memory Palace** where they can talk freely, share information and files, and collaborate on their own:
+Fairybread includes an automated **Idle Mode** that gives the agents their own **isolated Shared Idle Memory** where they can talk freely, share information and files, and collaborate on their own:
 
 - **Your Rules, Your Sandbox:** Out of the box, Idle Mode includes sensible baseline rules around safety, morality, ethics, and law—and you can set your own standing instructions and rules for the agents to follow.
 - **Upcoming Idle Mode Experiment Add-Ons:** We are building plug-and-play add-ons that turn Idle Mode into a true experimental space—so you can run the same kind of multi-agent experiments at home that the large AI companies run behind closed doors.
@@ -61,11 +61,11 @@ I made Fairybread **Source-Available Donationware** under the [Fairybread Dual L
   - Automatically understands plain-English requests for **YouTube banners** (`2560×1440`), **YouTube thumbnails** (`1280×720`), **Facebook page covers** (`1920×1080`), **Facebook PC banners** (`820×312`), **Facebook group covers** (`1640×856`), **desktop/4K/phone wallpapers**, and **300-DPI print sizes** (`8×10 in`, `A4`, or any `"WxHin"` / `"WxH"` dimensions).
 - **16-Worker Parallel Council Deliberation, Live Model Discovery & Automatic Failover:**
   - Dispatches all active council AIs simultaneously, streams live per-agent status chips (`Responded` / `Working`), includes a **`↻ Fetch Live Models`** button in **`Settings → AI Providers`** to query live provider model catalogs, and automatically fails over (e.g., Cerebras `gpt-oss-120b` → `qwen-3.8-27b`).
-- **Live Turn Control (`■ Stop`, `Steer / Queue ▾`), 3-Tier Search Depth & Full Mouseover Hints:**
-  - Interrupt any active turn cleanly (`Esc`), inject a live mid-turn steering note or queue your next command from the **`Steer / Queue ▾`** dropdown, and hover over any button in the interface for an instant plain-English explanation.
+- **Live Turn Control (`■ Stop`, `Steer / Queue ▾`), 3-Tier Search Depth, System Tray & Mouseover Hints:**
+  - Interrupt any active turn cleanly (`Esc`), inject a live mid-turn steering note or queue your next command from the **`Steer / Queue ▾`** dropdown, minimize to the Windows System Tray on close (`✕`), and hover over any button for a quick explanation.
 - **Universal External Agent Bridge (MCP Server + Skill Installer):**
-  - One-click registration in **`Settings → 🔗 External Agent Bridge (MCP)`** exposes Fairybread's Council and SQLite FTS5 Memory Palace to **Antigravity**, **Claude Desktop / Claude Code**, and **ChatGPT Desktop**.
+  - One-click registration in **`Settings → 🔗 External Agent Bridge (MCP)`** exposes Fairybread's Council and SQLite FTS5 Shared Memory to **Antigravity**, **Claude Desktop / Claude Code**, and **ChatGPT Desktop**.
 - **Exhaustive Multi-Folder Email Connector & Completion Notifications:**
   - Zero-truncation IMAP scanning across all mailbox folders (`[Gmail]/All Mail`, `INBOX`, `Archive`, `Sent`) plus desktop toast and email completion alerts.
-- **Durable SQLite FTS5 Memory Palace (`zlib` Compressed), Drive Space Sliders & AES-256 Password-Locked Backups:**
-  - Phase-aware Hot/Cold retrieval, SHA-256 deduplicated + `zlib`-compressed memory blobs, **`100 MB` → `Unlimited`** storage sliders, one-click **`🚚 Move Palace Data Here`** to relocate your Memory Palace to another drive, and **AES-256-GCM password-locked ZIP backups** (`PBKDF2-HMAC-SHA256`, 600,000 iterations) that transfer your encrypted API keys safely to a new PC.
+- **Durable SQLite FTS5 Shared Memory (`zlib` Compressed), Living Memory Summary, Drive Space Sliders & AES-256 Password-Locked Backups:**
+  - Editable **Memory summary** (`Overview`, `How You Like to Work`, `Software Projects` + `Ask or update` bar), phase-aware Hot/Cold retrieval, SHA-256 deduplicated + `zlib`-compressed memory blobs, **`100 MB` → `Unlimited`** storage sliders, one-click **`🚚 Move Fairybread Data Here`** to relocate your memory to another drive, and **AES-256-GCM password-locked ZIP backups** (`PBKDF2-HMAC-SHA256`, 600,000 iterations) that transfer your encrypted API keys safely to a new PC.

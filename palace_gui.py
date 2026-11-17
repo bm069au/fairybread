@@ -219,7 +219,7 @@ class ChatBrowser(QTextBrowser):
                     rev_act = menu.addAction('📂 Show in File Explorer')
                     rev_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'reveal-file:{file_path}'))
                     menu.addSeparator()
-                    del_act = menu.addAction('🗑 Delete from Palace Storage')
+                    del_act = menu.addAction('🗑 Delete from Fairybread Storage')
                     del_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'delete-file:{file_path}'))
                     menu.exec(event.globalPos())
                     return
@@ -601,10 +601,17 @@ class ManageAIsDialog(QDialog):
                 view.setMinimumWidth(max(420, max_px + 56))
 
     def _build_general_page(self):
-        w, lay = self._make_simple_page('General', 'Startup behavior and composer preferences.')
+        w, lay = self._make_simple_page('General', 'Startup behavior, system tray behavior, and composer preferences.')
         lay.addWidget(QCheckBox('Restore last active conversation on startup', checked=True))
 
         ui_cfg = load_ui_settings(self.config_path)
+        self.close_to_tray_check = QCheckBox(
+            'Close button (✕) minimizes Fairybread to the Windows System Tray (right-click tray icon to Expand or Exit)',
+            checked=bool(ui_cfg.get('close_to_tray', True)),
+        )
+        self.close_to_tray_check.setToolTip('Keep Fairybread running in the system tray when closed')
+        lay.addWidget(self.close_to_tray_check)
+
         enter_form = QFormLayout()
         self.enter_mode_combo = QComboBox()
         self.enter_mode_combo.addItem('Enter submits message · Shift+Enter adds new line (Default)', True)
@@ -1304,7 +1311,7 @@ class ManageAIsDialog(QDialog):
             '• 💬 Light Chat (Groq, Qwen, Cohere · Direct 1-Round)\n'
             '• 🧠 Generalist (Gemini, OpenAI, DeepSeek, Cohere · Deliberation ON)\n'
             '• 🎨 Graphics & Vision (OpenAI, Gemini)\n'
-            '• 🛠 Work Mode (Code AIs + Palace Source & Project Folder Tools)\n'
+            '• 🛠 Work Mode (Code AIs + Fairybread Source & Project Folder Tools)\n'
             '• 🌙 Idle Mode Sanctuary'
         ))
         lay.addStretch()
@@ -1319,8 +1326,8 @@ class ManageAIsDialog(QDialog):
         self.tool_checks: dict[str, QCheckBox] = {}
 
         items = [
-            ('palace_source_tool', '🔧 Palace Source Code Tool (Read-only inspection of C:\\Palace_Idle_Sandbox\\source_mirror\\)'),
-            ('shared_palace_files_tool', '🏛 Shared Memory Palace File Tools (Read/write persistent notes & proposals)'),
+            ('palace_source_tool', '🔧 Fairybread Source Code Tool (Read-only inspection of C:\\Palace_Idle_Sandbox\\source_mirror\\)'),
+            ('shared_palace_files_tool', '🏛 Shared Memory File Tools (Read/write persistent notes & proposals)'),
             ('project_folder_tool', '📁 Attached Project Folder Tool (Read-only workspace access to folders attached to Projects; M: blocked)'),
             ('owner_email_tool', '✉ Agent-to-Owner Email Tool (Send requests & file links to Agent Mail, max 5 per 30m)'),
             ('github_tool', '🐙 GitHub & Git Workflow Tools (Stage 3 Roadmap — Read/PR staging with Owner Approval)'),
@@ -1356,7 +1363,7 @@ class ManageAIsDialog(QDialog):
         lbl1.setTextFormat(Qt.TextFormat.RichText)
         self.enable_shared_mem_check = QCheckBox('Enabled')
         self.enable_shared_mem_check.setChecked(True)
-        self.enable_shared_mem_check.setToolTip('Toggle Shared Memory Palace across conversations')
+        self.enable_shared_mem_check.setToolTip('Toggle Shared Memory across conversations')
         row1.addWidget(lbl1, 1)
         row1.addWidget(self.enable_shared_mem_check)
         mc_lay.addLayout(row1)
@@ -1461,19 +1468,19 @@ class ManageAIsDialog(QDialog):
         idle_space_row.addWidget(self.idle_storage_slider, 1)
         idle_space_row.addWidget(QLabel('Unlimited'))
         idle_space_row.addWidget(self.idle_storage_edit)
-        form.addRow('Idle Palace drive space limit:', idle_space_row)
+        form.addRow('Idle Memory drive space limit:', idle_space_row)
 
         self.idle_memory_mode_combo = QComboBox()
         self.idle_memory_mode_combo.addItem(
-            'Only their own Idle memory (Isolated — No Palace memory access)',
+            'Only their own Idle memory (Isolated — No Normal memory access)',
             'isolated'
         )
         self.idle_memory_mode_combo.addItem(
-            'Non-project Palace memory + their own Idle memory (Projects off-limits)',
+            'Non-project Shared Memory + their own Idle memory (Projects off-limits)',
             'non_project'
         )
         self.idle_memory_mode_combo.addItem(
-            'Full Palace memory access (excluding Private projects) + their own Idle memory',
+            'Full Shared Memory access (excluding Private projects) + their own Idle memory',
             'full'
         )
         current_mode = idle_cfg.get('memory_access_mode', 'isolated')
@@ -1514,7 +1521,7 @@ class ManageAIsDialog(QDialog):
         mem_row.addWidget(self.idle_mem_status_label, 1)
 
         reset_defaults_btn = QPushButton('↺ Restore Default Prompts')
-        reset_defaults_btn.setToolTip('Reset both the Idle Startup Prompt and Mission Statement & Code of Ethics to the built-in defaults.')
+        reset_defaults_btn.setToolTip('Reset Idle prompts to built-in defaults')
 
         def _restore_idle_defaults():
             from palace_config import DEFAULT_IDLE_INSTRUCTION, DEFAULT_MISSION_ETHICS
@@ -1571,7 +1578,7 @@ class ManageAIsDialog(QDialog):
         lay.addWidget(self.bridge_email_check)
 
         self.bridge_memory_check = QCheckBox(
-            'Allow external agents to query the Shared Memory Palace (fairybread_search_memory)',
+            'Allow external agents to query Shared Memory (fairybread_search_memory)',
             checked=bool(b_cfg.get('allow_memory_search', True)),
         )
         lay.addWidget(self.bridge_memory_check)
@@ -1624,7 +1631,7 @@ class ManageAIsDialog(QDialog):
         lay.addWidget(QLabel(
             '<b>Idle Mode Privacy &amp; Storage Boundaries:</b>\n'
             '• Idle Mode live transcripts are strictly isolated from Normal Mode.\n'
-            '• Shared Idle Palace memory is capped at 10 MB.'
+            '• Shared Idle Memory is capped by your Idle storage slider.'
         ))
         lay.addStretch()
         self.pages.addWidget(w)
@@ -1665,7 +1672,7 @@ class ManageAIsDialog(QDialog):
 
         w, lay = self._make_simple_page(
             '📦 Storage, Files & Password-Locked Backup',
-            'Manage Normal Mode drive space & optional cap, move Palace Memory to another drive/folder, '
+            'Manage Normal Mode drive space & optional cap, move Fairybread Memory to another drive/folder, '
             'download or delete stored files & pictures, and create password-locked AES-256 backups.'
         )
 
@@ -1684,7 +1691,7 @@ class ManageAIsDialog(QDialog):
 
         cur_norm_mb = int(ui_cfg.get('normal_max_storage_mb', 0))
         norm_slider_row = QHBoxLayout()
-        norm_slider_row.addWidget(QLabel('Normal Palace Cap:'))
+        norm_slider_row.addWidget(QLabel('Normal Mode Cap:'))
         norm_slider_row.addWidget(QLabel('100 MB'))
         self.normal_storage_slider = QSlider(Qt.Orientation.Horizontal)
         self.normal_storage_slider.setRange(0, len(STORAGE_SLIDER_STOPS_MB) - 1)
@@ -1707,11 +1714,11 @@ class ManageAIsDialog(QDialog):
             if cap_mb > 0:
                 pct = (tot_mb / float(cap_mb)) * 100.0
                 if pct >= 100.0:
-                    warn_html = f'<br><span style="color:#f85149; font-weight:700;">⚠ DATA LIMIT REACHED ({pct:.1f}% of {cap_txt}): Delete old files below, raise your cap, or move Palace data to another drive!</span>'
+                    warn_html = f'<br><span style="color:#f85149; font-weight:700;">⚠ DATA LIMIT REACHED ({pct:.1f}% of {cap_txt}): Delete old files below, raise your cap, or move Fairybread data to another drive!</span>'
                 elif pct >= 85.0:
                     warn_html = f'<br><span style="color:#d29922; font-weight:700;">⚠ Approaching Data Limit ({pct:.1f}% of {cap_txt} used).</span>'
             self.normal_space_summary_lbl.setText(
-                f'<b>💾 Normal Palace Drive Space Used: {tot_mb:.2f} MB / {cap_txt}</b> '
+                f'<b>💾 Normal Mode Drive Space Used: {tot_mb:.2f} MB / {cap_txt}</b> '
                 f'<span style="color:#8b949e; font-size:12px;">'
                 f'(Memory DB: {mem_mb:.2f} MB · Chats: {chat_mb:.2f} MB · Uploaded Files: {up_mb:.2f} MB · Pictures: {img_mb:.2f} MB)'
                 f'</span>{warn_html}'
@@ -1737,13 +1744,13 @@ class ManageAIsDialog(QDialog):
         norm_slider_row.addWidget(self.normal_storage_edit)
         sp_lay.addLayout(norm_slider_row)
 
-        # --- 2. MOVE PALACE MEMORY LOCATION (DIFFERENT DRIVE / FOLDER) ---
+        # --- 2. MOVE FAIRYBREAD MEMORY LOCATION (DIFFERENT DRIVE / FOLDER) ---
         loc_row = QHBoxLayout()
-        loc_row.addWidget(QLabel('Palace Storage Folder:'))
+        loc_row.addWidget(QLabel('Fairybread Storage Folder:'))
         self.palace_data_dir_edit = QLineEdit(str(stats['data_root']))
         loc_browse_btn = QPushButton('Browse Drive/Folder…')
-        loc_move_btn = QPushButton('🚚 Move Palace Data Here')
-        loc_move_btn.setToolTip('Copy all Palace Memory, Chats, Uploaded Files & Pictures to the selected drive/folder and switch active storage there.')
+        loc_move_btn = QPushButton('🚚 Move Fairybread Data Here')
+        loc_move_btn.setToolTip('Copy all Fairybread Memory, Chats, Uploaded Files & Pictures to the selected drive/folder')
         loc_row.addWidget(self.palace_data_dir_edit, 1)
         loc_row.addWidget(loc_browse_btn)
         loc_row.addWidget(loc_move_btn)
@@ -1751,7 +1758,7 @@ class ManageAIsDialog(QDialog):
         lay.addWidget(space_grp)
 
         def _browse_data_dir():
-            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Palace Memory Storage', self.palace_data_dir_edit.text())
+            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Fairybread Memory Storage', self.palace_data_dir_edit.text())
             if chosen:
                 self.palace_data_dir_edit.setText(chosen)
 
@@ -1763,19 +1770,19 @@ class ManageAIsDialog(QDialog):
                 res = move_palace_data_to_directory(target_dir, config_path=self.config_path)
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                 self.backup_status_label.setText(
-                    f'✓ Moved {res["moved_files"]} Palace files to {res["new_root"]}. Active storage updated!'
+                    f'✓ Moved {res["moved_files"]} Fairybread files to {res["new_root"]}. Active storage updated!'
                 )
                 _refresh_storage_summary_labels()
                 _refresh_stored_files_list()
             except Exception as exc:
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
-                self.backup_status_label.setText(f'⚠ Could not move Palace data: {exc}')
+                self.backup_status_label.setText(f'⚠ Could not move Fairybread data: {exc}')
 
         loc_browse_btn.clicked.connect(_browse_data_dir)
         loc_move_btn.clicked.connect(_move_data_dir)
 
         # --- 3. MANAGE STORED FILES & PICTURES (DOWNLOAD OR DELETE OLD FILES) ---
-        files_hdr = QLabel('<b>🗂 Stored Palace Files &amp; Pictures (Retrieve / Download or Delete Old Files Taking Up Space):</b>')
+        files_hdr = QLabel('<b>🗂 Stored Fairybread Files &amp; Pictures (Retrieve / Download or Delete Old Files Taking Up Space):</b>')
         files_hdr.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(files_hdr)
 
@@ -1852,12 +1859,12 @@ class ManageAIsDialog(QDialog):
         refresh_files_btn.clicked.connect(lambda: (_refresh_stored_files_list(), _refresh_storage_summary_labels()))
 
         # --- 4. PASSWORD-LOCKED AES-256 BACKUP & RESTORE ---
-        bak_hdr = QLabel('<b>🔐 Password-Locked Backup &amp; Restore (Palace Memory + Settings &amp; API Keys):</b>')
+        bak_hdr = QLabel('<b>🔐 Password-Locked Backup &amp; Restore (Shared Memory + Settings &amp; API Keys):</b>')
         bak_hdr.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(bak_hdr)
 
         chk_row = QHBoxLayout()
-        self.backup_include_memory_check = QCheckBox('Palace Memory, Chats & Idle Palace', checked=True)
+        self.backup_include_memory_check = QCheckBox('Shared Memory, Chats & Idle Memory', checked=True)
         self.backup_include_settings_check = QCheckBox('All Settings & API Keys (AES-256 Password Locked)', checked=True)
         self.backup_include_images_check = QCheckBox('Generated PNG Pictures', checked=True)
         self.backup_include_creds_check = self.backup_include_settings_check
@@ -1885,7 +1892,7 @@ class ManageAIsDialog(QDialog):
         lay.addLayout(btn_row)
 
         self.backup_status_label = QLabel(
-            f'Active Config: {self.config_path}  |  Active Palace Root: {get_palace_appdata_root()}'
+            f'Active Config: {self.config_path}  |  Active Data Root: {get_palace_appdata_root()}'
         )
         self.backup_status_label.setWordWrap(True)
         self.backup_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
@@ -2146,6 +2153,7 @@ class ManageAIsDialog(QDialog):
         )
         ui_updates = {
             'enter_to_send': bool(self.enter_mode_combo.currentData()),
+            'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else True,
             'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
             'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
         }
@@ -2457,7 +2465,7 @@ class PalaceWindow(QMainWindow):
         self.memory_button.setObjectName('topIconButton')
         self.memory_button.setCheckable(True)
         self.memory_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.memory_button.setToolTip('View & manage Shared Memory Palace')
+        self.memory_button.setToolTip('View & manage Shared Memory')
         self.memory_button.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
@@ -2487,7 +2495,7 @@ class PalaceWindow(QMainWindow):
         nh_row = QHBoxLayout(self.no_history_banner)
         nh_row.setContentsMargins(6, 2, 6, 2)
         nh_lbl = QLabel(
-            '🚫 <b>NO-HISTORY MODE ACTIVE</b> — Conversations right now are <b>NOT</b> being saved to the Memory Palace. '
+            '🚫 <b>NO-HISTORY MODE ACTIVE</b> — Conversations right now are <b>NOT</b> being saved to Shared Memory. '
             '(For quick side-thoughts like Absurdityverse that <i>should</i> be saved without prior code context, use <b>Tangent</b> below instead.)'
         )
         nh_lbl.setWordWrap(True)
@@ -2724,7 +2732,7 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.send_button)
         card_layout.addLayout(controls)
         normal_lay.addWidget(composer_card)
-        self.workspace_tabs.addTab(normal_tab, '💬 Normal Palace')
+        self.workspace_tabs.addTab(normal_tab, '💬 Normal Mode')
 
         # ================= TAB 1: IDLE MODE (BETA) =================
         idle_tab = QWidget()
@@ -2753,7 +2761,7 @@ class PalaceWindow(QMainWindow):
         self.idle_budget_label.setStyleSheet('font-family: Consolas, monospace; font-size: 12px; color: #8b949e; background: #161b22; padding: 3px 10px; border-radius: 6px;')
         idle_top.addWidget(self.idle_budget_label)
 
-        self.idle_log_badge = QLabel('👁 BETA: Full Owner Access to Live Chat & Shared Idle Palace · Mail Limit: 5/30m')
+        self.idle_log_badge = QLabel('👁 BETA: Full Owner Access to Live Chat & Shared Idle Memory · Mail Limit: 5/30m')
         self.idle_log_badge.setObjectName('muted')
         idle_top.addWidget(self.idle_log_badge, 1)
 
@@ -2777,7 +2785,7 @@ class PalaceWindow(QMainWindow):
         self.idle_submode_combo.setMinimumWidth(235)
         self.idle_submode_combo.setToolTip('Choose between unprompted Free Talk Lounge or Self-Improvement code review')
         self.idle_submode_combo.addItem('💬 Free Talk (Unprompted Lounge)', 'free_talk')
-        self.idle_submode_combo.addItem('🔧 Self-Improvement (Palace Code)', 'self_improve')
+        self.idle_submode_combo.addItem('🔧 Self-Improvement (Fairybread Code)', 'self_improve')
         cur_submode = load_idle_settings(self.config_path).get('idle_submode', 'free_talk')
         idx_sub = self.idle_submode_combo.findData(cur_submode)
         if idx_sub >= 0:
@@ -2803,7 +2811,7 @@ class PalaceWindow(QMainWindow):
         idle_actions.addWidget(self.idle_join_btn)
 
         self.idle_stop_btn = QPushButton('⏹ Stop & Wipe RAM')
-        self.idle_stop_btn.setToolTip('Stop the active Idle session and clear the temporary RAM transcript (Idle Palace notes are preserved)')
+        self.idle_stop_btn.setToolTip('Stop the active Idle session and clear the temporary RAM transcript (Idle Memory notes are preserved)')
         self.idle_stop_btn.clicked.connect(self.stop_idle_session)
         self.idle_stop_btn.setEnabled(False)
         idle_actions.addWidget(self.idle_stop_btn)
@@ -2855,7 +2863,7 @@ class PalaceWindow(QMainWindow):
         idle_right_lay.setContentsMargins(10, 8, 10, 8)
         idle_right_lay.setSpacing(6)
 
-        palace_hdr = QLabel('🏛 Shared Persistent Idle Palace (Beta Full Access)')
+        palace_hdr = QLabel('🏛 Shared Persistent Idle Memory (Beta Full Access)')
         palace_hdr.setObjectName('sectionTitle')
         idle_right_lay.addWidget(palace_hdr)
         palace_sub = QLabel('All Idle Mode agents share this persistent space (C:\\Palace_Idle_Sandbox\\idle_palace\\).')
@@ -2869,7 +2877,7 @@ class PalaceWindow(QMainWindow):
         idle_right_lay.addWidget(self.idle_palace_list, 1)
 
         self.idle_palace_viewer = QTextBrowser()
-        self.idle_palace_viewer.setPlaceholderText('Select any shared Idle Palace note or proposed file to inspect its contents.')
+        self.idle_palace_viewer.setPlaceholderText('Select any shared Idle Memory note or proposed file to inspect its contents.')
         self.idle_palace_viewer.setMaximumHeight(230)
         idle_right_lay.addWidget(self.idle_palace_viewer)
         idle_split.addWidget(idle_right)
@@ -2916,8 +2924,8 @@ class PalaceWindow(QMainWindow):
         self.mail_header_label.setTextFormat(Qt.TextFormat.RichText)
         hdr_row.addWidget(self.mail_header_label, 1)
 
-        self.mail_open_link_btn = QPushButton('📂 Open Linked File in Shared Idle Palace')
-        self.mail_open_link_btn.setToolTip('Jump directly to the proposed file or note in the Shared Idle Palace')
+        self.mail_open_link_btn = QPushButton('📂 Open Linked File in Shared Idle Memory')
+        self.mail_open_link_btn.setToolTip('Jump directly to the proposed file or note in Shared Idle Memory')
         self.mail_open_link_btn.setEnabled(False)
         self.mail_open_link_btn.setStyleSheet(
             'QPushButton { background: #172a3a; color: #58a6ff; border: 1px solid #58a6ff; padding: 5px 12px; border-radius: 6px; font-weight: 600; } '
@@ -2953,12 +2961,12 @@ class PalaceWindow(QMainWindow):
 
         reply_row = QHBoxLayout()
         self.mail_reply_edit = QLineEdit()
-        self.mail_reply_edit.setPlaceholderText('Write a reply to this agent (saved into the Shared Idle Palace for the council)…')
-        self.mail_reply_edit.setToolTip('Type a reply to store in the Shared Idle Palace for the agents to read')
+        self.mail_reply_edit.setPlaceholderText('Write a reply to this agent (saved into Shared Idle Memory for the council)…')
+        self.mail_reply_edit.setToolTip('Type a reply to store in Shared Idle Memory for the agents to read')
         self.mail_reply_edit.returnPressed.connect(self._send_mail_reply)
         reply_row.addWidget(self.mail_reply_edit, 1)
-        self.mail_reply_btn = QPushButton('↩ Send Reply to Idle Palace')
-        self.mail_reply_btn.setToolTip('Save your reply into the Shared Idle Palace so all Idle Mode agents can read it')
+        self.mail_reply_btn = QPushButton('↩ Send Reply to Idle Memory')
+        self.mail_reply_btn.setToolTip('Save your reply into Shared Idle Memory so all Idle Mode agents can read it')
         self.mail_reply_btn.clicked.connect(self._send_mail_reply)
         reply_row.addWidget(self.mail_reply_btn)
         reader_lay.addLayout(reply_row)
@@ -3068,7 +3076,7 @@ class PalaceWindow(QMainWindow):
         self.bottom_token_label.setStyleSheet(
             'font-family: Consolas, monospace; font-size: 11.5px; color: #8b949e; padding: 1px 6px;'
         )
-        self.bottom_token_label.setToolTip('Live Session Token & Credit Monitor (30m Idle Timer / Active Turn Usage)')
+        self.bottom_token_label.setToolTip('Live Session Token & Credit Monitor')
 
         self.right_status_grid.addWidget(self.status_label, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.right_status_grid.addWidget(self.bottom_token_label, 0, 1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -3077,12 +3085,12 @@ class PalaceWindow(QMainWindow):
         layout.addWidget(agent_workbench_frame)
         splitter.addWidget(panel)
 
-        # --- RIGHT SIDEBAR: SHARED MEMORY PALACE (Auto-Indexed Contextual Memory for All AIs) ---
+        # --- RIGHT SIDEBAR: SHARED MEMORY (Auto-Indexed Contextual Memory for All AIs) ---
         self.memory_panel = QFrame()
         self.memory_panel.setObjectName('memoryPanel')
         self.memory_panel.setMinimumWidth(295)
         memory_layout = QVBoxLayout(self.memory_panel)
-        memory_title = QLabel('Shared Memory Palace')
+        memory_title = QLabel('Shared Memory')
         memory_title.setObjectName('sectionTitle')
         memory_layout.addWidget(memory_title)
         memory_note = QLabel('Contextual memories automatically saved & shared across all Council AIs (like ChatGPT & Antigravity).')
@@ -3128,7 +3136,7 @@ class PalaceWindow(QMainWindow):
         self.add_memory_btn.setToolTip('Add standing fact or rule for all AIs')
         self.add_memory_btn.clicked.connect(self.add_standing_memory)
         self.delete_memory_btn = QPushButton('🗑 Forget Selected')
-        self.delete_memory_btn.setToolTip('Delete selected memory from Palace')
+        self.delete_memory_btn.setToolTip('Delete selected memory')
         self.delete_memory_btn.clicked.connect(self.delete_selected_memory)
         mem_act_row.addWidget(self.add_memory_btn)
         mem_act_row.addWidget(self.delete_memory_btn)
@@ -3177,7 +3185,48 @@ class PalaceWindow(QMainWindow):
         self.load_history()
         self._refresh_idle_view()
         self._backfill_shared_memory_once()
+        self._force_quit = False
+        self._tray_hint_shown = False
+        if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+            self._ensure_system_tray()
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
+
+    def _ensure_system_tray(self):
+        try:
+            if hasattr(self, '_tray_icon') and self._tray_icon is not None:
+                return self._tray_icon
+            self._tray_icon = QSystemTrayIcon(fairybread_app_qicon(), self)
+            self._tray_icon.setToolTip('Fairybread — Right-click to Expand or Exit')
+            tray_menu = QMenu(self)
+            expand_act = QAction('🔼 Expand / Open Fairybread', tray_menu)
+            expand_act.triggered.connect(self.restore_from_tray)
+            tray_menu.addAction(expand_act)
+            tray_menu.addSeparator()
+            quit_act = QAction('✕ Exit Fairybread', tray_menu)
+            quit_act.triggered.connect(self.exit_application)
+            tray_menu.addAction(quit_act)
+            self._tray_icon.setContextMenu(tray_menu)
+            self._tray_icon.activated.connect(self._on_tray_icon_activated)
+            self._tray_icon.show()
+            return self._tray_icon
+        except Exception:
+            return None
+
+    def _on_tray_icon_activated(self, reason):
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.restore_from_tray()
+
+    def restore_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def exit_application(self):
+        self._force_quit = True
+        self.close()
 
     def _on_ouroboros_startup_ready(self):
         """Signal READY heartbeat to `palace_watchdog.py`, capture self-inspection snapshot, and process handoff."""
@@ -3228,18 +3277,16 @@ class PalaceWindow(QMainWindow):
         new_convo_act = QAction('New Conversation\tCtrl+N', self)
         new_convo_act.triggered.connect(self.new_conversation)
         palace_menu.addAction(new_convo_act)
+        new_proj_act = QAction('New Project…', self)
+        new_proj_act.triggered.connect(lambda: self.new_project())
+        palace_menu.addAction(new_proj_act)
         attach_act = QAction('Attach Documents or Pictures…\tCtrl+O', self)
         attach_act.triggered.connect(self.choose_files)
         palace_menu.addAction(attach_act)
         palace_menu.addSeparator()
-        exit_act = QAction('Exit', self)
-        exit_act.triggered.connect(self.close)
+        exit_act = QAction('Exit Fairybread', self)
+        exit_act.triggered.connect(self.exit_application)
         palace_menu.addAction(exit_act)
-
-        proj_menu = menubar.addMenu('Workspace')
-        new_proj_act = QAction('New Project (No Folder Required)…', self)
-        new_proj_act.triggered.connect(lambda: self.new_project())
-        proj_menu.addAction(new_proj_act)
 
         ai_menu = menubar.addMenu('Mode')
         normal_mode_act = QAction('Normal AI Mode', self)
@@ -3260,16 +3307,16 @@ class PalaceWindow(QMainWindow):
         open_themes_act.triggered.connect(lambda: os.startfile(str(get_themes_dir())) if hasattr(os, 'startfile') else None)
         theme_menu.addAction(open_themes_act)
         view_menu.addSeparator()
-        mem_sum_act = QAction('📝 Memory Summary (View & Edit)…', self)
+        mem_sum_act = QAction('📝 Memory Summary (View && Edit)…', self)
         mem_sum_act.triggered.connect(self.show_memory_summary_dialog)
         view_menu.addAction(mem_sum_act)
-        mem_act = QAction('Toggle Shared Memory Palace Panel', self)
+        mem_act = QAction('Toggle Shared Memory Panel', self)
         mem_act.triggered.connect(lambda: self.memory_button.click())
         view_menu.addAction(mem_act)
         peer_act = QAction('Expand / Collapse All Peer Deliberations', self)
         peer_act.triggered.connect(self.toggle_all_deliberations)
         view_menu.addAction(peer_act)
-        snap_act = QAction('Capture Palace UI Self-Inspection Snapshot (Palace Only)', self)
+        snap_act = QAction('Capture Fairybread UI Snapshot', self)
         snap_act.triggered.connect(self.capture_and_insert_ui_snapshot)
         view_menu.addAction(snap_act)
 
@@ -3277,10 +3324,10 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
-        voice_settings_act = QAction('🎙️ Voice & Audio (Microphone & Speaker)…', self)
+        voice_settings_act = QAction('🎙️ Voice && Audio (Microphone && Speaker)…', self)
         voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
         settings_menu.addAction(voice_settings_act)
-        email_settings_act = QAction('📧 Email & Notifications…', self)
+        email_settings_act = QAction('📧 Email && Notifications…', self)
         email_settings_act.triggered.connect(lambda: self.open_manage_ais('Email & Notifications'))
         settings_menu.addAction(email_settings_act)
         bridge_settings_act = QAction('🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…', self)
@@ -3291,7 +3338,7 @@ class PalaceWindow(QMainWindow):
         settings_menu.addAction(idle_settings_act)
 
         help_menu = menubar.addMenu('Help')
-        guide_act = QAction('📖 User Guide & Drawing Instructions…\tF1', self)
+        guide_act = QAction('📖 User Guide && Drawing Instructions…\tF1', self)
         guide_act.setShortcut(QKeySequence('F1'))
         guide_act.triggered.connect(self.show_user_guide_dialog)
         help_menu.addAction(guide_act)
@@ -3299,9 +3346,6 @@ class PalaceWindow(QMainWindow):
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
         help_menu.addSeparator()
-        ethics_act = QAction('Mission Statement & Code of Ethics…', self)
-        ethics_act.triggered.connect(self.show_mission_ethics_dialog)
-        help_menu.addAction(ethics_act)
         about_act = QAction('About Fairybread', self)
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
@@ -3991,7 +4035,7 @@ class PalaceWindow(QMainWindow):
         self.send_button.setEnabled(True)
         self.composer.setPlaceholderText('Ask anything, @ to mention, or drop files')
         self._refresh_idle_view()
-        self.status_label.setText('Idle session ended · Live RAM transcript wiped · Shared Idle Palace preserved.')
+        self.status_label.setText('Idle session ended · Live RAM transcript wiped · Shared Idle Memory preserved.')
 
     def _on_idle_timer_tick(self):
         expired = self.idle_manager.tick(1)
@@ -4066,7 +4110,7 @@ class PalaceWindow(QMainWindow):
         self.start_task(
             _step,
             self._on_idle_step_finished,
-            'Idle Mode Council deliberating & testing Shared Idle Palace…',
+            'Idle Mode Council deliberating & testing Shared Idle Memory…',
             on_progress=self._on_idle_turn_streamed,
             worker_box=worker_box,
         )
@@ -4176,7 +4220,7 @@ class PalaceWindow(QMainWindow):
             '<div style="padding:10px 14px; background:#132232; border:1px solid #58a6ff; border-radius:8px; margin-bottom:10px;">'
             '<span style="color:#58a6ff; font-weight:700;">👁 BETA TESTING MODE — Full Owner Visibility</span> '
             '<span style="color:#8b949e; font-size:12px;">'
-            '(Live discussion &amp; Shared Idle Palace are open to you for Beta testing. '
+            '(Live discussion &amp; Shared Idle Memory are open to you for Beta testing. '
             f'Status: <b>{html.escape(self.idle_manager.status)}</b>)'
             '</span>'
             f'<div style="margin-top:6px; font-size:12.5px;"><span style="color:#8b949e;">Council Roster:</span>&nbsp;&nbsp;{roster_html}</div>'
@@ -4204,7 +4248,7 @@ class PalaceWindow(QMainWindow):
                     '<div style="margin-top:18px; padding:18px; background:#141820; border:1px solid #262c3a; border-radius:10px; color:#8b949e; font-size:13px;">'
                     f'<div style="margin-bottom:8px; color:#c9d1d9;"><b>Ready Agents ({len(active_agents)}):</b>&nbsp;&nbsp;{roster_html}</div>'
                     'Flip the <b>⏻ Idle Mode</b> switch on the top bar (or click <b>▶ Start / Resume Autonomous Idle</b>) '
-                    'to let the active AIs test their <b>Shared Idle Palace</b>, review the mirrored Palace source code '
+                    'to let the active AIs test their <b>Shared Idle Memory</b>, review the mirrored Fairybread source code '
                     '(<code>C:\\Palace_Idle_Sandbox\\source_mirror\\</code>), and email you improvement proposals.'
                     '</div>'
                 )
@@ -4238,7 +4282,7 @@ class PalaceWindow(QMainWindow):
         self.idle_palace_list.clear()
         entries = self.idle_memory.list_all_entries_for_beta()
         if not entries:
-            placeholder = QListWidgetItem('No files/notes in Shared Idle Palace yet.')
+            placeholder = QListWidgetItem('No files/notes in Shared Idle Memory yet.')
             placeholder.setData(Qt.ItemDataRole.UserRole, None)
             self.idle_palace_list.addItem(placeholder)
             return
@@ -4282,10 +4326,10 @@ class PalaceWindow(QMainWindow):
             self.open_idle_palace_file_by_ref(ref)
 
     def open_idle_palace_file_by_ref(self, link_ref: str) -> bool:
-        """Jump directly to the linked file/entry in the Shared Idle Palace browser."""
+        """Jump directly to the linked file/entry in the Shared Idle Memory browser."""
         entry = self.idle_memory.resolve_linked_entry(link_ref)
         if not entry:
-            self.show_notice(f'Linked Idle Palace file "{link_ref}" was not found.')
+            self.show_notice(f'Linked Idle Memory file "{link_ref}" was not found.')
             return False
         if self.sidebar_mail_btn.isChecked():
             self.sidebar_mail_btn.blockSignals(True)
@@ -4300,7 +4344,7 @@ class PalaceWindow(QMainWindow):
             if isinstance(data, dict) and data.get('id') == target_id:
                 self.idle_palace_list.setCurrentItem(it)
                 break
-        self.status_label.setText(f'Opened Shared Idle Palace file: {entry.get("file")} ({entry.get("title")})')
+        self.status_label.setText(f'Opened Shared Idle Memory file: {entry.get("file")} ({entry.get("title")})')
         return True
 
     def _refresh_agent_mail_tab(self):
@@ -4387,15 +4431,15 @@ class PalaceWindow(QMainWindow):
             esc_link = html.escape(link)
             link_html = (
                 f'<div style="margin-top:6px;">'
-                f'📎 Linked Shared Idle Palace File: '
+                f'📎 Linked Shared Idle Memory File: '
                 f'<a href="idle-file:{esc_link}" style="color:#58a6ff; font-weight:700;">{esc_link}</a>'
                 f'</div>'
             )
             self.mail_open_link_btn.setEnabled(True)
-            self.mail_open_link_btn.setText(f'📂 Open "{link}" in Idle Palace')
+            self.mail_open_link_btn.setText(f'📂 Open "{link}" in Idle Memory')
         else:
             self.mail_open_link_btn.setEnabled(False)
-            self.mail_open_link_btn.setText('📂 No Linked Idle Palace File')
+            self.mail_open_link_btn.setText('📂 No Linked Idle Memory File')
 
         self.mail_header_label.setText(
             f'<div style="font-size:14px; font-weight:700; color:#f0f6fc;">{subj}</div>'
@@ -4408,7 +4452,7 @@ class PalaceWindow(QMainWindow):
         if reply:
             reply_block = (
                 f'<hr style="border:1px solid #232834; margin-top:14px;">'
-                f'<div style="color:#3fb950; font-weight:700; font-size:12px;">↩ Your Reply (Saved to Shared Idle Palace):</div>'
+                f'<div style="color:#3fb950; font-weight:700; font-size:12px;">↩ Your Reply (Saved to Shared Idle Memory):</div>'
                 f'<div style="color:#e6edf3; font-size:13px; margin-top:4px;">{html.escape(reply)}</div>'
             )
 
@@ -4457,7 +4501,7 @@ class PalaceWindow(QMainWindow):
         sender = str(msg.get('sender') or 'agent')
         subj = str(msg.get('subject') or 'Agent Mail')
         self.idle_manager.mailbox.record_owner_reply(msg_id, reply_txt)
-        # Also save the owner's reply into the Shared Idle Palace so all Idle agents see it
+        # Also save the owner's reply into Shared Idle Memory so all Idle agents see it
         self.idle_memory.save_note(
             author='owner_brett',
             title=f'Owner Reply to {sender.upper()}: {subj}',
@@ -4467,7 +4511,7 @@ class PalaceWindow(QMainWindow):
         )
         self.mail_reply_edit.clear()
         self._refresh_idle_view()
-        self.status_label.setText(f'Reply sent to {sender.upper()} and stored in Shared Idle Palace.')
+        self.status_label.setText(f'Reply sent to {sender.upper()} and stored in Shared Idle Memory.')
 
     @Slot()
     def open_manage_ais(self, initial_page: str = 'AI Providers'):
@@ -4488,7 +4532,7 @@ class PalaceWindow(QMainWindow):
             self.idle_manager.reload_settings()
             if self.current_profile == 'Idle':
                 self._refresh_idle_view()
-            self.status_label.setText('Palace settings updated.')
+            self.status_label.setText('Fairybread settings updated.')
 
     def reload_providers_from_config(self):
         self.reload_provider_bar()
@@ -4938,7 +4982,7 @@ class PalaceWindow(QMainWindow):
             age_lbl.setText(saved['updated_relative'])
             edit_toggle_btn.setChecked(False)
             status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
-            status_lbl.setText('✓ Direct edits saved to Shared Memory Palace.')
+            status_lbl.setText('✓ Direct edits saved to Shared Memory.')
             if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
                 self.refresh_memory_review(True)
 
@@ -4987,7 +5031,7 @@ class PalaceWindow(QMainWindow):
                 source={'kind': 'user_added'},
             )
             self.refresh_memory_review(True)
-            self.show_notice('✓ Added standing memory to Shared Memory Palace.')
+            self.show_notice('✓ Added standing memory to Shared Memory.')
         except Exception as exc:
             self.show_notice(f'Could not save memory: {exc}')
 
@@ -5004,7 +5048,7 @@ class PalaceWindow(QMainWindow):
                 from memory_service import SQLiteMemoryIndex
                 SQLiteMemoryIndex(self._memory_db_path()).delete_memory(mid)
                 self.refresh_memory_review(True)
-                self.show_notice('🗑 Memory forgotten from Shared Memory Palace.')
+                self.show_notice('🗑 Memory forgotten from Shared Memory.')
             except Exception as exc:
                 self.show_notice(f'Could not delete memory: {exc}')
         else:
@@ -5032,7 +5076,7 @@ class PalaceWindow(QMainWindow):
                 proposal_id,
                 project=self._current_project_name(),
             )
-            self.show_notice('Memory proposal approved and indexed in SQLite FTS5 Durable Memory Palace.')
+            self.show_notice('Memory proposal approved and indexed in Shared Memory.')
             self.refresh_memory_review(True)
             self._update_durable_memory_count()
         except Exception as exc:
@@ -5834,7 +5878,7 @@ class PalaceWindow(QMainWindow):
         ans = QMessageBox.question(
             self,
             'Delete Stored File',
-            f'Delete "{p.name}" from Palace storage to free up drive space?',
+            f'Delete "{p.name}" from Fairybread storage to free up drive space?',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -5854,18 +5898,18 @@ class PalaceWindow(QMainWindow):
             if st['normal_state'] == 'exceeded':
                 cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
                 self.show_notice(
-                    f"⚠ Normal Palace storage cap reached ({st['normal_total_mb']:.1f} MB / {cap_lbl}). "
+                    f"⚠ Normal Mode storage cap reached ({st['normal_total_mb']:.1f} MB / {cap_lbl}). "
                     f"Open Settings → Storage & Backup to delete old files, raise your cap, or move to another drive."
                 )
             elif st['normal_state'] == 'warning':
                 cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
                 self.show_notice(
-                    f"⚠ Approaching Normal Palace storage limit ({st['normal_pct']:.0f}% of {cap_lbl} used)."
+                    f"⚠ Approaching Normal Mode storage limit ({st['normal_pct']:.0f}% of {cap_lbl} used)."
                 )
             elif st['idle_state'] in {'exceeded', 'warning'}:
                 cap_lbl = format_storage_mb_label(st['idle_cap_mb'])
                 self.show_notice(
-                    f"⚠ Idle Palace storage is at {st['idle_pct']:.0f}% of {cap_lbl} ({st['idle_total_mb']:.1f} MB used)."
+                    f"⚠ Idle Memory storage is at {st['idle_pct']:.0f}% of {cap_lbl} ({st['idle_total_mb']:.1f} MB used)."
                 )
         except Exception:
             pass
@@ -6505,13 +6549,12 @@ class PalaceWindow(QMainWindow):
 
     def show_desktop_toast(self, title: str, message: str):
         try:
-            if not hasattr(self, '_tray_icon') or self._tray_icon is None:
-                self._tray_icon = QSystemTrayIcon(fairybread_app_qicon(), self)
-                self._tray_icon.setToolTip('Fairybread — Multi-AI Council')
-                self._tray_icon.show()
+            tray = self._ensure_system_tray()
+            if tray is None:
+                return
             clean_msg = re.sub(r'\[GENERATE_IMAGE[^\]]*\]', '[Generated Image]', message or '')
             clean_msg = re.sub(r'\s+', ' ', clean_msg).strip()[:180]
-            self._tray_icon.showMessage(title, clean_msg or 'Task completed.', QSystemTrayIcon.MessageIcon.Information, 4500)
+            tray.showMessage(title, clean_msg or 'Task completed.', QSystemTrayIcon.MessageIcon.Information, 4500)
         except Exception:
             pass
 
@@ -6668,14 +6711,35 @@ class PalaceWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent):
         if self.worker is not None:
-            self.show_notice('A request is still running. Please let it finish before closing Palace.')
+            self.show_notice('A request is still running. Please let it finish before closing Fairybread.')
             event.ignore()
-        elif not self.confirm_switch():
+            return
+        if not self.confirm_switch():
             event.ignore()
-        else:
-            self.idle_timer.stop()
-            self.idle_manager.wipe_ram()
-            event.accept()
+            return
+        if (
+            not getattr(self, '_force_quit', False)
+            and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
+            and bool(load_ui_settings(self.config_path).get('close_to_tray', True))
+        ):
+            self._ensure_system_tray()
+            self.hide()
+            event.ignore()
+            if not getattr(self, '_tray_hint_shown', False):
+                self._tray_hint_shown = True
+                self.show_desktop_toast(
+                    'Fairybread Minimized to Tray',
+                    'Fairybread is still running in the system tray. Right-click the tray icon to Expand or Exit.',
+                )
+            return
+        self.idle_timer.stop()
+        self.idle_manager.wipe_ram()
+        if hasattr(self, '_tray_icon') and self._tray_icon is not None:
+            try:
+                self._tray_icon.hide()
+            except Exception:
+                pass
+        event.accept()
 
 
 def _seed_demo_store(store: SessionStore):

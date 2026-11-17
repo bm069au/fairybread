@@ -260,3 +260,12 @@ Open **`Settings → 🎙️ Voice & Audio (Microphone & Speaker)…`** to:
 - **Reorder Conversations:** Grab any conversation in the left sidebar and drag it up or down to change its position.
 - **Move a Conversation into a Project:** Drag any conversation and drop it directly onto a **Project folder** header (or onto a conversation inside that Project) to assign it to that Project.
 - **Unassign from a Project:** Drag a conversation onto the **`Conversations`** header to move it back out of a Project.
+
+---
+
+## 13. Close to System Tray (`✕` Button & System Tray Menu)
+
+- **Minimize to System Tray on Close:** By default, clicking the top-right window **`✕`** button minimizes Fairybread into the Windows System Tray so your background tasks and Idle Mode sessions keep running safely (configurable under **`Settings → General`**).
+- **Right-Click the System Tray Icon:**
+  - **`🔼 Expand / Open Fairybread`** — Restores the Fairybread window to your screen (or double-click the tray icon).
+  - **`✕ Exit Fairybread`** — Completely exits the application (also available under **`Fairybread → Exit Fairybread`** in the top menu bar).
