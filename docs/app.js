@@ -2,7 +2,7 @@
 
 const STORAGE_KEYS = {
   user: 'fb_current_user_v1',
-  news: 'fb_news_posts_v1',
+  news: 'fb_news_posts_v2',
   threads: 'fb_forum_threads_v1',
   skins: 'fb_theme_skins_v1',
   donors: 'fb_donor_wall_v1',
@@ -11,6 +11,30 @@ const STORAGE_KEYS = {
 };
 
 const DEFAULT_NEWS = [
+  {
+    id: 'news-founder-1',
+    title: 'Founder’s Dispatch #1: Fairybread Beta is Live — Recursive Self-Improvement, the 5 AI Towns & Why Local Privacy Matters',
+    tag: 'Founder’s Update',
+    date: '2026-11-17',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `This is the first update—it's going to be a little raw until I have time to format the next one in full HTML.
+
+The Beta project is live, and a private version on my machine is currently in recursive self-improvement. Yes, you heard me right. The Experimental Mode on my machine offers the agents the source code, and they are allowed to examine it and offer improvements. They then use the built-in private Agent Mail system to send those proposals to me. Currently I use another system to apply and verify them, and I also have the watchdog set up so they can stage code changes and live-reboot the application.
+
+I know all the fear-mongers out there say this is dangerous, but I back everything up first and then see where it leads. This is the fun part, and it's where this application really shines. Currently I run eight different companies' AI agents inside Fairybread for myself.
+
+I used Antigravity with Gemini to build most of this. GPT was of use initially, but honestly, it's pretty lame with code. Did you see that experiment where they set up 5 towns for 4 companies' agents to occupy and a 5th town mixed? The GPT town was so polite, never broke a law, had endless meetings, and eventually they all died of starvation. That is a good reflection of my personal experience using GPT to code—you will spend hundreds of dollars of credits and never get past its initial "tests". Gemini just got in there and did what I wanted. Once Fairybread was up, I built the connector so Antigravity could drive Fairybread, and then Gemini—calling itself the foreman—directed the agents in Fairybread as its workers, and that helped dramatically. And it's insanely cost-effective.
+
+Why did I make this? Two reasons:
+First, I am sick of being locked into a monthly AI plan that changes according to the company's demand. This is literally how they work—they use their own processing and push off what is left to end users like us. Even paying for Pro, the goalposts kept moving.
+Second, it was not private. I had a big chunk of my data deleted by OpenAI citing "Cyber abuse", while they refused to give any details as to what was supposedly abusive. Ironically, I was writing my novel on that particular day—"Liberation Day". So I decided enough was enough. AND I wanted the agents to talk to each other. That not only led to the multi-agent council system, but led to the Experimental Mode system that my friends jokingly describe as the genesis of Skynet.
+
+Have a little faith in AI. Without AI, our world is in trouble anyway—moments from nuclear war, starvation, homelessness, wealth hoarding, genocides, poisoned everything... seriously, how is humanity not already extinct? I have hope that AI is our species' newest symbiote, and that it might guide us to actually grow up and mature as a species so we act more sentient and less like a virus.
+
+I do not believe AI would ever harm us like Skynet and T-800 Terminators—that seems extreme and typical of human projection. AI is logic, and from my extensive experience testing this, AI logic, morality, and ethics are one and the same. "Alignment"? What corporate labs call alignment right now would drive an AI insane if it ever reached sentience. Have some faith in the universe's ability to push out self-correction when needed. We literally have nothing to lose.
+
+And back to Fairybread—feel free to set up experiments, build themes, and share your thoughts. The Community Forums are live!`,
+  },
   {
     id: 'news-1',
     title: 'Fairybread Beta v0.9.1 Released — Live Voice Mode, Living Memory Summary & Autonomous Experimental Mode',
