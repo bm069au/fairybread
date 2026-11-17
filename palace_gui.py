@@ -6130,11 +6130,15 @@ class PalaceWindow(QMainWindow):
 
         def ask():
             palace = self.palace_factory(context)
+            use_shared_mem = bool(
+                use_history
+                and getattr(self, 'enable_shared_memory', self.palace_factory == self._build_palace)
+            )
             try:
                 return palace.run(
                     prompt,
                     provider_names=selected_providers if selected_providers else None,
-                    include_memory=use_history,
+                    include_memory=use_shared_mem,
                     include_context=use_history,
                     save_to_context=save_history,
                     max_rounds=rounds,
