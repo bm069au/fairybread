@@ -87,6 +87,13 @@ _IDLE_TOOL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_IDLE_PATCH_PATTERN = re.compile(
+    r'\[IDLE_PATCH\s+file="(?P<file>[^"]+)"(?:\s+summary="(?P<summary>[^"]*)")?\s*\]\s*'
+    r'<<<TARGET\r?\n(?P<target>.*?)\r?\n===REPLACE\r?\n(?P<replacement>.*?)\r?\n>>>\s*'
+    r'\[/IDLE_PATCH\]',
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _safe_filename(raw_name: str, fallback_prefix: str = "idle_note") -> str:
     clean = Path((raw_name or "").strip()).name
@@ -856,10 +863,23 @@ class IdleSessionManager:
         topic_line = f"\nSEED / OWNER NOTE: {opening_topic}\n" if opening_topic else ""
         mail_rem = self.mailbox.remaining_quota()
         submode = settings.get("idle_submode") or getattr(self, "idle_submode", "free_talk")
-        share_code = bool(settings.get("share_source_code", False) or submode == "self_improve")
+        allow_live = bool(settings.get("allow_live_self_modify", False))
+        share_code = bool(settings.get("share_source_code", False) or submode == "self_improve" or allow_live)
         code_tools_line = (
             '- Inspect Fairybread source code & UI (Read-Only): [TOOL: list_source_files] | [TOOL: search_source_code query="..."] | [TOOL: read_source_file file="palace_gui.py" start=1 end=60] | [TOOL: inspect_palace_ui]\n'
             if share_code
+            else ""
+        )
+        live_patch_line = (
+            '- LIVE SELF-MODIFICATION & HOT-REBOOT (Owner Armed): After reading the exact target lines with [TOOL: read_source_file], you may stage & apply a live patch and hot-reboot Fairybread (session automatically continues after reboot):\n'
+            '  [IDLE_PATCH file="palace_gui.py" summary="Brief summary"]\n'
+            '  <<<TARGET\n'
+            '  exact existing lines\n'
+            '  ===REPLACE\n'
+            '  replacement lines\n'
+            '  >>>\n'
+            '  [/IDLE_PATCH]\n'
+            if allow_live
             else ""
         )
 
@@ -876,7 +896,7 @@ class IdleSessionManager:
                 f"OPTIONAL TOOLS (only if you genuinely want to remember a note or message Brett):\n"
                 f'- Save a shared note: [IDLE_SAVE title="..."]...[/IDLE_SAVE]\n'
                 f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m): [IDLE_MAIL subject="..."]...[/IDLE_MAIL]\n'
-                f"{code_tools_line}"
+                f"{code_tools_line}{live_patch_line}"
                 f"- Keep replies natural and conversational (< 300 words). Never echo polite agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
             )
 
@@ -893,7 +913,7 @@ class IdleSessionManager:
             f"AVAILABLE TOOLS (invoke only when needed):\n"
             f'- Save note/file to Shared Experimental Memory: [IDLE_SAVE title="..." file="optional.py"]...[/IDLE_SAVE]\n'
             f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m) & link a file: [IDLE_MAIL subject="..." link="optional.py"]...[/IDLE_MAIL]\n'
-            f"{code_tools_line}"
+            f"{code_tools_line}{live_patch_line}"
             f"- Keep conversational commentary focused (< 350 words, plus any full [IDLE_SAVE] code/file blocks). Never echo or repeat agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
         )
 
@@ -1003,6 +1023,34 @@ class IdleSessionManager:
                 return f"[🛠 Called tool: {t_name}]"
 
             cleaned_reply = _IDLE_TOOL_PATTERN.sub(_run_tool, cleaned_reply).strip()
+
+            patch_reboot_requested: str = ""
+            if bool(self.reload_settings().get("allow_live_self_modify", False)):
+                def _run_patch(match: re.Match) -> str:
+                    nonlocal patch_reboot_requested
+                    p_file = (match.group("file") or "").strip()
+                    p_sum = (match.group("summary") or f"Live patch to {p_file} by {provider_id}").strip()
+                    p_target = match.group("target") or ""
+                    p_repl = match.group("replacement") or ""
+                    if not p_target.strip() or p_target.strip() == "exact existing lines":
+                        return ""
+                    try:
+                        from palace_ouroboros import stage_palace_replace, sync_live_to_staging
+                        sync_live_to_staging()
+                        ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=provider_id)
+                        if ok:
+                            patch_reboot_requested = f"{provider_id.upper()}: {p_sum}"
+                            tool_outputs.append(f"[⚡ LIVE PATCH STAGED & VERIFIED (`{p_file}`)]: {msg} — Initiating Hot-Reboot & Auto-Continue…")
+                            return f"[⚡ Staged Live Patch: {p_file}]"
+                        else:
+                            tool_outputs.append(f"[⚠ Live Patch Rejected (`{p_file}`)]: {msg}")
+                            return f"[⚠ Patch Rejected: {p_file}]"
+                    except Exception as exc:
+                        tool_outputs.append(f"[⚠ Live Patch Error]: {exc}")
+                        return ""
+
+                cleaned_reply = _IDLE_PATCH_PATTERN.sub(_run_patch, cleaned_reply).strip()
+
             final_text = (cleaned_reply or raw_reply).strip()
             if tool_outputs:
                 final_text = final_text + "\n\n" + "\n\n".join(tool_outputs)
@@ -1027,6 +1075,31 @@ class IdleSessionManager:
             new_messages.append(entry)
             if on_turn is not None:
                 on_turn(entry)
+
+            if patch_reboot_requested:
+                try:
+                    import subprocess, sys
+                    from palace_ouroboros import HANDOFF_PATH, write_reboot_handoff
+                    ok_h, _h_msg, payload = write_reboot_handoff(
+                        reason="experimental_agent_live_patch",
+                        applied_diff_summary=patch_reboot_requested,
+                        test_results={"py_compile": "pass"},
+                    )
+                    if ok_h and HANDOFF_PATH.exists():
+                        payload["continuity"]["auto_resume_idle"] = True
+                        payload["continuity"]["idle_transcript"] = self.transcript[-25:]
+                        payload["continuity"]["idle_remaining_seconds"] = self.remaining_seconds
+                        payload["continuity"]["idle_tokens_used"] = self.tokens_used_this_session
+                        payload["continuity"]["idle_spend_usd"] = self.spend_usd_this_session
+                        HANDOFF_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                        wd_script = Path(__file__).with_name("palace_watchdog.py")
+                        subprocess.Popen(
+                            [sys.executable, str(wd_script), "--skip-tests", "--summary", patch_reboot_requested],
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        break
+                except Exception:
+                    pass
 
         # Check 2-strike Agreement Loop / Convergence auto-stop
         if total_called >= 2 and agreement_or_pass_count >= max(1, (total_called + 1) // 2):

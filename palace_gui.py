@@ -1802,8 +1802,8 @@ class ManageAIsDialog(QDialog):
             '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
         )
         self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches, hot-reboot, and resume automatically')
-        self.idle_live_patch_check.setChecked(bool(idle_cfg.get('allow_live_self_modify', False)))
-        self.idle_live_patch_check.hide()
+        self.idle_live_patch_check.setChecked(False); self.idle_live_patch_check.hide()
+        lay.addWidget(self.idle_live_patch_check)
 
         self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
@@ -2835,7 +2835,7 @@ class PalaceWindow(QMainWindow):
         nh_row.setContentsMargins(6, 2, 6, 2)
         nh_lbl = QLabel(
             '🚫 <b>NO-HISTORY MODE ACTIVE</b> — Conversations right now are <b>NOT</b> being saved to Shared Memory. '
-            '(For quick side-thoughts that <i>should</i> be saved without prior code context, use <b>Tangent</b> below instead.)'
+            '(For quick side-thoughts like creative projects that <i>should</i> be saved without prior code context, use <b>Tangent</b> below instead.)'
         )
         nh_lbl.setWordWrap(True)
         nh_lbl.setStyleSheet('color: #fca5a5; font-size: 12px;')
@@ -3168,7 +3168,7 @@ class PalaceWindow(QMainWindow):
             'QPushButton:checked { background: #2c1e0f; color: #f59e0b; border: 1px solid #f59e0b; font-weight: 700; }'
         )
         self.idle_live_patch_btn.toggled.connect(self._on_idle_live_patch_btn_toggled)
-        self.idle_live_patch_btn.hide()
+        idle_actions.addWidget(self.idle_live_patch_btn)
 
         self.idle_start_btn = QPushButton('▶ Start')
         self.idle_start_btn.setToolTip('Start or resume autonomous Experimental Mode discussion')
@@ -4737,7 +4737,7 @@ class PalaceWindow(QMainWindow):
                 if sp == 'operator':
                     blocks.append(
                         f'<div style="margin-top:8px; padding:10px 14px; background:#181c24; border:1px solid #262b36; border-radius:8px;">'
-                        f'<div style="color:#8b949e; font-size:11px; font-weight:700;">OWNER / OPERATOR</div>'
+                        f'<div style="color:#8b949e; font-size:11px; font-weight:700;">OWNER (BRETT)</div>'
                         f'<div style="color:#f0f6fc; font-size:13px;">{txt}</div></div>'
                     )
                 else:
@@ -4980,7 +4980,7 @@ class PalaceWindow(QMainWindow):
         self.idle_manager.mailbox.record_owner_reply(msg_id, reply_txt)
         # Also save the owner's reply into Shared Idle Memory so all Idle agents see it
         self.idle_memory.save_note(
-            author='owner',
+            author='owner_brett',
             title=f'Owner Reply to {sender.upper()}: {subj}',
             file=f'owner_reply_{msg_id[:8]}.md',
             content=reply_txt,

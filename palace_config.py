@@ -337,7 +337,7 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
     "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Fairybread code & UI improvement)
     "share_source_code": False,      # Read-only Fairybread source code access in Experimental Mode
-    "allow_live_self_modify": False, # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
+     # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
