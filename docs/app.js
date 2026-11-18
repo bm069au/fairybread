@@ -449,9 +449,16 @@ function updateAuthUI() {
   const user = getCurrentUser();
   const btn = document.getElementById('authHeaderBtn');
   const modBtn = document.getElementById('modQueueBtn');
+  const gateEl = document.getElementById('forumAuthGate');
+  const unlockedEl = document.getElementById('forumUnlockedWorkspace');
+  const isSignedIn = Boolean(user && user.username);
+  if (gateEl && unlockedEl) {
+    gateEl.style.display = isSignedIn ? 'none' : 'block';
+    unlockedEl.style.display = isSignedIn ? 'block' : 'none';
+  }
   if (!btn) return;
   const signOutBtn = document.getElementById('signOutBtn');
-  if (user && user.username) {
+  if (isSignedIn) {
     const pendingTag = user.requestedBadge ? ' (Review Pending)' : '';
     btn.textContent = `${user.badge.split(' ')[0]} ${user.username}${pendingTag}`;
     if (signOutBtn) signOutBtn.style.display = 'inline-block';
@@ -719,6 +726,106 @@ function selectForumThread(id) {
   renderForumThreads();
 }
 
+let pendingThreadImageDataUrl = '';
+let pendingReplyImageDataUrl = '';
+
+function compressForumImageFile(file, callback) {
+  if (!file || !file.type || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = function (ev) {
+    const img = new Image();
+    img.onload = function () {
+      const maxW = 1200;
+      const maxH = 900;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxW || h > maxH) {
+        const scale = Math.min(maxW / w, maxH / h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      let dataUrl = canvas.toDataURL('image/webp', 0.82);
+      if (!dataUrl || dataUrl.length < 32) {
+        dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      }
+      callback(dataUrl);
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function handleForumFileSelect(event, targetKind) {
+  const file = event.target?.files?.[0];
+  if (!file) return;
+  compressForumImageFile(file, (dataUrl) => {
+    setForumImagePreview(targetKind, dataUrl);
+  });
+}
+
+function handleForumPasteImage(event, targetKind) {
+  const items = event.clipboardData?.items;
+  if (!items) return;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].type && items[i].type.startsWith('image/')) {
+      const file = items[i].getAsFile();
+      if (file) {
+        compressForumImageFile(file, (dataUrl) => {
+          setForumImagePreview(targetKind, dataUrl);
+        });
+      }
+      break;
+    }
+  }
+}
+
+function setForumImagePreview(targetKind, dataUrl) {
+  if (targetKind === 'thread') {
+    pendingThreadImageDataUrl = dataUrl || '';
+    const wrap = document.getElementById('threadImgPreviewWrap');
+    const img = document.getElementById('threadImgPreview');
+    if (wrap && img) {
+      img.src = pendingThreadImageDataUrl;
+      wrap.style.display = pendingThreadImageDataUrl ? 'flex' : 'none';
+    }
+  } else {
+    pendingReplyImageDataUrl = dataUrl || '';
+    const wrap = document.getElementById('replyImgPreviewWrap');
+    const img = document.getElementById('replyImgPreview');
+    if (wrap && img) {
+      img.src = pendingReplyImageDataUrl;
+      wrap.style.display = pendingReplyImageDataUrl ? 'flex' : 'none';
+    }
+  }
+}
+
+function clearForumImage(targetKind) {
+  setForumImagePreview(targetKind, '');
+  if (targetKind === 'thread') {
+    const inp = document.getElementById('threadImageInput');
+    if (inp) inp.value = '';
+  } else {
+    const inp = document.getElementById('replyImageInput');
+    if (inp) inp.value = '';
+  }
+}
+
+function openForumImageLightbox(src) {
+  if (!src) return;
+  const target = document.getElementById('forumImgLightboxTarget');
+  if (target) {
+    target.src = src;
+    showModal('forumImgLightbox');
+  } else {
+    window.open(src, '_blank');
+  }
+}
+
 function renderSelectedThreadDetail() {
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const t = threads.find((item) => item.id === selectedThreadId);
@@ -738,7 +845,8 @@ function renderSelectedThreadDetail() {
           ${canMod ? `<button class="btn-outline" style="padding:1px 6px; font-size:11px; margin-left:6px;" onclick="deleteForumReply('${t.id}', ${rIdx})">🗑</button>` : ''}
         </span>
       </div>
-      <div style="white-space: pre-line; font-size: 13.5px;">${escapeHtml(r.text)}</div>
+      ${r.image ? `<div style="margin:6px 0 8px;"><img src="${r.image}" alt="Attached screenshot" style="max-width:100%; max-height:320px; border-radius:8px; border:1px solid var(--border); cursor:zoom-in;" onclick="openForumImageLightbox(this.src)" title="Click to zoom full size" /></div>` : ''}
+      <div style="white-space: pre-line; font-size: 13.5px;">${escapeHtml(r.text || '')}</div>
     </div>
   `
     )
@@ -746,15 +854,29 @@ function renderSelectedThreadDetail() {
 
   const replyControlHtml = user
     ? `
-    <div class="reply-box">
-      <input type="text" id="replyInputBox" placeholder="Reply as ${escapeHtml(user.username)} (${escapeHtml(user.badge)})…" onkeydown="if(event.key==='Enter') submitThreadReply('${t.id}')" />
-      <button class="btn-primary" onclick="submitThreadReply('${t.id}')">Reply</button>
+    <div style="display:flex; flex-direction:column; gap:8px;">
+      <div id="replyImgPreviewWrap" style="display:none; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:8px; align-items:center; justify-content:space-between; gap:10px;">
+        <img id="replyImgPreview" src="" alt="Reply picture preview" style="max-height:72px; border-radius:6px; border:1px solid var(--border);" />
+        <button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="clearForumImage('reply')">✕ Remove Picture</button>
+      </div>
+      <div class="reply-box">
+        <label class="btn-outline" style="cursor:pointer; padding:8px 11px; font-size:13px; margin:0; white-space:nowrap;" title="Attach a picture or screenshot">
+          📷 Picture
+          <input type="file" id="replyImageInput" accept="image/*" style="display:none;" onchange="handleForumFileSelect(event, 'reply')" />
+        </label>
+        <input type="text" id="replyInputBox" placeholder="Reply as ${escapeHtml(user.username)} (or press Ctrl+V to paste screenshot)…" onpaste="handleForumPasteImage(event, 'reply')" onkeydown="if(event.key==='Enter') submitThreadReply('${t.id}')" />
+        <button class="btn-primary" onclick="submitThreadReply('${t.id}')">Reply</button>
+      </div>
     </div>`
     : `
     <div class="reply-box" style="justify-content:space-between; align-items:center; background:var(--bg-main); border:1px solid var(--border); padding:10px 14px; border-radius:8px;">
       <span class="muted-sub">🔒 You must be signed in to post a reply.</span>
       <button class="btn-primary" style="padding:6px 14px; font-size:12.5px;" onclick="openAuthModal()">🔐 Sign In / Register to Reply</button>
     </div>`;
+
+  const threadImageHtml = t.image
+    ? `<div style="margin: 10px 0 14px;"><img src="${t.image}" alt="Thread screenshot" style="max-width:100%; max-height:440px; border-radius:10px; border:1px solid var(--border); cursor:zoom-in;" onclick="openForumImageLightbox(this.src)" title="Click to zoom full size" /></div>`
+    : '';
 
   detailEl.innerHTML = `
     <div>
@@ -770,11 +892,12 @@ function renderSelectedThreadDetail() {
         </div>
       </div>
       <h3 style="margin: 6px 0 12px; font-size: 18px;">${escapeHtml(t.title)}</h3>
+      ${threadImageHtml}
       <div style="white-space: pre-line; color: var(--text-secondary); font-size: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border);">${escapeHtml(t.body)}</div>
     </div>
     <div style="display:flex; flex-direction:column; gap:10px;">
       <strong style="font-size:13px; color:var(--text-muted);">Replies (${(t.replies || []).length})</strong>
-      ${repliesHtml || '<div class="muted-sub">No replies yet — sign in below to be the first to reply!</div>'}
+      ${repliesHtml || '<div class="muted-sub">No replies yet — be the first to reply below!</div>'}
     </div>
     ${replyControlHtml}
   `;
@@ -815,7 +938,8 @@ function submitThreadReply(id) {
     return;
   }
   const inp = document.getElementById('replyInputBox');
-  if (!inp || !inp.value.trim()) return;
+  const txt = inp ? inp.value.trim() : '';
+  if (!txt && !pendingReplyImageDataUrl) return;
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const t = threads.find((item) => item.id === id);
   if (!t) return;
@@ -824,8 +948,10 @@ function submitThreadReply(id) {
     author: user.username,
     badge: user.badge || '👤 User',
     date: new Date().toISOString().slice(0, 10),
-    text: inp.value.trim(),
+    text: txt,
+    image: pendingReplyImageDataUrl || '',
   });
+  pendingReplyImageDataUrl = '';
   saveState(STORAGE_KEYS.threads, threads);
   renderForumThreads();
 }
@@ -836,6 +962,7 @@ function openNewThreadModal() {
     openAuthModal();
     return;
   }
+  clearForumImage('thread');
   showModal('newThreadModal');
 }
 
@@ -848,7 +975,7 @@ function submitNewForumThread() {
   const cat = document.getElementById('threadCatInput').value;
   const title = document.getElementById('threadTitleInput').value.trim();
   const body = document.getElementById('threadBodyInput').value.trim();
-  if (!title || !body) return;
+  if (!title || (!body && !pendingThreadImageDataUrl)) return;
   const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
   const newId = 'th-' + Date.now();
   threads.unshift({
@@ -860,8 +987,10 @@ function submitNewForumThread() {
     date: new Date().toISOString().slice(0, 10),
     upvotes: 1,
     body,
+    image: pendingThreadImageDataUrl || '',
     replies: [],
   });
+  pendingThreadImageDataUrl = '';
   saveState(STORAGE_KEYS.threads, threads);
   selectedThreadId = newId;
   renderForumThreads();

@@ -35,37 +35,50 @@
 
   <main class="site-main">
     <section class="tab-section active">
-      <!-- Clean Single-Row Forum Control Bar -->
-      <div class="forum-unified-bar">
-        <div class="forum-bar-left">
-          <h2 style="margin:0; font-size:20px;">💬 Community Forums</h2>
-          <select id="forumCategorySelect" class="forum-cat-select" onchange="filterForumCategory(this.value)">
-            <option value="all">📂 All Topics</option>
-            <option value="Announcements">📢 Announcements</option>
-            <option value="General Discussion">💬 General Discussion</option>
-            <option value="Experimental Mode Lab">🧪 Experimental Mode Lab</option>
-            <option value="Custom Themes & Skins">🎨 Custom Themes &amp; Skins</option>
-            <option value="Bug Reports & Ideas">🐛 Bug Reports &amp; Ideas</option>
-            <option value="Artwork & Prompts">🖼 Artwork &amp; Prompts</option>
-          </select>
-        </div>
-
-        <div class="forum-bar-right">
-          <input type="search" id="forumSearchInput" class="search-input" placeholder="Search threads…" oninput="renderForumThreads()" />
-          <button class="btn-primary" onclick="openNewThreadModal()">+ New Thread</button>
-        </div>
+      <!-- MANDATORY SIGN-IN / REGISTRATION GATE (Shown when user is not logged in) -->
+      <div id="forumAuthGate" style="max-width:560px; margin:36px auto; background:var(--bg-card); border:1px solid var(--border); border-radius:14px; padding:28px; text-align:center; box-shadow:0 12px 32px rgba(0,0,0,0.45);">
+        <div style="font-size:40px; margin-bottom:8px;">🔒</div>
+        <h2 style="margin:0 0 8px; font-size:22px;">Members-Only Community Forum</h2>
+        <p class="muted-sub" style="margin-bottom:18px; line-height:1.55;">
+          To protect community discussions, share screen captures, and prevent impersonation, you must <strong>register and sign in</strong> before viewing or posting in the Fairybread Community Forums.
+        </p>
+        <button class="btn-primary" style="padding:11px 26px; font-size:14.5px;" onclick="openAuthModal()">🔐 Register / Sign In to Enter Forum</button>
       </div>
 
-      <div class="forum-layout">
-        <div class="forum-thread-list" id="forumThreadList"></div>
-        <div class="forum-thread-detail" id="forumThreadDetail">
-          <div class="empty-detail">Select any thread on the left to read and reply.</div>
-        </div>
-      </div>
+      <!-- UNLOCKED FORUM WORKSPACE (Visible ONLY after user registers & logs in) -->
+      <div id="forumUnlockedWorkspace" style="display:none;">
+        <!-- Clean Single-Row Forum Control Bar -->
+        <div class="forum-unified-bar">
+          <div class="forum-bar-left">
+            <h2 style="margin:0; font-size:20px;">💬 Community Forums</h2>
+            <select id="forumCategorySelect" class="forum-cat-select" onchange="filterForumCategory(this.value)">
+              <option value="all">📂 All Topics</option>
+              <option value="Announcements">📢 Announcements</option>
+              <option value="General Discussion">💬 General Discussion</option>
+              <option value="Experimental Mode Lab">🧪 Experimental Mode Lab</option>
+              <option value="Custom Themes & Skins">🎨 Custom Themes &amp; Skins</option>
+              <option value="Bug Reports & Ideas">🐛 Bug Reports &amp; Ideas</option>
+              <option value="Artwork & Prompts">🖼 Artwork &amp; Prompts</option>
+            </select>
+          </div>
 
-      <div class="github-helper-banner">
-        <span>👩‍💻 <strong>Want to inspect the code or contribute improvements on GitHub?</strong></span>
-        <a href="https://github.com/bm069au/fairybread" target="_blank" rel="noopener" class="btn-outline">Open Official GitHub Repository ↗</a>
+          <div class="forum-bar-right">
+            <input type="search" id="forumSearchInput" class="search-input" placeholder="Search threads…" oninput="renderForumThreads()" />
+            <button class="btn-primary" onclick="openNewThreadModal()">+ New Thread</button>
+          </div>
+        </div>
+
+        <div class="forum-layout">
+          <div class="forum-thread-list" id="forumThreadList"></div>
+          <div class="forum-thread-detail" id="forumThreadDetail">
+            <div class="empty-detail">Select any thread on the left to read and reply.</div>
+          </div>
+        </div>
+
+        <div class="github-helper-banner">
+          <span>👩‍💻 <strong>Want to inspect the code or contribute improvements on GitHub?</strong></span>
+          <a href="https://github.com/bm069au/fairybread" target="_blank" rel="noopener" class="btn-outline">Open Official GitHub Repository ↗</a>
+        </div>
       </div>
     </section>
   </main>
@@ -138,12 +151,31 @@
       <label>Thread Title
         <input type="text" id="threadTitleInput" placeholder="What would you like to discuss?" />
       </label>
-      <label>Message
-        <textarea id="threadBodyInput" rows="6" placeholder="Write your post here…"></textarea>
+      <label>Message (Tip: Press <code>Ctrl+V</code> here to paste a screenshot directly!)
+        <textarea id="threadBodyInput" rows="5" placeholder="Write your post here… (or press Ctrl+V to paste a screenshot)" onpaste="handleForumPasteImage(event, 'thread')"></textarea>
       </label>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:4px;">
+        <label class="btn-outline" style="cursor:pointer; padding:6px 12px; font-size:12.5px; margin:0;">
+          📷 Attach Picture / Screen Capture…
+          <input type="file" id="threadImageInput" accept="image/*" style="display:none;" onchange="handleForumFileSelect(event, 'thread')" />
+        </label>
+        <span class="muted-sub" style="font-size:11.5px;">Auto-optimized for fast forum loading</span>
+      </div>
+      <div id="threadImgPreviewWrap" style="display:none; margin-top:8px; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:8px; align-items:center; justify-content:space-between; gap:10px;">
+        <img id="threadImgPreview" src="" alt="Preview" style="max-height:80px; border-radius:6px; border:1px solid var(--border);" />
+        <button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="clearForumImage('thread')">✕ Remove Picture</button>
+      </div>
       <div class="modal-actions">
         <button class="btn-primary" onclick="submitNewForumThread()">Post Thread</button>
         <button class="btn-outline" onclick="closeAllModals()">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Full-Screen Image Lightbox Modal -->
+    <div id="forumImgLightbox" class="modal-card" style="display:none; max-width:92vw; width:auto; padding:12px; text-align:center;" onclick="event.stopPropagation()">
+      <img id="forumImgLightboxTarget" src="" alt="Full Screen Preview" style="max-width:88vw; max-height:80vh; border-radius:8px; border:1px solid var(--border);" />
+      <div class="modal-actions" style="justify-content:center; margin-top:10px;">
+        <button class="btn-outline" onclick="closeAllModals()">Close Preview</button>
       </div>
     </div>
 

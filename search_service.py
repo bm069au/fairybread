@@ -11,14 +11,24 @@ from urllib import parse as urllib_parse, request as urllib_request
 
 
 SEARCH_DEPTH_CHOICES: list[tuple[str, str]] = [
-    ("Default (Light Search)", "default"),
-    ("Moderate (/msearch)", "moderate"),
-    ("Deep (/deepsearch)", "deep"),
+    ("Default (Light — /search)", "default"),
+    ("Moderate (/searchm)", "moderate"),
+    ("Deep (/searchd)", "deep"),
 ]
 
 _SLASH_SEARCH_RE = re.compile(
-    r"^\s*/(deepsearch|deep|ds|msearch|ms|research|search|s|quick)\b\s*(.*)$",
+    r"^\s*/(searchd|deepsearch|deep|ds|searchm|msearch|ms|research|search|s|quick)\b\s*(.*)$",
     re.IGNORECASE | re.DOTALL,
+)
+
+_INLINE_COMMAND_RE = re.compile(
+    r"(?:^|(?<=\s))/(autopatch|code|tangent|fullrender|single|searchd|deepsearch|searchm|msearch|search)(?=\b|\s|$|[.,!?;:])",
+    re.IGNORECASE,
+)
+
+_RESTORE_COMMAND_RE = re.compile(
+    r"(?:^|(?<=\s))/restore(?:\s+(list|pin\s+v?\d+|v\d{1,4}|previous|prev|golden|baseline))?(?=\b|\s|$|[.,!?;:])",
+    re.IGNORECASE,
 )
 
 _NATURAL_DEEP_SEARCH_RE = re.compile(
@@ -30,6 +40,69 @@ _NATURAL_MOD_SEARCH_RE = re.compile(
     r"\b(?:do\s+a\s+moderate\s+search|moderate\s+search|search\s+the\s+web\s+for|search\s+online\s+for|look\s+up\s+online)\b",
     re.IGNORECASE,
 )
+
+
+def parse_turn_commands(
+    question: str,
+    ui_search_depth: str = "default",
+) -> dict[str, Any]:
+    """Parse inline slash switches (/autopatch, /code, /tangent, /fullrender, /search, /searchm, /searchd)
+    anywhere in the user's message (preserving any ATTACHED FILE EXCERPTS tail).
+    """
+    raw = question or ""
+    att_marker = "\n\nATTACHED FILE EXCERPTS (user-provided reference material):"
+    if att_marker in raw:
+        user_part, att_tail = raw.split(att_marker, 1)
+        att_tail = att_marker + att_tail
+    else:
+        user_part, att_tail = raw, ""
+
+    found_cmds: set[str] = set()
+    restore_target = ""
+
+    def _strip_restore(m: re.Match) -> str:
+        nonlocal restore_target
+        found_cmds.add("restore")
+        arg = (m.group(1) or "").strip().lower()
+        restore_target = arg if arg else "previous"
+        return ""
+
+    user_part = _RESTORE_COMMAND_RE.sub(_strip_restore, user_part)
+
+    def _strip_cmd(m: re.Match) -> str:
+        found_cmds.add(m.group(1).lower())
+        return ""
+
+    cleaned_user = _INLINE_COMMAND_RE.sub(_strip_cmd, user_part).strip()
+    cleaned_user = re.sub(r"[ \t]{2,}", " ", cleaned_user).strip(" ,")
+    if not cleaned_user and user_part.strip():
+        cleaned_user = user_part.strip()
+
+    autopatch = "autopatch" in found_cmds
+    include_code = autopatch or ("code" in found_cmds)
+    tangent = "tangent" in found_cmds
+    full_render = bool(found_cmds & {"fullrender", "single"})
+
+    if found_cmds & {"searchd", "deepsearch"}:
+        resolved_depth = "deep"
+    elif found_cmds & {"searchm", "msearch"}:
+        resolved_depth = "moderate"
+    elif "search" in found_cmds:
+        resolved_depth = "light"
+    else:
+        resolved_depth, cleaned_user = parse_search_command(cleaned_user, ui_search_depth)
+
+    final_q = (cleaned_user + att_tail) if att_tail else cleaned_user
+    return {
+        "cleaned_question": final_q,
+        "search_depth": resolved_depth,
+        "autopatch": autopatch,
+        "include_code": include_code,
+        "tangent": tangent,
+        "full_render": full_render,
+        "restore_target": restore_target,
+        "commands": sorted(found_cmds),
+    }
 
 
 def parse_search_command(
@@ -45,11 +118,22 @@ def parse_search_command(
     if m:
         cmd = m.group(1).lower()
         rest = m.group(2).strip() or raw
-        if cmd in {"deepsearch", "deep", "ds"}:
+        if cmd in {"searchd", "deepsearch", "deep", "ds"}:
             return "deep", rest
-        if cmd in {"msearch", "ms", "research"}:
+        if cmd in {"searchm", "msearch", "ms", "research"}:
             return "moderate", rest
         return "light", rest
+
+    # Check inline /searchd, /searchm, /search anywhere in the text
+    inline_m = re.search(r"(?:^|(?<=\s))/(searchd|deepsearch|searchm|msearch|search)\b", raw, re.IGNORECASE)
+    if inline_m:
+        icmd = inline_m.group(1).lower()
+        cleaned = re.sub(r"(?:^|(?<=\s))/(?:searchd|deepsearch|searchm|msearch|search)\b\s*", "", raw, flags=re.IGNORECASE).strip() or raw
+        if icmd in {"searchd", "deepsearch"}:
+            return "deep", cleaned
+        if icmd in {"searchm", "msearch"}:
+            return "moderate", cleaned
+        return "light", cleaned
 
     if _NATURAL_DEEP_SEARCH_RE.search(raw):
         return "deep", raw
