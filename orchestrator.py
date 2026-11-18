@@ -796,7 +796,7 @@ Instructions:
         applied_files: list[str] = []
         if is_autopatch:
             try:
-                from idle_service import execute_live_autopatches_in_text
+                from idle_service import execute_live_autopatches_in_text, execute_sandbox_tool
                 if synthesis and synthesis.text and "[IDLE_PATCH" in synthesis.text.upper():
                     cleaned_syn, applied_files, autopatch_summary = execute_live_autopatches_in_text(
                         synthesis.text, author="council_autopatch"
@@ -814,6 +814,66 @@ Instructions:
                                 if synthesis and synthesis.text:
                                     synthesis.text += f"\n\n---\n✓ **Verified & Staged Patch ({', '.join(_af)})**: {_asum}"
                                 break
+
+                # If no patch was applied yet (e.g. agents only called [TOOL: ...] or had a target/syntax mismatch),
+                # run up to 1 automatic In-Turn Coding Architect Self-Heal / Patch Generation pass!
+                if not applied_files and succeeded_initial:
+                    pref_order = ["deepseek", "mistral", "gemini", "openai", "qwen", "groq", "cerebras", "cohere"]
+                    lead_coder = next((c for c in pref_order if c in succeeded_initial), succeeded_initial[0])
+                    gathered_ctx = "\n\n".join(
+                        f"[{k.upper()}]:\n{v.response.text}"
+                        for k, v in active_results.items()
+                        if v.succeeded and v.response is not None
+                    )
+                    if synthesis and synthesis.text:
+                        if "[TOOL:" in synthesis.text:
+                            extra_t = execute_sandbox_tool(synthesis.text)
+                            if extra_t:
+                                gathered_ctx += f"\n\n[SYNTHESIS TOOL RESULT]:\n{extra_t}"
+                        gathered_ctx += f"\n\n[PRIOR SYNTHESIS / REJECTION DIAGNOSTIC]:\n{synthesis.text}"
+
+                    heal_prompt = (
+                        f"You are the Lead Coding Architect ({lead_coder.upper()}) executing an `/autopatch` work order in Fairybread.\n\n"
+                        f"USER REQUEST:\n{effective_question}\n\n"
+                        f"RETRIEVED SOURCE CODE & DIAGNOSTICS:\n{gathered_ctx[-12000:]}\n\n"
+                        f"INSTRUCTIONS:\n"
+                        f"1. If you still need to read exact lines before patching, emit `[TOOL: read_source_file file=\"...\" start=1 end=90]`.\n"
+                        f"2. Otherwise, emit the exact executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block now:\n"
+                        f"[IDLE_PATCH file=\"palace_gui.py\" summary=\"Short summary\"]\n"
+                        f"<<<TARGET\n"
+                        f"exact existing lines from the file (do NOT include line number prefixes like '123: ')\n"
+                        f"===REPLACE\n"
+                        f"updated replacement lines\n"
+                        f">>>\n"
+                        f"[/IDLE_PATCH]"
+                    )
+                    heal_res_map = self.dispatcher.dispatch(heal_prompt, provider_names=[lead_coder])
+                    heal_res = heal_res_map.get(lead_coder)
+                    if heal_res and heal_res.succeeded and heal_res.response and heal_res.response.text:
+                        heal_txt = heal_res.response.text
+                        # If the coder did one more [TOOL: read_source_file ...] hop, run it and do the final patch call
+                        if "[TOOL:" in heal_txt and "[IDLE_PATCH" not in heal_txt.upper():
+                            hop2_out = execute_sandbox_tool(heal_txt)
+                            if hop2_out:
+                                hop2_prompt = (
+                                    f"{heal_prompt}\n\n[SECOND-HOP SOURCE READ RESULT]:\n{hop2_out}\n\n"
+                                    f"Now emit the executable `[IDLE_PATCH file=\"...\" summary=\"...\"]` block using the exact lines above."
+                                )
+                                hop2_map = self.dispatcher.dispatch(hop2_prompt, provider_names=[lead_coder])
+                                hop2_res = hop2_map.get(lead_coder)
+                                if hop2_res and hop2_res.succeeded and hop2_res.response and hop2_res.response.text:
+                                    heal_txt = hop2_res.response.text
+                        if "[IDLE_PATCH" in heal_txt.upper():
+                            cleaned_h, _af2, _asum2 = execute_live_autopatches_in_text(
+                                heal_txt, author=f"{lead_coder}_autopatch"
+                            )
+                            if _af2:
+                                applied_files.extend(_af2)
+                                autopatch_summary = _asum2
+                                if synthesis and synthesis.text:
+                                    synthesis.text = f"{synthesis.text}\n\n{cleaned_h}"
+                                else:
+                                    synthesis = SynthesisResult(text=cleaned_h, succeeded=True, error=None)
             except Exception:
                 pass
 

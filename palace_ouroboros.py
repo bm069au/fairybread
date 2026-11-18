@@ -210,6 +210,15 @@ _FORBIDDEN_STAGE_TOKENS = (
 )
 
 
+def _strip_accidental_line_numbers(snippet: str) -> str:
+    """Strip leading '1234: ' prefixes if an AI accidentally copied line numbers from read_source_file output."""
+    import re
+    lines = (snippet or "").splitlines()
+    if lines and sum(1 for ln in lines if re.match(r"^\s*\d+:\s?", ln)) >= max(1, (len(lines) + 1) // 2):
+        return "\n".join(re.sub(r"^\s*\d+:\s?", "", ln, count=1) for ln in lines)
+    return snippet
+
+
 def stage_palace_replace(
     filename: str,
     target_snippet: str,
@@ -235,11 +244,47 @@ def stage_palace_replace(
     if not staged_file.exists():
         return False, f"Staged file '{clean_name}' not found."
 
-    content = staged_file.read_text(encoding="utf-8")
-    if target_snippet not in content:
-        return False, f"Target snippet not found in '{clean_name}'."
+    content = staged_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+    norm_target = (target_snippet or "").replace("\r\n", "\n")
+    norm_repl = (replacement_snippet or "").replace("\r\n", "\n")
 
-    updated = content.replace(target_snippet, replacement_snippet, 1)
+    if norm_target not in content:
+        # Try stripping accidental '1234: ' line-number prefixes
+        stripped_target = _strip_accidental_line_numbers(norm_target)
+        stripped_repl = _strip_accidental_line_numbers(norm_repl)
+        if stripped_target and stripped_target in content:
+            norm_target = stripped_target
+            norm_repl = stripped_repl
+
+    updated: str | None = None
+    if norm_target and norm_target in content:
+        updated = content.replace(norm_target, norm_repl, 1)
+    elif norm_target:
+        # Fallback: trailing-whitespace-tolerant line block match
+        src_lines = content.splitlines()
+        tgt_lines = [ln.rstrip() for ln in norm_target.splitlines()]
+        n_tgt = len(tgt_lines)
+        if n_tgt > 0:
+            for i in range(len(src_lines) - n_tgt + 1):
+                if [src_lines[i + j].rstrip() for j in range(n_tgt)] == tgt_lines:
+                    new_lines = src_lines[:i] + norm_repl.splitlines() + src_lines[i + n_tgt :]
+                    updated = "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
+                    break
+
+    if updated is None:
+        # Provide the closest matching line window from the actual file so the self-heal pass can fix it immediately
+        src_lines = content.splitlines()
+        first_nonempty = next((ln.strip() for ln in norm_target.splitlines() if ln.strip()), "")
+        hint_block = ""
+        if first_nonempty:
+            for idx, ln in enumerate(src_lines):
+                if first_nonempty[:28] in ln:
+                    s_i = max(0, idx - 4)
+                    e_i = min(len(src_lines), idx + 20)
+                    hint_block = "\nActual lines in file around match:\n" + "\n".join(src_lines[s_i:e_i])
+                    break
+        return False, f"Target snippet not found in '{clean_name}'.{hint_block}"
+
     staged_file.write_text(updated, encoding="utf-8")
     try:
         py_compile.compile(str(staged_file), doraise=True)

@@ -203,25 +203,51 @@ def execute_sandbox_tool(
             return f"[{safe} lines {s}-{e} of {len(lines)}]:\n{snippet}"
         except OSError as exc:
             return f"Error reading '{safe}': {exc}"
-    if name == "search_source_code":
+    if name in {"search_source_code", "grep_source"}:
         q = (query_arg or "").strip().lower()
         if not q:
             return "Provide query=\"...\" to search_source_code."
         hits: list[str] = []
+        context_blocks: list[str] = []
         try:
             for p in sorted(mirror_dir.iterdir()):
                 if not p.is_file() or p.suffix.lower() != ".py":
                     continue
-                for idx, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                file_lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                for idx, line in enumerate(file_lines, 1):
                     if q in line.lower():
                         hits.append(f"{p.name}:{idx}: {line.strip()[:100]}")
+                        if len(context_blocks) < 4:
+                            c_start = max(1, idx - 6)
+                            c_end = min(len(file_lines), idx + 14)
+                            verbatim_window = "\n".join(file_lines[c_start - 1 : c_end])
+                            context_blocks.append(
+                                f"--- [{p.name} verbatim lines {c_start}-{c_end} around match at line {idx}] ---\n{verbatim_window}"
+                            )
                         if len(hits) >= 15:
                             break
                 if len(hits) >= 15:
                     break
         except OSError:
             pass
-        return "\n".join(hits) if hits else f"No matches for '{query_arg}'."
+        if not hits:
+            return f"No matches for '{query_arg}'."
+        return "\n".join(hits) + ("\n\n" + "\n\n".join(context_blocks) if context_blocks else "")
+    if name == "run_python_check":
+        safe = Path(file_arg or "palace_gui.py").name
+        target = mirror_dir / safe
+        if not target.exists():
+            return f"File '{safe}' not found."
+        try:
+            import ast
+            code_txt = target.read_text(encoding="utf-8", errors="replace")
+            compile(code_txt, safe, "exec")
+            ast.parse(code_txt, filename=safe)
+            return f"[run_python_check ({safe})]: OK — compile() and ast.parse() succeeded with 0 syntax errors."
+        except SyntaxError as exc:
+            return f"[run_python_check ({safe})]: SYNTAX ERROR at line {exc.lineno}: {exc.msg}"
+        except Exception as exc:
+            return f"[run_python_check ({safe})]: Error: {exc}"
     if name == "inspect_palace_ui":
         audit_file = Path(sandbox_root) / "latest_ui_audit.json"
         if audit_file.exists():

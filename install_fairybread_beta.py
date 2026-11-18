@@ -19,7 +19,8 @@ import sys
 import webbrowser
 
 APP_VERSION = "0.9.1"
-VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION}"
+ARCH_TAG = "Win_x64"
+VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION} ({ARCH_TAG})"
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files") / VERSION_STAMPED_NAME
 UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERSION_STAMPED_NAME}"
 
