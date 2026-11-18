@@ -188,5 +188,65 @@ def compose_question(question: str, attachments: list[Attachment]) -> str:
     parts = [question, 'ATTACHED FILE EXCERPTS (user-provided reference material):']
     for item in attachments:
         note = ' [first 24,000 characters only]' if item.truncated else ''
-        parts.append(f'File: {item.name}{note}\n{item.text}')
+        stored_name = item.stored_path.name if item.stored_path is not None else ''
+        meta_tag = f'[ATTACHED_FILE_META kind="{item.kind}" name="{item.name}" stored="{stored_name}"]\n'
+        parts.append(f'{meta_tag}File: {item.name}{note}\n{item.text}')
     return '\n\n'.join(parts)
+
+
+def parse_user_message_attachments(content: str) -> tuple[str, list[dict[str, str]]]:
+    """Split a user prompt into (visible_user_text, attachment_visual_cards) so raw file dumps are hidden in the chat UI."""
+    marker = 'ATTACHED FILE EXCERPTS (user-provided reference material):'
+    if marker not in content:
+        return content, []
+
+    head, tail = content.split(marker, 1)
+    clean_text = head.rstrip()
+    up_dir = get_uploaded_files_dir()
+    attachments_out: list[dict[str, str]] = []
+    seen_names: set[str] = set()
+
+    import re
+    for m in re.finditer(r'\[ATTACHED_FILE_META\s+kind="([^"]+)"\s+name="([^"]+)"\s+stored="([^"]*)"\]', tail):
+        kind, name, stored_name = m.group(1), m.group(2), m.group(3)
+        resolved = (up_dir / stored_name) if stored_name else None
+        if (resolved is None or not resolved.exists()) and name:
+            p_name = Path(name)
+            candidates = sorted(
+                up_dir.glob(f"{p_name.stem[:48]}_*{p_name.suffix}"),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                reverse=True,
+            )
+            if candidates:
+                resolved = candidates[0]
+        attachments_out.append({
+            "kind": kind,
+            "name": name,
+            "path": str(resolved) if (resolved and resolved.exists()) else "",
+        })
+        seen_names.add(name)
+
+    for m in re.finditer(r'(?m)^File:\s+([^\r\n\[]+?)(?:\s+\[first 24,000 characters only\])?\s*$', tail):
+        fname = m.group(1).strip()
+        if not fname or fname in seen_names:
+            continue
+        p_name = Path(fname)
+        ext = p_name.suffix.lower()
+        kind = "image" if ext in IMAGE_EXTENSIONS else "text"
+        resolved = None
+        candidates = sorted(
+            up_dir.glob(f"{p_name.stem[:48]}_*{p_name.suffix}"),
+            key=lambda p: p.stat().st_mtime if p.exists() else 0,
+            reverse=True,
+        )
+        if candidates:
+            resolved = candidates[0]
+        attachments_out.append({
+            "kind": kind,
+            "name": fname,
+            "path": str(resolved) if (resolved and resolved.exists()) else "",
+        })
+        seen_names.add(fname)
+
+    return clean_text, attachments_out
+

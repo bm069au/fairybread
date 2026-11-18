@@ -321,8 +321,10 @@ class Composer(QTextEdit):
         self.setObjectName('composerInput')
         self.setAcceptRichText(False)
         self.setAcceptDrops(True)
+        if self.viewport() is not None:
+            self.viewport().setAcceptDrops(True)
         self.setAccessibleName('Message to Palace')
-        self.setPlaceholderText('Ask anything, @ to mention, or drop files')
+        self.setPlaceholderText('Ask anything, / for commands, @ to mention, or drop files')
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFixedHeight(28)
         self.textChanged.connect(self._adjust_height)
@@ -332,6 +334,40 @@ class Composer(QTextEdit):
         target = max(28, min(110, doc_height))
         if self.height() != target:
             self.setFixedHeight(target)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and (
+            (mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()))
+            or mime.hasImage()
+            or mime.hasText()
+        ):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and (
+            (mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()))
+            or mime.hasImage()
+            or mime.hasText()
+        ):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()):
+            self.files_added.emit([u.toLocalFile() for u in mime.urls() if u.isLocalFile()])
+            event.acceptProposedAction()
+            return
+        if mime is not None and mime.hasImage():
+            self.insertFromMimeData(mime)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def canInsertFromMimeData(self, source):
         return source.hasUrls() or source.hasImage() or super().canInsertFromMimeData(source)
@@ -1792,11 +1828,40 @@ class ManageAIsDialog(QDialog):
         lay.addLayout(form)
 
         self.idle_share_code_check = QCheckBox(
-            'Share Fairybread source code with agents (Read-Only — allows agents to inspect code and propose improvements)'
+            'Share Fairybread source code with agents (Reference + On-Demand Read — allows agents to inspect code and propose improvements)'
         )
-        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only access to Fairybread source code')
+        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only on-demand access to Fairybread source code')
         self.idle_share_code_check.setChecked(bool(idle_cfg.get('share_source_code', False)))
         lay.addWidget(self.idle_share_code_check)
+
+        from palace_config import get_source_mirror_dir
+        from idle_service import sync_source_to_sandbox
+        mirror_row = QHBoxLayout()
+        mirror_row.addWidget(QLabel('Shared Source Code Mirror Folder:'))
+        self.idle_mirror_dir_edit = QLineEdit(str(idle_cfg.get('source_mirror_dir') or get_source_mirror_dir(self.config_path)))
+        self.idle_mirror_dir_edit.setToolTip('Read-only folder where a copy of Fairybread source code is kept for AI inspection')
+        mirror_browse_btn = QPushButton('Browse…')
+        mirror_sync_btn = QPushButton('↻ Sync Code Copy Now')
+        mirror_row.addWidget(self.idle_mirror_dir_edit, 1)
+        mirror_row.addWidget(mirror_browse_btn)
+        mirror_row.addWidget(mirror_sync_btn)
+        lay.addLayout(mirror_row)
+
+        def _browse_mirror_dir():
+            cur = self.idle_mirror_dir_edit.text().strip() or str(get_source_mirror_dir(self.config_path))
+            picked = QFileDialog.getExistingDirectory(self, 'Choose Shared Source Code Mirror Folder', cur)
+            if picked and not picked.upper().startswith('M:'):
+                self.idle_mirror_dir_edit.setText(picked)
+
+        def _sync_mirror_now():
+            target = self.idle_mirror_dir_edit.text().strip()
+            if target and not target.upper().startswith('M:'):
+                save_idle_settings({'source_mirror_dir': target}, config_path=self.config_path)
+            dest = sync_source_to_sandbox(self.config_path)
+            QMessageBox.information(self, 'Source Code Mirror Synced', f'Synced read-only Fairybread source code copy to:\n{dest}')
+
+        mirror_browse_btn.clicked.connect(_browse_mirror_dir)
+        mirror_sync_btn.clicked.connect(_sync_mirror_now)
 
         self.idle_live_patch_check = QCheckBox(
             '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
@@ -2481,6 +2546,7 @@ class ManageAIsDialog(QDialog):
                 'pause_when_joined': self.idle_pause_check.isChecked(),
                 'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
                 'allow_live_self_modify': bool(self.idle_live_patch_check.isChecked()) if hasattr(self, 'idle_live_patch_check') else False,
+                'source_mirror_dir': self.idle_mirror_dir_edit.text().strip() if hasattr(self, 'idle_mirror_dir_edit') else '',
                 'memory_access_mode': self.idle_memory_mode_combo.currentData(),
                 'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
             },
@@ -2870,6 +2936,8 @@ class PalaceWindow(QMainWindow):
         self.chat.setAccessibleName('Conversation history')
         self.chat.setOpenLinks(False)
         self.chat.setAcceptDrops(False)
+        if self.chat.viewport() is not None:
+            self.chat.viewport().setAcceptDrops(False)
         self.chat.anchorClicked.connect(self._on_chat_anchor_clicked)
         self.chat.anchor_action_requested.connect(lambda s: self._on_chat_anchor_clicked(QUrl(s)))
         normal_lay.addWidget(self.chat, 1)
@@ -2881,15 +2949,23 @@ class PalaceWindow(QMainWindow):
         card_layout.setContentsMargins(12, 8, 12, 8)
         card_layout.setSpacing(6)
 
+        self.staged_attachments_frame = QFrame()
+        self.staged_attachments_frame.setStyleSheet('background: transparent; border: none;')
+        self.staged_attachments_layout = QHBoxLayout(self.staged_attachments_frame)
+        self.staged_attachments_layout.setContentsMargins(0, 2, 0, 4)
+        self.staged_attachments_layout.setSpacing(8)
+        self.staged_attachments_frame.hide()
+        card_layout.addWidget(self.staged_attachments_frame)
+
         self.attachment_list = QListWidget()
         self.attachment_list.setObjectName('attachmentList')
         self.attachment_list.setAccessibleName('Attached files; select a file then Remove selected')
-        self.attachment_list.setMaximumHeight(60)
+        self.attachment_list.setFixedHeight(0)
         self.attachment_list.hide()
         card_layout.addWidget(self.attachment_list)
 
         self.composer = Composer(enter_to_send=bool(ui_cfg.get('enter_to_send', True)))
-        self.composer.setToolTip('Type message, paste image (Ctrl+V), or drop files')
+        self.composer.setToolTip('Type message, / for commands, paste image (Ctrl+V), or drop files')
         self.composer.files_added.connect(self.add_files)
         self.composer.image_pasted.connect(self.add_pasted_image)
         self.composer.send_requested.connect(self.send_message)
@@ -2904,6 +2980,17 @@ class PalaceWindow(QMainWindow):
         self.attach_button.setToolTip('Attach files or pictures (Ctrl+O)')
         self.attach_button.clicked.connect(self.choose_files)
         controls.addWidget(self.attach_button)
+
+        self.slash_cmd_btn = QPushButton('/ Commands ▾')
+        self.slash_cmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.slash_cmd_btn.setToolTip('Insert slash command switch (/autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, /fullrender)')
+        self.slash_cmd_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.slash_cmd_btn.clicked.connect(self._show_slash_commands_menu)
+        controls.addWidget(self.slash_cmd_btn)
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
@@ -3608,18 +3695,25 @@ class PalaceWindow(QMainWindow):
         self.close()
 
     def _on_ouroboros_startup_ready(self):
-        """Signal READY heartbeat to `palace_watchdog.py`, capture self-inspection snapshot, and process handoff."""
+        """Signal READY heartbeat to `palace_watchdog.py`, capture self-inspection snapshot, and process handoff/continuation tasks."""
         try:
             from palace_ouroboros import (
                 capture_palace_window_snapshot,
+                consume_pending_crash_report,
+                consume_post_reboot_task,
+                ensure_golden_baseline_edition,
                 read_pending_handoff,
                 write_ready_heartbeat,
             )
             write_ready_heartbeat(os.getpid(), status='READY')
-            # Capture a live self-inspection snapshot of the PalaceWindow widget buffer (never desktop)
+            try:
+                ensure_golden_baseline_edition()
+            except Exception:
+                pass
             capture_palace_window_snapshot(self, tag='palace_ui_snapshot')
             handoff = read_pending_handoff(consume=True)
             if handoff:
+                self._post_patch_soak_until = time.time() + 60.0
                 reboot_info = handoff.get('reboot', {})
                 diff_sum = reboot_info.get('applied_diff_summary', 'Upgrade applied.')
                 continuity = handoff.get('continuity', {})
@@ -3627,7 +3721,7 @@ class PalaceWindow(QMainWindow):
                 self.status_label.setTextFormat(Qt.TextFormat.RichText)
                 self.status_label.setToolTip(f'Ouroboros Hot-Reboot Complete: {diff_sum}')
                 self.status_label.setText(
-                    '<span style="color:#22c55e; font-weight:700;">✓ Ready</span>'
+                    '<span style="color:#22c55e; font-weight:700;">✓ Ready (60s Soak Active)</span>'
                 )
                 if resume_prompt and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
                     self.composer.setPlainText(resume_prompt)
@@ -3647,6 +3741,60 @@ class PalaceWindow(QMainWindow):
                     self.workspace_tabs.setCurrentIndex(1)
                     self._refresh_idle_view()
                     QTimer.singleShot(900, lambda: self.idle_switch_btn.setChecked(True))
+
+            crash_rep = consume_pending_crash_report()
+            if crash_rep and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                exc_info = crash_rep.get('exception', {})
+                tb_tail = str(crash_rep.get('traceback') or '').strip()
+                failed_ed = crash_rep.get('failed_edition', 'latest')
+                restored_ed = crash_rep.get('restored_edition', 'last_known_good')
+                trig = crash_rep.get('trigger', 'runtime_exception')
+                report_md = (
+                    f"### 🚨 Zero-Touch Autofallback Triggered — Agent Patch Automatically Reverted\n"
+                    f"- **Failed Edition:** `{failed_ed}` (Quarantined)\n"
+                    f"- **Restored Safe Edition:** `{restored_ed}`\n"
+                    f"- **Trigger:** `{trig}` — `{exc_info.get('type', 'Exception')}: {exc_info.get('message', '')}`\n\n"
+                    f"```text\n{tb_tail[-1200:]}\n```\n"
+                    f"*Fairybread automatically rolled back and relaunched so you didn't have to manually restore. The AI Council now has this traceback in session context to fix the issue cleanly.*"
+                )
+                self.append_message('assistant', report_md, contributors=['palace'])
+                try:
+                    self.store.context(self.session_id).append_exchange(
+                        '[SYSTEM AUTO-FALLBACK REPORT]',
+                        report_md,
+                        contributors=['palace'],
+                    )
+                except Exception:
+                    pass
+
+            cont_task = consume_post_reboot_task()
+            if cont_task and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                target_sid = str(cont_task.get('chat_session_id') or '').strip()
+                if target_sid and target_sid != self.session_id:
+                    try:
+                        self.store.select(target_sid)
+                        self.session_id = self.store.selected
+                        self.refresh_sessions()
+                        self.load_history()
+                    except Exception:
+                        pass
+                origin = cont_task.get('origin', 'autopatch_hot_reboot')
+                active_ed = cont_task.get('active_edition', 'latest')
+                ctx_info = cont_task.get('context') or {}
+                orig_req = ctx_info.get('user_request_summary', '')
+                attempted = ctx_info.get('what_was_attempted', '')
+                inst_list = cont_task.get('instructions_for_agents') or []
+                inst_joined = ' '.join(inst_list)
+                auto_prompt = (
+                    f"/code [POST-REBOOT CONTINUATION — {origin.upper()} (Active Edition: {active_ed})]: "
+                    f"Attempted: \"{attempted}\" for user request: \"{orig_req}\". "
+                    f"{inst_joined}"
+                )
+                def _fire_post_reboot_continuation(prompt_txt=auto_prompt):
+                    if self.worker is None:
+                        self.composer.setPlainText(prompt_txt)
+                        self.send_message()
+                QTimer.singleShot(1100, _fire_post_reboot_continuation)
         except Exception:
             pass
 
@@ -6085,21 +6233,64 @@ class PalaceWindow(QMainWindow):
         speaker_messages = item.get('speaker_messages') or []
         item_idx = item['idx']
 
-        safe = html.escape(content).replace('\n', '<br>')
         t_dict = load_theme_dict(getattr(self, 'active_theme', 'dark'))
         user_txt_col = str(t_dict.get('user_bubble_text', '#f0f6fc'))
         if role == 'user':
+            import urllib.parse
+            from attachment_service import parse_user_message_attachments
+            clean_user_text, user_atts = parse_user_message_attachments(content)
+            safe_user = html.escape(clean_user_text).replace('\n', '<br>')
+            att_rows_html = ''
+            for att in user_atts:
+                a_kind = att.get('kind', 'text')
+                a_name = att.get('name', 'Attached file')
+                a_path = att.get('path', '')
+                safe_a_name = html.escape(a_name)
+                if a_kind == 'image' and a_path and Path(a_path).exists():
+                    img_url = Path(a_path).as_uri()
+                    enc_path = urllib.parse.quote(a_path)
+                    att_rows_html += (
+                        f'<tr><td align="right" style="padding-bottom:6px;">'
+                        f'<a href="open-img:{enc_path}" style="text-decoration:none;" title="Click to view {safe_a_name}">'
+                        f'<img src="{img_url}" width="160" />'
+                        f'</a>'
+                        f'</td></tr>'
+                    )
+                else:
+                    icon_chr = '🖼' if a_kind == 'image' else '📄'
+                    if a_path and Path(a_path).exists():
+                        enc_path = urllib.parse.quote(a_path)
+                        pill_inner = (
+                            f'<a href="reveal-file:{enc_path}" style="color:#e6edf3; text-decoration:none; font-weight:600;" '
+                            f'title="Click to reveal {safe_a_name} in Explorer">{icon_chr}&nbsp;&nbsp;{safe_a_name}</a>'
+                        )
+                    else:
+                        pill_inner = f'<span style="color:#e6edf3; font-weight:600;">{icon_chr}&nbsp;&nbsp;{safe_a_name}</span>'
+                    att_rows_html += (
+                        f'<tr><td align="right" style="padding-bottom:6px;">'
+                        f'<table cellspacing="0" cellpadding="0" style="background:#21262d; border:1px solid #30363d; border-radius:12px;">'
+                        f'<tr><td style="padding:5px 12px; font-size:12.5px;">{pill_inner}</td></tr>'
+                        f'</table>'
+                        f'</td></tr>'
+                    )
+            text_row_html = (
+                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px; line-height:1.48;">'
+                f'{safe_user}'
+                f'</td></tr>'
+            ) if safe_user.strip() else ''
             return (
                 f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px; margin-bottom:16px;">'
                 f'<tr><td width="26%"></td>'
                 f'<td align="right">'
                 f'<table cellspacing="0" cellpadding="0" style="background:transparent; border:none;">'
-                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px; line-height:1.48;">'
-                f'{safe}'
-                f'</td></tr></table>'
+                f'{att_rows_html}'
+                f'{text_row_html}'
+                f'</table>'
                 f'</td>'
                 f'<td width="20"></td></tr></table>'
             )
+
+        safe = html.escape(content).replace('\n', '<br>')
 
         if speaker and speaker not in {'assistant', 'palace'}:
             active_contribs = [speaker]
@@ -6295,6 +6486,12 @@ class PalaceWindow(QMainWindow):
             prefix = 'open-img:' if raw.startswith('open-img:') else 'img:'
             img_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
             self._open_image_viewer_dialog(img_path)
+        elif raw.startswith('promote-draft:'):
+            draft_title = urllib.parse.unquote(raw.split('promote-draft:', 1)[1])
+            self.composer.setPlainText(
+                f'/fullrender I like "{draft_title}"! Please render the finished full-resolution master (size: 16:9 HD / Facebook Banner / Square HD).'
+            )
+            self.composer.setFocus()
         elif raw.startswith('save-file:') or raw.startswith('save-img:'):
             prefix = 'save-file:' if raw.startswith('save-file:') else 'save-img:'
             file_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
@@ -6631,10 +6828,77 @@ class PalaceWindow(QMainWindow):
             entry = QListWidgetItem(f'📎 {item.name}  ·  {len(item.text):,} chars{note}')
             entry.setToolTip(item.text[:1200])
             self.attachment_list.addItem(entry)
+        self.attachment_list.setFixedHeight(0)
         self.attachment_list.setVisible(bool(self.attachments))
         self.remove_button.setVisible(bool(self.attachments))
         if self.attachments:
             self.attachment_list.setCurrentRow(0)
+
+        if hasattr(self, 'staged_attachments_layout'):
+            while self.staged_attachments_layout.count():
+                child = self.staged_attachments_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            for idx, item in enumerate(self.attachments):
+                kind = getattr(item, 'kind', 'text')
+                stored_p = getattr(item, 'stored_path', None) or getattr(item, 'path', None)
+                if kind == 'image' and stored_p and Path(stored_p).exists():
+                    # ChatGPT-style mini picture icon (no text clutter!) with top-right ✕ remove button
+                    chip = QFrame()
+                    chip.setFixedSize(62, 62)
+                    chip.setToolTip(item.name)
+                    chip.setStyleSheet(
+                        'QFrame { background: #161b22; border: 1px solid #30363d; border-radius: 10px; }'
+                    )
+                    thumb_lbl = QLabel(chip)
+                    thumb_lbl.setGeometry(2, 2, 58, 58)
+                    pix = QPixmap(str(stored_p))
+                    if not pix.isNull():
+                        thumb_lbl.setPixmap(
+                            pix.scaled(58, 58, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                        )
+                    thumb_lbl.setStyleSheet('border-radius: 8px; border: none;')
+                    rm_btn = QPushButton('✕', chip)
+                    rm_btn.setGeometry(40, 2, 20, 20)
+                    rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    rm_btn.setToolTip(f'Remove {item.name}')
+                    rm_btn.setStyleSheet(
+                        'QPushButton { background: rgba(13,17,23,0.88); color: #f0f6fc; border: 1px solid #30363d; border-radius: 10px; font-size: 10px; font-weight: 700; } '
+                        'QPushButton:hover { background: #da3633; color: #ffffff; }'
+                    )
+                    rm_btn.clicked.connect(lambda _c=False, i=idx: self._remove_attachment_at(i))
+                    self.staged_attachments_layout.addWidget(chip)
+                else:
+                    # ChatGPT-style dark rounded document pill (📄 filename.txt  ✕)
+                    chip = QFrame()
+                    chip.setStyleSheet(
+                        'QFrame { background: #21262d; border: 1px solid #30363d; border-radius: 12px; }'
+                    )
+                    chip_lay = QHBoxLayout(chip)
+                    chip_lay.setContentsMargins(10, 5, 6, 5)
+                    chip_lay.setSpacing(7)
+                    txt_lbl = QLabel(f'📄  <b>{html.escape(item.name)}</b>')
+                    txt_lbl.setTextFormat(Qt.TextFormat.RichText)
+                    txt_lbl.setStyleSheet('color: #e6edf3; font-size: 12.5px; border: none; background: transparent;')
+                    chip_lay.addWidget(txt_lbl)
+                    rm_btn = QPushButton('✕')
+                    rm_btn.setFixedSize(20, 20)
+                    rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    rm_btn.setToolTip(f'Remove {item.name}')
+                    rm_btn.setStyleSheet(
+                        'QPushButton { background: #30363d; color: #c9d1d9; border: none; border-radius: 10px; font-size: 10px; font-weight: 700; } '
+                        'QPushButton:hover { background: #da3633; color: #ffffff; }'
+                    )
+                    rm_btn.clicked.connect(lambda _c=False, i=idx: self._remove_attachment_at(i))
+                    chip_lay.addWidget(rm_btn)
+                    self.staged_attachments_layout.addWidget(chip)
+            self.staged_attachments_layout.addStretch(1)
+            self.staged_attachments_frame.setVisible(bool(self.attachments))
+
+    def _remove_attachment_at(self, idx: int):
+        if self.worker is None and 0 <= idx < len(self.attachments):
+            self.attachments.pop(idx)
+            self.refresh_attachments()
 
     @Slot()
     def remove_attachment(self):
@@ -6647,10 +6911,40 @@ class PalaceWindow(QMainWindow):
         if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
             event.acceptProposedAction()
 
+    def dragMoveEvent(self, event):
+        if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+
     def dropEvent(self, event):
-        if self.worker is None:
+        if self.worker is None and event.mimeData().hasUrls():
             self.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
             event.acceptProposedAction()
+
+    def _show_slash_commands_menu(self):
+        menu = QMenu(self)
+        commands = [
+            ('/search', '🔍 /search — Light web search'),
+            ('/searchm', '🔎 /searchm — Moderate multi-angle sharded web search'),
+            ('/searchd', '🌐 /searchd — Deep exhaustive 15–25 site web research'),
+            ('/tangent', '↗ /tangent — Side question (ignore prior chat context, still saved)'),
+            ('/fullrender', '🖼 /fullrender — Render 1 full-res master image immediately (skip 3 drafts)'),
+        ]
+        for cmd_token, label in commands:
+            act = QAction(label, menu)
+
+            def _insert_cmd(_checked=False, tok=cmd_token):
+                cur = self.composer.toPlainText()
+                if tok not in cur:
+                    sep = ' ' if (cur and not cur.endswith(' ')) else ''
+                    self.composer.setPlainText(f'{cur}{sep}{tok} ')
+                    cursor = self.composer.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    self.composer.setTextCursor(cursor)
+                self.composer.setFocus()
+
+            act.triggered.connect(_insert_cmd)
+            menu.addAction(act)
+        menu.exec(self.slash_cmd_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
 
     def _on_palace_code_btn_toggled(self, on: bool):
         self.palace_code_btn.setIcon(code_shield_qicon(on))
@@ -6662,8 +6956,8 @@ class PalaceWindow(QMainWindow):
         menu = QMenu(self)
         choices = [
             ('default', '🔍 Default (Light Search — /search)'),
-            ('moderate', '🔎 Moderate (Sharded Multi-Angle — /msearch)'),
-            ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /deepsearch)'),
+            ('moderate', '🔎 Moderate (Sharded Multi-Angle — /searchm)'),
+            ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /searchd)'),
         ]
         for depth_key, label in choices:
             act = QAction(label, menu)
@@ -7042,6 +7336,35 @@ class PalaceWindow(QMainWindow):
             warnings.append(f'Synthesis: {result.synthesis.error}')
         if any(warnings):
             self.show_notice('\n'.join(w for w in warnings if w))
+        applied_ap = getattr(result, 'applied_autopatch_files', None) or []
+        ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
+        if applied_ap and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+            self.show_notice(f'⚡ /autopatch Verified & Staged ({", ".join(applied_ap)}): {ap_sum} — Hot-Rebooting in 1.5s…')
+            try:
+                from palace_ouroboros import write_post_reboot_task
+                is_already_cont = '[POST-REBOOT CONTINUATION' in (self.last_question or '')
+                if not is_already_cont:
+                    write_post_reboot_task(
+                        origin='autopatch_hot_reboot',
+                        chat_session_id=self.session_id,
+                        user_request_summary=self.last_question,
+                        what_was_attempted=ap_sum or f'Modified {", ".join(applied_ap)}',
+                        instructions_for_agents=[
+                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
+                            'Review what you were doing and confirm to the user that the update is live and working (do NOT call /autopatch again unless a fix failed).',
+                        ],
+                        chain_depth=1,
+                    )
+            except Exception:
+                pass
+            def _trigger_autopatch_reboot():
+                import subprocess, sys
+                wd_script = Path(__file__).with_name('palace_watchdog.py')
+                subprocess.Popen(
+                    [sys.executable, str(wd_script), '--skip-tests', '--summary', ap_sum or 'Normal Mode /autopatch'],
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                )
+            QTimer.singleShot(1500, _trigger_autopatch_reboot)
 
     def show_desktop_toast(self, title: str, message: str):
         try:
@@ -7276,6 +7599,38 @@ def _seed_demo_store(store: SessionStore):
         store.save()
 
 
+def _trigger_zero_touch_autofallback(trigger: str, exc_type: str, exc_msg: str, tb_str: str, session_id: str = 'legacy') -> None:
+    """Write forensic crash_report.json + post_reboot_task.json and invoke palace_watchdog.py --auto-rollback."""
+    try:
+        import subprocess
+        from palace_ouroboros import write_crash_report, write_post_reboot_task
+        write_crash_report(
+            trigger=trigger,
+            exc_type=exc_type,
+            exc_message=exc_msg,
+            traceback_str=tb_str,
+        )
+        write_post_reboot_task(
+            origin='crash_autofallback',
+            chat_session_id=session_id,
+            user_request_summary='Automatic recovery from crashed agent patch',
+            what_was_attempted=f'{exc_type}: {exc_msg}',
+            instructions_for_agents=[
+                'Examine the Zero-Touch Autofallback crash report above and the relevant source code lines.',
+                'Review what you were doing when the patch crashed, explain the root cause to the user, and propose a safe fix.',
+            ],
+            chain_depth=1,
+        )
+        wd_script = Path(__file__).with_name('palace_watchdog.py')
+        if wd_script.exists():
+            subprocess.Popen(
+                [sys.executable, str(wd_script), '--auto-rollback'],
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+    except Exception:
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Palace Windows interface')
     parser.add_argument('--demo', action='store_true', help='Local simulated responses in separate preview storage; no credentials or APIs.')
@@ -7293,9 +7648,32 @@ def main(argv=None):
         app.setWindowIcon(fairybread_app_qicon())
     except Exception:
         pass
+
+    window_ref = [None]
+    orig_excepthook = sys.excepthook
+
+    def _palace_runtime_excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb_str = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        win = window_ref[0]
+        soak_until = float(getattr(win, '_post_patch_soak_until', 0.0) or 0.0) if win is not None else 0.0
+        sid = str(getattr(win, 'session_id', 'legacy') or 'legacy') if win is not None else 'legacy'
+        if time.time() <= soak_until:
+            _trigger_zero_touch_autofallback(
+                trigger='runtime_soak_exception',
+                exc_type=getattr(exc_type, '__name__', str(exc_type)),
+                exc_msg=str(exc_value),
+                tb_str=tb_str,
+                session_id=sid,
+            )
+            os._exit(2)
+        orig_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _palace_runtime_excepthook
+
     try:
         if args.demo:
-            import os
+            import os as _os
             from bootstrap import build_palace
             from providers import ProviderResponse
 
@@ -7304,14 +7682,14 @@ def main(argv=None):
                     self.label = label
 
                 def generate(self, prompt):
-                    import time
-                    time.sleep(0.2)
+                    import time as _t
+                    _t.sleep(0.2)
                     return ProviderResponse(
                         text='Assuming you managed the logistics, after a short burn it would take approximately six years for GPT to reach the Kuiper Belt.',
                         provider=self.label.lower()
                     )
 
-            preview_root = Path(os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview'
+            preview_root = Path(_os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview'
             store = SessionStore(preview_root)
             _seed_demo_store(store)
             proposal_service = MemoryProposalService(
@@ -7332,8 +7710,15 @@ def main(argv=None):
             )
         else:
             window = PalaceWindow()
+        window_ref[0] = window
     except Exception as exc:
-        QMessageBox.critical(None, 'Palace could not start', str(exc))
+        import traceback
+        _trigger_zero_touch_autofallback(
+            trigger='startup_constructor_crash',
+            exc_type=type(exc).__name__,
+            exc_msg=str(exc),
+            tb_str=traceback.format_exc(),
+        )
         return 1
     window.show()
     return app.exec()

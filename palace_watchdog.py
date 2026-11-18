@@ -70,6 +70,16 @@ def perform_hot_reboot(
     resumption_prompt: str = "",
     skip_tests: bool = False,
 ) -> tuple[bool, str]:
+    # 0. Sync any newer files from SOURCE_REPO_DIR (E:\Visual_studio\Palace) into STAGING_DIR first
+    # so direct repo edits are never overwritten by older staging files!
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    if SOURCE_REPO_DIR.exists():
+        for fname in EDITABLE_PALACE_FILES:
+            repo_f = SOURCE_REPO_DIR / fname
+            staged_f = STAGING_DIR / fname
+            if repo_f.exists() and (not staged_f.exists() or repo_f.stat().st_mtime >= staged_f.stat().st_mtime):
+                shutil.copy2(repo_f, staged_f)
+
     # 1. Preflight Gate (L3)
     print("[Watchdog] Running Preflight Gate (py_compile + unittest)...")
     test_res = validate_staged_palace(run_unit_tests=not skip_tests)

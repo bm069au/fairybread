@@ -1112,13 +1112,27 @@ def list_palace_stored_files(
     return items
 
 
+def get_source_mirror_dir(config_path: Path = CONFIG_PATH) -> Path:
+    """Return the configured Shared Source Code Mirror folder (defaulting to C:\\Palace_Idle_Sandbox\\source_mirror or %LOCALAPPDATA%\\Palace\\source_mirror)."""
+    try:
+        idle_cfg = load_idle_settings(config_path)
+        custom = str(idle_cfg.get("source_mirror_dir") or "").strip()
+        if custom and not custom.upper().startswith("M:"):
+            return Path(custom)
+    except Exception:
+        pass
+    if IDLE_SANDBOX_ROOT.exists():
+        return IDLE_SANDBOX_ROOT / "source_mirror"
+    return get_palace_data_root(config_path) / "source_mirror"
+
+
 def build_palace_source_context(
     question: str = "",
     *,
     force_include: bool = False,
     max_chars: int = 14_000,
 ) -> str:
-    """Return read-only Palace source code context for Normal Mode debugging & improvement discussions."""
+    """Return a lightweight Source Code Reference Manifest + On-Demand Read Tool instructions (instead of dumping 14,000 chars of raw code)."""
     q_lower = (question or "").lower()
     code_keywords = (
         "palace_gui", "idle_service", "orchestrator", "synthesizer",
@@ -1129,8 +1143,8 @@ def build_palace_source_context(
     if not force_include and not auto_triggered:
         return ""
 
-    mirror_dir = IDLE_SANDBOX_ROOT / "source_mirror"
-    src_dir = mirror_dir if mirror_dir.exists() else Path(__file__).resolve().parent
+    mirror_dir = get_source_mirror_dir()
+    src_dir = mirror_dir if (mirror_dir.exists() and any(mirror_dir.glob("*.py"))) else Path(__file__).resolve().parent
     excluded = {"key.txt", "credentials.json", "palace_config.json"}
     try:
         py_files = sorted(
@@ -1143,38 +1157,25 @@ def build_palace_source_context(
     if not py_files:
         return ""
 
-    manifest = ", ".join(p.name for p in py_files[:30])
-    prioritized: list[Path] = []
-    core_names = ["palace_gui.py", "orchestrator.py", "idle_service.py", "palace_config.py", "synthesizer.py"]
-    for p in py_files:
-        if p.name.lower() in q_lower or p.stem.lower() in q_lower:
-            prioritized.append(p)
-    for cname in core_names:
-        for p in py_files:
-            if p.name == cname and p not in prioritized:
-                prioritized.append(p)
+    manifest = ", ".join(p.name for p in py_files[:35])
+    matched = [p for p in py_files if p.name.lower() in q_lower or p.stem.lower() in q_lower]
 
-    excerpts: list[str] = [
-        f"PALACE APPLICATION SOURCE CODE (Read-Only Mirror in {src_dir}):\n"
-        f"Available Python modules: {manifest}"
+    lines = [
+        f"FAIRYBREAD SOURCE CODE REFERENCE (Read-Only Mirror at `{src_dir}`):",
+        f"Available Python modules ({len(py_files)}): {manifest}",
+        "ON-DEMAND SOURCE CODE TOOLS (Use these instead of full-file injection):",
+        '- `[TOOL: list_source_files]` -> List all files in the source mirror',
+        '- `[TOOL: search_source_code query="search_term"]` -> Search across all .py files for matching lines',
+        '- `[TOOL: read_source_file file="palace_gui.py" start=1 end=80]` -> Read specific line range on demand',
+        '- `[TOOL: inspect_palace_ui]` -> Run live PalaceWindow geometry & UI self-audit',
     ]
-    used = len(excerpts[0])
-    for p in prioritized[:4]:
+    for p in matched[:2]:
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            txt = p.read_text(encoding="utf-8", errors="replace")
+            lines.append(f"\n--- REFERENCED MODULE HEADER ({p.name}, {len(txt.splitlines())} lines) ---\n{txt[:1800]}")
         except OSError:
-            continue
-        budget = max(1200, (max_chars - used) // 2)
-        snippet = text[:budget]
-        if len(text) > budget:
-            snippet += f"\n... [truncated {len(text) - budget} chars of {p.name}]"
-        block = f"\n--- FILE: {p.name} ---\n{snippet}"
-        if used + len(block) > max_chars:
-            break
-        excerpts.append(block)
-        used += len(block)
-
-    return "\n".join(excerpts)
+            pass
+    return "\n".join(lines)
 
 
 DEFAULT_TOOL_SETTINGS: dict[str, bool] = {

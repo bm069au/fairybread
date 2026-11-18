@@ -107,17 +107,24 @@ def _safe_filename(raw_name: str, fallback_prefix: str = "idle_note") -> str:
 
 def sync_source_to_sandbox(
     source_dir: Path | None = None,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> list[str]:
-    """Copy Palace source code (.py, .md) into C:\\Palace_Idle_Sandbox\\source_mirror\\ for read-only agent inspection.
-
-    Also writes C:\\Palace_Idle_Sandbox\\IDLE_CHARTER_AND_RULES.md so agents can reference rules via tool without prompt bloat.
-    """
+    """Copy Palace source code (.py, .md) into the configured source_mirror_dir for read-only agent inspection."""
     src = source_dir or Path(__file__).resolve().parent
-    mirror_dir = Path(sandbox_root) / "source_mirror"
+    if sandbox_root is not None and not str(sandbox_root).endswith(".json"):
+        mirror_dir = Path(sandbox_root) / "source_mirror"
+        rules_parent = Path(sandbox_root)
+    else:
+        try:
+            from palace_config import get_source_mirror_dir
+            cfg_p = Path(sandbox_root) if (sandbox_root is not None and str(sandbox_root).endswith(".json")) else None
+            mirror_dir = get_source_mirror_dir(cfg_p) if cfg_p else get_source_mirror_dir()
+        except Exception:
+            mirror_dir = IDLE_SANDBOX_ROOT / "source_mirror"
+        rules_parent = mirror_dir.parent
     try:
         mirror_dir.mkdir(parents=True, exist_ok=True)
-        rules_file = Path(sandbox_root) / "IDLE_CHARTER_AND_RULES.md"
+        rules_file = rules_parent / "IDLE_CHARTER_AND_RULES.md"
         rules_file.write_text(DEFAULT_IDLE_INSTRUCTION + "\n", encoding="utf-8")
     except OSError:
         return []
@@ -153,9 +160,22 @@ def execute_sandbox_tool(
     end_line: int = 80,
     sandbox_root: Path = IDLE_SANDBOX_ROOT,
 ) -> str:
-    """Execute a Stage-1 sandboxed read-only tool for Idle Mode agents."""
+    """Execute a Stage-1 sandboxed read-only tool for Idle or Normal Mode agents."""
+    if "[TOOL:" in (tool_name or "").upper():
+        return execute_all_code_tools_in_text(tool_name, sandbox_root=sandbox_root)
+
     name = (tool_name or "").strip().lower()
     mirror_dir = Path(sandbox_root) / "source_mirror"
+    if not mirror_dir.exists() or not any(mirror_dir.glob("*.py")):
+        try:
+            from palace_config import get_source_mirror_dir
+            cfg_mirror = get_source_mirror_dir()
+            if cfg_mirror.exists() and any(cfg_mirror.glob("*.py")):
+                mirror_dir = cfg_mirror
+            else:
+                mirror_dir = Path(__file__).resolve().parent
+        except Exception:
+            mirror_dir = Path(__file__).resolve().parent
     if name == "read_rules":
         rules_path = Path(sandbox_root) / "IDLE_CHARTER_AND_RULES.md"
         if rules_path.exists():
@@ -223,6 +243,84 @@ def execute_sandbox_tool(
         except Exception as exc:
             return f"Validation error: {exc}"
     return f"Unknown tool '{name}'."
+
+
+def execute_all_code_tools_in_text(
+    response_text: str,
+    *,
+    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+) -> str:
+    """Parse and run all [TOOL: ...] tags in response_text and return concatenated tool results."""
+    if not response_text or "[TOOL:" not in response_text.upper():
+        return ""
+    outputs: list[str] = []
+    for match in _IDLE_TOOL_PATTERN.finditer(response_text):
+        t_name = (match.group("name") or "").strip()
+        t_file = (match.group("file") or "").strip()
+        t_query = (match.group("query") or "").strip()
+        t_start = int(match.group("start") or 1)
+        t_end = int(match.group("end") or 80)
+        out = execute_sandbox_tool(
+            t_name,
+            file_arg=t_file,
+            query_arg=t_query,
+            start_line=t_start,
+            end_line=t_end,
+            sandbox_root=sandbox_root,
+        )
+        outputs.append(f"[🛠 Tool `{t_name}` result]:\n{out}")
+    return "\n\n".join(outputs)
+
+
+def execute_live_autopatches_in_text(
+    response_text: str,
+    *,
+    author: str = "council_autopatch",
+) -> tuple[str, list[str], str]:
+    """Parse any [IDLE_PATCH file="..."] blocks in response_text, stage & preflight-verify them via palace_ouroboros,
+    and return (cleaned_text, applied_files, status_or_reboot_summary).
+    """
+    if not response_text or "[IDLE_PATCH" not in response_text.upper():
+        return response_text, [], ""
+
+    applied_files: list[str] = []
+    summaries: list[str] = []
+    status_notes: list[str] = []
+
+    def _run_patch(match: re.Match) -> str:
+        p_file = (match.group("file") or "").strip()
+        p_sum = (match.group("summary") or f"Autopatch to {p_file} by {author}").strip()
+        p_target = match.group("target") or ""
+        p_repl = match.group("replacement") or ""
+        if not p_target.strip() or p_target.strip() == "exact existing lines":
+            return ""
+        try:
+            from palace_ouroboros import stage_palace_replace, sync_live_to_staging
+            if not applied_files:
+                sync_live_to_staging()
+            ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=author)
+            if ok:
+                dev_file = Path(__file__).resolve().parent / Path(p_file).name
+                if dev_file.exists():
+                    cur_txt = dev_file.read_text(encoding="utf-8")
+                    if p_target in cur_txt:
+                        dev_file.write_text(cur_txt.replace(p_target, p_repl, 1), encoding="utf-8")
+                applied_files.append(p_file)
+                summaries.append(p_sum)
+                status_notes.append(f"✓ **Verified & Staged Patch (`{p_file}`)**: {msg}")
+                return f"[⚡ Autopatch Applied: `{p_file}` — {p_sum}]"
+            else:
+                status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {msg}")
+                return f"[⚠ Autopatch Rejected: `{p_file}` — {msg}]"
+        except Exception as exc:
+            status_notes.append(f"⚠ **Autopatch Error (`{p_file}`)**: {exc}")
+            return ""
+
+    cleaned = _IDLE_PATCH_PATTERN.sub(_run_patch, response_text).strip()
+    if status_notes:
+        cleaned = f"{cleaned}\n\n---\n" + "\n".join(status_notes)
+    summary_str = "; ".join(summaries)
+    return cleaned, applied_files, summary_str
 
 
 class IdleMemoryStore:

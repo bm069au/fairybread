@@ -656,6 +656,81 @@ def read_pending_handoff(consume: bool = True) -> dict[str, Any] | None:
         return None
 
 
+POST_REBOOT_TASK_PATH = SANDBOX_ROOT / "post_reboot_task.json"
+
+
+def write_post_reboot_task(
+    *,
+    origin: str,
+    chat_session_id: str,
+    user_request_summary: str,
+    what_was_attempted: str,
+    instructions_for_agents: list[str] | None = None,
+    chain_depth: int = 1,
+) -> Path | None:
+    """Atomically write a consume-once `post_reboot_task.json` continuation file before hot-reboot or autofallback."""
+    if chain_depth > 2:
+        return None
+    SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
+    editions = list_code_editions()
+    active_ed = editions[-1].get("version", "latest") if editions else "v0001"
+    payload = {
+        "schema_version": 1,
+        "task_id": str(uuid4()),
+        "created_at_utc": datetime.now().isoformat(),
+        "origin": origin,
+        "active_edition": active_ed,
+        "chat_session_id": chat_session_id or "legacy",
+        "context": {
+            "user_request_summary": (user_request_summary or "")[:600],
+            "what_was_attempted": (what_was_attempted or "")[:600],
+        },
+        "instructions_for_agents": list(
+            instructions_for_agents
+            or [
+                "Inspect what just happened after the hot-reboot or recovery ([TOOL: inspect_palace_ui] or read the updated code).",
+                "Review what you were doing for the user's request and confirm whether the update is complete or needs any follow-up.",
+            ]
+        ),
+        "loop_guard": {
+            "reboot_chain_depth": chain_depth,
+            "max_chain_depth": 2,
+        },
+    }
+    tmp_p = POST_REBOOT_TASK_PATH.with_suffix(".json.tmp")
+    raw_bytes = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    with open(tmp_p, "wb") as fh:
+        fh.write(raw_bytes)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_p, POST_REBOOT_TASK_PATH)
+    return POST_REBOOT_TASK_PATH
+
+
+def consume_post_reboot_task() -> dict[str, Any] | None:
+    """Atomically read and unlink `post_reboot_task.json` on startup so it executes at most once."""
+    if not POST_REBOOT_TASK_PATH.exists():
+        return None
+    try:
+        data = json.loads(POST_REBOOT_TASK_PATH.read_text(encoding="utf-8"))
+        try:
+            POST_REBOOT_TASK_PATH.unlink()
+        except OSError:
+            pass
+        if not isinstance(data, dict):
+            return None
+        depth = int((data.get("loop_guard") or {}).get("reboot_chain_depth", 1))
+        if depth > 2:
+            return None
+        return data
+    except Exception:
+        try:
+            POST_REBOOT_TASK_PATH.unlink()
+        except OSError:
+            pass
+        return None
+
+
 def write_ready_heartbeat(pid: int, status: str = "READY") -> None:
     """Called by `PalaceWindow` once startup and UI initialization succeed."""
     try:
