@@ -1,7 +1,7 @@
-"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.9.1).
+"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.9.1e).
 
 Complies with all strict installer rules:
-(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.9.1 (editable + Browse button)
+(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.9.1e (editable + Browse button)
 (b) Checks for and refuses to overwrite any existing installation
 (c) Accounts for Windows Program Files standard-user write permissions (ACL + %LOCALAPPDATA%\\Palace runtime storage)
 (d) Shows a post-install summary of the exact folder and files installed + One-Click USD Donation ($5/$10/$20/$50/Other) & Corporate License banner
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import webbrowser
 
-APP_VERSION = "0.9.1d"
+APP_VERSION = "0.9.1e"
 VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION}"
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files") / VERSION_STAMPED_NAME
 UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERSION_STAMPED_NAME}"
@@ -35,10 +35,10 @@ CORP_MAILTO = "mailto:bm069au@gmail.com?subject=Fairybread%20Corporate%20License
 
 CLEAN_DEFAULT_CONFIG = {
     "providers": {
-        "gemini": {"enabled": True, "model": "gemini-2.5-flash"},
+        "gemini": {"enabled": True, "model": "gemini-4-neon"},
         "openai": {"enabled": True},
         "deepseek": {"enabled": True, "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1"},
-        "qwen": {"enabled": True, "model": "Qwen/Qwen3.8-27B", "base_url": "https://api.deepinfra.com/v1/openai"},
+        "qwen": {"enabled": True, "model": "Qwen/Qwen3.8-27B", "base_url": "https://api.deepinfra.com/v1/openai", "max_tokens": 8192},
         "cohere": {"enabled": True},
         "mistral": {"enabled": True, "model": "codestral-latest"},
     },
@@ -46,6 +46,39 @@ CLEAN_DEFAULT_CONFIG = {
         "enter_to_send": True,
         "badge_display_mode": "icons_only",
         "theme": "dark",
+    },
+    "voice_settings": {
+        "tts_engine": "auto",
+        "voice_name": "coral",
+        "gemini_voice_name": "Kore",
+        "voice_style": "warm_american",
+        "custom_style_prompt": "",
+        "speech_speed": 1.0,
+        "microphone_device": "System default",
+        "mic_gain_percent": 150,
+        "silence_timeout_ms": 1500,
+        "volume_percent": 100,
+        "auto_speak_responses": False,
+        "voice_companion_enabled": True,
+        "spoken_summary_for_background": True,
+    },
+    "graphics_settings": {
+        "prompt_duo": ["gemini", "openai"],
+        "prompt_duo_fallback": ["deepseek", "qwen", "cerebras", "groq"],
+        "primary_image_engine": "gemini-3-pro-image",
+        "draft_image_engine": "gemini-3.1-flash-image",
+        "fallback_image_engines": ["gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+    },
+    "agent_defaults": {
+        "approval_policy": "on_request",
+        "sandbox_mode": "sandbox_write",
+        "web_search_default": "default",
+        "output_detail": "high",
+        "reasoning_summary": "auto",
+        "synthesizer_mode": "auto_fast",
+        "smart_routing": True,
+        "provider_timeout_sec": 45,
+        "straggler_grace_sec": 15,
     },
 }
 
