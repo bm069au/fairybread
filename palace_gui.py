@@ -7244,12 +7244,19 @@ class PalaceWindow(QMainWindow):
         if note:
             self.active_steering_state.setdefault('notes', []).append(note)
             self.composer.clear()
-            self.steer_button.setText(f"🧭 Steer ({len(self.active_steering_state['notes'])}) ▾")
+            count = len(self.active_steering_state['notes'])
+            self.steer_button.setText(f"🧭 Steer ({count}) ▾")
             self.steer_button.setStyleSheet(
                 'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
                 'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
             )
-            self.show_notice(f'✓ Live Steering injected into active turn: "{note[:60]}"')
+            # Display the steer comment in chat stream immediately so the user can see it!
+            self.append_message(
+                'user',
+                f"[LIVE STEER #{count}]: {note}",
+                render=True
+            )
+            self.show_notice(f'✓ Live Steering #{count} injected into active turn: "{note[:60]}"')
         else:
             self.show_notice('✓ Live Steering updated (Fairybread Code & tool flags synced to active turn).')
 

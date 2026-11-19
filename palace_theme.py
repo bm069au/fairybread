@@ -754,29 +754,38 @@ def generate_ai_image_to_png(
 
 def _unwrap_real_image_tags(text: str) -> str:
     """Unwrap real [GENERATE_IMAGE prompt="..." ...] tags that an AI accidentally placed inside
-    ```text / ```markdown fences or standalone line backticks, while keeping short documentation
+    ```text / ```markdown fences or standalone/inline backticks, while keeping short documentation
     examples (like `Use `[GENERATE_IMAGE prompt="example" title="demo"]` to draw.`) untouched as code.
     """
     if not text or "[GENERATE_IMAGE" not in text.upper():
         return text
 
     def _unwrap_fence(m: re.Match) -> str:
-        inner = (m.group(2) or "").strip().strip("`").strip()
+        inner = (m.group(3) or "").strip()
+        while inner.startswith("`") and inner.endswith("`") and len(inner) > 2:
+            inner = inner[1:-1].strip()
         if inner.upper().startswith("[GENERATE_IMAGE") and inner.endswith("]"):
-            return inner
+            return f"\n{inner}\n"
         return m.group(0)
 
-    out = re.sub(r"```([a-zA-Z0-9_-]*)\s*\n(\s*`?\[GENERATE_IMAGE\b.*?\]`?\s*)\n```", _unwrap_fence, text, flags=re.DOTALL | re.IGNORECASE)
+    # 1. Matches 3+ backticks fences with optional language and optional trailing spaces/newlines
+    out = re.sub(
+        r"(`{3,})([a-zA-Z0-9_-]*)[ \t]*\n?([ \t]*`?\[GENERATE_IMAGE\b.*?\]`?[ \t]*)\n?\1",
+        _unwrap_fence,
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
-    def _unwrap_standalone_backtick(m: re.Match) -> str:
+    # 2. Matches [GENERATE_IMAGE ...] enclosed in backticks anywhere as a real tag
+    def _unwrap_backticked_tag(m: re.Match) -> str:
         tag = m.group(1)
         attrs = _parse_generate_image_attrs(tag)
         p = attrs.get("prompt", "").strip()
-        if len(p) >= 15 and p.lower() not in {"example", "..."}:
+        if len(p) >= 10 and p.lower() not in {"example", "...", "rich visual description"}:
             return tag
         return m.group(0)
 
-    out = re.sub(r"(?m)^\s*`(\[GENERATE_IMAGE\b[^\n`]+?\])`\s*$", _unwrap_standalone_backtick, out)
+    out = re.sub(r"`+(\[GENERATE_IMAGE\b[^`\n]+?\])`+", _unwrap_backticked_tag, out)
     return out
 
 

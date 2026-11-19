@@ -24,7 +24,12 @@ _DIRECT_DRAW_VERB_RE = re.compile(
 )
 
 _VISUAL_TOPIC_RE = re.compile(
-    r"\b(?:images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?)\b",
+    r"\b(?:"
+    r"images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|"
+    r"wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?|"
+    r"drafts?|options?|variants?|render(?:s|ing)?|fullrender|avatar|avatars?|pfp|profile\s*pic(?:ture)?|"
+    r"draw(?:s|ing)?|paint(?:s|ing)?|sketch(?:es|ing)?"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -54,6 +59,8 @@ def classify_drawing_request(question: str) -> str:
         return "none"
     is_draw = bool(_DIRECT_DRAW_VERB_RE.search(q))
     if not is_draw and re.match(r"^(?:draw|paint|sketch)\b", q, re.IGNORECASE):
+        is_draw = True
+    if not is_draw and re.search(r"\b(?:draft\s*\d+|option\s*\d+|choice\s*\d+|pick\s*\d+|variant\s*\d+|choose\s+draft|pick\s+draft|render\s+draft|fullrender)\b", q, re.IGNORECASE):
         is_draw = True
     if not is_draw:
         return "none"
@@ -788,7 +795,13 @@ Instructions:
         synth_question = effective_question
         if steering_state and steering_state.get("notes"):
             notes_joined = "\n".join(f"- {n}" for n in steering_state["notes"])
-            synth_question += f"\n\n[LIVE OPERATOR STEERING INSTRUCTIONS]:\n{notes_joined}"
+            synth_question = (
+                f"{effective_question}\n\n"
+                f"[LIVE OPERATOR STEERING OVERRIDE — PRIORITIZE OVER PEER DELIBERATIONS]:\n"
+                f"The operator injected the following live steering instructions during the turn. "
+                f"You MUST follow these instructions even if earlier peer responses did not address them:\n"
+                f"{notes_joined}"
+            )
             if not is_autopatch:
                 try:
                     from search_service import is_terse_patch_confirmation, parse_turn_commands
@@ -822,9 +835,20 @@ Instructions:
                     session_context=session_context
                 )
             )
+            has_prior_image_context = bool(
+                session_context and (
+                    "[GENERATE_IMAGE" in session_context.upper()
+                    or "DRAFT" in session_context.upper()
+                    or "RENDER" in session_context.upper()
+                )
+            )
+            is_visual_turn = (
+                drawing_mode != "none"
+                or bool(_VISUAL_TOPIC_RE.search(effective_question))
+                or has_prior_image_context
+            )
             if (
-                drawing_mode == "none"
-                and not _VISUAL_TOPIC_RE.search(effective_question)
+                not is_visual_turn
                 and synthesis
                 and synthesis.text
                 and "[GENERATE_IMAGE" in synthesis.text.upper()
