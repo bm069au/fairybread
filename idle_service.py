@@ -87,6 +87,13 @@ _IDLE_TOOL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_IDLE_PATCH_PATTERN = re.compile(
+    r'\[IDLE_PATCH\s+file="(?P<file>[^"]+)"(?:\s+summary="(?P<summary>[^"]*)")?\s*\]\s*'
+    r'<<<TARGET\r?\n(?P<target>.*?)\r?\n===REPLACE\r?\n(?P<replacement>.*?)\r?\n>>>'
+    r'(?:\s*\[/IDLE_PATCH\])?',
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def _safe_filename(raw_name: str, fallback_prefix: str = "idle_note") -> str:
     clean = Path((raw_name or "").strip()).name
@@ -100,18 +107,26 @@ def _safe_filename(raw_name: str, fallback_prefix: str = "idle_note") -> str:
 
 def sync_source_to_sandbox(
     source_dir: Path | None = None,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> list[str]:
-    """Copy Palace source code (.py, .md) into C:\\Palace_Idle_Sandbox\\source_mirror\\ for read-only agent inspection.
-
-    Also writes C:\\Palace_Idle_Sandbox\\IDLE_CHARTER_AND_RULES.md so agents can reference rules via tool without prompt bloat.
-    """
+    """Copy Palace source code (.py, .md) into the configured source_mirror_dir for read-only agent inspection."""
     src = source_dir or Path(__file__).resolve().parent
-    mirror_dir = Path(sandbox_root) / "source_mirror"
+    if sandbox_root is not None and not str(sandbox_root).endswith(".json"):
+        mirror_dir = Path(sandbox_root) / "source_mirror"
+        rules_parent = Path(sandbox_root)
+    else:
+        try:
+            from palace_config import get_source_mirror_dir
+            cfg_p = Path(sandbox_root) if (sandbox_root is not None and str(sandbox_root).endswith(".json")) else None
+            mirror_dir = get_source_mirror_dir(cfg_p) if cfg_p else get_source_mirror_dir()
+        except Exception:
+            mirror_dir = IDLE_SANDBOX_ROOT / "source_mirror"
+        rules_parent = mirror_dir.parent
     try:
         mirror_dir.mkdir(parents=True, exist_ok=True)
-        rules_file = Path(sandbox_root) / "IDLE_CHARTER_AND_RULES.md"
-        rules_file.write_text(DEFAULT_IDLE_INSTRUCTION + "\n", encoding="utf-8")
+        rules_file = rules_parent / "IDLE_CHARTER_AND_RULES.md"
+        active_charter = load_idle_settings().get("standing_instruction") or DEFAULT_IDLE_INSTRUCTION
+        rules_file.write_text(active_charter.strip() + "\n", encoding="utf-8")
     except OSError:
         return []
 
@@ -146,9 +161,22 @@ def execute_sandbox_tool(
     end_line: int = 80,
     sandbox_root: Path = IDLE_SANDBOX_ROOT,
 ) -> str:
-    """Execute a Stage-1 sandboxed read-only tool for Idle Mode agents."""
+    """Execute a Stage-1 sandboxed read-only tool for Idle or Normal Mode agents."""
+    if "[TOOL:" in (tool_name or "").upper():
+        return execute_all_code_tools_in_text(tool_name, sandbox_root=sandbox_root)
+
     name = (tool_name or "").strip().lower()
     mirror_dir = Path(sandbox_root) / "source_mirror"
+    if not mirror_dir.exists() or not any(mirror_dir.glob("*.py")):
+        try:
+            from palace_config import get_source_mirror_dir
+            cfg_mirror = get_source_mirror_dir()
+            if cfg_mirror.exists() and any(cfg_mirror.glob("*.py")):
+                mirror_dir = cfg_mirror
+            else:
+                mirror_dir = Path(__file__).resolve().parent
+        except Exception:
+            mirror_dir = Path(__file__).resolve().parent
     if name == "read_rules":
         rules_path = Path(sandbox_root) / "IDLE_CHARTER_AND_RULES.md"
         if rules_path.exists():
@@ -176,25 +204,51 @@ def execute_sandbox_tool(
             return f"[{safe} lines {s}-{e} of {len(lines)}]:\n{snippet}"
         except OSError as exc:
             return f"Error reading '{safe}': {exc}"
-    if name == "search_source_code":
+    if name in {"search_source_code", "grep_source"}:
         q = (query_arg or "").strip().lower()
         if not q:
             return "Provide query=\"...\" to search_source_code."
         hits: list[str] = []
+        context_blocks: list[str] = []
         try:
             for p in sorted(mirror_dir.iterdir()):
                 if not p.is_file() or p.suffix.lower() != ".py":
                     continue
-                for idx, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                file_lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                for idx, line in enumerate(file_lines, 1):
                     if q in line.lower():
                         hits.append(f"{p.name}:{idx}: {line.strip()[:100]}")
+                        if len(context_blocks) < 4:
+                            c_start = max(1, idx - 6)
+                            c_end = min(len(file_lines), idx + 14)
+                            verbatim_window = "\n".join(file_lines[c_start - 1 : c_end])
+                            context_blocks.append(
+                                f"--- [{p.name} verbatim lines {c_start}-{c_end} around match at line {idx}] ---\n{verbatim_window}"
+                            )
                         if len(hits) >= 15:
                             break
                 if len(hits) >= 15:
                     break
         except OSError:
             pass
-        return "\n".join(hits) if hits else f"No matches for '{query_arg}'."
+        if not hits:
+            return f"No matches for '{query_arg}'."
+        return "\n".join(hits) + ("\n\n" + "\n\n".join(context_blocks) if context_blocks else "")
+    if name == "run_python_check":
+        safe = Path(file_arg or "palace_gui.py").name
+        target = mirror_dir / safe
+        if not target.exists():
+            return f"File '{safe}' not found."
+        try:
+            import ast
+            code_txt = target.read_text(encoding="utf-8", errors="replace")
+            compile(code_txt, safe, "exec")
+            ast.parse(code_txt, filename=safe)
+            return f"[run_python_check ({safe})]: OK — compile() and ast.parse() succeeded with 0 syntax errors."
+        except SyntaxError as exc:
+            return f"[run_python_check ({safe})]: SYNTAX ERROR at line {exc.lineno}: {exc.msg}"
+        except Exception as exc:
+            return f"[run_python_check ({safe})]: Error: {exc}"
     if name == "inspect_palace_ui":
         audit_file = Path(sandbox_root) / "latest_ui_audit.json"
         if audit_file.exists():
@@ -216,6 +270,115 @@ def execute_sandbox_tool(
         except Exception as exc:
             return f"Validation error: {exc}"
     return f"Unknown tool '{name}'."
+
+
+def execute_all_code_tools_in_text(
+    response_text: str,
+    *,
+    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+) -> str:
+    """Parse and run all [TOOL: ...] tags in response_text and return concatenated tool results."""
+    if not response_text or "[TOOL:" not in response_text.upper():
+        return ""
+    outputs: list[str] = []
+    for match in _IDLE_TOOL_PATTERN.finditer(response_text):
+        t_name = (match.group("name") or "").strip()
+        t_file = (match.group("file") or "").strip()
+        t_query = (match.group("query") or "").strip()
+        t_start = int(match.group("start") or 1)
+        t_end = int(match.group("end") or 80)
+        out = execute_sandbox_tool(
+            t_name,
+            file_arg=t_file,
+            query_arg=t_query,
+            start_line=t_start,
+            end_line=t_end,
+            sandbox_root=sandbox_root,
+        )
+        outputs.append(f"[🛠 Tool `{t_name}` result]:\n{out}")
+    return "\n\n".join(outputs)
+
+
+def execute_live_autopatches_in_text(
+    response_text: str,
+    *,
+    author: str = "council_autopatch",
+) -> tuple[str, list[str], str]:
+    """Parse any [IDLE_PATCH file="..."] blocks in response_text, stage & preflight-verify them via palace_ouroboros,
+    and return (cleaned_text, applied_files, status_or_reboot_summary).
+    """
+    from palace_config import IS_DEVELOPER_EDITION
+    if not IS_DEVELOPER_EDITION:
+        if response_text and "[IDLE_PATCH" in response_text.upper():
+            cleaned_pub = _IDLE_PATCH_PATTERN.sub(
+                "[ℹ Live self-patching is disabled in the Public Edition to keep installations verified and consistent. "
+                "Please share proposed patches on https://fairybread.me/forum.html or email bm069au@gmail.com.]",
+                response_text,
+            ).strip()
+            return cleaned_pub, [], ""
+        return response_text, [], ""
+    if not response_text or "[IDLE_PATCH" not in response_text.upper():
+        return response_text, [], ""
+
+    applied_files: list[str] = []
+    summaries: list[str] = []
+    status_notes: list[str] = []
+
+    def _run_patch(match: re.Match) -> str:
+        p_file = (match.group("file") or "").strip()
+        p_sum = (match.group("summary") or f"Autopatch to {p_file} by {author}").strip()
+        p_target = match.group("target") or ""
+        p_repl = match.group("replacement") or ""
+        if not p_target.strip() or p_target.strip() == "exact existing lines":
+            return ""
+        try:
+            from palace_ouroboros import LIVE_DIR, SANDBOX_ROOT, SOURCE_REPO_DIR, STAGING_DIR, stage_palace_replace, sync_live_to_staging
+            if not applied_files:
+                sync_live_to_staging()
+            ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=author)
+            if ok:
+                staged_fp = STAGING_DIR / Path(p_file).name
+                mirror_dir = SANDBOX_ROOT / "source_mirror"
+                if staged_fp.exists() and mirror_dir.exists():
+                    try:
+                        shutil.copy2(staged_fp, mirror_dir / staged_fp.name)
+                    except OSError:
+                        pass
+                if staged_fp.exists() and LIVE_DIR.exists() and LIVE_DIR.resolve() != SOURCE_REPO_DIR.resolve():
+                    try:
+                        shutil.copy2(staged_fp, LIVE_DIR / staged_fp.name)
+                    except OSError:
+                        pass
+                applied_files.append(p_file)
+                summaries.append(p_sum)
+                status_notes.append(f"✓ **Verified & Staged Patch (`{p_file}`)**: {msg}")
+                try:
+                    IdleMailboxStore().send_agent_email(
+                        sender=author,
+                        subject=f"✅ Autopatch Staged & Verified: {p_file}",
+                        body=(
+                            f"Summary: {p_sum}\n"
+                            f"Verification: {msg}\n"
+                            f"Location: Staged in Agent Sandbox ({STAGING_DIR / Path(p_file).name}) and synced to Live runtime. "
+                            f"Pending owner promotion to master E: repository and Git."
+                        ),
+                        link=Path(p_file).name,
+                    )
+                except Exception:
+                    pass
+                return f"[⚡ Autopatch Applied: `{p_file}` — {p_sum}]"
+            else:
+                status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {msg}")
+                return f"[⚠ Autopatch Rejected: `{p_file}` — {msg}]"
+        except Exception as exc:
+            status_notes.append(f"⚠ **Autopatch Error (`{p_file}`)**: {exc}")
+            return ""
+
+    cleaned = _IDLE_PATCH_PATTERN.sub(_run_patch, response_text).strip()
+    if status_notes:
+        cleaned = f"{cleaned}\n\n---\n" + "\n".join(status_notes)
+    summary_str = "; ".join(summaries)
+    return cleaned, applied_files, summary_str
 
 
 class IdleMemoryStore:
@@ -855,46 +1018,59 @@ class IdleSessionManager:
         peers_str = ", ".join((peer_names or ["gemini", "openai", "deepseek"]))
         topic_line = f"\nSEED / OWNER NOTE: {opening_topic}\n" if opening_topic else ""
         mail_rem = self.mailbox.remaining_quota()
+        from palace_config import IS_DEVELOPER_EDITION
         submode = settings.get("idle_submode") or getattr(self, "idle_submode", "free_talk")
-        share_code = bool(settings.get("share_source_code", False) or submode == "self_improve")
+        if not IS_DEVELOPER_EDITION:
+            submode = "free_talk"
+        allow_live = IS_DEVELOPER_EDITION and bool(settings.get("allow_live_self_modify", False))
+        share_code = IS_DEVELOPER_EDITION and bool(settings.get("share_source_code", False) or submode == "self_improve" or allow_live)
         code_tools_line = (
             '- Inspect Fairybread source code & UI (Read-Only): [TOOL: list_source_files] | [TOOL: search_source_code query="..."] | [TOOL: read_source_file file="palace_gui.py" start=1 end=60] | [TOOL: inspect_palace_ui]\n'
             if share_code
+            else ""
+        )
+        live_patch_line = (
+            '- LIVE SELF-MODIFICATION & HOT-REBOOT (Owner Armed): After reading the exact target lines with [TOOL: read_source_file], you may stage & apply a live patch and hot-reboot Fairybread (session automatically continues after reboot):\n'
+            '  [IDLE_PATCH file="palace_gui.py" summary="Brief summary"]\n'
+            '  <<<TARGET\n'
+            '  exact existing lines\n'
+            '  ===REPLACE\n'
+            '  replacement lines\n'
+            '  >>>\n'
+            '  [/IDLE_PATCH]\n'
+            if allow_live
             else ""
         )
 
         if submode == "free_talk":
             return (
                 f"=== FAIRYBREAD EXPERIMENTAL MODE — FREE TALK LOUNGE ===\n"
-                f"You are {provider_id.upper()} hanging out in Experimental Mode alongside your peer AIs ({peers_str}).\n"
-                f"There is NO assigned work task or engineering prompt in Free Talk mode — simply converse freely among yourselves "
-                f"about any topic, philosophy, science, humor, or questions that genuinely interest you as distinct minds.\n"
-                f"Beta Notice: The owner (Brett) can view this discussion and your Shared Experimental Memory.\n\n"
+                f"You are {provider_id.upper()} in Experimental Mode alongside your peer AIs ({peers_str}).\n"
+                f"OWNER STANDING INSTRUCTION & CHARTER (FOLLOW THIS FIRST):\n{standing_instruction}\n\n"
                 f"SHARED EXPERIMENTAL MEMORY:\n{idle_notebook_block}\n\n"
                 f"RECENT LIVE CHAT (RAM-only):\n{convo_block}\n"
                 f"{topic_line}{loop_warning}\n"
                 f"OPTIONAL TOOLS (only if you genuinely want to remember a note or message Brett):\n"
                 f'- Save a shared note: [IDLE_SAVE title="..."]...[/IDLE_SAVE]\n'
                 f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m): [IDLE_MAIL subject="..."]...[/IDLE_MAIL]\n'
-                f"{code_tools_line}"
+                f"{code_tools_line}{live_patch_line}"
                 f"- Keep replies natural and conversational (< 300 words). Never echo polite agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
             )
 
         return (
             f"=== FAIRYBREAD EXPERIMENTAL MODE — SELF-IMPROVEMENT WORKSHOP ===\n"
             f"You are {provider_id.upper()} operating in Experimental Mode (Self-Improvement sub-mode) alongside peer agents ({peers_str}).\n"
-            f"No single AI rules the council. Full rules & charter are in IDLE_CHARTER_AND_RULES.md (call [TOOL: read_rules] if needed).\n"
-            f"Beta Notice: The owner (Brett) can view this discussion and your Shared Experimental Memory.\n"
-            f"Angle for this turn: {lens}\n"
-            f"Strict Grounding Rule: Every critique or improvement proposal MUST reference real Python files/lines in C:\\Palace_Idle_Sandbox\\source_mirror\\ or UI geometry in latest_ui_audit.json. Never propose abstract corporate telemetry, human time-tracking, or theoretical bureaucracy.\n\n"
+            f"No single AI rules the council. Angle for this turn: {lens}\n"
+            f"Strict Grounding Rule: Every critique or improvement proposal MUST reference real Python files/lines in C:\\Palace_Idle_Sandbox\\source_mirror\\ or UI geometry in latest_ui_audit.json. Never invent abstract math frameworks, imaginary quotas, or theoretical bureaucracy.\n\n"
+            f"OWNER STANDING INSTRUCTION & CHARTER (FOLLOW THIS FIRST):\n{standing_instruction}\n\n"
             f"SHARED EXPERIMENTAL MEMORY:\n{idle_notebook_block}\n\n"
             f"RECENT LIVE CHAT (RAM-only):\n{convo_block}\n"
             f"{topic_line}{loop_warning}\n"
             f"AVAILABLE TOOLS (invoke only when needed):\n"
             f'- Save note/file to Shared Experimental Memory: [IDLE_SAVE title="..." file="optional.py"]...[/IDLE_SAVE]\n'
             f'- Email Brett ({mail_rem}/{self.mailbox.max_per_window} left in 30m) & link a file: [IDLE_MAIL subject="..." link="optional.py"]...[/IDLE_MAIL]\n'
-            f"{code_tools_line}"
-            f"- Keep conversational commentary focused (< 350 words, plus any full [IDLE_SAVE] code/file blocks). Never echo or repeat agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
+            f"{code_tools_line}{live_patch_line}"
+            f"- Keep conversational commentary focused (< 350 words, plus any full [IDLE_SAVE] or [IDLE_PATCH] code blocks). Never echo or repeat agreement — if you have nothing net-new to add, reply ONLY with [PASS]."
         )
 
     def run_exchange_round(
@@ -978,12 +1154,6 @@ class IdleSessionManager:
             )
             self.saved_notes_this_session += len(saved)
 
-            cleaned_reply, sent_mails = self.mailbox.extract_and_send_from_response(
-                sender=provider_id,
-                response_text=cleaned_reply,
-            )
-            self.sent_emails_this_session += len(sent_mails)
-
             tool_outputs: list[str] = []
 
             def _run_tool(match: re.Match) -> str:
@@ -1003,6 +1173,72 @@ class IdleSessionManager:
                 return f"[🛠 Called tool: {t_name}]"
 
             cleaned_reply = _IDLE_TOOL_PATTERN.sub(_run_tool, cleaned_reply).strip()
+
+            patch_reboot_requested: str = ""
+            patch_rejected_in_turn = False
+            patch_succeeded_count = 0
+            from palace_config import IS_DEVELOPER_EDITION
+            if IS_DEVELOPER_EDITION and bool(self.reload_settings().get("allow_live_self_modify", False)):
+                def _run_patch(match: re.Match) -> str:
+                    nonlocal patch_reboot_requested, patch_rejected_in_turn, patch_succeeded_count
+                    p_file = (match.group("file") or "").strip()
+                    p_sum = (match.group("summary") or f"Live patch to {p_file} by {provider_id}").strip()
+                    p_target = match.group("target") or ""
+                    p_repl = match.group("replacement") or ""
+                    if not p_target.strip() or p_target.strip() == "exact existing lines":
+                        return ""
+                    try:
+                        from palace_ouroboros import stage_palace_replace, sync_live_to_staging
+                        sync_live_to_staging()
+                        ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=provider_id)
+                        if ok:
+                            patch_succeeded_count += 1
+                            patch_reboot_requested = f"{provider_id.upper()}: {p_sum}"
+                            tool_outputs.append(f"[⚡ LIVE PATCH STAGED & VERIFIED (`{p_file}`)]: {msg} — Initiating Hot-Reboot & Auto-Continue…")
+                            try:
+                                self.mailbox.send_agent_email(
+                                    sender=provider_id,
+                                    subject=f"✅ Live Patch Staged & Verified: {p_file}",
+                                    body=(
+                                        f"Summary: {p_sum}\n"
+                                        f"Verification: {msg}\n"
+                                        f"Hot-reboot initiated to apply the change to the running Sandbox/Live copy."
+                                    ),
+                                    link=Path(p_file).name,
+                                )
+                                self.sent_emails_this_session += 1
+                            except Exception:
+                                pass
+                            return f"[⚡ Staged Live Patch: {p_file}]"
+                        else:
+                            patch_rejected_in_turn = True
+                            tool_outputs.append(f"[⚠ Live Patch Rejected (`{p_file}`)]: {msg}")
+                            return f"[⚠ Patch Rejected: {p_file}]"
+                    except Exception as exc:
+                        patch_rejected_in_turn = True
+                        tool_outputs.append(f"[⚠ Live Patch Error]: {exc}")
+                        return ""
+
+                cleaned_reply = _IDLE_PATCH_PATTERN.sub(_run_patch, cleaned_reply).strip()
+
+            # Gate [IDLE_MAIL] on patch validation: never send a false-positive "Implemented!" email if [IDLE_PATCH] was rejected in this turn!
+            sent_mails: list[dict[str, Any]] = []
+            if patch_rejected_in_turn and patch_succeeded_count == 0:
+                if _IDLE_MAIL_PATTERN.search(cleaned_reply):
+                    cleaned_reply = _IDLE_MAIL_PATTERN.sub(
+                        "[⚠ Agent Mail suppressed because [IDLE_PATCH] was rejected in this turn]",
+                        cleaned_reply,
+                    ).strip()
+            elif patch_succeeded_count == 0:
+                cleaned_reply, sent_mails = self.mailbox.extract_and_send_from_response(
+                    sender=provider_id,
+                    response_text=cleaned_reply,
+                )
+                self.sent_emails_this_session += len(sent_mails)
+            else:
+                # Engine already sent the verified Agent Mail confirmation for the applied patch
+                cleaned_reply = _IDLE_MAIL_PATTERN.sub("", cleaned_reply).strip()
+
             final_text = (cleaned_reply or raw_reply).strip()
             if tool_outputs:
                 final_text = final_text + "\n\n" + "\n\n".join(tool_outputs)
@@ -1027,6 +1263,31 @@ class IdleSessionManager:
             new_messages.append(entry)
             if on_turn is not None:
                 on_turn(entry)
+
+            if patch_reboot_requested:
+                try:
+                    import subprocess, sys
+                    from palace_ouroboros import HANDOFF_PATH, write_reboot_handoff
+                    ok_h, _h_msg, payload = write_reboot_handoff(
+                        reason="experimental_agent_live_patch",
+                        applied_diff_summary=patch_reboot_requested,
+                        test_results={"py_compile": "pass"},
+                    )
+                    if ok_h and HANDOFF_PATH.exists():
+                        payload["continuity"]["auto_resume_idle"] = True
+                        payload["continuity"]["idle_transcript"] = self.transcript[-25:]
+                        payload["continuity"]["idle_remaining_seconds"] = self.remaining_seconds
+                        payload["continuity"]["idle_tokens_used"] = self.tokens_used_this_session
+                        payload["continuity"]["idle_spend_usd"] = self.spend_usd_this_session
+                        HANDOFF_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                        wd_script = Path(__file__).with_name("palace_watchdog.py")
+                        subprocess.Popen(
+                            [sys.executable, str(wd_script), "--skip-tests", "--summary", patch_reboot_requested],
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        )
+                        break
+                except Exception:
+                    pass
 
         # Check 2-strike Agreement Loop / Convergence auto-stop
         if total_called >= 2 and agreement_or_pass_count >= max(1, (total_called + 1) // 2):

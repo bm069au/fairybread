@@ -22,6 +22,29 @@ def _resolve_default_config_path() -> Path:
 
 CONFIG_PATH = _resolve_default_config_path()
 
+FAIRYBREAD_BASE_VERSION = "0.9.1"
+FAIRYBREAD_VERSION = "0.9.1d"
+FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
+IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
+
+
+def bump_minor_letter_version(version_str: str = FAIRYBREAD_VERSION) -> str:
+    """Increment the minor letter suffix ('0.9.1' -> '0.9.1a' -> '0.9.1b' ... -> '0.9.1z')."""
+    v = (version_str or FAIRYBREAD_VERSION).strip().lstrip("vV")
+    if not v:
+        return "0.9.1a"
+    last_ch = v[-1]
+    if last_ch.isalpha() and last_ch.islower():
+        base = v[:-1]
+        if last_ch == "z":
+            parts = base.split(".")
+            if len(parts) == 3 and parts[2].isdigit():
+                return f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}a"
+            return f"{base}a"
+        return f"{base}{chr(ord(last_ch) + 1)}"
+    return f"{v}a"
+
+
 DONATION_TIER_URLS: dict[str, str] = {
     "5": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=5",
     "10": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=10",
@@ -337,6 +360,7 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
     "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Fairybread code & UI improvement)
     "share_source_code": False,      # Read-only Fairybread source code access in Experimental Mode
+    "allow_live_self_modify": False, # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
@@ -613,12 +637,18 @@ def load_idle_settings(
         merged["idle_submode"] = raw_idle["idle_submode"]
     if "share_source_code" in raw_idle:
         merged["share_source_code"] = bool(raw_idle["share_source_code"])
+    if "allow_live_self_modify" in raw_idle:
+        merged["allow_live_self_modify"] = bool(raw_idle["allow_live_self_modify"])
     if "pause_when_joined" in raw_idle:
         merged["pause_when_joined"] = bool(raw_idle["pause_when_joined"])
     if raw_idle.get("memory_access_mode") in {"isolated", "non_project", "full"}:
         merged["memory_access_mode"] = raw_idle["memory_access_mode"]
     if isinstance(raw_idle.get("standing_instruction"), str) and raw_idle["standing_instruction"].strip():
         merged["standing_instruction"] = raw_idle["standing_instruction"]
+    if not IS_DEVELOPER_EDITION:
+        merged["allow_live_self_modify"] = False
+        merged["share_source_code"] = False
+        merged["idle_submode"] = "free_talk"
     return merged
 
 
@@ -640,9 +670,14 @@ def save_idle_settings(
     if current.get("idle_submode") not in {"free_talk", "self_improve"}:
         current["idle_submode"] = "free_talk"
     current["share_source_code"] = bool(current.get("share_source_code", False))
+    current["allow_live_self_modify"] = bool(current.get("allow_live_self_modify", False))
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
     if current.get("memory_access_mode") not in {"isolated", "non_project", "full"}:
         current["memory_access_mode"] = "isolated"
+    if not IS_DEVELOPER_EDITION:
+        current["allow_live_self_modify"] = False
+        current["share_source_code"] = False
+        current["idle_submode"] = "free_talk"
     data["idle_settings"] = current
     _write_raw_config(data, config_path)
     return load_idle_settings(config_path)
@@ -669,26 +704,83 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "providers": ["deepseek", "mistral", "gemini"],
         "deliberate": True,
         "code_access": True,
+        "max_ais": 0,
     },
     "light_chat": {
         "label": "💬 Light Chat (Cheap)",
         "providers": ["groq", "qwen", "cohere"],
         "deliberate": False,
         "code_access": False,
+        "max_ais": 0,
     },
     "generalist": {
         "label": "🧠 Generalist",
         "providers": ["gemini", "openai", "deepseek", "cohere"],
         "deliberate": True,
         "code_access": False,
+        "max_ais": 0,
     },
     "graphics": {
-        "label": "🎨 Graphics & Vision",
+        "label": "🎨 Graphics & Vision (Pictures)",
         "providers": ["openai", "gemini"],
         "deliberate": False,
         "code_access": False,
+        "max_ais": 0,
+    },
+    "work_mode": {
+        "label": "🛠 Work Mode",
+        "providers": ["deepseek", "mistral", "gemini", "openai"],
+        "deliberate": True,
+        "code_access": True,
+        "max_ais": 0,
     },
 }
+
+
+def load_ai_squads(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]:
+    data = _read_raw_config(config_path)
+    raw = data.get("ai_squads")
+    if not isinstance(raw, dict) or not raw:
+        return {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for k, val in raw.items():
+        if not isinstance(val, dict):
+            continue
+        slug = str(k).strip()
+        if not slug:
+            continue
+        out[slug] = {
+            "label": str(val.get("label") or slug).strip(),
+            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
+            "deliberate": bool(val.get("deliberate", True)),
+            "code_access": bool(val.get("code_access", False)),
+            "max_ais": max(0, int(val.get("max_ais") or 0)),
+        }
+    return out or {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+
+
+def save_ai_squads(
+    squads: dict[str, dict[str, Any]],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    data = _read_raw_config(config_path)
+    cleaned: dict[str, dict[str, Any]] = {}
+    for k, val in (squads or {}).items():
+        if not isinstance(val, dict):
+            continue
+        slug = str(k).strip()
+        if not slug:
+            continue
+        cleaned[slug] = {
+            "label": str(val.get("label") or slug).strip(),
+            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
+            "deliberate": bool(val.get("deliberate", True)),
+            "code_access": bool(val.get("code_access", False)),
+            "max_ais": max(0, int(val.get("max_ais") or 0)),
+        }
+    data["ai_squads"] = cleaned or {k: dict(v) for k, v in DEFAULT_AI_SQUADS.items()}
+    _write_raw_config(data, config_path)
+    return load_ai_squads(config_path)
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "enter_to_send": True,  # True: Enter sends, Shift+Enter newline; False: Shift+Enter sends, Enter newline
@@ -755,6 +847,102 @@ def save_ui_settings(
     data["ui_settings"] = current
     _write_raw_config(data, config_path)
     return load_ui_settings(config_path)
+
+
+DEFAULT_PERSONALIZATION_SETTINGS: dict[str, Any] = {
+    "auto_evolve_profile": True,
+    "base_style": "Friendly",           # "Friendly" | "Candid & Direct (No Flattery)" | "Technical & Concise" | "Casual & Witty" | "Professional"
+    "warmth": "Default",                # "Less" | "Default" | "More"
+    "enthusiasm": "Less",               # "Less" | "Default" | "More"
+    "emoji": "Less",                    # "None" | "Less" | "Default" | "More"
+    "visual_answers": "Default",        # "Less" | "Default" | "More"
+    "headers_and_lists": "More",        # "Less" | "Default" | "More"
+    "custom_instructions_general": "",
+    "custom_instructions_coding": "",
+    "reference_photo_face": "",
+    "reference_photo_body": "",
+}
+
+
+def load_personalization_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("personalization_settings", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(DEFAULT_PERSONALIZATION_SETTINGS)
+    for k in (
+        "base_style",
+        "warmth",
+        "enthusiasm",
+        "emoji",
+        "visual_answers",
+        "headers_and_lists",
+        "custom_instructions_general",
+        "custom_instructions_coding",
+        "reference_photo_face",
+        "reference_photo_body",
+    ):
+        if isinstance(raw.get(k), str):
+            merged[k] = raw[k].strip()
+    if "auto_evolve_profile" in raw:
+        merged["auto_evolve_profile"] = bool(raw["auto_evolve_profile"])
+    return merged
+
+
+def save_personalization_settings(
+    updates: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    current = load_personalization_settings(config_path)
+    current.update(updates or {})
+    current["auto_evolve_profile"] = bool(current.get("auto_evolve_profile", True))
+    for k in (
+        "base_style",
+        "warmth",
+        "enthusiasm",
+        "emoji",
+        "visual_answers",
+        "headers_and_lists",
+        "custom_instructions_general",
+        "custom_instructions_coding",
+        "reference_photo_face",
+        "reference_photo_body",
+    ):
+        val = str(current.get(k) or "").strip()
+        if k.startswith("reference_photo_") and val.upper().startswith("M:"):
+            val = ""
+        current[k] = val
+    data["personalization_settings"] = current
+    _write_raw_config(data, config_path)
+    return load_personalization_settings(config_path)
+
+
+def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
+    """Compile the user's Tone, Formatting, Custom Instructions, and Reference Photo status into a compact prompt block."""
+    p = load_personalization_settings(config_path)
+    lines = [
+        "[USER PERSONALIZATION & TONE PREFERENCES]:",
+        f"- Base Style & Tone: {p.get('base_style', 'Friendly')} | Warmth: {p.get('warmth', 'Default')} | Enthusiasm: {p.get('enthusiasm', 'Less')}",
+        f"- Formatting: Emoji={p.get('emoji', 'Less')} | Visual Answers={p.get('visual_answers', 'Default')} | Headers & Lists={p.get('headers_and_lists', 'More')}",
+    ]
+    gen_inst = (p.get("custom_instructions_general") or "").strip()
+    if gen_inst:
+        lines.append(f"- General Custom Instructions: {gen_inst}")
+    code_inst = (p.get("custom_instructions_coding") or "").strip()
+    if code_inst:
+        lines.append(f"- Coding & Technical Instructions: {code_inst}")
+    face_ref = (p.get("reference_photo_face") or "").strip()
+    body_ref = (p.get("reference_photo_body") or "").strip()
+    if face_ref or body_ref:
+        refs = []
+        if face_ref and Path(face_ref).exists():
+            refs.append(f"Face reference photo: {face_ref}")
+        if body_ref and Path(body_ref).exists():
+            refs.append(f"Full-body reference photo: {body_ref}")
+        if refs:
+            lines.append("- Reference Photos Available (use when creating/editing images of the user): " + " ; ".join(refs))
+    return "\n".join(lines)
 
 
 def get_palace_data_root(config_path: Path = CONFIG_PATH) -> Path:
@@ -955,13 +1143,29 @@ def list_palace_stored_files(
     return items
 
 
+def get_source_mirror_dir(config_path: Path = CONFIG_PATH) -> Path:
+    """Return the configured Shared Source Code Mirror folder (defaulting to C:\\Palace_Idle_Sandbox\\source_mirror or %LOCALAPPDATA%\\Palace\\source_mirror)."""
+    try:
+        idle_cfg = load_idle_settings(config_path)
+        custom = str(idle_cfg.get("source_mirror_dir") or "").strip()
+        if custom and not custom.upper().startswith("M:"):
+            return Path(custom)
+    except Exception:
+        pass
+    if IDLE_SANDBOX_ROOT.exists():
+        return IDLE_SANDBOX_ROOT / "source_mirror"
+    return get_palace_data_root(config_path) / "source_mirror"
+
+
 def build_palace_source_context(
     question: str = "",
     *,
     force_include: bool = False,
     max_chars: int = 14_000,
 ) -> str:
-    """Return read-only Palace source code context for Normal Mode debugging & improvement discussions."""
+    """Return a lightweight Source Code Reference Manifest + On-Demand Read Tool instructions (instead of dumping 14,000 chars of raw code)."""
+    if not IS_DEVELOPER_EDITION:
+        return ""
     q_lower = (question or "").lower()
     code_keywords = (
         "palace_gui", "idle_service", "orchestrator", "synthesizer",
@@ -972,8 +1176,8 @@ def build_palace_source_context(
     if not force_include and not auto_triggered:
         return ""
 
-    mirror_dir = IDLE_SANDBOX_ROOT / "source_mirror"
-    src_dir = mirror_dir if mirror_dir.exists() else Path(__file__).resolve().parent
+    mirror_dir = get_source_mirror_dir()
+    src_dir = mirror_dir if (mirror_dir.exists() and any(mirror_dir.glob("*.py"))) else Path(__file__).resolve().parent
     excluded = {"key.txt", "credentials.json", "palace_config.json"}
     try:
         py_files = sorted(
@@ -986,38 +1190,25 @@ def build_palace_source_context(
     if not py_files:
         return ""
 
-    manifest = ", ".join(p.name for p in py_files[:30])
-    prioritized: list[Path] = []
-    core_names = ["palace_gui.py", "orchestrator.py", "idle_service.py", "palace_config.py", "synthesizer.py"]
-    for p in py_files:
-        if p.name.lower() in q_lower or p.stem.lower() in q_lower:
-            prioritized.append(p)
-    for cname in core_names:
-        for p in py_files:
-            if p.name == cname and p not in prioritized:
-                prioritized.append(p)
+    manifest = ", ".join(p.name for p in py_files[:35])
+    matched = [p for p in py_files if p.name.lower() in q_lower or p.stem.lower() in q_lower]
 
-    excerpts: list[str] = [
-        f"PALACE APPLICATION SOURCE CODE (Read-Only Mirror in {src_dir}):\n"
-        f"Available Python modules: {manifest}"
+    lines = [
+        f"FAIRYBREAD SOURCE CODE REFERENCE (Read-Only Mirror at `{src_dir}`):",
+        f"Available Python modules ({len(py_files)}): {manifest}",
+        "ON-DEMAND SOURCE CODE TOOLS (Use these instead of full-file injection):",
+        '- `[TOOL: list_source_files]` -> List all files in the source mirror',
+        '- `[TOOL: search_source_code query="search_term"]` -> Search across all .py files for matching lines',
+        '- `[TOOL: read_source_file file="palace_gui.py" start=1 end=80]` -> Read specific line range on demand',
+        '- `[TOOL: inspect_palace_ui]` -> Run live PalaceWindow geometry & UI self-audit',
     ]
-    used = len(excerpts[0])
-    for p in prioritized[:4]:
+    for p in matched[:2]:
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            txt = p.read_text(encoding="utf-8", errors="replace")
+            lines.append(f"\n--- REFERENCED MODULE HEADER ({p.name}, {len(txt.splitlines())} lines) ---\n{txt[:1800]}")
         except OSError:
-            continue
-        budget = max(1200, (max_chars - used) // 2)
-        snippet = text[:budget]
-        if len(text) > budget:
-            snippet += f"\n... [truncated {len(text) - budget} chars of {p.name}]"
-        block = f"\n--- FILE: {p.name} ---\n{snippet}"
-        if used + len(block) > max_chars:
-            break
-        excerpts.append(block)
-        used += len(block)
-
-    return "\n".join(excerpts)
+            pass
+    return "\n".join(lines)
 
 
 DEFAULT_TOOL_SETTINGS: dict[str, bool] = {

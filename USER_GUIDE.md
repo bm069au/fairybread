@@ -139,7 +139,7 @@ You can allow external coding/desktop agents (**Google Antigravity**, **Anthropi
 
 1. Open **`Settings → 🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…`**.
 2. Choose which capabilities external agents may invoke:
-   - `fairybread_ask_council` — Consult your 8-AI Fairybread council and return the democratic synthesis.
+   - `fairybread_ask_council` — Consult your Multi-AI Fairybread council and return the democratic synthesis.
    - `fairybread_generate_image` — Render 300-DPI images, YouTube/Facebook banners, or wallpapers.
    - `fairybread_search_email` — Run an exhaustive zero-truncation email search.
    - `fairybread_search_memory` — Query your Shared Memory.
@@ -216,7 +216,7 @@ While a turn is running, the composer input box and **`{} Code`** toggle remain 
 ## 10. Durable Shared Memory (SQLite FTS5), Storage Sliders, Drive Mover & AES-256 Password-Locked Backups
 
 ### Living `Memory summary` & Automatic Cross-Agent SQLite FTS5 Shared Memory
-- **Automatic Contextual Memory (Like ChatGPT & Antigravity, Shared Across All 8 AIs):** Every conversation turn (when `No-History` is OFF) is automatically indexed into `%LOCALAPPDATA%\Palace\memory.db` (`BM25` + temporal recency + `zlib` compression) and shared across **all active Council AIs**.
+- **Automatic Contextual Memory (Like ChatGPT & Antigravity, Shared Across All Connected AIs):** Every conversation turn (when `No-History` is OFF) is automatically indexed into `%LOCALAPPDATA%\Palace\memory.db` (`BM25` + temporal recency + `zlib` compression) and shared across **all active Council AIs**.
 - **Living `Memory summary` (`Memory` button → `📝 Memory Summary (View & Edit)…` or `Settings → Memory & History → Manage`):**
   - Maintains a personal overview divided into **`Overview`**, **`How You Like to Work`**, and **`Software & Creative Projects`**, injected at the top of `MEMORY CONTEXT` for every Council AI.
   - **Direct Keyboard Editing (`✎ Edit Directly` / `💾 Save Edits`):** Unlike read-only AI summaries, you can click **`✎ Edit Directly`** to edit or delete any word yourself at any time.
@@ -268,3 +268,11 @@ Open **`Settings → 🎙️ Voice & Audio (Microphone & Speaker)…`** to:
 - **Right-Click the System Tray Icon:**
   - **`🔼 Expand / Open Fairybread`** — Restores the Fairybread window to your screen (or double-click the tray icon).
   - **`✕ Exit Fairybread`** — Completely exits the application (also available under **`Fairybread → Exit Fairybread`** in the top menu bar).
+
+---
+
+## Public Edition Notice: Live Self-Modification & Proposing Patches
+
+- **Experimental Mode** (Free Talk lounge, Shared Experimental Memory, and Agent Mail) is fully available in the Public Edition.
+- **Live Code Self-Modification (`⚡ Live Patch` / `/autopatch`)** is **hardwired OFF** in the Public (non-Developer) Edition to prevent unverified forks in the wild and preserve application integrity and restrictions.
+- **Want to Suggest a Feature or Submit a Proposed Patch?** Post your idea or code snippet in the **[Fairybread Community Forum](https://fairybread.me/forum.html)** or email **bm069au@gmail.com** so Brett can review, test, and include strong improvements in official releases.

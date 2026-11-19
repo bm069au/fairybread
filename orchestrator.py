@@ -76,6 +76,8 @@ class PalaceRunResult:
     context_error: Optional[str] = None
     speaker_messages: list[dict[str, Any]] = field(default_factory=list)
     peer_rounds: list[dict[str, ProviderResult]] = field(default_factory=list)
+    autopatch_reboot_summary: str = ""
+    applied_autopatch_files: list[str] = field(default_factory=list)
 
     @property
     def contributors(self) -> list[str]:
@@ -132,17 +134,18 @@ class PalaceOrchestrator:
         workspace_block = f"\nWORKSPACE / SOURCE CODE TOOL CONTEXT:\n{extra_workspace_context}\n" if extra_workspace_context else ""
         if drawing_mode == "direct_draw":
             mode_rules = (
-                "- DIRECT DRAWING / PROMPT ARCHITECT MODE: You have been selected as the sole Prompt Architect for this image request. "
-                "Do NOT defer to another agent (`[DEFER EXECUTION TO: ...]`) and NEVER return text descriptions asking the user to pick an option before drawing. "
-                "Instead, immediately expand the user's request into rich, detailed photographic or artistic specifications (lighting, composition, textures, background details, camera/lens cues) "
-                "and emit the `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag(s) directly (if the user asked for N images/banners/options, emit N separate `[GENERATE_IMAGE ...]` tags!). "
+                "- DIRECT DRAWING / PROMPT ARCHITECT MODE (DEFAULT 3 SMALL VISUAL DRAFTS LIKE XAI/GROK): You have been selected as the sole Prompt Architect for this image request. "
+                "Do NOT defer to another agent (`[DEFER EXECUTION TO: ...]`) and NEVER return text-only descriptions asking the user to pick an option before drawing. "
+                "When humans talk about pictures, they expect to SEE visual pictures! "
+                "DEFAULT BEHAVIOR: Unless the user explicitly passed `/fullrender` or asked for the final/finished full-resolution render of a specific chosen draft, emit THREE (3) distinct smaller draft sample tags (`size=\"512x512\" quality=\"low\"` for square/general or `size=\"640x360\" quality=\"low\"` for banners/widescreen) representing 3 creative compositional/lighting variations (`title=\"Draft 1 - ...\"`, `title=\"Draft 2 - ...\"`, `title=\"Draft 3 - ...\"`). "
+                "Then briefly ask the user which draft they like best (or what modifications they want) and what final size they need so you can hand over the finished high-resolution master! "
+                "If the user IS choosing a draft or requested `/fullrender`, emit the finished full-size `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly. "
                 "Do NOT wrap `[GENERATE_IMAGE ...]` inside markdown code fences (` ``` `)."
             )
         elif drawing_mode == "council_draw":
             mode_rules = (
-                "- COUNCIL-ASSISTED PROMPT BRAINSTORM MODE: The user asked the council to collaborate on or design visual concepts/images. "
-                "Contribute specific visual, lighting, anatomical, or compositional improvements and emit the executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag(s) "
-                "(if the user asked for multiple images/banners/options, emit multiple `[GENERATE_IMAGE ...]` tags so every option is actually rendered for the user to see!). "
+                "- COUNCIL-ASSISTED PROMPT BRAINSTORM MODE (3 VISUAL DRAFT SAMPLES): The user asked the council to collaborate on or design visual concepts/images. "
+                "Contribute specific visual, lighting, anatomical, or compositional improvements and emit THREE (3) executable smaller draft `[GENERATE_IMAGE prompt=\"...\" title=\"Draft 1/2/3...\" size=\"512x512\" quality=\"low\"]` (or `size=\"640x360\" quality=\"low\"` for banners) tags so every option is visually rendered on screen for the user to compare before choosing a final full-resolution master! "
                 "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) and NEVER ask the user to copy-paste a prompt into another tool."
             )
         else:
@@ -237,11 +240,113 @@ Instructions:
     ) -> PalaceRunResult:
 
         try:
-            from search_service import parse_search_command, run_multi_tier_search
-            resolved_search_depth, cleaned_q = parse_search_command(question, search_depth)
+            from palace_config import IS_DEVELOPER_EDITION
+            from search_service import parse_turn_commands, run_multi_tier_search
+            cmd_info = parse_turn_commands(question, search_depth)
+            resolved_search_depth = cmd_info["search_depth"]
+            cleaned_q = cmd_info["cleaned_question"]
+            is_autopatch = bool(cmd_info.get("autopatch", False)) and IS_DEVELOPER_EDITION
+            if cmd_info.get("include_code") and IS_DEVELOPER_EDITION:
+                include_palace_code = True
+            if cmd_info.get("tangent"):
+                include_context = False
+                if save_to_context is None:
+                    save_to_context = True
+            is_full_render = bool(cmd_info.get("full_render", False))
+            restore_target = str(cmd_info.get("restore_target") or "").strip() if IS_DEVELOPER_EDITION else ""
         except Exception:
             resolved_search_depth, cleaned_q = "none", question
+            is_autopatch = False
+            is_full_render = False
+            restore_target = ""
+
+        if restore_target:
+            try:
+                from palace_ouroboros import (
+                    format_code_editions_markdown,
+                    pin_code_edition,
+                    restore_code_edition,
+                )
+                if restore_target == "list":
+                    md = format_code_editions_markdown()
+                    return PalaceRunResult(
+                        question=question,
+                        prompt=question,
+                        memory_context="",
+                        memory_error=None,
+                        provider_results={},
+                        synthesis=SynthesisResult(text=md, succeeded=True, error=None),
+                    )
+                if restore_target.startswith("pin "):
+                    ver_to_pin = restore_target.split(None, 1)[1].strip()
+                    _ok, pin_msg = pin_code_edition(ver_to_pin, pinned=True)
+                    md = f"✓ **{pin_msg}**\n\n" + format_code_editions_markdown()
+                    return PalaceRunResult(
+                        question=question,
+                        prompt=question,
+                        memory_context="",
+                        memory_error=None,
+                        provider_results={},
+                        synthesis=SynthesisResult(text=md, succeeded=True, error=None),
+                    )
+                ok_r, r_msg, r_manifest = restore_code_edition(restore_target)
+                if ok_r:
+                    ver_id = r_manifest.get("version", restore_target)
+                    ans_txt = (
+                        f"### ♻ Code Edition Restored (`{ver_id}`)\n"
+                        f"- **Status:** {r_msg}\n"
+                        f"- **Manifest SHA-256 Chain:** `{r_manifest.get('manifest_hash', 'verified')}`\n"
+                        f"- **Action:** Initiating Hot-Reboot into `{ver_id}` now…"
+                    )
+                    if self.context_service is not None and (include_context if save_to_context is None else bool(save_to_context)):
+                        try:
+                            self.context_service.append_exchange(question, ans_txt, contributors=["palace"])
+                        except Exception:
+                            pass
+                    return PalaceRunResult(
+                        question=question,
+                        prompt=question,
+                        memory_context="",
+                        memory_error=None,
+                        provider_results={},
+                        synthesis=SynthesisResult(text=ans_txt, succeeded=True, error=None),
+                        autopatch_reboot_summary=r_msg,
+                        applied_autopatch_files=[f"Edition {ver_id}"],
+                    )
+                else:
+                    return PalaceRunResult(
+                        question=question,
+                        prompt=question,
+                        memory_context="",
+                        memory_error=None,
+                        provider_results={},
+                        synthesis=SynthesisResult(text=f"⚠ **Restore Notice:** {r_msg}\n\n{format_code_editions_markdown()}", succeeded=True, error=None),
+                    )
+            except Exception as exc:
+                return PalaceRunResult(
+                    question=question,
+                    prompt=question,
+                    memory_context="",
+                    memory_error=None,
+                    provider_results={},
+                    synthesis=SynthesisResult(text=f"⚠ Restore error: {exc}", succeeded=True, error=None),
+                )
+
         effective_question = cleaned_q or question
+        if is_full_render:
+            effective_question += "\n[IMAGE RENDER OVERRIDE: /fullrender requested — emit 1 finished full-resolution quality=\"high\" image instead of 3 small drafts.]"
+        if is_autopatch:
+            max_rounds = max(2, max_rounds)
+            effective_question += (
+                "\n\n[OPERATOR /AUTOPATCH DIRECTIVE ACTIVE]:\n"
+                "1. In Round 1, use `[TOOL: search_source_code query=\"...\"]` and `[TOOL: read_source_file file=\"...\" start=1 end=80]` to inspect the exact lines in the Fairybread codebase.\n"
+                "2. Once you have the exact file lines, emit an executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread can verify, apply, and hot-reboot automatically!\n"
+                "3. MANDATORY END-OF-TURN STATUS REQUIREMENT: Conclude your final message with one of:\n"
+                "   - `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]` (if staging an autopatch or chaining next task)\n"
+                "   - `✓ [ALL TASKS COMPLETED SUCCESSFULLY]` (if the full sequence of requested improvements is verified & finished)\n"
+                "   - `⏸ [PAUSED — WAITING FOR USER INPUT: <reason>]` (if you encounter a blocker or ambiguous choice)\n"
+                "   Never claim you are running in the background without an active task or staged patch."
+            )
 
         if include_memory:
             memory_result = self.memory_service.search(
@@ -280,6 +385,26 @@ Instructions:
             except (OSError, ValueError) as exc:
                 context_error = f"Session history could not be loaded: {exc}"
                 write_context = None
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if IS_DEVELOPER_EDITION and not is_autopatch and session_context:
+            try:
+                from search_service import is_terse_patch_confirmation
+                sc_upper = session_context.upper()
+                if is_terse_patch_confirmation(effective_question) and (
+                    "[IDLE_PATCH" in sc_upper or "AUTOPATCH" in sc_upper or "PATCH" in sc_upper
+                ):
+                    is_autopatch = True
+                    include_palace_code = True
+                    max_rounds = max(2, max_rounds)
+                    effective_question += (
+                        "\n\n[OPERATOR CONFIRMATION RECEIVED — EXECUTE AUTOPATCH NOW]:\n"
+                        "The operator confirmed your proposed patch ('Apply' / 'Proceed' / 'Yes'). "
+                        "Do NOT roleplay or narrate fake execution. Verify exact anchor lines with `[TOOL: read_source_file ...]` if needed, "
+                        "and emit the executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"...\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread applies it to disk, logs Agent Mail, and hot-reboots!"
+                    )
+            except Exception:
+                pass
 
         extra_blocks: list[str] = []
         palace_src = build_palace_source_context(effective_question, force_include=include_palace_code)
@@ -477,6 +602,25 @@ Instructions:
 
         peer_rounds: list[dict[str, ProviderResult]] = []
         active_results = dict(provider_results)
+
+        try:
+            from idle_service import execute_sandbox_tool
+            from copy import copy as _copy_obj
+            for _p_name, _p_res in list(active_results.items()):
+                if not _p_res.succeeded or _p_res.response is None:
+                    continue
+                _p_txt = _p_res.response.text or ""
+                if "[TOOL:" in _p_txt:
+                    _t_out = execute_sandbox_tool(_p_txt)
+                    if _t_out:
+                        _new_resp = _copy_obj(_p_res.response)
+                        _new_resp.text = f"{_p_txt}\n\n[ON-DEMAND SOURCE CODE TOOL RESULT]:\n{_t_out}"
+                        _new_res = _copy_obj(_p_res)
+                        _new_res.response = _new_resp
+                        active_results[_p_name] = _new_res
+        except Exception:
+            pass
+
         succeeded_initial = [
             name
             for name, r in provider_results.items()
@@ -593,6 +737,14 @@ Instructions:
                         if not r_val.succeeded or r_val.response is None:
                             continue
                         txt = (r_val.response.text or "").strip()
+                        if "[TOOL:" in txt:
+                            try:
+                                from idle_service import execute_sandbox_tool
+                                _r2_t_out = execute_sandbox_tool(txt)
+                                if _r2_t_out:
+                                    txt = f"{txt}\n\n[ON-DEMAND SOURCE CODE TOOL RESULT]:\n{_r2_t_out}"
+                            except Exception:
+                                pass
                         if txt.upper() not in {"[PASS]", "PASS"}:
                             prev_res = merged_results.get(r_name)
                             prev_txt = (
@@ -637,6 +789,25 @@ Instructions:
         if steering_state and steering_state.get("notes"):
             notes_joined = "\n".join(f"- {n}" for n in steering_state["notes"])
             synth_question += f"\n\n[LIVE OPERATOR STEERING INSTRUCTIONS]:\n{notes_joined}"
+            if not is_autopatch:
+                try:
+                    from search_service import is_terse_patch_confirmation, parse_turn_commands
+                    for _sn in steering_state["notes"]:
+                        if parse_turn_commands(_sn).get("autopatch") or (
+                            is_terse_patch_confirmation(_sn) and session_context and (
+                                "[IDLE_PATCH" in session_context.upper() or "PATCH" in session_context.upper()
+                            )
+                        ):
+                            is_autopatch = True
+                            break
+                except Exception:
+                    pass
+        if is_autopatch:
+            synth_question += (
+                "\n\n[CRITICAL /AUTOPATCH SYNTHESIS REQUIREMENT]: "
+                "Preserve or emit the executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"...\"]\n<<<TARGET\n...\n===REPLACE\n...\n>>>\n[/IDLE_PATCH]` block(s) "
+                "using the exact lines from the source file so the Autopatch engine can verify and apply the fix now."
+            )
 
         if self.synthesizer:
             if on_phase_status is not None:
@@ -660,6 +831,104 @@ Instructions:
             ):
                 synthesis.text = re.sub(r"\[GENERATE_IMAGE\s+[^\]]+\]", "", synthesis.text, flags=re.IGNORECASE).strip()
 
+        autopatch_summary = ""
+        applied_files: list[str] = []
+        if is_autopatch:
+            try:
+                from idle_service import execute_live_autopatches_in_text, execute_sandbox_tool
+                if synthesis and synthesis.text and "[IDLE_PATCH" in synthesis.text.upper():
+                    cleaned_syn, applied_files, autopatch_summary = execute_live_autopatches_in_text(
+                        synthesis.text, author="council_autopatch"
+                    )
+                    synthesis.text = cleaned_syn
+                else:
+                    for _p_name, _p_res in active_results.items():
+                        if _p_res.succeeded and _p_res.response and "[IDLE_PATCH" in (_p_res.response.text or "").upper():
+                            _c_txt, _af, _asum = execute_live_autopatches_in_text(
+                                _p_res.response.text, author=f"{_p_name}_autopatch"
+                            )
+                            if _af:
+                                applied_files.extend(_af)
+                                autopatch_summary = _asum
+                                if synthesis and synthesis.text:
+                                    synthesis.text += f"\n\n---\n✓ **Verified & Staged Patch ({', '.join(_af)})**: {_asum}"
+                                break
+
+                if not applied_files and session_context and "[IDLE_PATCH" in session_context.upper():
+                    _c_sc, _af_sc, _asum_sc = execute_live_autopatches_in_text(
+                        session_context, author="council_confirmed_autopatch"
+                    )
+                    if _af_sc:
+                        applied_files.extend(_af_sc)
+                        autopatch_summary = _asum_sc
+                        if synthesis and synthesis.text:
+                            synthesis.text += f"\n\n---\n✓ **Verified & Staged Confirmed Patch ({', '.join(_af_sc)})**: {_asum_sc}"
+
+                # If no patch was applied yet (e.g. agents only called [TOOL: ...] or had a target/syntax mismatch),
+                # run up to 1 automatic In-Turn Coding Architect Self-Heal / Patch Generation pass!
+                if not applied_files and succeeded_initial:
+                    pref_order = ["deepseek", "mistral", "gemini", "openai", "qwen", "groq", "cerebras", "cohere"]
+                    lead_coder = next((c for c in pref_order if c in succeeded_initial), succeeded_initial[0])
+                    gathered_ctx = ""
+                    if session_context:
+                        gathered_ctx += f"[RECENT SESSION CONTEXT]:\n{session_context[-4500:]}\n\n"
+                    gathered_ctx += "\n\n".join(
+                        f"[{k.upper()}]:\n{v.response.text}"
+                        for k, v in active_results.items()
+                        if v.succeeded and v.response is not None
+                    )
+                    if synthesis and synthesis.text:
+                        if "[TOOL:" in synthesis.text:
+                            extra_t = execute_sandbox_tool(synthesis.text)
+                            if extra_t:
+                                gathered_ctx += f"\n\n[SYNTHESIS TOOL RESULT]:\n{extra_t}"
+                        gathered_ctx += f"\n\n[PRIOR SYNTHESIS / REJECTION DIAGNOSTIC]:\n{synthesis.text}"
+
+                    heal_prompt = (
+                        f"You are the Lead Coding Architect ({lead_coder.upper()}) executing an `/autopatch` work order in Fairybread.\n\n"
+                        f"USER REQUEST:\n{effective_question}\n\n"
+                        f"RETRIEVED SOURCE CODE & DIAGNOSTICS:\n{gathered_ctx[-12000:]}\n\n"
+                        f"INSTRUCTIONS:\n"
+                        f"1. If you still need to read exact lines before patching, emit `[TOOL: read_source_file file=\"...\" start=1 end=90]`.\n"
+                        f"2. Otherwise, emit the exact executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block now:\n"
+                        f"[IDLE_PATCH file=\"palace_gui.py\" summary=\"Short summary\"]\n"
+                        f"<<<TARGET\n"
+                        f"exact existing lines from the file (do NOT include line number prefixes like '123: ')\n"
+                        f"===REPLACE\n"
+                        f"updated replacement lines\n"
+                        f">>>\n"
+                        f"[/IDLE_PATCH]"
+                    )
+                    heal_res_map = self.dispatcher.dispatch(heal_prompt, provider_names=[lead_coder])
+                    heal_res = heal_res_map.get(lead_coder)
+                    if heal_res and heal_res.succeeded and heal_res.response and heal_res.response.text:
+                        heal_txt = heal_res.response.text
+                        # If the coder did one more [TOOL: read_source_file ...] hop, run it and do the final patch call
+                        if "[TOOL:" in heal_txt and "[IDLE_PATCH" not in heal_txt.upper():
+                            hop2_out = execute_sandbox_tool(heal_txt)
+                            if hop2_out:
+                                hop2_prompt = (
+                                    f"{heal_prompt}\n\n[SECOND-HOP SOURCE READ RESULT]:\n{hop2_out}\n\n"
+                                    f"Now emit the executable `[IDLE_PATCH file=\"...\" summary=\"...\"]` block using the exact lines above."
+                                )
+                                hop2_map = self.dispatcher.dispatch(hop2_prompt, provider_names=[lead_coder])
+                                hop2_res = hop2_map.get(lead_coder)
+                                if hop2_res and hop2_res.succeeded and hop2_res.response and hop2_res.response.text:
+                                    heal_txt = hop2_res.response.text
+                        if "[IDLE_PATCH" in heal_txt.upper():
+                            cleaned_h, _af2, _asum2 = execute_live_autopatches_in_text(
+                                heal_txt, author=f"{lead_coder}_autopatch"
+                            )
+                            if _af2:
+                                applied_files.extend(_af2)
+                                autopatch_summary = _asum2
+                                if synthesis and synthesis.text:
+                                    synthesis.text = f"{synthesis.text}\n\n{cleaned_h}"
+                                else:
+                                    synthesis = SynthesisResult(text=cleaned_h, succeeded=True, error=None)
+            except Exception:
+                pass
+
         result = PalaceRunResult(
             question=question,
             prompt=prompt,
@@ -670,7 +939,9 @@ Instructions:
             session_context=session_context,
             context_error=context_error,
             speaker_messages=speaker_messages,
-            peer_rounds=peer_rounds
+            peer_rounds=peer_rounds,
+            autopatch_reboot_summary=autopatch_summary,
+            applied_autopatch_files=applied_files,
         )
         if (
             (drawing_mode != "none" or _VISUAL_TOPIC_RE.search(effective_question))

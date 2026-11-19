@@ -12,7 +12,7 @@
 The real benefit of **Fairybread** is to **replace dedicated corporate workspaces like ChatGPT Plus, Claude Pro, and Grok** with one platform that *you* own:
 
 - **No Lock-In & Zero Monthly Subscriptions:** Stop paying multiple \$20–\$30/month subscriptions across rival AI companies. With Fairybread, you connect your own API keys (**Gemini**, **OpenAI**, **DeepSeek**, **Qwen**, **Cohere**, **Mistral/Codestral**, **Anthropic**, **xAI**, **Groq**, **OpenRouter**, **DeepInfra**, **Cerebras**, or local **Ollama**) and only pay pennies for the exact API usage you actually consume—no monthly fees, no vendor lock-in, just freedom.
-- **100% Local & Private Shared Memory + Living Memory Summary:** Your data and Shared Memory live **100% locally on your own machine**, including an editable **Memory summary** (`Overview`, `How You Like to Work`, `Software & Creative Projects`) shared across all 8 Council AIs. Even if you change AI providers tomorrow, all your history, context, and long-term memory stay privately with you.
+- **100% Local & Private Shared Memory + Living Memory Summary:** Your data and Shared Memory live **100% locally on your own machine**, including an editable **Memory summary** (`Overview`, `How You Like to Work`, `Software & Creative Projects`) shared across all connected Council AIs (no limit on how many AI providers you connect). Even if you change AI providers tomorrow, all your history, context, and long-term memory stay privately with you.
 - **Everything You Do in GPT/Claude—And More:** Read and search your emails, access your local files and desktop, generate high-resolution photography and 300-DPI print graphics, talk hands-free with Live Voice Mode, bridge into external coding tools, and let multiple AIs debate and cross-examine answers together instead of trusting one company's model blindly.
 
 ---
@@ -69,3 +69,12 @@ I made Fairybread **Source-Available Donationware** under the [Fairybread Dual L
   - Zero-truncation IMAP scanning across all mailbox folders (`[Gmail]/All Mail`, `INBOX`, `Archive`, `Sent`) plus desktop toast and email completion alerts.
 - **Durable SQLite FTS5 Shared Memory (`zlib` Compressed), Living Memory Summary, Drive Space Sliders & AES-256 Password-Locked Backups:**
   - Editable **Memory summary** (`Overview`, `How You Like to Work`, `Software Projects` + `Ask or update` bar), phase-aware Hot/Cold retrieval, SHA-256 deduplicated + `zlib`-compressed memory blobs, **`100 MB` → `Unlimited`** storage sliders, one-click **`🚚 Move Fairybread Data Here`** to relocate your memory to another drive, and **AES-256-GCM password-locked ZIP backups** (`PBKDF2-HMAC-SHA256`, 600,000 iterations) that transfer your encrypted API keys safely to a new PC.
+
+---
+
+## Public Edition vs. Developer Edition (Why Live Self-Modification Is Disabled in Public Builds)
+
+- **Experimental Mode** (multi-AI Free Talk lounge, Shared Experimental Memory, and Agent Mail) is included in **both** the Public Edition and the Developer Edition.
+- **Live Code Self-Modification (`/autopatch` & `[IDLE_PATCH]`)** is **hardwired OFF** in the Public (non-Dev) Edition, and the live patching kernel (`palace_ouroboros.py` / `palace_watchdog.py`) is omitted from Public installers.
+- **Why?** Allowing public installations to rewrite their own code in the wild would create untraceable, unverified versions and risk bypassing licensing or safety protections.
+- **Have an Improvement Idea or Proposed Patch?** Please share it on the **[Fairybread Community Forum](https://fairybread.me/forum.html)** or email **bm069au@gmail.com**. All community proposals are reviewed and tested before being rolled into official signed releases.

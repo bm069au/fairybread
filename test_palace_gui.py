@@ -725,7 +725,7 @@ class WindowTests(unittest.TestCase):
 
         # Test Stage 1 Idle Sandbox Tools (read_rules, list_source_files, search_source_code)
         rules_out = execute_sandbox_tool('read_rules')
-        self.assertIn('IDLE MODE CHARTER', rules_out)
+        self.assertIn('CHARTER & OPERATING RULES', rules_out)
         files_out = execute_sandbox_tool('list_source_files')
         self.assertIn('palace_gui.py', files_out)
 
@@ -1289,6 +1289,60 @@ class WindowTests(unittest.TestCase):
         saved_sum = save_memory_summary('### Overview\nCustom profile summary for Brett.', db_path=mem_db_path)
         self.assertIn('Custom profile summary for Brett.', saved_sum['text'])
         self.assertIn('Custom profile summary for Brett.', fast_mem_svc.search('anything').context)
+
+        # 12. Verify v0.9.1a upgrades:
+        #     - Letter-suffix version bumping (0.9.1 -> 0.9.1a -> 0.9.1b)
+        #     - Natural-language autopatch without '/' & terse confirmation matching
+        #     - _IDLE_PATCH_PATTERN matching without trailing [/IDLE_PATCH]
+        #     - Static Experimental notice (WA_TransparentForMouseEvents) + red topbar indicator
+        #     - Enter key (send_message) during busy turn auto-injecting Live Steering note
+        from idle_service import _IDLE_PATCH_PATTERN
+        from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
+        from search_service import is_terse_patch_confirmation, parse_turn_commands
+
+        self.assertEqual(FAIRYBREAD_VERSION, '0.9.1d')
+        self.assertEqual(bump_minor_letter_version('0.9.1'), '0.9.1a')
+        self.assertEqual(bump_minor_letter_version('0.9.1a'), '0.9.1b')
+        self.assertEqual(bump_minor_letter_version('0.9.1y'), '0.9.1z')
+
+        self.assertTrue(parse_turn_commands('Please autopatch the experimental notice')['autopatch'])
+        self.assertTrue(parse_turn_commands('apply experimental mode patches')['autopatch'])
+        self.assertTrue(is_terse_patch_confirmation('Apply. (just in case I confused you).'))
+        self.assertTrue(is_terse_patch_confirmation('Proceed'))
+
+        sample_patch = (
+            '[IDLE_PATCH file="memory_service.py" summary="30s timeout"]\n'
+            '<<<TARGET\n'
+            'timeout=15.0\n'
+            '===REPLACE\n'
+            'timeout=30.0\n'
+            '>>>'
+        )
+        m_patch = _IDLE_PATCH_PATTERN.search(sample_patch)
+        self.assertIsNotNone(m_patch)
+        self.assertEqual(m_patch.group('file'), 'memory_service.py')
+
+        self.assertTrue(self.window.idle_switch_btn.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+        self.window.idle_switch_btn.setChecked(True)
+        self.assertIn('RUNNING', self.window.idle_switch_btn.text())
+        self.window._set_experimental_badge_state('stopped')
+        self.assertIn('STOPPED', self.window.idle_switch_btn.text())
+        self.window.idle_switch_btn.setChecked(False)
+        self.assertIn('Experimental: OFF', self.window.idle_switch_btn.text())
+
+        # Busy-turn Enter key -> auto-steers instead of dropping keystroke
+        self.provider.delay = 0.25
+        self.window.composer.setPlainText('Initial turn question')
+        self.window.send_message()
+        busy_w = self.window.worker
+        self.window.composer.setPlainText('Apply. (just in case I confused you).')
+        self.window.send_message()
+        self.assertEqual(self.window.composer.toPlainText(), '')
+        self.assertIn('Apply. (just in case I confused you).', self.window.active_steering_state.get('notes', []))
+        self.assertIn('Steer (1)', self.window.steer_button.text())
+        self.window.stop_active_turn()
+        if busy_w is not None:
+            busy_w.wait(1000)
 
 
 if __name__ == '__main__':

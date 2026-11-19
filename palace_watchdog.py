@@ -29,8 +29,11 @@ from palace_ouroboros import (
     SOURCE_REPO_DIR,
     STAGING_DIR,
     backup_live_to_last_known_good,
+    create_code_edition_snapshot,
+    ensure_golden_baseline_edition,
     rollback_to_last_known_good,
     validate_staged_palace,
+    write_crash_report,
     write_reboot_handoff,
 )
 
@@ -45,18 +48,25 @@ def _stop_existing_palace_gui() -> None:
 
 
 def _launch_palace_on_interactive_desktop() -> None:
-    """Trigger the interactive desktop scheduled task (`LaunchPalaceDesktop`) so the window opens on WinSta0\\Default."""
-    res = subprocess.run(
-        ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if res.returncode != 0:
-        # Fallback direct spawn if scheduled task is not present
-        bat = LIVE_DIR / "Run_Palace_Live.bat"
-        if bat.exists():
-            subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(LIVE_DIR))
+    """Launch the active PalaceWindow instance onto the desktop."""
+    if LIVE_DIR.resolve() == Path(r"C:\Palace_Live").resolve():
+        res = subprocess.run(
+            ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0:
+            return
+    bat = LIVE_DIR / "Run_Palace_Live.bat"
+    if bat.exists():
+        subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(LIVE_DIR))
+        return
+    pythonw_exe = Path(sys.executable).with_name("pythonw.exe")
+    launcher = str(pythonw_exe if pythonw_exe.exists() else Path(sys.executable))
+    gui_py = LIVE_DIR / "palace_gui.py"
+    if gui_py.exists():
+        subprocess.Popen([launcher, str(gui_py)], cwd=str(LIVE_DIR))
 
 
 def perform_hot_reboot(
@@ -67,6 +77,16 @@ def perform_hot_reboot(
     resumption_prompt: str = "",
     skip_tests: bool = False,
 ) -> tuple[bool, str]:
+    # 0. Sync any newer files from SOURCE_REPO_DIR (E:\Visual_studio\Palace) into STAGING_DIR first
+    # so direct repo edits are never overwritten by older staging files!
+    STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    if SOURCE_REPO_DIR.exists():
+        for fname in EDITABLE_PALACE_FILES:
+            repo_f = SOURCE_REPO_DIR / fname
+            staged_f = STAGING_DIR / fname
+            if repo_f.exists() and (not staged_f.exists() or repo_f.stat().st_mtime >= staged_f.stat().st_mtime):
+                shutil.copy2(repo_f, staged_f)
+
     # 1. Preflight Gate (L3)
     print("[Watchdog] Running Preflight Gate (py_compile + unittest)...")
     test_res = validate_staged_palace(run_unit_tests=not skip_tests)
@@ -75,7 +95,11 @@ def perform_hot_reboot(
         print(f"[Watchdog] {msg}", file=sys.stderr)
         return False, msg
 
-    # 2. Backup current live files to last_known_good/
+    # 2. Ensure golden baseline v0001 exists and backup current live files to last_known_good/
+    try:
+        ensure_golden_baseline_edition()
+    except Exception:
+        pass
     backup_live_to_last_known_good()
 
     # 3. Write atomic handoff with Circuit Breaker check (L4 & L6)
@@ -105,7 +129,9 @@ def perform_hot_reboot(
         if staged_f.exists():
             if LIVE_DIR.exists():
                 shutil.copy2(staged_f, LIVE_DIR / fname)
-            if SOURCE_REPO_DIR.exists():
+            # Only copy to SOURCE_REPO_DIR if we are in a standalone single-folder install.
+            # In owner dev mode, master E:\Visual_studio\Palace is protected from auto-reboot overwrites.
+            if SOURCE_REPO_DIR.exists() and SOURCE_REPO_DIR.resolve() == LIVE_DIR.resolve():
                 shutil.copy2(staged_f, SOURCE_REPO_DIR / fname)
             shutil.copy2(staged_f, source_mirror_dir / fname)
 
@@ -121,6 +147,14 @@ def perform_hot_reboot(
             try:
                 hb = json.loads(READY_HEARTBEAT_PATH.read_text(encoding="utf-8"))
                 if float(hb.get("timestamp", 0)) >= launch_ts - 0.5 and hb.get("status") == "READY":
+                    try:
+                        create_code_edition_snapshot(
+                            author=reason,
+                            summary=diff_summary,
+                            source_dir=LIVE_DIR if LIVE_DIR.exists() else SOURCE_REPO_DIR,
+                        )
+                    except Exception:
+                        pass
                     msg = f"SUCCESS: Upgraded Palace process (PID {hb.get('pid')}) verified READY on desktop!"
                     print(f"[Watchdog] {msg}")
                     return True, msg
@@ -128,10 +162,19 @@ def perform_hot_reboot(
                 pass
         time.sleep(0.4)
 
-    # 7. Automatic Rollback on Timeout/Crash!
+    # 7. Automatic Zero-Touch Rollback on Timeout/Crash!
     print("[Watchdog] ERROR: READY heartbeat timed out! Rolling back to last_known_good...", file=sys.stderr)
     _stop_existing_palace_gui()
     rollback_to_last_known_good()
+    try:
+        write_crash_report(
+            trigger="boot_timeout_or_startup_crash",
+            exc_type="StartupTimeoutError",
+            exc_message=f"Upgraded Palace window failed to emit READY heartbeat within 10s ({diff_summary})",
+            traceback_str="Startup failed before READY heartbeat. Watchdog automatically rolled back to last_known_good.",
+        )
+    except Exception:
+        pass
     _launch_palace_on_interactive_desktop()
     return False, "Upgrade failed READY heartbeat within 10s — rolled back to last_known_good automatically."
 
@@ -143,7 +186,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session", type=str, default="legacy")
     parser.add_argument("--resumption-prompt", type=str, default="")
     parser.add_argument("--skip-tests", action="store_true")
+    parser.add_argument("--auto-rollback", action="store_true", help="Immediately roll back to last_known_good after a runtime crash")
     args = parser.parse_args(argv)
+
+    if args.auto_rollback:
+        print("[Watchdog] Runtime crash detected — executing Zero-Touch Auto-Rollback to last_known_good...")
+        _stop_existing_palace_gui()
+        time.sleep(0.5)
+        rollback_to_last_known_good()
+        _launch_palace_on_interactive_desktop()
+        return 0
 
     ok, _msg = perform_hot_reboot(
         reason=args.reason,

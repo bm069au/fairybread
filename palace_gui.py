@@ -34,19 +34,60 @@ from palace_config import (
     IDLE_DURATION_CHOICES,
     IDLE_TOKEN_LIMIT_CHOICES,
     PROVIDER_CATALOG,
+    load_ai_squads,
     load_idle_settings,
     load_mission_ethics,
+    load_personalization_settings,
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
+    save_ai_squads,
     save_idle_settings,
     save_mission_ethics,
+    save_personalization_settings,
     save_provider_config,
     save_tool_settings,
     save_ui_settings,
     set_provider_enabled,
 )
 from session_store import SessionStore
+
+
+def format_chat_timestamp(raw_iso: str | None) -> str:
+    """Format ISO timestamp to human-friendly ChatGPT-style display ('Today 8:51 AM', etc.)."""
+    if not raw_iso:
+        return ""
+    try:
+        from datetime import datetime
+        clean = str(raw_iso).replace('Z', '')
+        if '.' in clean:
+            clean = clean.split('.')[0]
+        dt = datetime.fromisoformat(clean)
+        now = datetime.now()
+        time_str = dt.strftime("%I:%M %p").lstrip("0")
+        if dt.date() == now.date():
+            return f"Today {time_str}"
+        elif (now.date() - dt.date()).days == 1:
+            return f"Yesterday {time_str}"
+        else:
+            return dt.strftime("%b %d, ") + time_str
+    except Exception:
+        return str(raw_iso)[:16].replace('T', ' ')
+
+
+def format_time_only(raw_iso: str | None) -> str:
+    """Format ISO timestamp to time only ('12:59 PM') for message bubble footers, matching ChatGPT exactly."""
+    if not raw_iso:
+        return ""
+    try:
+        from datetime import datetime
+        clean = str(raw_iso).replace('Z', '')
+        if '.' in clean:
+            clean = clean.split('.')[0]
+        dt = datetime.fromisoformat(clean)
+        return dt.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return str(raw_iso)[11:16]
 
 
 from palace_theme import (
@@ -317,8 +358,10 @@ class Composer(QTextEdit):
         self.setObjectName('composerInput')
         self.setAcceptRichText(False)
         self.setAcceptDrops(True)
+        if self.viewport() is not None:
+            self.viewport().setAcceptDrops(True)
         self.setAccessibleName('Message to Palace')
-        self.setPlaceholderText('Ask anything, @ to mention, or drop files')
+        self.setPlaceholderText('Ask anything, / for commands, @ to mention, or drop files')
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFixedHeight(28)
         self.textChanged.connect(self._adjust_height)
@@ -328,6 +371,40 @@ class Composer(QTextEdit):
         target = max(28, min(110, doc_height))
         if self.height() != target:
             self.setFixedHeight(target)
+
+    def dragEnterEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and (
+            (mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()))
+            or mime.hasImage()
+            or mime.hasText()
+        ):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and (
+            (mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()))
+            or mime.hasImage()
+            or mime.hasText()
+        ):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        mime = event.mimeData()
+        if mime is not None and mime.hasUrls() and any(u.isLocalFile() for u in mime.urls()):
+            self.files_added.emit([u.toLocalFile() for u in mime.urls() if u.isLocalFile()])
+            event.acceptProposedAction()
+            return
+        if mime is not None and mime.hasImage():
+            self.insertFromMimeData(mime)
+            event.acceptProposedAction()
+            return
+        super().dropEvent(event)
 
     def canInsertFromMimeData(self, source):
         return source.hasUrls() or source.hasImage() or super().canInsertFromMimeData(source)
@@ -457,7 +534,7 @@ class ManageAIsDialog(QDialog):
         'AI Providers',
         'Profiles',
         'Work Mode & Tools',
-        'Memory & History',
+        'Memory & Personalization',
         'Experimental Mode',
         'Agent Bridge & Permissions',
         'Backup & Restore',
@@ -536,6 +613,9 @@ class ManageAIsDialog(QDialog):
             'Idle Mode': 'Experimental Mode',
             'Idle': 'Experimental Mode',
             'Experimental': 'Experimental Mode',
+            'Memory & History': 'Memory & Personalization',
+            'Personalization': 'Memory & Personalization',
+            'Memory': 'Memory & Personalization',
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
         target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 4
@@ -1305,19 +1385,181 @@ class ManageAIsDialog(QDialog):
 
     def _build_profiles_page(self):
         w, lay = self._make_simple_page(
-            'Profiles & Squads',
-            'Profiles and AI Squads let you switch between Code AIs, Light Chat, Generalist, Graphics, Work Mode, and Idle Mode.'
+            'Profiles & AI Squads',
+            'Customize which AI providers, how many AIs per turn, and which modes (Deliberation / Code access) belong to each Profile.'
         )
-        lay.addWidget(QLabel(
-            'Built-in Squads & Modes:\n'
-            '• 💻 Code AIs (DeepSeek, Mistral, Gemini · Deliberation ON)\n'
-            '• 💬 Light Chat (Groq, Qwen, Cohere · Direct 1-Round)\n'
-            '• 🧠 Generalist (Gemini, OpenAI, DeepSeek, Cohere · Deliberation ON)\n'
-            '• 🎨 Graphics & Vision (OpenAI, Gemini)\n'
-            '• 🛠 Work Mode (Code AIs + Fairybread Source & Project Folder Tools)\n'
-            '• 🌙 Idle Mode Sanctuary'
-        ))
-        lay.addStretch()
+        self._squads_data = load_ai_squads(self.config_path)
+        self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
+        self._loading_squad_ui = False
+
+        split_row = QHBoxLayout()
+        split_row.setSpacing(14)
+
+        left_col = QVBoxLayout()
+        left_col.addWidget(QLabel('<b>Profiles / Squads:</b>'))
+        self.squad_list_widget = QListWidget()
+        self.squad_list_widget.setFixedWidth(220)
+        self.squad_list_widget.setToolTip('Select a Profile to customize its AIs and settings')
+        left_col.addWidget(self.squad_list_widget, 1)
+
+        sq_btn_row = QHBoxLayout()
+        add_sq_btn = QPushButton('+ New')
+        add_sq_btn.setToolTip('Create a new custom Profile')
+        del_sq_btn = QPushButton('🗑 Delete')
+        del_sq_btn.setToolTip('Delete selected Profile')
+        reset_sq_btn = QPushButton('↺ Defaults')
+        reset_sq_btn.setToolTip('Restore built-in default Profiles')
+        sq_btn_row.addWidget(add_sq_btn)
+        sq_btn_row.addWidget(del_sq_btn)
+        sq_btn_row.addWidget(reset_sq_btn)
+        left_col.addLayout(sq_btn_row)
+        split_row.addLayout(left_col)
+
+        right_card = QFrame()
+        right_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        right_lay = QVBoxLayout(right_card)
+        right_lay.setSpacing(10)
+
+        form = QFormLayout()
+        self.squad_label_edit = QLineEdit()
+        self.squad_label_edit.setToolTip('Display name for this Profile')
+        form.addRow('Profile Name:', self.squad_label_edit)
+
+        self.squad_max_ais_combo = QComboBox()
+        self.squad_max_ais_combo.setToolTip('Maximum number of AIs to run per turn in this Profile')
+        self.squad_max_ais_combo.addItem('All Checked AIs (No Cap)', 0)
+        for n_cap in (1, 2, 3, 4, 5, 6, 8, 10, 12):
+            self.squad_max_ais_combo.addItem(f'Max {n_cap} AI{"s" if n_cap > 1 else ""} per turn', n_cap)
+        form.addRow('How Many AIs to Use:', self.squad_max_ais_combo)
+        right_lay.addLayout(form)
+
+        self.squad_delib_check = QCheckBox('Enable 2-Round Council Deliberation (Peer Review ON)')
+        self.squad_delib_check.setToolTip('Run 2-round peer review when this Profile is selected')
+        right_lay.addWidget(self.squad_delib_check)
+
+        self.squad_code_check = QCheckBox('Enable Fairybread Source Code Access ({} Code ON)')
+        self.squad_code_check.setToolTip('Automatically enable read-only source code sharing in this Profile')
+        right_lay.addWidget(self.squad_code_check)
+
+        right_lay.addWidget(QLabel('<b>Included AI Providers in this Profile:</b>'))
+        prov_grid = QGridLayout()
+        prov_grid.setSpacing(8)
+        self.squad_provider_checks: dict[str, QCheckBox] = {}
+        configs = load_provider_configs(self.config_path)
+        all_prov_names = list(dict.fromkeys([*PROVIDER_CATALOG.keys(), *configs.keys()]))
+        for idx, pname in enumerate(all_prov_names):
+            disp = provider_display_name(pname)
+            ic = provider_icon(pname)
+            chk = QCheckBox(f'{ic} {disp}')
+            chk.setToolTip(f'Include {disp} in this Profile')
+            self.squad_provider_checks[pname] = chk
+            prov_grid.addWidget(chk, idx // 3, idx % 3)
+        right_lay.addLayout(prov_grid)
+        right_lay.addStretch(1)
+        split_row.addWidget(right_card, 1)
+        lay.addLayout(split_row, 1)
+
+        def _save_current_squad_edits():
+            if self._loading_squad_ui or not self._active_squad_key:
+                return
+            if self._active_squad_key not in self._squads_data:
+                return
+            lbl = self.squad_label_edit.text().strip() or self._active_squad_key
+            provs = [p for p, c in self.squad_provider_checks.items() if c.isChecked()]
+            self._squads_data[self._active_squad_key] = {
+                'label': lbl,
+                'providers': provs,
+                'deliberate': self.squad_delib_check.isChecked(),
+                'code_access': self.squad_code_check.isChecked(),
+                'max_ais': int(self.squad_max_ais_combo.currentData() or 0),
+            }
+            cur_item = self.squad_list_widget.currentItem()
+            if cur_item and str(cur_item.data(Qt.ItemDataRole.UserRole)) == self._active_squad_key:
+                cur_item.setText(f'{lbl} ({len(provs)} AIs)')
+
+        def _populate_squad_list(select_key: str | None = None):
+            self._loading_squad_ui = True
+            self.squad_list_widget.clear()
+            target_row = 0
+            for idx, (k, v) in enumerate(self._squads_data.items()):
+                cnt = len(v.get('providers') or [])
+                it = QListWidgetItem(f'{v.get("label", k)} ({cnt} AIs)')
+                it.setData(Qt.ItemDataRole.UserRole, k)
+                self.squad_list_widget.addItem(it)
+                if select_key and k == select_key:
+                    target_row = idx
+            self._loading_squad_ui = False
+            if self.squad_list_widget.count() > 0:
+                self.squad_list_widget.setCurrentRow(target_row)
+
+        def _on_squad_selected(current: QListWidgetItem | None, _prev: QListWidgetItem | None = None):
+            if current is None:
+                return
+            _save_current_squad_edits()
+            key = str(current.data(Qt.ItemDataRole.UserRole) or '')
+            if key not in self._squads_data:
+                return
+            self._loading_squad_ui = True
+            self._active_squad_key = key
+            sq = self._squads_data[key]
+            self.squad_label_edit.setText(str(sq.get('label') or key))
+            max_idx = self.squad_max_ais_combo.findData(int(sq.get('max_ais') or 0))
+            self.squad_max_ais_combo.setCurrentIndex(max_idx if max_idx >= 0 else 0)
+            self.squad_delib_check.setChecked(bool(sq.get('deliberate', True)))
+            self.squad_code_check.setChecked(bool(sq.get('code_access', False)))
+            inc = set(sq.get('providers') or [])
+            for p, c in self.squad_provider_checks.items():
+                c.setChecked(p in inc)
+            self._loading_squad_ui = False
+
+        def _add_new_squad():
+            _save_current_squad_edits()
+            new_key = f'custom_{len(self._squads_data) + 1}'
+            while new_key in self._squads_data:
+                new_key += '_'
+            self._squads_data[new_key] = {
+                'label': '✨ Custom Profile',
+                'providers': ['gemini', 'openai'],
+                'deliberate': True,
+                'code_access': False,
+                'max_ais': 0,
+            }
+            _populate_squad_list(select_key=new_key)
+
+        def _del_selected_squad():
+            if len(self._squads_data) <= 1:
+                return
+            cur = self.squad_list_widget.currentItem()
+            if cur is None:
+                return
+            k = str(cur.data(Qt.ItemDataRole.UserRole) or '')
+            if k in self._squads_data:
+                self._loading_squad_ui = True
+                del self._squads_data[k]
+                self._active_squad_key = next(iter(self._squads_data.keys()), '')
+                self._loading_squad_ui = False
+                _populate_squad_list(select_key=self._active_squad_key)
+
+        def _restore_default_squads():
+            self._loading_squad_ui = True
+            self._squads_data = {k: dict(v, providers=list(v.get('providers', []))) for k, v in DEFAULT_AI_SQUADS.items()}
+            self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
+            self._loading_squad_ui = False
+            _populate_squad_list(select_key=self._active_squad_key)
+
+        self._flush_squad_editor = _save_current_squad_edits
+        self.squad_list_widget.currentItemChanged.connect(_on_squad_selected)
+        self.squad_label_edit.textEdited.connect(lambda _t: _save_current_squad_edits())
+        self.squad_max_ais_combo.currentIndexChanged.connect(lambda _i: _save_current_squad_edits())
+        self.squad_delib_check.toggled.connect(lambda _b: _save_current_squad_edits())
+        self.squad_code_check.toggled.connect(lambda _b: _save_current_squad_edits())
+        for chk in self.squad_provider_checks.values():
+            chk.toggled.connect(lambda _b: _save_current_squad_edits())
+        add_sq_btn.clicked.connect(_add_new_squad)
+        del_sq_btn.clicked.connect(_del_selected_squad)
+        reset_sq_btn.clicked.connect(_restore_default_squads)
+        _populate_squad_list(select_key=self._active_squad_key)
+
         self.pages.addWidget(w)
 
     def _build_work_tools_page(self):
@@ -1350,37 +1592,40 @@ class ManageAIsDialog(QDialog):
     def _build_memory_history_page(self):
         w, lay = self._make_simple_page(
             'Memory & Personalization',
-            'Configure how Fairybread manages shared contextual memory across all Council AIs (like ChatGPT & Antigravity).'
+            'Configure your Rich User Profile, Reference Photos, Tone & Style sliders, and Custom Instructions across all Council AIs.'
         )
+        p_cfg = load_personalization_settings(self.config_path)
+
+        # 1. MEMORY & AUTO-EVOLVING RICH PROFILE CARD
         mem_card = QFrame()
-        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         mc_lay = QVBoxLayout(mem_card)
-        mc_lay.setSpacing(10)
+        mc_lay.setSpacing(8)
 
         row1 = QHBoxLayout()
         lbl1 = QLabel(
-            '<b>Enable memory</b><br>'
-            '<span style="color:#8b949e; font-size:12px;">Let all Council AIs personalize your experience based on your chats, files, and connected apps.</span>'
+            '<b>Enable Shared Memory &amp; Rich User Profile</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">Automatically remember facts, preferences, skills, and project context across all connected AIs.</span>'
         )
         lbl1.setWordWrap(True)
         lbl1.setTextFormat(Qt.TextFormat.RichText)
         self.enable_shared_mem_check = QCheckBox('Enabled')
-        self.enable_shared_mem_check.setChecked(True)
-        self.enable_shared_mem_check.setToolTip('Toggle Shared Memory across conversations')
+        self.enable_shared_mem_check.setChecked(bool(p_cfg.get('auto_evolve_profile', True)))
+        self.enable_shared_mem_check.setToolTip('Automatically learn and update your Rich User Profile from chats')
         row1.addWidget(lbl1, 1)
         row1.addWidget(self.enable_shared_mem_check)
         mc_lay.addLayout(row1)
 
         row2 = QHBoxLayout()
         lbl2 = QLabel(
-            '<b>Memory summary</b><br>'
-            '<span style="color:#8b949e; font-size:12px;">View and directly edit the overview of what Fairybread has learned about you (Overview, How You Like to Work, Software Projects).</span>'
+            '<b>Living User Profile &amp; Memory Summary</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">View and directly edit what Fairybread knows about you (Overview, How You Like to Work, Projects).</span>'
         )
         lbl2.setWordWrap(True)
         lbl2.setTextFormat(Qt.TextFormat.RichText)
-        manage_sum_btn = QPushButton('Manage')
+        manage_sum_btn = QPushButton('Manage Profile…')
         manage_sum_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage_sum_btn.setToolTip('View & edit Memory summary')
+        manage_sum_btn.setToolTip('View & edit your Living User Profile')
 
         def _open_summary():
             parent = self.parent()
@@ -1393,8 +1638,134 @@ class ManageAIsDialog(QDialog):
         mc_lay.addLayout(row2)
         lay.addWidget(mem_card)
 
-        lay.addWidget(QCheckBox('Save standard chat transcripts locally per conversation', checked=True))
-        lay.addStretch()
+        # 2. REFERENCE PHOTOS CARD (Face + Full-Body)
+        ref_card = QFrame()
+        ref_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        ref_lay = QVBoxLayout(ref_card)
+        ref_lay.setSpacing(6)
+        ref_lay.addWidget(QLabel('<b>Reference photos</b> <span style="color:#8b949e; font-size:11.5px;">(Stored 100% locally — used when you ask to generate or edit an image of yourself)</span>'))
+
+        self.ref_face_path = str(p_cfg.get('reference_photo_face') or '')
+        self.ref_body_path = str(p_cfg.get('reference_photo_body') or '')
+
+        face_row = QHBoxLayout()
+        self.ref_face_lbl = QLabel()
+        face_add_btn = QPushButton('Add / Change…')
+        face_clr_btn = QPushButton('Clear')
+        face_row.addWidget(self.ref_face_lbl, 1)
+        face_row.addWidget(face_add_btn)
+        face_row.addWidget(face_clr_btn)
+        ref_lay.addLayout(face_row)
+
+        body_row = QHBoxLayout()
+        self.ref_body_lbl = QLabel()
+        body_add_btn = QPushButton('Add / Change…')
+        body_clr_btn = QPushButton('Clear')
+        body_row.addWidget(self.ref_body_lbl, 1)
+        body_row.addWidget(body_add_btn)
+        body_row.addWidget(body_clr_btn)
+        ref_lay.addLayout(body_row)
+
+        def _refresh_ref_labels():
+            f_name = Path(self.ref_face_path).name if self.ref_face_path else 'Not set'
+            b_name = Path(self.ref_body_path).name if self.ref_body_path else 'Not set'
+            self.ref_face_lbl.setText(f'<b>Reference photo (Face / Portrait):</b> <span style="color:#58a6ff;">{html.escape(f_name)}</span>')
+            self.ref_body_lbl.setText(f'<b>Full-body reference photo:</b> <span style="color:#58a6ff;">{html.escape(b_name)}</span>')
+
+        def _pick_ref_photo(kind: str):
+            p_str, _ = QFileDialog.getOpenFileName(
+                self,
+                'Select Reference Photo',
+                '',
+                'Images (*.png *.jpg *.jpeg *.webp *.bmp)',
+            )
+            if not p_str or p_str.upper().startswith('M:'):
+                return
+            import shutil
+            ref_dir = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'Palace' / 'reference_photos'
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            src = Path(p_str)
+            dst = ref_dir / f'{kind}_{src.name}'
+            try:
+                shutil.copy2(src, dst)
+                if kind == 'face':
+                    self.ref_face_path = str(dst)
+                else:
+                    self.ref_body_path = str(dst)
+                _refresh_ref_labels()
+            except Exception:
+                pass
+
+        face_add_btn.clicked.connect(lambda: _pick_ref_photo('face'))
+        face_clr_btn.clicked.connect(lambda: (setattr(self, 'ref_face_path', ''), _refresh_ref_labels()))
+        body_add_btn.clicked.connect(lambda: _pick_ref_photo('body'))
+        body_clr_btn.clicked.connect(lambda: (setattr(self, 'ref_body_path', ''), _refresh_ref_labels()))
+        _refresh_ref_labels()
+        lay.addWidget(ref_card)
+
+        # 3. STYLE, TONE & FORMATTING CONTROLS CARD
+        tone_card = QFrame()
+        tone_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        tone_grid = QGridLayout(tone_card)
+        tone_grid.setSpacing(8)
+
+        self.pers_base_style_combo = QComboBox()
+        for opt in ('Friendly', 'Candid & Direct (No Flattery)', 'Technical & Concise', 'Casual & Witty', 'Professional'):
+            self.pers_base_style_combo.addItem(opt, opt)
+        self.pers_base_style_combo.setCurrentText(str(p_cfg.get('base_style') or 'Friendly'))
+
+        def _make_level_combo(cur_val: str, choices=('Less', 'Default', 'More')) -> QComboBox:
+            cb = QComboBox()
+            for ch in choices:
+                cb.addItem(ch, ch)
+            cb.setCurrentText(cur_val if cur_val in choices else 'Default')
+            return cb
+
+        self.pers_warmth_combo = _make_level_combo(str(p_cfg.get('warmth') or 'Default'))
+        self.pers_enthusiasm_combo = _make_level_combo(str(p_cfg.get('enthusiasm') or 'Less'))
+        self.pers_emoji_combo = _make_level_combo(str(p_cfg.get('emoji') or 'Less'), choices=('None', 'Less', 'Default', 'More'))
+        self.pers_visual_combo = _make_level_combo(str(p_cfg.get('visual_answers') or 'Default'))
+        self.pers_headers_combo = _make_level_combo(str(p_cfg.get('headers_and_lists') or 'More'))
+
+        tone_grid.addWidget(QLabel('<b>Base style and tone:</b>'), 0, 0)
+        tone_grid.addWidget(self.pers_base_style_combo, 0, 1)
+        tone_grid.addWidget(QLabel('<b>Warmth:</b>'), 0, 2)
+        tone_grid.addWidget(self.pers_warmth_combo, 0, 3)
+
+        tone_grid.addWidget(QLabel('<b>Enthusiasm:</b>'), 1, 0)
+        tone_grid.addWidget(self.pers_enthusiasm_combo, 1, 1)
+        tone_grid.addWidget(QLabel('<b>Emoji:</b>'), 1, 2)
+        tone_grid.addWidget(self.pers_emoji_combo, 1, 3)
+
+        tone_grid.addWidget(QLabel('<b>Visual answers:</b>'), 2, 0)
+        tone_grid.addWidget(self.pers_visual_combo, 2, 1)
+        tone_grid.addWidget(QLabel('<b>Headers and lists:</b>'), 2, 2)
+        tone_grid.addWidget(self.pers_headers_combo, 2, 3)
+        lay.addWidget(tone_card)
+
+        # 4. CUSTOM INSTRUCTIONS (General Chat + Coding / Work)
+        inst_card = QFrame()
+        inst_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        inst_lay = QVBoxLayout(inst_card)
+        inst_lay.setSpacing(6)
+        inst_lay.addWidget(QLabel('<b>Custom instructions (General Chat — applies to all Council AIs):</b>'))
+        self.pers_general_inst_edit = QTextEdit()
+        self.pers_general_inst_edit.setAcceptRichText(False)
+        self.pers_general_inst_edit.setPlaceholderText('Give your Council AIs extra instructions and context for everyday chats…')
+        self.pers_general_inst_edit.setMaximumHeight(68)
+        self.pers_general_inst_edit.setPlainText(str(p_cfg.get('custom_instructions_general') or ''))
+        inst_lay.addWidget(self.pers_general_inst_edit)
+
+        inst_lay.addWidget(QLabel('<b>Coding &amp; Technical Work instructions (like Codex — applies to code/work tasks):</b>'))
+        self.pers_coding_inst_edit = QTextEdit()
+        self.pers_coding_inst_edit.setAcceptRichText(False)
+        self.pers_coding_inst_edit.setPlaceholderText('Specify coding conventions, languages, drive rules, or review workflow…')
+        self.pers_coding_inst_edit.setMaximumHeight(68)
+        self.pers_coding_inst_edit.setPlainText(str(p_cfg.get('custom_instructions_coding') or ''))
+        inst_lay.addWidget(self.pers_coding_inst_edit)
+        lay.addWidget(inst_card)
+
+        lay.addStretch(1)
         self.pages.addWidget(w)
 
     def _build_idle_mode_page(self):
@@ -1494,11 +1865,68 @@ class ManageAIsDialog(QDialog):
         lay.addLayout(form)
 
         self.idle_share_code_check = QCheckBox(
-            'Share Fairybread source code with agents (Read-Only — allows agents to inspect code and propose improvements)'
+            'Share Fairybread source code with agents (Reference + On-Demand Read — allows agents to inspect code and propose improvements)'
         )
-        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only access to Fairybread source code')
+        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only on-demand access to Fairybread source code')
         self.idle_share_code_check.setChecked(bool(idle_cfg.get('share_source_code', False)))
         lay.addWidget(self.idle_share_code_check)
+
+        from palace_config import get_source_mirror_dir
+        from idle_service import sync_source_to_sandbox
+        mirror_row = QHBoxLayout()
+        mirror_row.addWidget(QLabel('Shared Source Code Mirror Folder:'))
+        self.idle_mirror_dir_edit = QLineEdit(str(idle_cfg.get('source_mirror_dir') or get_source_mirror_dir(self.config_path)))
+        self.idle_mirror_dir_edit.setToolTip('Read-only folder where a copy of Fairybread source code is kept for AI inspection')
+        mirror_browse_btn = QPushButton('Browse…')
+        mirror_sync_btn = QPushButton('↻ Sync Code Copy Now')
+        mirror_row.addWidget(self.idle_mirror_dir_edit, 1)
+        mirror_row.addWidget(mirror_browse_btn)
+        mirror_row.addWidget(mirror_sync_btn)
+        lay.addLayout(mirror_row)
+
+        def _browse_mirror_dir():
+            cur = self.idle_mirror_dir_edit.text().strip() or str(get_source_mirror_dir(self.config_path))
+            picked = QFileDialog.getExistingDirectory(self, 'Choose Shared Source Code Mirror Folder', cur)
+            if picked and not picked.upper().startswith('M:'):
+                self.idle_mirror_dir_edit.setText(picked)
+
+        def _sync_mirror_now():
+            target = self.idle_mirror_dir_edit.text().strip()
+            if target and not target.upper().startswith('M:'):
+                save_idle_settings({'source_mirror_dir': target}, config_path=self.config_path)
+            dest = sync_source_to_sandbox(self.config_path)
+            QMessageBox.information(self, 'Source Code Mirror Synced', f'Synced read-only Fairybread source code copy to:\n{dest}')
+
+        mirror_browse_btn.clicked.connect(_browse_mirror_dir)
+        mirror_sync_btn.clicked.connect(_sync_mirror_now)
+
+        self.idle_live_patch_check = QCheckBox(
+            '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
+        )
+        self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches, hot-reboot, and resume automatically')
+        self.idle_live_patch_check.setChecked(bool(idle_cfg.get('allow_live_self_modify', False)))
+        lay.addWidget(self.idle_live_patch_check)
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if not IS_DEVELOPER_EDITION:
+            self.idle_share_code_check.setChecked(False)
+            self.idle_share_code_check.setEnabled(False)
+            self.idle_live_patch_check.setChecked(False)
+            self.idle_live_patch_check.setEnabled(False)
+            self.idle_mirror_dir_edit.setEnabled(False)
+            mirror_browse_btn.setEnabled(False)
+            mirror_sync_btn.setEnabled(False)
+            pub_notice = QLabel(
+                '🔒 Public Edition Notice: Live code self-modification & autopatching are disabled in non-Developer builds '
+                'to keep installations verified, consistent, and secure. Have an improvement idea or proposed patch? '
+                'Post it on the Fairybread Forum (https://fairybread.me/forum.html) or email bm069au@gmail.com for review.'
+            )
+            pub_notice.setWordWrap(True)
+            pub_notice.setStyleSheet(
+                'color: #eab308; background: #29230f; border: 1px solid #854d0e; '
+                'padding: 8px 10px; border-radius: 6px; font-size: 11.5px;'
+            )
+            lay.addWidget(pub_notice)
 
         self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
@@ -2143,6 +2571,27 @@ class ManageAIsDialog(QDialog):
             QMessageBox.warning(self, 'Missing Provider Name', 'Please enter a provider name.')
             return
         self._auto_save_current_provider()
+        if hasattr(self, '_flush_squad_editor') and callable(self._flush_squad_editor):
+            self._flush_squad_editor()
+        if hasattr(self, '_squads_data'):
+            save_ai_squads(self._squads_data, config_path=self.config_path)
+        if hasattr(self, 'pers_base_style_combo'):
+            save_personalization_settings(
+                {
+                    'auto_evolve_profile': bool(self.enable_shared_mem_check.isChecked()) if hasattr(self, 'enable_shared_mem_check') else True,
+                    'base_style': self.pers_base_style_combo.currentText(),
+                    'warmth': self.pers_warmth_combo.currentText(),
+                    'enthusiasm': self.pers_enthusiasm_combo.currentText(),
+                    'emoji': self.pers_emoji_combo.currentText(),
+                    'visual_answers': self.pers_visual_combo.currentText(),
+                    'headers_and_lists': self.pers_headers_combo.currentText(),
+                    'custom_instructions_general': self.pers_general_inst_edit.toPlainText().strip(),
+                    'custom_instructions_coding': self.pers_coding_inst_edit.toPlainText().strip(),
+                    'reference_photo_face': getattr(self, 'ref_face_path', ''),
+                    'reference_photo_body': getattr(self, 'ref_body_path', ''),
+                },
+                config_path=self.config_path,
+            )
         self._save_email_and_notification_fields()
         self._save_bridge_fields()
         from palace_config import parse_storage_mb_text
@@ -2154,6 +2603,8 @@ class ManageAIsDialog(QDialog):
                 'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
                 'pause_when_joined': self.idle_pause_check.isChecked(),
                 'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
+                'allow_live_self_modify': bool(self.idle_live_patch_check.isChecked()) if hasattr(self, 'idle_live_patch_check') else False,
+                'source_mirror_dir': self.idle_mirror_dir_edit.text().strip() if hasattr(self, 'idle_mirror_dir_edit') else '',
                 'memory_access_mode': self.idle_memory_mode_combo.currentData(),
                 'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
             },
@@ -2462,13 +2913,14 @@ class PalaceWindow(QMainWindow):
         self.idle_switch_btn.setIcon(idle_moon_qicon(False))
         self.idle_switch_btn.setIconSize(QSize(15, 15))
         self.idle_switch_btn.setCheckable(True)
-        self.idle_switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.idle_switch_btn.setToolTip('Toggle Autonomous Experimental Mode')
+        self.idle_switch_btn.setCursor(Qt.CursorShape.ArrowCursor)
+        self.idle_switch_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.idle_switch_btn.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.idle_switch_btn.setToolTip('Experimental Mode status notice (use Mode menu to launch or exit)')
         self.idle_switch_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
-            'QPushButton:hover { color: #c9d1d9; } '
-            'QPushButton:checked { background: #11281b; color: #22c55e; border: 1px solid #22c55e; font-weight: 700; }'
+            'QPushButton:checked { background: #3d1414; color: #ff4d4d; border: 1px solid #ef4444; font-weight: 700; }'
         )
         self.idle_switch_btn.toggled.connect(self._on_idle_switch_toggled)
         top_strip.addWidget(self.idle_switch_btn)
@@ -2543,6 +2995,8 @@ class PalaceWindow(QMainWindow):
         self.chat.setAccessibleName('Conversation history')
         self.chat.setOpenLinks(False)
         self.chat.setAcceptDrops(False)
+        if self.chat.viewport() is not None:
+            self.chat.viewport().setAcceptDrops(False)
         self.chat.anchorClicked.connect(self._on_chat_anchor_clicked)
         self.chat.anchor_action_requested.connect(lambda s: self._on_chat_anchor_clicked(QUrl(s)))
         normal_lay.addWidget(self.chat, 1)
@@ -2554,15 +3008,23 @@ class PalaceWindow(QMainWindow):
         card_layout.setContentsMargins(12, 8, 12, 8)
         card_layout.setSpacing(6)
 
+        self.staged_attachments_frame = QFrame()
+        self.staged_attachments_frame.setStyleSheet('background: transparent; border: none;')
+        self.staged_attachments_layout = QHBoxLayout(self.staged_attachments_frame)
+        self.staged_attachments_layout.setContentsMargins(0, 2, 0, 4)
+        self.staged_attachments_layout.setSpacing(8)
+        self.staged_attachments_frame.hide()
+        card_layout.addWidget(self.staged_attachments_frame)
+
         self.attachment_list = QListWidget()
         self.attachment_list.setObjectName('attachmentList')
         self.attachment_list.setAccessibleName('Attached files; select a file then Remove selected')
-        self.attachment_list.setMaximumHeight(60)
+        self.attachment_list.setFixedHeight(0)
         self.attachment_list.hide()
         card_layout.addWidget(self.attachment_list)
 
         self.composer = Composer(enter_to_send=bool(ui_cfg.get('enter_to_send', True)))
-        self.composer.setToolTip('Type message, paste image (Ctrl+V), or drop files')
+        self.composer.setToolTip('Type message, / for commands, paste image (Ctrl+V), or drop files')
         self.composer.files_added.connect(self.add_files)
         self.composer.image_pasted.connect(self.add_pasted_image)
         self.composer.send_requested.connect(self.send_message)
@@ -2577,6 +3039,17 @@ class PalaceWindow(QMainWindow):
         self.attach_button.setToolTip('Attach files or pictures (Ctrl+O)')
         self.attach_button.clicked.connect(self.choose_files)
         controls.addWidget(self.attach_button)
+
+        self.slash_cmd_btn = QPushButton('/ Commands ▾')
+        self.slash_cmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.slash_cmd_btn.setToolTip('Insert slash command switch (/autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, /fullrender)')
+        self.slash_cmd_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.slash_cmd_btn.clicked.connect(self._show_slash_commands_menu)
+        controls.addWidget(self.slash_cmd_btn)
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
@@ -2782,7 +3255,7 @@ class PalaceWindow(QMainWindow):
 
         back_chat_from_idle_btn = QPushButton('← Normal Chat')
         back_chat_from_idle_btn.setToolTip('Switch back to Normal Mode chat')
-        back_chat_from_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(0))
+        back_chat_from_idle_btn.clicked.connect(self._activate_normal_mode_from_menu)
         idle_top.addWidget(back_chat_from_idle_btn)
 
         self.idle_settings_btn = QPushButton('⚙ Settings')
@@ -2827,6 +3300,29 @@ class PalaceWindow(QMainWindow):
         )
         self.idle_code_btn.toggled.connect(self._on_idle_code_btn_toggled)
         idle_actions.addWidget(self.idle_code_btn)
+
+        live_patch_init = bool(idle_cfg_init.get('allow_live_self_modify', False))
+        self.idle_live_patch_btn = QPushButton('⚡ Live Patch')
+        self.idle_live_patch_btn.setCheckable(True)
+        self.idle_live_patch_btn.setChecked(live_patch_init)
+        self.idle_live_patch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.idle_live_patch_btn.setToolTip('Allow agents to apply live code patches & continue past reboot')
+        self.idle_live_patch_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; } '
+            'QPushButton:checked { background: #2c1e0f; color: #f59e0b; border: 1px solid #f59e0b; font-weight: 700; }'
+        )
+        self.idle_live_patch_btn.toggled.connect(self._on_idle_live_patch_btn_toggled)
+        idle_actions.addWidget(self.idle_live_patch_btn)
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if not IS_DEVELOPER_EDITION:
+            self.idle_code_btn.hide()
+            self.idle_live_patch_btn.hide()
+            idx_si = self.idle_submode_combo.findData('self_improve')
+            if idx_si >= 0:
+                self.idle_submode_combo.removeItem(idx_si)
 
         self.idle_start_btn = QPushButton('▶ Start')
         self.idle_start_btn.setToolTip('Start or resume autonomous Experimental Mode discussion')
@@ -3266,18 +3762,25 @@ class PalaceWindow(QMainWindow):
         self.close()
 
     def _on_ouroboros_startup_ready(self):
-        """Signal READY heartbeat to `palace_watchdog.py`, capture self-inspection snapshot, and process handoff."""
+        """Signal READY heartbeat to `palace_watchdog.py`, capture self-inspection snapshot, and process handoff/continuation tasks."""
         try:
             from palace_ouroboros import (
                 capture_palace_window_snapshot,
+                consume_pending_crash_report,
+                consume_post_reboot_task,
+                ensure_golden_baseline_edition,
                 read_pending_handoff,
                 write_ready_heartbeat,
             )
             write_ready_heartbeat(os.getpid(), status='READY')
-            # Capture a live self-inspection snapshot of the PalaceWindow widget buffer (never desktop)
+            try:
+                ensure_golden_baseline_edition()
+            except Exception:
+                pass
             capture_palace_window_snapshot(self, tag='palace_ui_snapshot')
             handoff = read_pending_handoff(consume=True)
             if handoff:
+                self._post_patch_soak_until = time.time() + 60.0
                 reboot_info = handoff.get('reboot', {})
                 diff_sum = reboot_info.get('applied_diff_summary', 'Upgrade applied.')
                 continuity = handoff.get('continuity', {})
@@ -3285,10 +3788,82 @@ class PalaceWindow(QMainWindow):
                 self.status_label.setTextFormat(Qt.TextFormat.RichText)
                 self.status_label.setToolTip(f'Ouroboros Hot-Reboot Complete: {diff_sum}')
                 self.status_label.setText(
-                    '<span style="color:#22c55e; font-weight:700;">✓ Ready</span>'
+                    '<span style="color:#22c55e; font-weight:700;">✓ Ready (60s Soak Active)</span>'
                 )
                 if resume_prompt and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
                     self.composer.setPlainText(resume_prompt)
+                if continuity.get('auto_resume_idle') and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                    saved_turns = list(continuity.get('idle_transcript') or [])
+                    saved_turns.append({
+                        'speaker': 'operator',
+                        'content': f'⚡ **Ouroboros Hot-Reboot Complete** — Live patch applied (`{diff_sum}`). Continuing autonomous Experimental Mode session…',
+                        'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                    })
+                    self.idle_manager.transcript = saved_turns
+                    rem_sec = int(continuity.get('idle_remaining_seconds') or 0)
+                    if rem_sec > 0:
+                        self.idle_manager.remaining_seconds = rem_sec
+                    self.idle_manager.tokens_used_this_session = int(continuity.get('idle_tokens_used') or 0)
+                    self.idle_manager.spend_usd_this_session = float(continuity.get('idle_spend_usd') or 0.0)
+                    self.workspace_tabs.setCurrentIndex(1)
+                    self._refresh_idle_view()
+                    QTimer.singleShot(900, lambda: self.idle_switch_btn.setChecked(True))
+
+            crash_rep = consume_pending_crash_report()
+            if crash_rep and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                exc_info = crash_rep.get('exception', {})
+                tb_tail = str(crash_rep.get('traceback') or '').strip()
+                failed_ed = crash_rep.get('failed_edition', 'latest')
+                restored_ed = crash_rep.get('restored_edition', 'last_known_good')
+                trig = crash_rep.get('trigger', 'runtime_exception')
+                report_md = (
+                    f"### 🚨 Zero-Touch Autofallback Triggered — Agent Patch Automatically Reverted\n"
+                    f"- **Failed Edition:** `{failed_ed}` (Quarantined)\n"
+                    f"- **Restored Safe Edition:** `{restored_ed}`\n"
+                    f"- **Trigger:** `{trig}` — `{exc_info.get('type', 'Exception')}: {exc_info.get('message', '')}`\n\n"
+                    f"```text\n{tb_tail[-1200:]}\n```\n"
+                    f"*Fairybread automatically rolled back and relaunched so you didn't have to manually restore. The AI Council now has this traceback in session context to fix the issue cleanly.*"
+                )
+                self.append_message('assistant', report_md, contributors=['palace'])
+                try:
+                    self.store.context(self.session_id).append_exchange(
+                        '[SYSTEM AUTO-FALLBACK REPORT]',
+                        report_md,
+                        contributors=['palace'],
+                    )
+                except Exception:
+                    pass
+
+            cont_task = consume_post_reboot_task()
+            if cont_task and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                target_sid = str(cont_task.get('chat_session_id') or '').strip()
+                if target_sid and target_sid != self.session_id:
+                    try:
+                        self.store.select(target_sid)
+                        self.session_id = self.store.selected
+                        self.refresh_sessions()
+                        self.load_history()
+                    except Exception:
+                        pass
+                origin = cont_task.get('origin', 'autopatch_hot_reboot')
+                active_ed = cont_task.get('active_edition', 'latest')
+                ctx_info = cont_task.get('context') or {}
+                orig_req = ctx_info.get('user_request_summary', '')
+                attempted = ctx_info.get('what_was_attempted', '')
+                inst_list = cont_task.get('instructions_for_agents') or []
+                inst_joined = ' '.join(inst_list)
+                depth = int((cont_task.get('loop_guard') or {}).get('reboot_chain_depth', 1))
+                max_depth = int((cont_task.get('loop_guard') or {}).get('max_chain_depth', 3))
+                auto_prompt = (
+                    f"/code [POST-REBOOT CONTINUATION — {origin.upper()} (Active Edition: {active_ed}) (Chain: {depth}/{max_depth})]: "
+                    f"Attempted: \"{attempted}\" for user request: \"{orig_req}\". "
+                    f"{inst_joined}"
+                )
+                def _fire_post_reboot_continuation(prompt_txt=auto_prompt):
+                    if self.worker is None:
+                        self.composer.setPlainText(prompt_txt)
+                        self.send_message()
+                QTimer.singleShot(1100, _fire_post_reboot_continuation)
         except Exception:
             pass
 
@@ -3325,13 +3900,9 @@ class PalaceWindow(QMainWindow):
         exit_act.triggered.connect(self.exit_application)
         palace_menu.addAction(exit_act)
 
-        ai_menu = menubar.addMenu('Mode')
-        normal_mode_act = QAction('Normal AI Mode', self)
-        normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
-        ai_menu.addAction(normal_mode_act)
-        idle_act = QAction('🧪 Experimental Mode', self)
-        idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
-        ai_menu.addAction(idle_act)
+        self.mode_menu = menubar.addMenu('Mode')
+        self.mode_menu.aboutToShow.connect(self._rebuild_mode_menu)
+        self._rebuild_mode_menu()
 
         view_menu = menubar.addMenu('View')
         self.theme_menu = view_menu.addMenu('🎨 Theme')
@@ -3354,6 +3925,9 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
+        profiles_settings_act = QAction('🎛 Profiles && AI Squads…', self)
+        profiles_settings_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
+        settings_menu.addAction(profiles_settings_act)
         voice_settings_act = QAction('🎙️ Voice && Audio (Microphone && Speaker)…', self)
         voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
         settings_menu.addAction(voice_settings_act)
@@ -3382,6 +3956,31 @@ class PalaceWindow(QMainWindow):
         about_act = QAction('About Fairybread', self)
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+
+    def _rebuild_mode_menu(self):
+        if not hasattr(self, 'mode_menu'):
+            return
+        self.mode_menu.clear()
+        normal_mode_act = QAction('💬 Normal AI Mode', self.mode_menu)
+        normal_mode_act.triggered.connect(self._activate_normal_mode_from_menu)
+        self.mode_menu.addAction(normal_mode_act)
+        idle_act = QAction('🧪 Experimental Mode', self.mode_menu)
+        idle_act.triggered.connect(self._activate_experimental_mode_from_menu)
+        self.mode_menu.addAction(idle_act)
+        self.mode_menu.addSeparator()
+        self._populate_profiles_and_ais_menu(self.mode_menu)
+
+    def _activate_normal_mode_from_menu(self):
+        self.idle_switch_btn.blockSignals(True)
+        self.idle_switch_btn.setChecked(False)
+        self.idle_switch_btn.blockSignals(False)
+        self._on_idle_switch_toggled(False)
+
+    def _activate_experimental_mode_from_menu(self):
+        self.idle_switch_btn.blockSignals(True)
+        self.idle_switch_btn.setChecked(True)
+        self.idle_switch_btn.blockSignals(False)
+        self._on_idle_switch_toggled(True)
 
     def _rebuild_theme_menu(self):
         if not hasattr(self, 'theme_menu'):
@@ -3554,12 +4153,25 @@ class PalaceWindow(QMainWindow):
         self.open_manage_ais(initial_page='Idle Mode')
 
     def show_about_dialog(self):
+        from palace_config import FAIRYBREAD_VERSION, IS_DEVELOPER_EDITION
+        ed_label = 'Developer Edition' if IS_DEVELOPER_EDITION else 'Public Edition'
+        pub_note = (
+            ''
+            if IS_DEVELOPER_EDITION
+            else (
+                '<p style="color:#eab308; font-size:11.5px;"><b>Public Edition Safety Note:</b> '
+                'Live code self-modification is disabled in non-Developer builds to keep installations verified and consistent. '
+                'Share proposed patches or ideas on the <a href="https://fairybread.me/forum.html">Fairybread Forum</a> '
+                'or email <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a>.</p>'
+            )
+        )
         box = QMessageBox(self)
-        box.setWindowTitle('About Fairybread')
+        box.setWindowTitle(f'About Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION})')
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
-            '<h3>Fairybread (Beta) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
+            f'<h3>Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
             '<p>Created by <b>Brett Martin Moore</b>.</p>'
+            f'{pub_note}'
             '<p><b>License:</b> Open-Source / Source-Available Donationware for personal use &amp; small teams (up to 2 seats). '
             'For businesses/companies using more than 2 seats, a negotiable corporate license applies.</p>'
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
@@ -3652,6 +4264,89 @@ class PalaceWindow(QMainWindow):
         else:
             self.ai_pill_button.setText('Choose AIs  ▾')
 
+    def _populate_profiles_and_ais_menu(self, menu: QMenu, menu_style: str = ''):
+        configs = load_provider_configs(self.config_path)
+        prov_states = getattr(self, 'provider_states', {}) or {}
+        all_names = list(dict.fromkeys([
+            *prov_states.keys(),
+            *configs.keys(),
+        ]))
+        if not all_names:
+            all_names = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral']
+
+        squad_dict = load_ai_squads(self.config_path)
+        for _sq_key, sq_val in squad_dict.items():
+            squad_title = str(sq_val.get('label') or _sq_key)
+            members = list(sq_val.get('providers') or [])
+            default_delib = bool(sq_val.get('deliberate', True))
+            default_code = bool(sq_val.get('code_access', False))
+            max_cap = int(sq_val.get('max_ais') or 0)
+            avail_members = [m for m in members if m in all_names] or members
+            sub = menu.addMenu(f'{squad_title}')
+            if menu_style:
+                sub.setStyleSheet(menu_style)
+            joined_disp = ', '.join(provider_display_name(m) for m in avail_members)
+            cap_note = f' [Max {max_cap}]' if max_cap > 0 else ''
+            all_act = QAction(f'All {squad_title}{cap_note}: {joined_disp}', sub)
+            all_act.triggered.connect(
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc)
+            )
+            sub.addAction(all_act)
+            sub.addSeparator()
+            for m in avail_members:
+                single_act = QAction(
+                    provider_qicon(m, checked=(prov_states.get(m) is True)),
+                    f'Only {provider_display_name(m)} ({squad_title})',
+                    sub,
+                )
+                single_act.triggered.connect(
+                    lambda _c=False, m_name=m, dc=default_code:
+                    self._apply_squad_preset(
+                        f'{provider_icon(m_name)} {provider_display_name(m_name)}',
+                        [m_name],
+                        deliberate=False,
+                        palace_code=dc,
+                        max_ais=1,
+                    )
+                )
+                sub.addAction(single_act)
+
+        all_en_act = QAction('🌐  All Configured AIs', menu)
+        all_en_act.triggered.connect(
+            lambda: self._apply_squad_preset(
+                '🌐 All AIs',
+                all_names,
+                deliberate=True,
+                palace_code=bool(getattr(self, 'palace_code_btn', None) and self.palace_code_btn.isChecked()),
+                max_ais=0,
+            )
+        )
+        menu.addAction(all_en_act)
+
+        custom_act = QAction('✋  Custom Selection & How Many AIs…', menu)
+        custom_act.triggered.connect(self._open_custom_ai_picker)
+        menu.addAction(custom_act)
+
+        menu.addSeparator()
+        for name in all_names:
+            is_active = (prov_states.get(name) is True)
+            disp = provider_display_name(name)
+            model_hint = configs.get(name, {}).get('model', '')
+            label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
+            act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
+            act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
+            menu.addAction(act)
+
+        menu.addSeparator()
+        edit_prof_act = QAction('🎛  Customize Profiles & Squads…', menu)
+        edit_prof_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
+        menu.addAction(edit_prof_act)
+
+        manage_act = QAction('⚙  Manage AI Keys, Models & Tools…', menu)
+        manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
+        menu.addAction(manage_act)
+
     @Slot()
     def _show_choose_ais_menu(self):
         if self.worker is not None:
@@ -3663,94 +4358,18 @@ class PalaceWindow(QMainWindow):
         )
         menu = QMenu(self)
         menu.setStyleSheet(menu_style)
-        configs = load_provider_configs(self.config_path)
-        all_names = list(dict.fromkeys([
-            *self.provider_states.keys(),
-            *configs.keys(),
-        ]))
-        if not all_names:
-            all_names = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral']
-
-        # --- SQUAD PRESETS WITH FLYOUT SUBMENUS (All Squad OR Single AI in 1 Click) ---
-        squads = [
-            ('💻 Code AIs', ['deepseek', 'mistral', 'gemini'], True, True),
-            ('💬 Light Chat (Cheap)', ['groq', 'qwen', 'cohere'], False, False),
-            ('🧠 Generalist', ['gemini', 'openai', 'deepseek', 'cohere'], True, False),
-            ('🎨 Graphics & Vision', ['openai', 'gemini'], False, False),
-        ]
-        for squad_title, members, default_delib, default_code in squads:
-            avail_members = [m for m in members if m in all_names] or members
-            sub = menu.addMenu(f'{squad_title}')
-            sub.setStyleSheet(menu_style)
-            joined_disp = ', '.join(provider_display_name(m) for m in avail_members)
-            all_act = QAction(f'All {squad_title}: {joined_disp}', sub)
-            all_act.triggered.connect(
-                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code:
-                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc)
-            )
-            sub.addAction(all_act)
-            sub.addSeparator()
-            for m in avail_members:
-                single_act = QAction(
-                    provider_qicon(m, checked=(self.provider_states.get(m) is True)),
-                    f'Only {provider_display_name(m)} ({squad_title})',
-                    sub,
-                )
-                single_act.triggered.connect(
-                    lambda _c=False, m_name=m, dl=default_delib, dc=default_code:
-                    self._apply_squad_preset(
-                        f'{provider_icon(m_name)} {provider_display_name(m_name)}',
-                        [m_name],
-                        deliberate=False if len([m_name]) == 1 else dl,
-                        palace_code=dc,
-                    )
-                )
-                sub.addAction(single_act)
-
-        work_act = QAction('🛠  Work Mode (Code AIs + Deliberation + Palace & Folder Tools)', menu)
-        work_act.triggered.connect(
-            lambda: self._apply_squad_preset(
-                '🛠 Work Mode',
-                [m for m in ['deepseek', 'mistral', 'gemini'] if m in all_names] or ['deepseek', 'mistral', 'gemini'],
-                deliberate=True,
-                palace_code=True,
-            )
-        )
-        menu.addAction(work_act)
-
-        all_en_act = QAction('🌐  All Configured AIs', menu)
-        all_en_act.triggered.connect(
-            lambda: self._apply_squad_preset('🌐 All AIs', all_names, deliberate=True, palace_code=self.palace_code_btn.isChecked())
-        )
-        menu.addAction(all_en_act)
-
-        custom_act = QAction('✋  Custom Selection… (Pick AIs & Max Cap)', menu)
-        custom_act.triggered.connect(self._open_custom_ai_picker)
-        menu.addAction(custom_act)
-
-        menu.addSeparator()
-        for name in all_names:
-            is_active = (self.provider_states.get(name) is True)
-            disp = provider_display_name(name)
-            model_hint = configs.get(name, {}).get('model', '')
-            label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
-            act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
-            act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
-            menu.addAction(act)
-
-        menu.addSeparator()
-        manage_act = QAction('⚙  Manage AI Keys, Models & Tools…', menu)
-        manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
-        menu.addAction(manage_act)
+        self._populate_profiles_and_ais_menu(menu, menu_style=menu_style)
 
         pos = self.ai_pill_button.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4))
         if pos.y() < 40:
             pos = self.ai_pill_button.mapToGlobal(QPoint(0, self.ai_pill_button.height() + 4))
         menu.exec(pos)
 
-    def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False):
+    def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False, max_ais: int = 0):
         self.current_squad_label = label
-        self.max_ais_per_turn = 0
+        self.max_ais_per_turn = max(0, int(max_ais or 0))
+        if self.idle_switch_btn.isChecked():
+            self.idle_switch_btn.setChecked(False)
         all_known = list(dict.fromkeys([*self.provider_states.keys(), *active_list]))
         for name in all_known:
             en = name in active_list
@@ -3949,11 +4568,61 @@ class PalaceWindow(QMainWindow):
             tip_detail = f'\nDetail: {detail}' if detail else ''
             label.setToolTip(f'{icon} {display_name} — {status} (Inactive / Paused){tip_detail}\nClick to toggle active')
 
+    def _apply_experimental_topbar_indicator(self, active: bool):
+        """Keep the window title bar and menu bar in normal dark theme; highlight only the Experimental notice badge."""
+        try:
+            self.setWindowTitle('Fairybread')
+            self.menuBar().setStyleSheet('')
+        except Exception:
+            pass
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                if hwnd:
+                    DWMWA_CAPTION_COLOR = 35
+                    DWMWA_TEXT_COLOR = 36
+                    cap_col = ctypes.c_uint(0xFFFFFFFF)
+                    txt_col = ctypes.c_uint(0xFFFFFFFF)
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(cap_col), ctypes.sizeof(cap_col)
+                    )
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, DWMWA_TEXT_COLOR, ctypes.byref(txt_col), ctypes.sizeof(txt_col)
+                    )
+            except Exception:
+                pass
+
+    def _set_experimental_badge_state(self, state: str):
+        """Update the static top-strip Experimental notice with 3 unmistakable states: 'off', 'running', or 'stopped'."""
+        st = (state or 'off').strip().lower()
+        if st == 'running':
+            self.idle_switch_btn.setIcon(idle_moon_qicon(True))
+            self.idle_switch_btn.setText(' 🔴 Experimental: RUNNING')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #3d1414; color: #ff4d4d; border: 1px solid #ef4444; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11.5px; }'
+            )
+        elif st == 'stopped':
+            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
+            self.idle_switch_btn.setText(' ⏸ Experimental: STOPPED')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11.5px; }'
+            )
+        else:
+            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
+            self.idle_switch_btn.setText(' Experimental: OFF')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; }'
+            )
+
     def _on_idle_switch_toggled(self, active: bool):
-        """Front-interface Experimental Mode switch: pauses Normal AI mode when ON and runs Experimental Mode autonomously."""
-        self.idle_switch_btn.setIcon(idle_moon_qicon(active))
+        """Front-interface Experimental Mode status notice & handler: pauses Normal AI mode when ON and runs Experimental Mode autonomously."""
+        self._apply_experimental_topbar_indicator(active)
         if active:
-            self.idle_switch_btn.setText(' Experimental: ON')
+            self._set_experimental_badge_state('running')
             if self.sidebar_mail_btn.isChecked():
                 self.sidebar_mail_btn.blockSignals(True)
                 self.sidebar_mail_btn.setChecked(False)
@@ -3970,7 +4639,7 @@ class PalaceWindow(QMainWindow):
             self.workspace_tabs.setCurrentIndex(1)
             self.start_idle_session()
         else:
-            self.idle_switch_btn.setText(' Experimental: OFF')
+            self._set_experimental_badge_state('off')
             self.idle_auto_timer.stop()
             self.idle_timer.stop()
             self.idle_manager.leave_idle_mode()
@@ -4062,12 +4731,12 @@ class PalaceWindow(QMainWindow):
         if not self.idle_switch_btn.isChecked():
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(True)
-            self.idle_switch_btn.setIcon(idle_moon_qicon(True))
-            self.idle_switch_btn.setText(' Experimental: ON')
             self.idle_switch_btn.blockSignals(False)
             self.normal_pause_banner.show()
             self.composer.setEnabled(False)
             self.send_button.setEnabled(False)
+        self._set_experimental_badge_state('running')
+        self._apply_experimental_topbar_indicator(True)
         self.idle_manager.start_session()
         self.idle_timer.start()
         self.idle_start_btn.setText('↻ Restart')
@@ -4105,9 +4774,9 @@ class PalaceWindow(QMainWindow):
         if self.idle_switch_btn.isChecked():
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(False)
-            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-            self.idle_switch_btn.setText(' Experimental: OFF')
             self.idle_switch_btn.blockSignals(False)
+        self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
+        self._apply_experimental_topbar_indicator(False)
         self.normal_pause_banner.hide()
         self.composer.setEnabled(True)
         self.send_button.setEnabled(True)
@@ -4127,9 +4796,9 @@ class PalaceWindow(QMainWindow):
             if self.idle_switch_btn.isChecked():
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
-                self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
+            self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
+            self._apply_experimental_topbar_indicator(False)
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
             self.send_button.setEnabled(True)
@@ -4222,9 +4891,8 @@ class PalaceWindow(QMainWindow):
             if self.idle_switch_btn.isChecked():
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
-                self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
+            self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
             self.send_button.setEnabled(True)
@@ -4283,6 +4951,21 @@ class PalaceWindow(QMainWindow):
         self.idle_manager.reload_settings()
         state_lbl = 'ON (Read-Only Fairybread source shared)' if checked else 'OFF'
         self.status_label.setText(f'Experimental Mode Source Code Sharing: {state_lbl}')
+        self._refresh_idle_view()
+
+    def _on_idle_live_patch_btn_toggled(self, checked: bool):
+        updates = {'allow_live_self_modify': bool(checked)}
+        if checked:
+            updates['share_source_code'] = True
+            if hasattr(self, 'idle_code_btn'):
+                self.idle_code_btn.blockSignals(True)
+                self.idle_code_btn.setChecked(True)
+                self.idle_code_btn.setIcon(code_shield_qicon(True))
+                self.idle_code_btn.blockSignals(False)
+        save_idle_settings(updates, config_path=self.config_path)
+        self.idle_manager.reload_settings()
+        state_lbl = 'ARMED (Agents can apply live patches, hot-reboot & auto-continue)' if checked else 'OFF'
+        self.status_label.setText(f'Experimental Live Patch & Auto-Reboot: {state_lbl}')
         self._refresh_idle_view()
 
     def _refresh_idle_view(self):
@@ -4616,11 +5299,16 @@ class PalaceWindow(QMainWindow):
             self.reload_provider_bar()
             self.idle_manager.reload_settings()
             if hasattr(self, 'idle_code_btn'):
-                share_c = bool(load_idle_settings(self.config_path).get('share_source_code', False))
+                idle_s = load_idle_settings(self.config_path)
+                share_c = bool(idle_s.get('share_source_code', False))
                 self.idle_code_btn.blockSignals(True)
                 self.idle_code_btn.setChecked(share_c)
                 self.idle_code_btn.setIcon(code_shield_qicon(share_c))
                 self.idle_code_btn.blockSignals(False)
+                if hasattr(self, 'idle_live_patch_btn'):
+                    self.idle_live_patch_btn.blockSignals(True)
+                    self.idle_live_patch_btn.setChecked(bool(idle_s.get('allow_live_self_modify', False)))
+                    self.idle_live_patch_btn.blockSignals(False)
             self._refresh_idle_view()
             self.status_label.setText('Fairybread settings updated.')
 
@@ -5602,7 +6290,7 @@ class PalaceWindow(QMainWindow):
                         self.conversation_contributors.append(c)
 
                 if role == 'user':
-                    self.append_message('user', message['content'], render=False)
+                    self.append_message('user', message['content'], timestamp=message.get('timestamp'), render=False)
                 elif phase in {'initial', 'peer_reply'} and speaker not in {'assistant', 'palace'}:
                     pending_speakers.append(message)
                 else:
@@ -5613,6 +6301,7 @@ class PalaceWindow(QMainWindow):
                         phase=phase,
                         contributors=msg_contribs,
                         speaker_messages=list(pending_speakers),
+                        timestamp=message.get('timestamp'),
                         render=False,
                     )
                     pending_speakers.clear()
@@ -5626,6 +6315,7 @@ class PalaceWindow(QMainWindow):
                         msg['content'],
                         speaker=msg.get('speaker_id'),
                         phase=msg.get('phase'),
+                        timestamp=msg.get('timestamp'),
                         render=False,
                     )
                     self.last_answer = msg['content']
@@ -5644,8 +6334,9 @@ class PalaceWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             self.show_notice(f'Could not load history: {exc}')
 
-    def append_message(self, role, content, speaker=None, phase=None, contributors=None, speaker_messages=None, render: bool = True):
+    def append_message(self, role, content, speaker=None, phase=None, contributors=None, speaker_messages=None, timestamp=None, render: bool = True):
         item_idx = len(self.chat_items)
+        import time as _t
         self.chat_items.append({
             'idx': item_idx,
             'role': role,
@@ -5654,6 +6345,7 @@ class PalaceWindow(QMainWindow):
             'phase': phase,
             'contributors': list(contributors or []),
             'speaker_messages': list(speaker_messages or []),
+            'timestamp': timestamp or _t.strftime('%Y-%m-%dT%H:%M:%S'),
         })
         if role != 'user':
             self.reply_archive.append(content)
@@ -5688,21 +6380,67 @@ class PalaceWindow(QMainWindow):
         speaker_messages = item.get('speaker_messages') or []
         item_idx = item['idx']
 
-        safe = html.escape(content).replace('\n', '<br>')
         t_dict = load_theme_dict(getattr(self, 'active_theme', 'dark'))
         user_txt_col = str(t_dict.get('user_bubble_text', '#f0f6fc'))
         if role == 'user':
+            import urllib.parse
+            from attachment_service import parse_user_message_attachments
+            clean_user_text, user_atts = parse_user_message_attachments(content)
+            safe_user = html.escape(clean_user_text).replace('\n', '<br>')
+            att_rows_html = ''
+            for att in user_atts:
+                a_kind = att.get('kind', 'text')
+                a_name = att.get('name', 'Attached file')
+                a_path = att.get('path', '')
+                safe_a_name = html.escape(a_name)
+                if a_kind == 'image' and a_path and Path(a_path).exists():
+                    img_url = Path(a_path).as_uri()
+                    enc_path = urllib.parse.quote(a_path)
+                    att_rows_html += (
+                        f'<tr><td align="right" style="padding-bottom:6px;">'
+                        f'<a href="open-img:{enc_path}" style="text-decoration:none;" title="Click to view {safe_a_name}">'
+                        f'<img src="{img_url}" width="160" />'
+                        f'</a>'
+                        f'</td></tr>'
+                    )
+                else:
+                    icon_chr = '🖼' if a_kind == 'image' else '📄'
+                    if a_path and Path(a_path).exists():
+                        enc_path = urllib.parse.quote(a_path)
+                        pill_inner = (
+                            f'<a href="reveal-file:{enc_path}" style="color:#e6edf3; text-decoration:none; font-weight:600;" '
+                            f'title="Click to reveal {safe_a_name} in Explorer">{icon_chr}&nbsp;&nbsp;{safe_a_name}</a>'
+                        )
+                    else:
+                        pill_inner = f'<span style="color:#e6edf3; font-weight:600;">{icon_chr}&nbsp;&nbsp;{safe_a_name}</span>'
+                    att_rows_html += (
+                        f'<tr><td align="right" style="padding-bottom:6px;">'
+                        f'<table cellspacing="0" cellpadding="0" style="background:#21262d; border:1px solid #30363d; border-radius:12px;">'
+                        f'<tr><td style="padding:5px 12px; font-size:12.5px;">{pill_inner}</td></tr>'
+                        f'</table>'
+                        f'</td></tr>'
+                    )
+            text_row_html = (
+                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px; line-height:1.48;">'
+                f'{safe_user}'
+                f'</td></tr>'
+            ) if safe_user.strip() else ''
+            ts_str = format_time_only(item.get('timestamp'))
+            ts_row = f'<tr><td align="right" style="color:#8b949e; font-size:11px; padding-top:4px; padding-right:2px;">{ts_str}</td></tr>' if ts_str else ''
             return (
                 f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px; margin-bottom:16px;">'
                 f'<tr><td width="26%"></td>'
                 f'<td align="right">'
                 f'<table cellspacing="0" cellpadding="0" style="background:transparent; border:none;">'
-                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px; line-height:1.48;">'
-                f'{safe}'
-                f'</td></tr></table>'
+                f'{att_rows_html}'
+                f'{text_row_html}'
+                f'{ts_row}'
+                f'</table>'
                 f'</td>'
                 f'<td width="20"></td></tr></table>'
             )
+
+        safe = html.escape(content).replace('\n', '<br>')
 
         if speaker and speaker not in {'assistant', 'palace'}:
             active_contribs = [speaker]
@@ -5794,10 +6532,12 @@ class PalaceWindow(QMainWindow):
             test_meta_html = f'<div style="font-size:1px; color:#0b0d10;">{html.escape(meta_tag)}</div>'
 
         reply_idx = max(0, len(self.reply_archive) - 1)
+        ts_str = format_time_only(item.get('timestamp'))
+        ts_tag = f'&nbsp;&nbsp;<span style="color:#8b949e; font-size:11px;">· {ts_str}</span>' if ts_str else ''
         actions_row_html = (
             f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:10px; border-top:1px solid #161b22; padding-top:6px;">'
             f'<tr>'
-            f'<td align="left" style="vertical-align:middle;">{badges_html}</td>'
+            f'<td align="left" style="vertical-align:middle;">{badges_html}{ts_tag}</td>'
             f'<td align="right" style="vertical-align:middle; margin-right:6px; color:#6e7681; font-size:11.5px;">'
             f'<a href="speak:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Read response aloud">🔊 Speak</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
@@ -5843,7 +6583,31 @@ class PalaceWindow(QMainWindow):
             return
         scrollbar = self.chat.verticalScrollBar()
         prev_val = scrollbar.value() if scrollbar else 0
-        html_blocks = [self._render_single_chat_item(item) for item in self.chat_items]
+        html_blocks = []
+        for i, item in enumerate(self.chat_items):
+            curr_ts = item.get('timestamp')
+            prev_ts = self.chat_items[i - 1].get('timestamp') if i > 0 else None
+            if curr_ts:
+                try:
+                    from datetime import datetime
+                    dt_curr = datetime.fromisoformat(str(curr_ts).replace('Z', '').split('.')[0])
+                    show_sep = False
+                    if not prev_ts:
+                        show_sep = True
+                    else:
+                        dt_prev = datetime.fromisoformat(str(prev_ts).replace('Z', '').split('.')[0])
+                        if (dt_curr - dt_prev).total_seconds() > 1800 or dt_curr.date() != dt_prev.date():
+                            show_sep = True
+                    if show_sep:
+                        sep_txt = format_chat_timestamp(curr_ts)
+                        html_blocks.append(
+                            f'<div align="center" style="margin:24px 0 14px; font-size:11px; font-weight:600; color:#8b949e;">'
+                            f'{sep_txt}'
+                            f'</div>'
+                        )
+                except Exception:
+                    pass
+            html_blocks.append(self._render_single_chat_item(item))
         self.chat.setHtml(''.join(html_blocks))
         if scroll_to_bottom:
             # Scroll to the top of the latest card so the user reads from the beginning of the new reply
@@ -5898,6 +6662,12 @@ class PalaceWindow(QMainWindow):
             prefix = 'open-img:' if raw.startswith('open-img:') else 'img:'
             img_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
             self._open_image_viewer_dialog(img_path)
+        elif raw.startswith('promote-draft:'):
+            draft_title = urllib.parse.unquote(raw.split('promote-draft:', 1)[1])
+            self.composer.setPlainText(
+                f'/fullrender I like "{draft_title}"! Please render the finished full-resolution master (size: 16:9 HD / Facebook Banner / Square HD).'
+            )
+            self.composer.setFocus()
         elif raw.startswith('save-file:') or raw.startswith('save-img:'):
             prefix = 'save-file:' if raw.startswith('save-file:') else 'save-img:'
             file_path = urllib.parse.unquote(raw.split(prefix, 1)[1])
@@ -6234,10 +7004,77 @@ class PalaceWindow(QMainWindow):
             entry = QListWidgetItem(f'📎 {item.name}  ·  {len(item.text):,} chars{note}')
             entry.setToolTip(item.text[:1200])
             self.attachment_list.addItem(entry)
+        self.attachment_list.setFixedHeight(0)
         self.attachment_list.setVisible(bool(self.attachments))
         self.remove_button.setVisible(bool(self.attachments))
         if self.attachments:
             self.attachment_list.setCurrentRow(0)
+
+        if hasattr(self, 'staged_attachments_layout'):
+            while self.staged_attachments_layout.count():
+                child = self.staged_attachments_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            for idx, item in enumerate(self.attachments):
+                kind = getattr(item, 'kind', 'text')
+                stored_p = getattr(item, 'stored_path', None) or getattr(item, 'path', None)
+                if kind == 'image' and stored_p and Path(stored_p).exists():
+                    # ChatGPT-style mini picture icon (no text clutter!) with top-right ✕ remove button
+                    chip = QFrame()
+                    chip.setFixedSize(62, 62)
+                    chip.setToolTip(item.name)
+                    chip.setStyleSheet(
+                        'QFrame { background: #161b22; border: 1px solid #30363d; border-radius: 10px; }'
+                    )
+                    thumb_lbl = QLabel(chip)
+                    thumb_lbl.setGeometry(2, 2, 58, 58)
+                    pix = QPixmap(str(stored_p))
+                    if not pix.isNull():
+                        thumb_lbl.setPixmap(
+                            pix.scaled(58, 58, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                        )
+                    thumb_lbl.setStyleSheet('border-radius: 8px; border: none;')
+                    rm_btn = QPushButton('✕', chip)
+                    rm_btn.setGeometry(40, 2, 20, 20)
+                    rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    rm_btn.setToolTip(f'Remove {item.name}')
+                    rm_btn.setStyleSheet(
+                        'QPushButton { background: rgba(13,17,23,0.88); color: #f0f6fc; border: 1px solid #30363d; border-radius: 10px; font-size: 10px; font-weight: 700; } '
+                        'QPushButton:hover { background: #da3633; color: #ffffff; }'
+                    )
+                    rm_btn.clicked.connect(lambda _c=False, i=idx: self._remove_attachment_at(i))
+                    self.staged_attachments_layout.addWidget(chip)
+                else:
+                    # ChatGPT-style dark rounded document pill (📄 filename.txt  ✕)
+                    chip = QFrame()
+                    chip.setStyleSheet(
+                        'QFrame { background: #21262d; border: 1px solid #30363d; border-radius: 12px; }'
+                    )
+                    chip_lay = QHBoxLayout(chip)
+                    chip_lay.setContentsMargins(10, 5, 6, 5)
+                    chip_lay.setSpacing(7)
+                    txt_lbl = QLabel(f'📄  <b>{html.escape(item.name)}</b>')
+                    txt_lbl.setTextFormat(Qt.TextFormat.RichText)
+                    txt_lbl.setStyleSheet('color: #e6edf3; font-size: 12.5px; border: none; background: transparent;')
+                    chip_lay.addWidget(txt_lbl)
+                    rm_btn = QPushButton('✕')
+                    rm_btn.setFixedSize(20, 20)
+                    rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                    rm_btn.setToolTip(f'Remove {item.name}')
+                    rm_btn.setStyleSheet(
+                        'QPushButton { background: #30363d; color: #c9d1d9; border: none; border-radius: 10px; font-size: 10px; font-weight: 700; } '
+                        'QPushButton:hover { background: #da3633; color: #ffffff; }'
+                    )
+                    rm_btn.clicked.connect(lambda _c=False, i=idx: self._remove_attachment_at(i))
+                    chip_lay.addWidget(rm_btn)
+                    self.staged_attachments_layout.addWidget(chip)
+            self.staged_attachments_layout.addStretch(1)
+            self.staged_attachments_frame.setVisible(bool(self.attachments))
+
+    def _remove_attachment_at(self, idx: int):
+        if self.worker is None and 0 <= idx < len(self.attachments):
+            self.attachments.pop(idx)
+            self.refresh_attachments()
 
     @Slot()
     def remove_attachment(self):
@@ -6250,10 +7087,49 @@ class PalaceWindow(QMainWindow):
         if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
             event.acceptProposedAction()
 
+    def dragMoveEvent(self, event):
+        if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+
     def dropEvent(self, event):
-        if self.worker is None:
+        if self.worker is None and event.mimeData().hasUrls():
             self.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
             event.acceptProposedAction()
+
+    def _show_slash_commands_menu(self):
+        menu = QMenu(self)
+        from palace_config import IS_DEVELOPER_EDITION
+        commands = []
+        if IS_DEVELOPER_EDITION:
+            commands.extend([
+                ('/autopatch', '⚡ /autopatch — Read code, generate verified patch & hot-reboot'),
+                ('/restore', '♻ /restore — Roll back to previous verified code edition & hot-reboot'),
+                ('/restore list', '🕰️ /restore list — View all saved code editions & golden pins'),
+                ('/code', '{} /code — Attach Fairybread source code reference for this turn'),
+            ])
+        commands.extend([
+            ('/search', '🔍 /search — Light web search'),
+            ('/searchm', '🔎 /searchm — Moderate multi-angle sharded web search'),
+            ('/searchd', '🌐 /searchd — Deep exhaustive 15–25 site web research'),
+            ('/tangent', '↗ /tangent — Side question (ignore prior chat context, still saved)'),
+            ('/fullrender', '🖼 /fullrender — Render 1 full-res master image immediately (skip 3 drafts)'),
+        ])
+        for cmd_token, label in commands:
+            act = QAction(label, menu)
+
+            def _insert_cmd(_checked=False, tok=cmd_token):
+                cur = self.composer.toPlainText()
+                if tok not in cur:
+                    sep = ' ' if (cur and not cur.endswith(' ')) else ''
+                    self.composer.setPlainText(f'{cur}{sep}{tok} ')
+                    cursor = self.composer.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    self.composer.setTextCursor(cursor)
+                self.composer.setFocus()
+
+            act.triggered.connect(_insert_cmd)
+            menu.addAction(act)
+        menu.exec(self.slash_cmd_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
 
     def _on_palace_code_btn_toggled(self, on: bool):
         self.palace_code_btn.setIcon(code_shield_qicon(on))
@@ -6265,8 +7141,8 @@ class PalaceWindow(QMainWindow):
         menu = QMenu(self)
         choices = [
             ('default', '🔍 Default (Light Search — /search)'),
-            ('moderate', '🔎 Moderate (Sharded Multi-Angle — /msearch)'),
-            ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /deepsearch)'),
+            ('moderate', '🔎 Moderate (Sharded Multi-Angle — /searchm)'),
+            ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /searchd)'),
         ]
         for depth_key, label in choices:
             act = QAction(label, menu)
@@ -6306,13 +7182,24 @@ class PalaceWindow(QMainWindow):
             )
 
     def _show_busy_action_menu(self):
+        note_present = bool(self.composer.toPlainText().strip())
+        local_pos = self.steer_button.mapFromGlobal(QCursor.pos())
+        clicked_arrow = local_pos.x() >= max(24, self.steer_button.width() - 24)
+        if note_present and not clicked_arrow:
+            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
+                self.queue_next_turn()
+            else:
+                self.steer_active_turn()
+            return
         menu = QMenu(self)
-        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn)')
+        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn · Enter)')
         queue_act = menu.addAction('⏳ Queue for Next Turn (run after current turn)')
         chosen = menu.exec(self.steer_button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
         if chosen == steer_act:
+            self._busy_submit_mode = 'steer'
             self.steer_active_turn()
         elif chosen == queue_act:
+            self._busy_submit_mode = 'queue'
             self.queue_next_turn()
 
     @Slot()
@@ -6386,6 +7273,10 @@ class PalaceWindow(QMainWindow):
     @Slot()
     def send_message(self):
         if self.worker is not None:
+            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
+                self.queue_next_turn()
+            else:
+                self.steer_active_turn()
             return
         question = self.composer.toPlainText().strip()
         if not question:
@@ -6596,14 +7487,37 @@ class PalaceWindow(QMainWindow):
                         self.refresh_memory_review(True)
                     else:
                         self._update_durable_memory_count()
+                    if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                        import threading
+                        from memory_service import auto_evolve_user_profile_from_turn
+                        q_snap = str(self.last_question or '')
+                        db_snap = self._memory_db_path()
+                        threading.Thread(
+                            target=lambda: auto_evolve_user_profile_from_turn(q_snap, db_path=db_snap),
+                            daemon=True,
+                        ).start()
                 except Exception:
                     pass
             saved = 'Saved locally' if self.pending_history and not result.context_error else 'Not saved (No-History)'
             if self.tangent_btn.isChecked() and self.pending_history and not result.context_error:
                 saved = 'Tangent saved to Palace (clean context)'
             contrib_badges = '&nbsp;&nbsp;'.join(format_ai_badge_html(c) for c in turn_contributors)
+
+            applied_ap = getattr(result, 'applied_autopatch_files', None) or []
+            ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
+
+            ans_upper = str(result.final_answer or '').upper()
+            if '[ALL TASKS COMPLETED' in ans_upper:
+                status_badge = '<span style="color:#3fb950; font-weight:700;">✓ All background tasks completed successfully</span>'
+            elif '[PAUSED' in ans_upper or 'WAITING FOR USER INPUT' in ans_upper:
+                status_badge = '<span style="color:#d29922; font-weight:700;">⏸ Paused — Waiting for your input</span>'
+            elif applied_ap or '[AUTOPATCH STAGED' in ans_upper:
+                status_badge = '<span style="color:#58a6ff; font-weight:700;">⚡ Autopatch Staged — Hot-Rebooting…</span>'
+            else:
+                status_badge = '<span style="color:#8b949e; font-weight:600;">✓ Turn Complete · Ready</span>'
+
             self.status_label.setTextFormat(Qt.TextFormat.RichText)
-            self.status_label.setText(f'{saved} · Contributors: {contrib_badges}')
+            self.status_label.setText(f'{status_badge} &nbsp;·&nbsp; {saved} &nbsp;·&nbsp; {contrib_badges}')
             elapsed_s = max(0.0, time.time() - getattr(self, '_turn_start_time', time.time()))
             self.trigger_completion_notifications(
                 title='Fairybread — Response Ready',
@@ -6636,6 +7550,48 @@ class PalaceWindow(QMainWindow):
             warnings.append(f'Synthesis: {result.synthesis.error}')
         if any(warnings):
             self.show_notice('\n'.join(w for w in warnings if w))
+        applied_ap = getattr(result, 'applied_autopatch_files', None) or []
+        ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
+        if applied_ap and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+            self.show_notice(f'⚡ /autopatch Verified & Staged ({", ".join(applied_ap)}): {ap_sum} — Hot-Rebooting in 1.5s…')
+            try:
+                import re
+                from palace_ouroboros import write_post_reboot_task
+                last_q = self.last_question or ''
+                chain_match = re.search(r'\(Chain:\s*(\d+)/(\d+)\)', last_q)
+                cur_depth = int(chain_match.group(1)) if chain_match else (1 if '[POST-REBOOT CONTINUATION' in last_q else 0)
+                next_depth = cur_depth + 1
+                if next_depth <= 3:
+                    if next_depth < 3:
+                        instructions = [
+                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
+                            'Verify that the latest patch is working cleanly.',
+                            'If there are remaining planned improvements in your sequence, proceed autonomously to apply the next planned patch via /autopatch.',
+                            'If all planned improvements are complete, or if you hit any blocker/ambiguity, confirm to the user and report completion.',
+                        ]
+                    else:
+                        instructions = [
+                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
+                            'All chained patches in this sequence (up to 3) are complete. Confirm to the user that all updates are live and working.',
+                        ]
+                    write_post_reboot_task(
+                        origin='autopatch_hot_reboot',
+                        chat_session_id=self.session_id,
+                        user_request_summary=last_q,
+                        what_was_attempted=ap_sum or f'Modified {", ".join(applied_ap)}',
+                        instructions_for_agents=instructions,
+                        chain_depth=next_depth,
+                    )
+            except Exception:
+                pass
+            def _trigger_autopatch_reboot():
+                import subprocess, sys
+                wd_script = Path(__file__).with_name('palace_watchdog.py')
+                subprocess.Popen(
+                    [sys.executable, str(wd_script), '--skip-tests', '--summary', ap_sum or 'Normal Mode /autopatch'],
+                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                )
+            QTimer.singleShot(1500, _trigger_autopatch_reboot)
 
     def show_desktop_toast(self, title: str, message: str):
         try:
@@ -6870,6 +7826,38 @@ def _seed_demo_store(store: SessionStore):
         store.save()
 
 
+def _trigger_zero_touch_autofallback(trigger: str, exc_type: str, exc_msg: str, tb_str: str, session_id: str = 'legacy') -> None:
+    """Write forensic crash_report.json + post_reboot_task.json and invoke palace_watchdog.py --auto-rollback."""
+    try:
+        import subprocess
+        from palace_ouroboros import write_crash_report, write_post_reboot_task
+        write_crash_report(
+            trigger=trigger,
+            exc_type=exc_type,
+            exc_message=exc_msg,
+            traceback_str=tb_str,
+        )
+        write_post_reboot_task(
+            origin='crash_autofallback',
+            chat_session_id=session_id,
+            user_request_summary='Automatic recovery from crashed agent patch',
+            what_was_attempted=f'{exc_type}: {exc_msg}',
+            instructions_for_agents=[
+                'Examine the Zero-Touch Autofallback crash report above and the relevant source code lines.',
+                'Review what you were doing when the patch crashed, explain the root cause to the user, and propose a safe fix.',
+            ],
+            chain_depth=1,
+        )
+        wd_script = Path(__file__).with_name('palace_watchdog.py')
+        if wd_script.exists():
+            subprocess.Popen(
+                [sys.executable, str(wd_script), '--auto-rollback'],
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            )
+    except Exception:
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Palace Windows interface')
     parser.add_argument('--demo', action='store_true', help='Local simulated responses in separate preview storage; no credentials or APIs.')
@@ -6887,9 +7875,32 @@ def main(argv=None):
         app.setWindowIcon(fairybread_app_qicon())
     except Exception:
         pass
+
+    window_ref = [None]
+    orig_excepthook = sys.excepthook
+
+    def _palace_runtime_excepthook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb_str = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        win = window_ref[0]
+        soak_until = float(getattr(win, '_post_patch_soak_until', 0.0) or 0.0) if win is not None else 0.0
+        sid = str(getattr(win, 'session_id', 'legacy') or 'legacy') if win is not None else 'legacy'
+        if time.time() <= soak_until:
+            _trigger_zero_touch_autofallback(
+                trigger='runtime_soak_exception',
+                exc_type=getattr(exc_type, '__name__', str(exc_type)),
+                exc_msg=str(exc_value),
+                tb_str=tb_str,
+                session_id=sid,
+            )
+            os._exit(2)
+        orig_excepthook(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _palace_runtime_excepthook
+
     try:
         if args.demo:
-            import os
+            import os as _os
             from bootstrap import build_palace
             from providers import ProviderResponse
 
@@ -6898,14 +7909,14 @@ def main(argv=None):
                     self.label = label
 
                 def generate(self, prompt):
-                    import time
-                    time.sleep(0.2)
+                    import time as _t
+                    _t.sleep(0.2)
                     return ProviderResponse(
                         text='Assuming you managed the logistics, after a short burn it would take approximately six years for GPT to reach the Kuiper Belt.',
                         provider=self.label.lower()
                     )
 
-            preview_root = Path(os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview'
+            preview_root = Path(_os.environ['LOCALAPPDATA']) / 'Palace' / 'ui-preview'
             store = SessionStore(preview_root)
             _seed_demo_store(store)
             proposal_service = MemoryProposalService(
@@ -6926,8 +7937,15 @@ def main(argv=None):
             )
         else:
             window = PalaceWindow()
+        window_ref[0] = window
     except Exception as exc:
-        QMessageBox.critical(None, 'Palace could not start', str(exc))
+        import traceback
+        _trigger_zero_touch_autofallback(
+            trigger='startup_constructor_crash',
+            exc_type=type(exc).__name__,
+            exc_msg=str(exc),
+            tb_str=traceback.format_exc(),
+        )
         return 1
     window.show()
     return app.exec()

@@ -929,12 +929,28 @@ def format_markdown_and_drawings(content: str) -> str:
             engine_badge = get_image_engine_badge(png_path)
             meta_txt = f"{engine_badge} · {size_label}" if engine_badge else size_label
             esc_size = html.escape(meta_txt)
-            preview_w = min(680, max(360, int(540 * (target_w / float(max(1, target_h))))))
+            is_draft_sample = (
+                img_quality.lower() == "low"
+                or max(target_w, target_h) <= 640
+                or "draft" in img_title.lower()
+            )
+            if is_draft_sample:
+                preview_w = min(360, max(220, int(260 * (target_w / float(max(1, target_h))))))
+                from urllib import parse as _url_parse
+                enc_draft = _url_parse.quote(img_title)
+                promote_link = (
+                    f'<a href="promote-draft:{enc_draft}" style="color:#a855f7; text-decoration:none; font-weight:700;">'
+                    f'✨ Choose &amp; Render Full-Res Master</a> &nbsp;·&nbsp; '
+                )
+            else:
+                preview_w = min(680, max(360, int(540 * (target_w / float(max(1, target_h))))))
+                promote_link = ""
             img_block = (
                 f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:10px 0; background:#0d1117; border:1px solid #21262d;">'
                 f'<tr><td>'
                 f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'🎨 {esc_title} &nbsp;<span style="color:#6e7681;">({esc_size})</span> &nbsp;·&nbsp; '
+                f'{promote_link}'
                 f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
                 f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
                 f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
