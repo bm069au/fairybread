@@ -240,19 +240,20 @@ Instructions:
     ) -> PalaceRunResult:
 
         try:
+            from palace_config import IS_DEVELOPER_EDITION
             from search_service import parse_turn_commands, run_multi_tier_search
             cmd_info = parse_turn_commands(question, search_depth)
             resolved_search_depth = cmd_info["search_depth"]
             cleaned_q = cmd_info["cleaned_question"]
-            is_autopatch = False
-            if cmd_info.get("include_code"):
+            is_autopatch = bool(cmd_info.get("autopatch", False)) and IS_DEVELOPER_EDITION
+            if cmd_info.get("include_code") and IS_DEVELOPER_EDITION:
                 include_palace_code = True
             if cmd_info.get("tangent"):
                 include_context = False
                 if save_to_context is None:
                     save_to_context = True
             is_full_render = bool(cmd_info.get("full_render", False))
-            restore_target = ""
+            restore_target = str(cmd_info.get("restore_target") or "").strip() if IS_DEVELOPER_EDITION else ""
         except Exception:
             resolved_search_depth, cleaned_q = "none", question
             is_autopatch = False
@@ -339,7 +340,12 @@ Instructions:
             effective_question += (
                 "\n\n[OPERATOR /AUTOPATCH DIRECTIVE ACTIVE]:\n"
                 "1. In Round 1, use `[TOOL: search_source_code query=\"...\"]` and `[TOOL: read_source_file file=\"...\" start=1 end=80]` to inspect the exact lines in the Fairybread codebase.\n"
-                "2. Once you have the exact file lines, emit an executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread can verify, apply, and hot-reboot automatically!"
+                "2. Once you have the exact file lines, emit an executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread can verify, apply, and hot-reboot automatically!\n"
+                "3. MANDATORY END-OF-TURN STATUS REQUIREMENT: Conclude your final message with one of:\n"
+                "   - `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]` (if staging an autopatch or chaining next task)\n"
+                "   - `✓ [ALL TASKS COMPLETED SUCCESSFULLY]` (if the full sequence of requested improvements is verified & finished)\n"
+                "   - `⏸ [PAUSED — WAITING FOR USER INPUT: <reason>]` (if you encounter a blocker or ambiguous choice)\n"
+                "   Never claim you are running in the background without an active task or staged patch."
             )
 
         if include_memory:
@@ -379,6 +385,26 @@ Instructions:
             except (OSError, ValueError) as exc:
                 context_error = f"Session history could not be loaded: {exc}"
                 write_context = None
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if IS_DEVELOPER_EDITION and not is_autopatch and session_context:
+            try:
+                from search_service import is_terse_patch_confirmation
+                sc_upper = session_context.upper()
+                if is_terse_patch_confirmation(effective_question) and (
+                    "[IDLE_PATCH" in sc_upper or "AUTOPATCH" in sc_upper or "PATCH" in sc_upper
+                ):
+                    is_autopatch = True
+                    include_palace_code = True
+                    max_rounds = max(2, max_rounds)
+                    effective_question += (
+                        "\n\n[OPERATOR CONFIRMATION RECEIVED — EXECUTE AUTOPATCH NOW]:\n"
+                        "The operator confirmed your proposed patch ('Apply' / 'Proceed' / 'Yes'). "
+                        "Do NOT roleplay or narrate fake execution. Verify exact anchor lines with `[TOOL: read_source_file ...]` if needed, "
+                        "and emit the executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"...\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread applies it to disk, logs Agent Mail, and hot-reboots!"
+                    )
+            except Exception:
+                pass
 
         extra_blocks: list[str] = []
         palace_src = build_palace_source_context(effective_question, force_include=include_palace_code)
@@ -763,6 +789,19 @@ Instructions:
         if steering_state and steering_state.get("notes"):
             notes_joined = "\n".join(f"- {n}" for n in steering_state["notes"])
             synth_question += f"\n\n[LIVE OPERATOR STEERING INSTRUCTIONS]:\n{notes_joined}"
+            if not is_autopatch:
+                try:
+                    from search_service import is_terse_patch_confirmation, parse_turn_commands
+                    for _sn in steering_state["notes"]:
+                        if parse_turn_commands(_sn).get("autopatch") or (
+                            is_terse_patch_confirmation(_sn) and session_context and (
+                                "[IDLE_PATCH" in session_context.upper() or "PATCH" in session_context.upper()
+                            )
+                        ):
+                            is_autopatch = True
+                            break
+                except Exception:
+                    pass
         if is_autopatch:
             synth_question += (
                 "\n\n[CRITICAL /AUTOPATCH SYNTHESIS REQUIREMENT]: "
@@ -815,12 +854,25 @@ Instructions:
                                     synthesis.text += f"\n\n---\n✓ **Verified & Staged Patch ({', '.join(_af)})**: {_asum}"
                                 break
 
+                if not applied_files and session_context and "[IDLE_PATCH" in session_context.upper():
+                    _c_sc, _af_sc, _asum_sc = execute_live_autopatches_in_text(
+                        session_context, author="council_confirmed_autopatch"
+                    )
+                    if _af_sc:
+                        applied_files.extend(_af_sc)
+                        autopatch_summary = _asum_sc
+                        if synthesis and synthesis.text:
+                            synthesis.text += f"\n\n---\n✓ **Verified & Staged Confirmed Patch ({', '.join(_af_sc)})**: {_asum_sc}"
+
                 # If no patch was applied yet (e.g. agents only called [TOOL: ...] or had a target/syntax mismatch),
                 # run up to 1 automatic In-Turn Coding Architect Self-Heal / Patch Generation pass!
                 if not applied_files and succeeded_initial:
                     pref_order = ["deepseek", "mistral", "gemini", "openai", "qwen", "groq", "cerebras", "cohere"]
                     lead_coder = next((c for c in pref_order if c in succeeded_initial), succeeded_initial[0])
-                    gathered_ctx = "\n\n".join(
+                    gathered_ctx = ""
+                    if session_context:
+                        gathered_ctx += f"[RECENT SESSION CONTEXT]:\n{session_context[-4500:]}\n\n"
+                    gathered_ctx += "\n\n".join(
                         f"[{k.upper()}]:\n{v.response.text}"
                         for k, v in active_results.items()
                         if v.succeeded and v.response is not None

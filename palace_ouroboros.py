@@ -32,15 +32,28 @@ from uuid import uuid4
 
 from palace_theme import get_generated_images_dir
 
-SANDBOX_ROOT = Path(r"C:\Palace_Idle_Sandbox")
+_HERE_DIR = Path(__file__).resolve().parent
+_IS_OWNER_DEV_ENV = _HERE_DIR in {Path(r"C:\Palace_Live").resolve(), Path(r"E:\Visual_studio\Palace").resolve()} if Path(r"C:\Palace_Live").exists() else False
+
+if _IS_OWNER_DEV_ENV:
+    SANDBOX_ROOT = Path(r"C:\Palace_Idle_Sandbox")
+    LIVE_DIR = Path(r"C:\Palace_Live")
+    SOURCE_REPO_DIR = Path(r"E:\Visual_studio\Palace")
+else:
+    # Self-contained clean install (e.g. C:\Program Files\Fairybread Developer - Beta v0.9.1 (Win_x64))
+    LIVE_DIR = _HERE_DIR
+    SOURCE_REPO_DIR = _HERE_DIR
+    try:
+        from palace_config import get_source_mirror_dir
+        SANDBOX_ROOT = get_source_mirror_dir(_HERE_DIR / "palace_config.json").parent
+    except Exception:
+        SANDBOX_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
+
 STAGING_DIR = SANDBOX_ROOT / "staging"
 LAST_KNOWN_GOOD_DIR = SANDBOX_ROOT / "last_known_good"
 HANDOFF_PATH = SANDBOX_ROOT / "reboot_handoff.json"
 READY_HEARTBEAT_PATH = SANDBOX_ROOT / "palace_ready_heartbeat.json"
 UI_AUDIT_REPORT_PATH = SANDBOX_ROOT / "latest_ui_audit.json"
-
-LIVE_DIR = Path(r"C:\Palace_Live")
-SOURCE_REPO_DIR = Path(r"E:\Visual_studio\Palace")
 
 # Strict L1 Allowlist: Agents can ONLY stage edits to these Palace UI/service files.
 # Watchdog (`palace_watchdog.py`), Ouroboros kernel (`palace_ouroboros.py`), and `credential_store.py` are excluded.
@@ -54,6 +67,9 @@ EDITABLE_PALACE_FILES: frozenset[str] = frozenset({
     "session_store.py",
     "context_service.py",
     "attachment_service.py",
+    "memory_service.py",
+    "search_service.py",
+    "dispatcher.py",
 })
 
 MAX_REBOOTS_IN_WINDOW = 3
@@ -714,7 +730,7 @@ def write_post_reboot_task(
     chain_depth: int = 1,
 ) -> Path | None:
     """Atomically write a consume-once `post_reboot_task.json` continuation file before hot-reboot or autofallback."""
-    if chain_depth > 2:
+    if chain_depth > 3:
         return None
     SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
     editions = list_code_editions()
@@ -739,7 +755,7 @@ def write_post_reboot_task(
         ),
         "loop_guard": {
             "reboot_chain_depth": chain_depth,
-            "max_chain_depth": 2,
+            "max_chain_depth": 3,
         },
     }
     tmp_p = POST_REBOOT_TASK_PATH.with_suffix(".json.tmp")
@@ -765,7 +781,7 @@ def consume_post_reboot_task() -> dict[str, Any] | None:
         if not isinstance(data, dict):
             return None
         depth = int((data.get("loop_guard") or {}).get("reboot_chain_depth", 1))
-        if depth > 2:
+        if depth > 3:
             return None
         return data
     except Exception:

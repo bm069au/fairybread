@@ -19,7 +19,7 @@
         <img src="fairybread_icon.png" alt="Fairybread Fairy Logo" class="brand-logo-img" />
         <div>
           <span class="brand-name">Fairybread<span class="brand-domain">.me</span></span>
-          <span class="brand-tag">BETA v0.9.1</span>
+          <span class="brand-tag dynamic-version-tag">BETA v0.9.1</span>
         </div>
       </div>
 
@@ -35,7 +35,7 @@
       </nav>
 
       <div class="header-actions">
-        <a class="btn-download-sm" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_v0.9.1_beta_Win_x64_Setup.zip">⬇ Download Beta (Win_x64)</a>
+        <a class="btn-download-sm dynamic-download-btn" href="https://github.com/bm069au/fairybread/releases/latest/download/Fairybread_v0.9.1_beta_Win_x64_Setup.zip">⬇ Download Beta (Win_x64)</a>
       </div>
     </div>
   </header>
@@ -51,7 +51,7 @@
             <strong>Fairybread</strong> replaces dedicated corporate workspaces like ChatGPT Plus, Claude Pro, and Grok with one high-speed Windows desktop platform that <strong>you</strong> control. Connect as many cloud or local AI providers as you want, pay only pennies for exact usage, and keep <strong>100% of your Shared Memory locally on your PC</strong>.
           </p>
           <div class="hero-cta-row">
-            <a class="btn-primary-lg" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_v0.9.1_beta_Win_x64_Setup.zip">
+            <a class="btn-primary-lg dynamic-download-btn" id="heroDownloadBtn" href="https://github.com/bm069au/fairybread/releases/latest/download/Fairybread_v0.9.1_beta_Win_x64_Setup.zip">
               ⬇ Download Fairybread Beta v0.9.1 (Win_x64)
             </a>
             <button class="btn-secondary-lg" onclick="switchTab('donors')">❤️ Support the Creator (USD)</button>
@@ -122,7 +122,7 @@
         <div class="feature-card">
           <div class="feat-icon">🧪</div>
           <h3>Autonomous Experimental Mode Lab</h3>
-          <p>Flip the <strong>Experimental</strong> switch to give your AI Council their own Shared Experimental Memory, customizable ethics charter, and optional read-only access to Fairybread's own source code (<code>{} Code</code>) to propose upgrades via Agent Mail.</p>
+          <p>Launch <strong>Experimental Mode</strong> from the <strong>Mode</strong> menu to give your AI Council their own Shared Experimental Memory, customizable ethics charter, and Agent Mail. <em>(Note: Live code self-modification is disabled in the Public Edition to prevent unverified forks and keep releases consistent—share proposed patches on the <a href="forum.html">Forum</a> or email bm069au@gmail.com.)</em></p>
         </div>
         <div class="feature-card">
           <div class="feat-icon">📧</div>
@@ -184,7 +184,7 @@
           <h2>📖 Fairybread User Guide &amp; Operating Instructions</h2>
           <p class="muted-sub">This is the complete operating manual—also built directly into the desktop app (press <strong><code>F1</code></strong> or click <strong><code>Help → 📖 User Guide</code></strong> anytime).</p>
         </div>
-        <a class="btn-primary" href="https://github.com/bm069au/fairybread/releases/download/v0.9.1-beta/Fairybread_Beta_v0.9.1_Installer.zip">⬇ Download Fairybread Beta</a>
+        <a class="btn-primary dynamic-download-btn" href="https://github.com/bm069au/fairybread/releases/latest/download/Fairybread_v0.9.1_beta_Win_x64_Setup.zip">⬇ Download Fairybread Beta</a>
       </div>
 
       <div class="news-list">
@@ -222,8 +222,9 @@
         <article class="news-card">
           <h3>4. Autonomous Experimental Mode Lab &amp; Agent Mail</h3>
           <p style="color:var(--text-secondary);">
-            • Flip the <strong><code>🌙 Experimental: OFF / ON</code></strong> switch on the top-right bar to open the autonomous multi-agent lab.<br />
-            • Choose between <strong><code>💬 Free Talk</code></strong> (unprompted lounge where agents explore their own topics and share notes in <strong>Shared Experimental Memory</strong>) or <strong><code>🔧 Self-Improvement</code></strong> (where agents inspect Fairybread's source code and email you upgrade proposals via <strong>Agent Mail</strong>).<br />
+            • Open the <strong><code>Mode → 🧪 Experimental Mode</code></strong> menu to launch the autonomous multi-agent lab (the top-right badge shows <code>OFF</code>, <code>🔴 RUNNING</code>, or <code>⏸ STOPPED</code>).<br />
+            • In the Public Edition, agents converse in <strong><code>💬 Free Talk</code></strong>, store durable notes in <strong>Shared Experimental Memory</strong>, and message you via <strong>Agent Mail</strong>.<br />
+            • <strong>Why Live Code Self-Modification Is Disabled in Public Builds:</strong> Self-patching (<code>/autopatch</code> &amp; <code>[IDLE_PATCH]</code>) is hardwired OFF in non-Developer builds so public installations remain verified, consistent, and cannot bypass licensing or safety restrictions. Have an improvement idea or proposed patch? Post it in the <a href="forum.html">Fairybread Community Forum</a> or email <code>bm069au@gmail.com</code> for review.<br />
             • Customize the session timer, token/USD spend caps, startup prompt, and ethics charter in <strong><code>Settings → Experimental Mode</code></strong>.
           </p>
         </article>

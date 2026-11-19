@@ -86,7 +86,7 @@ class SQLiteMemoryIndex:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(str(self.db_path), timeout=15.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA journal_mode=WAL;")
@@ -338,22 +338,25 @@ class MemorySearchResult:
 
 
 DEFAULT_MEMORY_SUMMARY_MARKDOWN = (
-    "### Overview
-"
-    "Welcome to your personal Shared Memory summary. Everything here is stored 100% locally on your computer "
-    "and shared across all active AI providers in your Fairybread Council.
-
-"
-    "### How You Like to Work
-"
-    "- Add your preferred communication style, coding languages, or workflow preferences here.
-"
-    "- Click **✎ Edit Directly** to customize this summary yourself, or use the **Ask or update** bar below to let the AI refine it automatically from your conversations.
-
-"
-    "### Software & Creative Projects
-"
-    "- As you chat with the Council, click **↻ Auto-Update from Chats** to automatically organize your active projects and goals here."
+    "### Overview\n"
+    "You're an Australian Gen X creator and systems builder, around 60 (`bm069au`). You bring a practical, "
+    "pattern-focused approach to technology and creative work, and prefer useful specifics and candid technical "
+    "pushback over generic reassurance or flattery. Your main interests include building software and multi-AI tools, "
+    "making music and animated comedy, health and gut-microbiome wellness, and hands-on projects such as brewing ginger beer.\n\n"
+    "### How You Like to Work\n"
+    "You prefer concise, personable answers with an optional deeper technical layer when needed. You value direct options "
+    "and risks, dislike canned reassurance and a policing tone, and are comfortable with banter when the subject is light. "
+    "For development, you want a clear summary and plan before implementation steps or code changes. You edit in Notepad++ "
+    "or Visual Studio and use Git savepoints. Your drive conventions are `G:` for notes and checkpoints, `E:` for active "
+    "projects (`E:\\Visual_studio\\Palace`), and `M:` for private backups/media (strictly off-limits unless explicitly authorized).\n\n"
+    "### Software & Creative Projects\n"
+    "- **Fairybread (formerly Palace, `E:\\Visual_studio\\Palace`):** Your source-available donationware multi-AI council "
+    "desktop workspace (`https://github.com/bm069au/fairybread`) where 8 AI providers (`Gemini`, `OpenAI`, `DeepSeek`, `Groq`, "
+    "`Qwen`, `Cohere`, `Mistral`, `Cerebras`) collaborate, share a 100% local SQLite FTS5 Memory Palace, render 300-DPI artwork "
+    "and banners, use Live Voice Mode, and run autonomous multi-agent experiments in Idle Mode.\n"
+    "- **EvidenceBench (`E:\\Visual_studio\\EvidenceBenchDesktop`):** Your local-first evidence workspace with imports, metadata, "
+    "graphing, exhaustive email search, and backups.\n"
+    "- **Creative & Community Work:** Your upcoming animated comedy series and your Facebook wellness / gut-microbiome community group."
 )
 
 

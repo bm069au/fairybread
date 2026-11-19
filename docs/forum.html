@@ -149,10 +149,18 @@
         </select>
       </label>
       <label>Thread Title
-        <input type="text" id="threadTitleInput" placeholder="What would you like to discuss?" />
+        <input type="text" id="threadTitleInput" maxlength="120" placeholder="What would you like to discuss? (Up to 120 chars)" oninput="updateThreadCharCounters()" />
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted); margin-top:-4px;">
+          <span>A clear summary of your topic</span>
+          <span id="threadTitleCharCount">0 / 120 chars</span>
+        </div>
       </label>
       <label>Message (Tip: Press <code>Ctrl+V</code> here to paste a screenshot directly!)
-        <textarea id="threadBodyInput" rows="5" placeholder="Write your post here… (or press Ctrl+V to paste a screenshot)" onpaste="handleForumPasteImage(event, 'thread')"></textarea>
+        <textarea id="threadBodyInput" rows="6" maxlength="20000" placeholder="Write your post here… (Up to 20,000 chars, or press Ctrl+V to paste a screenshot)" oninput="updateThreadCharCounters()" onpaste="handleForumPasteImage(event, 'thread')"></textarea>
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted); margin-top:-4px;">
+          <span>Detailed explanation, patch idea, or logs</span>
+          <span id="threadBodyCharCount">0 / 20,000 chars</span>
+        </div>
       </label>
       <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:4px;">
         <label class="btn-outline" style="cursor:pointer; padding:6px 12px; font-size:12.5px; margin:0;">
@@ -165,6 +173,7 @@
         <img id="threadImgPreview" src="" alt="Preview" style="max-height:80px; border-radius:6px; border:1px solid var(--border);" />
         <button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="clearForumImage('thread')">✕ Remove Picture</button>
       </div>
+      <div id="threadErrorMsg" style="display:none; color:#f87171; background:#291114; border:1px solid #7f1d1d; border-radius:6px; padding:8px 12px; margin-top:8px; font-size:12.5px; line-height:1.4;"></div>
       <div class="modal-actions">
         <button class="btn-primary" onclick="submitNewForumThread()">Post Thread</button>
         <button class="btn-outline" onclick="closeAllModals()">Cancel</button>

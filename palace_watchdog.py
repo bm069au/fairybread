@@ -48,18 +48,25 @@ def _stop_existing_palace_gui() -> None:
 
 
 def _launch_palace_on_interactive_desktop() -> None:
-    """Trigger the interactive desktop scheduled task (`LaunchPalaceDesktop`) so the window opens on WinSta0\\Default."""
-    res = subprocess.run(
-        ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if res.returncode != 0:
-        # Fallback direct spawn if scheduled task is not present
-        bat = LIVE_DIR / "Run_Palace_Live.bat"
-        if bat.exists():
-            subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(LIVE_DIR))
+    """Launch the active PalaceWindow instance onto the desktop."""
+    if LIVE_DIR.resolve() == Path(r"C:\Palace_Live").resolve():
+        res = subprocess.run(
+            ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0:
+            return
+    bat = LIVE_DIR / "Run_Palace_Live.bat"
+    if bat.exists():
+        subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(LIVE_DIR))
+        return
+    pythonw_exe = Path(sys.executable).with_name("pythonw.exe")
+    launcher = str(pythonw_exe if pythonw_exe.exists() else Path(sys.executable))
+    gui_py = LIVE_DIR / "palace_gui.py"
+    if gui_py.exists():
+        subprocess.Popen([launcher, str(gui_py)], cwd=str(LIVE_DIR))
 
 
 def perform_hot_reboot(
@@ -122,7 +129,9 @@ def perform_hot_reboot(
         if staged_f.exists():
             if LIVE_DIR.exists():
                 shutil.copy2(staged_f, LIVE_DIR / fname)
-            if SOURCE_REPO_DIR.exists():
+            # Only copy to SOURCE_REPO_DIR if we are in a standalone single-folder install.
+            # In owner dev mode, master E:\Visual_studio\Palace is protected from auto-reboot overwrites.
+            if SOURCE_REPO_DIR.exists() and SOURCE_REPO_DIR.resolve() == LIVE_DIR.resolve():
                 shutil.copy2(staged_f, SOURCE_REPO_DIR / fname)
             shutil.copy2(staged_f, source_mirror_dir / fname)
 

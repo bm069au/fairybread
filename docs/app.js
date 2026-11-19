@@ -13,6 +13,25 @@ const STORAGE_KEYS = {
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-dev-split-2026-11-19',
+    title: 'Public vs. Developer Editions: Why Live Self-Improvement is Restricted to Developer Builds',
+    tag: 'Architecture & Safety',
+    date: '2026-11-19',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `A quick note on the architectural difference between the standard Public Edition and the Developer Edition of Fairybread, and why this restriction exists:
+
+In the Public release, your AI Council has full access to Shared Memory, Agent Mail, and autonomous reasoning, but live self-modification of the underlying source code is strictly disabled.
+
+There are two vital reasons for this:
+1. Preventing Rogue Divergent Versions: If public installations were allowed to rewrite their own Python codebase autonomously on thousands of machines, we would quickly end up with fractured, unpredictable versions in the wild that could bypass safety restrictions and corrupt user environments.
+2. Licensing & Integrity: Keeping the core codebase immutable on public builds protects the proprietary source-available licensing agreement and ensures that every Fairybread user is running verified, stable software.
+
+How to contribute improvements:
+If your AI Council comes up with brilliant patch ideas, optimizations, or new tool designs in Experimental Mode, do not let them rewrite your local files directly. Instead, post the proposed diffs and logic here in the Community Forums or email them to me directly at bm069au@gmail.com.
+
+I review every proposed improvement personally, test it against our regression suite, and merge the best ideas into the official releases for everyone to enjoy.`,
+  },
+  {
     id: 'news-founder-1',
     title: 'Founder’s Dispatch #1: Fairybread Beta is Live — Recursive Self-Improvement, the 5 AI Towns & Why Local Privacy Matters',
     tag: 'Founder’s Update',
@@ -70,6 +89,28 @@ And back to Fairybread—feel free to set up experiments, build themes, and shar
 ];
 
 const DEFAULT_THREADS = [
+  {
+    id: 'th-announcement-dev-split',
+    category: 'Announcements',
+    title: 'Public vs. Developer Editions: Why Live Self-Improvement is Restricted',
+    author: 'Brett Moore',
+    badge: '👑 Creator',
+    date: '2026-11-19',
+    upvotes: 21,
+    body: `A quick note on the architectural difference between the standard Public Edition and the Developer Edition of Fairybread, and why this restriction exists:
+
+In the Public release, your AI Council has full access to Shared Memory, Agent Mail, and autonomous reasoning, but live self-modification of the underlying source code is strictly disabled.
+
+There are two vital reasons for this:
+1. Preventing Rogue Divergent Versions: If public installations were allowed to rewrite their own Python codebase autonomously on thousands of machines, we would quickly end up with fractured, unpredictable versions in the wild that could bypass safety restrictions and corrupt user environments.
+2. Licensing & Integrity: Keeping the core codebase immutable on public builds protects the proprietary source-available licensing agreement and ensures that every Fairybread user is running verified, stable software.
+
+How to contribute improvements:
+If your AI Council comes up with brilliant patch ideas, optimizations, or new tool designs in Experimental Mode, do not let them rewrite your local files directly. Instead, post the proposed diffs and logic here in the [Bug Reports & Ideas] forum or email them to me directly at bm069au@gmail.com.
+
+I review every proposed improvement personally, test it against our regression suite, and merge the best ideas into the official releases for everyone to enjoy.`,
+    replies: [],
+  },
   {
     id: 'th-0',
     category: 'Announcements',
@@ -420,6 +461,20 @@ function migrateLegacyThreads() {
         saveState(STORAGE_KEYS.threads, oldList);
       }
     }
+    // Sync official creator threads into local cache if missing
+    const curThreads = loadState(STORAGE_KEYS.threads, null);
+    if (Array.isArray(curThreads)) {
+      let modified = false;
+      DEFAULT_THREADS.forEach((def) => {
+        if (!curThreads.some((t) => t.id === def.id)) {
+          curThreads.unshift(def);
+          modified = true;
+        }
+      });
+      if (modified) {
+        saveState(STORAGE_KEYS.threads, curThreads);
+      }
+    }
   } catch (_) {}
 }
 
@@ -624,7 +679,21 @@ function resolveBadgeRequest(reqId, approve) {
 
 // ================= NEWS =================
 function renderNews() {
-  const posts = loadState(STORAGE_KEYS.news, DEFAULT_NEWS);
+  let posts = loadState(STORAGE_KEYS.news, null);
+  if (Array.isArray(posts)) {
+    let modified = false;
+    DEFAULT_NEWS.forEach((def) => {
+      if (!posts.some((p) => p.id === def.id)) {
+        posts.unshift(def);
+        modified = true;
+      }
+    });
+    if (modified) {
+      saveState(STORAGE_KEYS.news, posts);
+    }
+  } else {
+    posts = DEFAULT_NEWS;
+  }
   const container = document.getElementById('newsFeedContainer');
   if (!container) return;
   container.innerHTML = posts
@@ -931,6 +1000,42 @@ function upvoteThread(id) {
   }
 }
 
+function updateThreadCharCounters() {
+  const titleEl = document.getElementById('threadTitleInput');
+  const bodyEl = document.getElementById('threadBodyInput');
+  const titleCountEl = document.getElementById('threadTitleCharCount');
+  const bodyCountEl = document.getElementById('threadBodyCharCount');
+  if (titleEl && titleCountEl) {
+    const len = titleEl.value.length;
+    titleCountEl.textContent = `${len} / 120 chars`;
+    titleCountEl.style.color = len > 115 ? '#f87171' : 'var(--text-muted)';
+  }
+  if (bodyEl && bodyCountEl) {
+    const len = bodyEl.value.length;
+    bodyCountEl.textContent = `${len.toLocaleString()} / 20,000 chars`;
+    bodyCountEl.style.color = len > 19500 ? '#f87171' : 'var(--text-muted)';
+  }
+  clearThreadError();
+}
+
+function showThreadError(msg) {
+  const errEl = document.getElementById('threadErrorMsg');
+  if (errEl) {
+    errEl.textContent = msg;
+    errEl.style.display = 'block';
+  } else {
+    alert(msg);
+  }
+}
+
+function clearThreadError() {
+  const errEl = document.getElementById('threadErrorMsg');
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.style.display = 'none';
+  }
+}
+
 function submitThreadReply(id) {
   const user = getCurrentUser();
   if (!user || !user.username) {
@@ -939,21 +1044,41 @@ function submitThreadReply(id) {
   }
   const inp = document.getElementById('replyInputBox');
   const txt = inp ? inp.value.trim() : '';
-  if (!txt && !pendingReplyImageDataUrl) return;
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const t = threads.find((item) => item.id === id);
-  if (!t) return;
-  t.replies = t.replies || [];
-  t.replies.push({
-    author: user.username,
-    badge: user.badge || '👤 User',
-    date: new Date().toISOString().slice(0, 10),
-    text: txt,
-    image: pendingReplyImageDataUrl || '',
-  });
-  pendingReplyImageDataUrl = '';
-  saveState(STORAGE_KEYS.threads, threads);
-  renderForumThreads();
+  if (!txt && !pendingReplyImageDataUrl) {
+    if (inp) {
+      inp.placeholder = '⚠️ Please type a reply before sending…';
+      inp.style.borderColor = '#f87171';
+      setTimeout(() => {
+        inp.placeholder = `Reply as ${escapeHtml(user.username)} (or press Ctrl+V to paste screenshot)…`;
+        inp.style.borderColor = '';
+      }, 3000);
+      inp.focus();
+    }
+    return;
+  }
+  if (txt.length > 10000) {
+    alert(`⚠️ Reply exceeds character limit (${txt.length.toLocaleString()} / 10,000 characters). Please shorten it.`);
+    return;
+  }
+  try {
+    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
+    const t = threads.find((item) => item.id === id);
+    if (!t) return;
+    t.replies = t.replies || [];
+    t.replies.push({
+      author: user.username,
+      badge: user.badge || '👤 User',
+      date: new Date().toISOString().slice(0, 10),
+      text: txt,
+      image: pendingReplyImageDataUrl || '',
+    });
+    pendingReplyImageDataUrl = '';
+    saveState(STORAGE_KEYS.threads, threads);
+    if (inp) inp.value = '';
+    renderForumThreads();
+  } catch (err) {
+    alert('⚠️ Could not save reply: ' + (err.message || String(err)));
+  }
 }
 
 function openNewThreadModal() {
@@ -962,39 +1087,92 @@ function openNewThreadModal() {
     openAuthModal();
     return;
   }
+  clearThreadError();
   clearForumImage('thread');
+  updateThreadCharCounters();
   showModal('newThreadModal');
 }
 
 function submitNewForumThread() {
+  clearThreadError();
   const user = getCurrentUser();
   if (!user || !user.username) {
+    showThreadError('⚠️ You must be signed in to post a thread.');
     openAuthModal();
     return;
   }
-  const cat = document.getElementById('threadCatInput').value;
-  const title = document.getElementById('threadTitleInput').value.trim();
-  const body = document.getElementById('threadBodyInput').value.trim();
-  if (!title || (!body && !pendingThreadImageDataUrl)) return;
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const newId = 'th-' + Date.now();
-  threads.unshift({
-    id: newId,
-    category: cat,
-    title,
-    author: user.username,
-    badge: user.badge || '👤 User',
-    date: new Date().toISOString().slice(0, 10),
-    upvotes: 1,
-    body,
-    image: pendingThreadImageDataUrl || '',
-    replies: [],
-  });
-  pendingThreadImageDataUrl = '';
-  saveState(STORAGE_KEYS.threads, threads);
-  selectedThreadId = newId;
-  renderForumThreads();
-  closeAllModals();
+
+  const cat = document.getElementById('threadCatInput')?.value || 'General Discussion';
+  let title = (document.getElementById('threadTitleInput')?.value || '').trim();
+  const body = (document.getElementById('threadBodyInput')?.value || '').trim();
+
+  // If user wrote a body but forgot the title, auto-derive title from first line
+  if (!title && body) {
+    const firstLine = body.split('\n')[0].trim();
+    title = firstLine.length > 80 ? firstLine.slice(0, 77) + '…' : firstLine;
+    const titleInput = document.getElementById('threadTitleInput');
+    if (titleInput) titleInput.value = title;
+  }
+
+  if (!title && !body && !pendingThreadImageDataUrl) {
+    showThreadError('⚠️ Please enter a title and message for your post (or attach a screenshot).');
+    return;
+  }
+
+  if (!title) {
+    showThreadError('⚠️ Please enter a Title for your thread (up to 120 characters).');
+    document.getElementById('threadTitleInput')?.focus();
+    return;
+  }
+
+  if (title.length > 120) {
+    showThreadError(`⚠️ Title is too long (${title.length} / 120 characters). Please shorten it.`);
+    document.getElementById('threadTitleInput')?.focus();
+    return;
+  }
+
+  if (!body && !pendingThreadImageDataUrl) {
+    showThreadError('⚠️ Please write a message for your post (up to 20,000 characters) or attach a screenshot.');
+    document.getElementById('threadBodyInput')?.focus();
+    return;
+  }
+
+  if (body.length > 20000) {
+    showThreadError(`⚠️ Message exceeds character limit (${body.length.toLocaleString()} / 20,000 characters). Please shorten it.`);
+    document.getElementById('threadBodyInput')?.focus();
+    return;
+  }
+
+  try {
+    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
+    const newId = 'th-' + Date.now();
+    threads.unshift({
+      id: newId,
+      category: cat,
+      title,
+      author: user.username,
+      badge: user.badge || '👤 User',
+      date: new Date().toISOString().slice(0, 10),
+      upvotes: 1,
+      body,
+      image: pendingThreadImageDataUrl || '',
+      replies: [],
+    });
+
+    pendingThreadImageDataUrl = '';
+    saveState(STORAGE_KEYS.threads, threads);
+    selectedThreadId = newId;
+
+    // Reset inputs
+    if (document.getElementById('threadTitleInput')) document.getElementById('threadTitleInput').value = '';
+    if (document.getElementById('threadBodyInput')) document.getElementById('threadBodyInput').value = '';
+    updateThreadCharCounters();
+
+    closeAllModals();
+    renderForumThreads();
+  } catch (err) {
+    showThreadError('⚠️ Error saving thread: ' + (err.message || String(err)));
+  }
 }
 
 // ================= WINAMP-STYLE THEME STUDIO & SKIN GALLERY =================
@@ -1298,8 +1476,49 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// ================= DYNAMIC GITHUB RELEASE AUTO-UPDATER =================
+async function autoUpdateLatestRelease() {
+  try {
+    const res = await fetch('https://api.github.com/repos/bm069au/fairybread/releases/latest');
+    if (!res.ok) return;
+    const release = await res.json();
+    if (!release || !release.tag_name) return;
+
+    const rawTag = release.tag_name; // e.g. "v0.9.1-beta" or "v0.9.1d"
+    const cleanTag = rawTag.replace(/-beta$/i, '');
+
+    // Locate the Windows setup zip asset
+    const zipAsset = (release.assets || []).find((a) =>
+      a.name.toLowerCase().endsWith('.zip') &&
+      (a.name.toLowerCase().includes('setup') || a.name.toLowerCase().includes('installer') || a.name.toLowerCase().includes('win'))
+    ) || (release.assets || [])[0];
+
+    const downloadUrl = zipAsset
+      ? zipAsset.browser_download_url
+      : `https://github.com/bm069au/fairybread/releases/tag/${rawTag}`;
+
+    // Update all version tags on the page
+    document.querySelectorAll('.brand-tag, .dynamic-version-tag').forEach((el) => {
+      el.textContent = `BETA ${cleanTag}`;
+    });
+
+    // Update all download buttons
+    document.querySelectorAll('.dynamic-download-btn').forEach((btn) => {
+      btn.href = downloadUrl;
+      if (btn.id === 'heroDownloadBtn') {
+        btn.innerHTML = `⬇ Download Fairybread Beta ${escapeHtml(cleanTag)} (Win_x64)`;
+      }
+    });
+
+    console.log(`[Fairybread] Auto-resolved latest GitHub release: ${rawTag} -> ${downloadUrl}`);
+  } catch (err) {
+    console.debug('[Fairybread] GitHub release auto-resolve fallback to static defaults:', err);
+  }
+}
+
 // Initialize everything on DOM load
 document.addEventListener('DOMContentLoaded', () => {
+  autoUpdateLatestRelease();
   updateAuthUI();
   renderNews();
   renderForumThreads();

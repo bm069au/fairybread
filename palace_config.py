@@ -22,6 +22,29 @@ def _resolve_default_config_path() -> Path:
 
 CONFIG_PATH = _resolve_default_config_path()
 
+FAIRYBREAD_BASE_VERSION = "0.9.1"
+FAIRYBREAD_VERSION = "0.9.1d"
+FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
+IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
+
+
+def bump_minor_letter_version(version_str: str = FAIRYBREAD_VERSION) -> str:
+    """Increment the minor letter suffix ('0.9.1' -> '0.9.1a' -> '0.9.1b' ... -> '0.9.1z')."""
+    v = (version_str or FAIRYBREAD_VERSION).strip().lstrip("vV")
+    if not v:
+        return "0.9.1a"
+    last_ch = v[-1]
+    if last_ch.isalpha() and last_ch.islower():
+        base = v[:-1]
+        if last_ch == "z":
+            parts = base.split(".")
+            if len(parts) == 3 and parts[2].isdigit():
+                return f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}a"
+            return f"{base}a"
+        return f"{base}{chr(ord(last_ch) + 1)}"
+    return f"{v}a"
+
+
 DONATION_TIER_URLS: dict[str, str] = {
     "5": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=5",
     "10": "https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=10",
@@ -337,7 +360,7 @@ DEFAULT_IDLE_SETTINGS: dict[str, Any] = {
     "max_storage_mb": 0,             # 0 = Unlimited, or >= 100 MB (adjustable via slider/box)
     "idle_submode": "free_talk",     # "free_talk" (unprompted peer chat) | "self_improve" (Fairybread code & UI improvement)
     "share_source_code": False,      # Read-only Fairybread source code access in Experimental Mode
-     # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
+    "allow_live_self_modify": False, # Owner-only: allow agents to stage/apply live patches, hot-reboot & auto-continue
     "pause_when_joined": True,
     "memory_access_mode": "isolated",  # "isolated" | "non_project" | "full"
     "standing_instruction": DEFAULT_IDLE_INSTRUCTION,
@@ -622,6 +645,10 @@ def load_idle_settings(
         merged["memory_access_mode"] = raw_idle["memory_access_mode"]
     if isinstance(raw_idle.get("standing_instruction"), str) and raw_idle["standing_instruction"].strip():
         merged["standing_instruction"] = raw_idle["standing_instruction"]
+    if not IS_DEVELOPER_EDITION:
+        merged["allow_live_self_modify"] = False
+        merged["share_source_code"] = False
+        merged["idle_submode"] = "free_talk"
     return merged
 
 
@@ -647,6 +674,10 @@ def save_idle_settings(
     current["pause_when_joined"] = bool(current.get("pause_when_joined", True))
     if current.get("memory_access_mode") not in {"isolated", "non_project", "full"}:
         current["memory_access_mode"] = "isolated"
+    if not IS_DEVELOPER_EDITION:
+        current["allow_live_self_modify"] = False
+        current["share_source_code"] = False
+        current["idle_submode"] = "free_talk"
     data["idle_settings"] = current
     _write_raw_config(data, config_path)
     return load_idle_settings(config_path)
@@ -1133,6 +1164,8 @@ def build_palace_source_context(
     max_chars: int = 14_000,
 ) -> str:
     """Return a lightweight Source Code Reference Manifest + On-Demand Read Tool instructions (instead of dumping 14,000 chars of raw code)."""
+    if not IS_DEVELOPER_EDITION:
+        return ""
     q_lower = (question or "").lower()
     code_keywords = (
         "palace_gui", "idle_service", "orchestrator", "synthesizer",

@@ -53,6 +53,43 @@ from palace_config import (
 from session_store import SessionStore
 
 
+def format_chat_timestamp(raw_iso: str | None) -> str:
+    """Format ISO timestamp to human-friendly ChatGPT-style display ('Today 8:51 AM', etc.)."""
+    if not raw_iso:
+        return ""
+    try:
+        from datetime import datetime
+        clean = str(raw_iso).replace('Z', '')
+        if '.' in clean:
+            clean = clean.split('.')[0]
+        dt = datetime.fromisoformat(clean)
+        now = datetime.now()
+        time_str = dt.strftime("%I:%M %p").lstrip("0")
+        if dt.date() == now.date():
+            return f"Today {time_str}"
+        elif (now.date() - dt.date()).days == 1:
+            return f"Yesterday {time_str}"
+        else:
+            return dt.strftime("%b %d, ") + time_str
+    except Exception:
+        return str(raw_iso)[:16].replace('T', ' ')
+
+
+def format_time_only(raw_iso: str | None) -> str:
+    """Format ISO timestamp to time only ('12:59 PM') for message bubble footers, matching ChatGPT exactly."""
+    if not raw_iso:
+        return ""
+    try:
+        from datetime import datetime
+        clean = str(raw_iso).replace('Z', '')
+        if '.' in clean:
+            clean = clean.split('.')[0]
+        dt = datetime.fromisoformat(clean)
+        return dt.strftime("%I:%M %p").lstrip("0")
+    except Exception:
+        return str(raw_iso)[11:16]
+
+
 from palace_theme import (
     AI_BG_COLORS,
     AI_COLORS,
@@ -1867,8 +1904,29 @@ class ManageAIsDialog(QDialog):
             '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
         )
         self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches, hot-reboot, and resume automatically')
-        self.idle_live_patch_check.setChecked(False); self.idle_live_patch_check.hide()
+        self.idle_live_patch_check.setChecked(bool(idle_cfg.get('allow_live_self_modify', False)))
         lay.addWidget(self.idle_live_patch_check)
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if not IS_DEVELOPER_EDITION:
+            self.idle_share_code_check.setChecked(False)
+            self.idle_share_code_check.setEnabled(False)
+            self.idle_live_patch_check.setChecked(False)
+            self.idle_live_patch_check.setEnabled(False)
+            self.idle_mirror_dir_edit.setEnabled(False)
+            mirror_browse_btn.setEnabled(False)
+            mirror_sync_btn.setEnabled(False)
+            pub_notice = QLabel(
+                '🔒 Public Edition Notice: Live code self-modification & autopatching are disabled in non-Developer builds '
+                'to keep installations verified, consistent, and secure. Have an improvement idea or proposed patch? '
+                'Post it on the Fairybread Forum (https://fairybread.me/forum.html) or email bm069au@gmail.com for review.'
+            )
+            pub_notice.setWordWrap(True)
+            pub_notice.setStyleSheet(
+                'color: #eab308; background: #29230f; border: 1px solid #854d0e; '
+                'padding: 8px 10px; border-radius: 6px; font-size: 11.5px;'
+            )
+            lay.addWidget(pub_notice)
 
         self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
@@ -2855,13 +2913,14 @@ class PalaceWindow(QMainWindow):
         self.idle_switch_btn.setIcon(idle_moon_qicon(False))
         self.idle_switch_btn.setIconSize(QSize(15, 15))
         self.idle_switch_btn.setCheckable(True)
-        self.idle_switch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.idle_switch_btn.setToolTip('Toggle Autonomous Experimental Mode')
+        self.idle_switch_btn.setCursor(Qt.CursorShape.ArrowCursor)
+        self.idle_switch_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.idle_switch_btn.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.idle_switch_btn.setToolTip('Experimental Mode status notice (use Mode menu to launch or exit)')
         self.idle_switch_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
             'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
-            'QPushButton:hover { color: #c9d1d9; } '
-            'QPushButton:checked { background: #11281b; color: #22c55e; border: 1px solid #22c55e; font-weight: 700; }'
+            'QPushButton:checked { background: #3d1414; color: #ff4d4d; border: 1px solid #ef4444; font-weight: 700; }'
         )
         self.idle_switch_btn.toggled.connect(self._on_idle_switch_toggled)
         top_strip.addWidget(self.idle_switch_btn)
@@ -2901,7 +2960,7 @@ class PalaceWindow(QMainWindow):
         nh_row.setContentsMargins(6, 2, 6, 2)
         nh_lbl = QLabel(
             '🚫 <b>NO-HISTORY MODE ACTIVE</b> — Conversations right now are <b>NOT</b> being saved to Shared Memory. '
-            '(For quick side-thoughts like creative projects that <i>should</i> be saved without prior code context, use <b>Tangent</b> below instead.)'
+            '(For quick side-thoughts like Absurdityverse that <i>should</i> be saved without prior code context, use <b>Tangent</b> below instead.)'
         )
         nh_lbl.setWordWrap(True)
         nh_lbl.setStyleSheet('color: #fca5a5; font-size: 12px;')
@@ -3196,7 +3255,7 @@ class PalaceWindow(QMainWindow):
 
         back_chat_from_idle_btn = QPushButton('← Normal Chat')
         back_chat_from_idle_btn.setToolTip('Switch back to Normal Mode chat')
-        back_chat_from_idle_btn.clicked.connect(lambda: self.workspace_tabs.setCurrentIndex(0))
+        back_chat_from_idle_btn.clicked.connect(self._activate_normal_mode_from_menu)
         idle_top.addWidget(back_chat_from_idle_btn)
 
         self.idle_settings_btn = QPushButton('⚙ Settings')
@@ -3256,6 +3315,14 @@ class PalaceWindow(QMainWindow):
         )
         self.idle_live_patch_btn.toggled.connect(self._on_idle_live_patch_btn_toggled)
         idle_actions.addWidget(self.idle_live_patch_btn)
+
+        from palace_config import IS_DEVELOPER_EDITION
+        if not IS_DEVELOPER_EDITION:
+            self.idle_code_btn.hide()
+            self.idle_live_patch_btn.hide()
+            idx_si = self.idle_submode_combo.findData('self_improve')
+            if idx_si >= 0:
+                self.idle_submode_combo.removeItem(idx_si)
 
         self.idle_start_btn = QPushButton('▶ Start')
         self.idle_start_btn.setToolTip('Start or resume autonomous Experimental Mode discussion')
@@ -3785,8 +3852,10 @@ class PalaceWindow(QMainWindow):
                 attempted = ctx_info.get('what_was_attempted', '')
                 inst_list = cont_task.get('instructions_for_agents') or []
                 inst_joined = ' '.join(inst_list)
+                depth = int((cont_task.get('loop_guard') or {}).get('reboot_chain_depth', 1))
+                max_depth = int((cont_task.get('loop_guard') or {}).get('max_chain_depth', 3))
                 auto_prompt = (
-                    f"/code [POST-REBOOT CONTINUATION — {origin.upper()} (Active Edition: {active_ed})]: "
+                    f"/code [POST-REBOOT CONTINUATION — {origin.upper()} (Active Edition: {active_ed}) (Chain: {depth}/{max_depth})]: "
                     f"Attempted: \"{attempted}\" for user request: \"{orig_req}\". "
                     f"{inst_joined}"
                 )
@@ -3893,13 +3962,25 @@ class PalaceWindow(QMainWindow):
             return
         self.mode_menu.clear()
         normal_mode_act = QAction('💬 Normal AI Mode', self.mode_menu)
-        normal_mode_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(False))
+        normal_mode_act.triggered.connect(self._activate_normal_mode_from_menu)
         self.mode_menu.addAction(normal_mode_act)
         idle_act = QAction('🧪 Experimental Mode', self.mode_menu)
-        idle_act.triggered.connect(lambda: self.idle_switch_btn.setChecked(True))
+        idle_act.triggered.connect(self._activate_experimental_mode_from_menu)
         self.mode_menu.addAction(idle_act)
         self.mode_menu.addSeparator()
         self._populate_profiles_and_ais_menu(self.mode_menu)
+
+    def _activate_normal_mode_from_menu(self):
+        self.idle_switch_btn.blockSignals(True)
+        self.idle_switch_btn.setChecked(False)
+        self.idle_switch_btn.blockSignals(False)
+        self._on_idle_switch_toggled(False)
+
+    def _activate_experimental_mode_from_menu(self):
+        self.idle_switch_btn.blockSignals(True)
+        self.idle_switch_btn.setChecked(True)
+        self.idle_switch_btn.blockSignals(False)
+        self._on_idle_switch_toggled(True)
 
     def _rebuild_theme_menu(self):
         if not hasattr(self, 'theme_menu'):
@@ -4072,12 +4153,25 @@ class PalaceWindow(QMainWindow):
         self.open_manage_ais(initial_page='Idle Mode')
 
     def show_about_dialog(self):
+        from palace_config import FAIRYBREAD_VERSION, IS_DEVELOPER_EDITION
+        ed_label = 'Developer Edition' if IS_DEVELOPER_EDITION else 'Public Edition'
+        pub_note = (
+            ''
+            if IS_DEVELOPER_EDITION
+            else (
+                '<p style="color:#eab308; font-size:11.5px;"><b>Public Edition Safety Note:</b> '
+                'Live code self-modification is disabled in non-Developer builds to keep installations verified and consistent. '
+                'Share proposed patches or ideas on the <a href="https://fairybread.me/forum.html">Fairybread Forum</a> '
+                'or email <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a>.</p>'
+            )
+        )
         box = QMessageBox(self)
-        box.setWindowTitle('About Fairybread')
+        box.setWindowTitle(f'About Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION})')
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
-            '<h3>Fairybread (Beta) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
+            f'<h3>Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
             '<p>Created by <b>Brett Martin Moore</b>.</p>'
+            f'{pub_note}'
             '<p><b>License:</b> Open-Source / Source-Available Donationware for personal use &amp; small teams (up to 2 seats). '
             'For businesses/companies using more than 2 seats, a negotiable corporate license applies.</p>'
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
@@ -4474,11 +4568,61 @@ class PalaceWindow(QMainWindow):
             tip_detail = f'\nDetail: {detail}' if detail else ''
             label.setToolTip(f'{icon} {display_name} — {status} (Inactive / Paused){tip_detail}\nClick to toggle active')
 
+    def _apply_experimental_topbar_indicator(self, active: bool):
+        """Keep the window title bar and menu bar in normal dark theme; highlight only the Experimental notice badge."""
+        try:
+            self.setWindowTitle('Fairybread')
+            self.menuBar().setStyleSheet('')
+        except Exception:
+            pass
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                hwnd = int(self.winId())
+                if hwnd:
+                    DWMWA_CAPTION_COLOR = 35
+                    DWMWA_TEXT_COLOR = 36
+                    cap_col = ctypes.c_uint(0xFFFFFFFF)
+                    txt_col = ctypes.c_uint(0xFFFFFFFF)
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(cap_col), ctypes.sizeof(cap_col)
+                    )
+                    ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                        hwnd, DWMWA_TEXT_COLOR, ctypes.byref(txt_col), ctypes.sizeof(txt_col)
+                    )
+            except Exception:
+                pass
+
+    def _set_experimental_badge_state(self, state: str):
+        """Update the static top-strip Experimental notice with 3 unmistakable states: 'off', 'running', or 'stopped'."""
+        st = (state or 'off').strip().lower()
+        if st == 'running':
+            self.idle_switch_btn.setIcon(idle_moon_qicon(True))
+            self.idle_switch_btn.setText(' 🔴 Experimental: RUNNING')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #3d1414; color: #ff4d4d; border: 1px solid #ef4444; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11.5px; }'
+            )
+        elif st == 'stopped':
+            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
+            self.idle_switch_btn.setText(' ⏸ Experimental: STOPPED')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 11.5px; }'
+            )
+        else:
+            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
+            self.idle_switch_btn.setText(' Experimental: OFF')
+            self.idle_switch_btn.setStyleSheet(
+                'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+                'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; }'
+            )
+
     def _on_idle_switch_toggled(self, active: bool):
-        """Front-interface Experimental Mode switch: pauses Normal AI mode when ON and runs Experimental Mode autonomously."""
-        self.idle_switch_btn.setIcon(idle_moon_qicon(active))
+        """Front-interface Experimental Mode status notice & handler: pauses Normal AI mode when ON and runs Experimental Mode autonomously."""
+        self._apply_experimental_topbar_indicator(active)
         if active:
-            self.idle_switch_btn.setText(' Experimental: ON')
+            self._set_experimental_badge_state('running')
             if self.sidebar_mail_btn.isChecked():
                 self.sidebar_mail_btn.blockSignals(True)
                 self.sidebar_mail_btn.setChecked(False)
@@ -4495,7 +4639,7 @@ class PalaceWindow(QMainWindow):
             self.workspace_tabs.setCurrentIndex(1)
             self.start_idle_session()
         else:
-            self.idle_switch_btn.setText(' Experimental: OFF')
+            self._set_experimental_badge_state('off')
             self.idle_auto_timer.stop()
             self.idle_timer.stop()
             self.idle_manager.leave_idle_mode()
@@ -4587,12 +4731,12 @@ class PalaceWindow(QMainWindow):
         if not self.idle_switch_btn.isChecked():
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(True)
-            self.idle_switch_btn.setIcon(idle_moon_qicon(True))
-            self.idle_switch_btn.setText(' Experimental: ON')
             self.idle_switch_btn.blockSignals(False)
             self.normal_pause_banner.show()
             self.composer.setEnabled(False)
             self.send_button.setEnabled(False)
+        self._set_experimental_badge_state('running')
+        self._apply_experimental_topbar_indicator(True)
         self.idle_manager.start_session()
         self.idle_timer.start()
         self.idle_start_btn.setText('↻ Restart')
@@ -4630,9 +4774,9 @@ class PalaceWindow(QMainWindow):
         if self.idle_switch_btn.isChecked():
             self.idle_switch_btn.blockSignals(True)
             self.idle_switch_btn.setChecked(False)
-            self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-            self.idle_switch_btn.setText(' Experimental: OFF')
             self.idle_switch_btn.blockSignals(False)
+        self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
+        self._apply_experimental_topbar_indicator(False)
         self.normal_pause_banner.hide()
         self.composer.setEnabled(True)
         self.send_button.setEnabled(True)
@@ -4652,9 +4796,9 @@ class PalaceWindow(QMainWindow):
             if self.idle_switch_btn.isChecked():
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
-                self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
+            self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
+            self._apply_experimental_topbar_indicator(False)
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
             self.send_button.setEnabled(True)
@@ -4747,9 +4891,8 @@ class PalaceWindow(QMainWindow):
             if self.idle_switch_btn.isChecked():
                 self.idle_switch_btn.blockSignals(True)
                 self.idle_switch_btn.setChecked(False)
-                self.idle_switch_btn.setIcon(idle_moon_qicon(False))
-                self.idle_switch_btn.setText(' Experimental: OFF')
                 self.idle_switch_btn.blockSignals(False)
+            self._set_experimental_badge_state('stopped' if self.workspace_tabs.currentIndex() == 1 else 'off')
             self.normal_pause_banner.hide()
             self.composer.setEnabled(True)
             self.send_button.setEnabled(True)
@@ -6147,7 +6290,7 @@ class PalaceWindow(QMainWindow):
                         self.conversation_contributors.append(c)
 
                 if role == 'user':
-                    self.append_message('user', message['content'], render=False)
+                    self.append_message('user', message['content'], timestamp=message.get('timestamp'), render=False)
                 elif phase in {'initial', 'peer_reply'} and speaker not in {'assistant', 'palace'}:
                     pending_speakers.append(message)
                 else:
@@ -6158,6 +6301,7 @@ class PalaceWindow(QMainWindow):
                         phase=phase,
                         contributors=msg_contribs,
                         speaker_messages=list(pending_speakers),
+                        timestamp=message.get('timestamp'),
                         render=False,
                     )
                     pending_speakers.clear()
@@ -6171,6 +6315,7 @@ class PalaceWindow(QMainWindow):
                         msg['content'],
                         speaker=msg.get('speaker_id'),
                         phase=msg.get('phase'),
+                        timestamp=msg.get('timestamp'),
                         render=False,
                     )
                     self.last_answer = msg['content']
@@ -6189,8 +6334,9 @@ class PalaceWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             self.show_notice(f'Could not load history: {exc}')
 
-    def append_message(self, role, content, speaker=None, phase=None, contributors=None, speaker_messages=None, render: bool = True):
+    def append_message(self, role, content, speaker=None, phase=None, contributors=None, speaker_messages=None, timestamp=None, render: bool = True):
         item_idx = len(self.chat_items)
+        import time as _t
         self.chat_items.append({
             'idx': item_idx,
             'role': role,
@@ -6199,6 +6345,7 @@ class PalaceWindow(QMainWindow):
             'phase': phase,
             'contributors': list(contributors or []),
             'speaker_messages': list(speaker_messages or []),
+            'timestamp': timestamp or _t.strftime('%Y-%m-%dT%H:%M:%S'),
         })
         if role != 'user':
             self.reply_archive.append(content)
@@ -6278,6 +6425,8 @@ class PalaceWindow(QMainWindow):
                 f'{safe_user}'
                 f'</td></tr>'
             ) if safe_user.strip() else ''
+            ts_str = format_time_only(item.get('timestamp'))
+            ts_row = f'<tr><td align="right" style="color:#8b949e; font-size:11px; padding-top:4px; padding-right:2px;">{ts_str}</td></tr>' if ts_str else ''
             return (
                 f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:20px; margin-bottom:16px;">'
                 f'<tr><td width="26%"></td>'
@@ -6285,6 +6434,7 @@ class PalaceWindow(QMainWindow):
                 f'<table cellspacing="0" cellpadding="0" style="background:transparent; border:none;">'
                 f'{att_rows_html}'
                 f'{text_row_html}'
+                f'{ts_row}'
                 f'</table>'
                 f'</td>'
                 f'<td width="20"></td></tr></table>'
@@ -6382,10 +6532,12 @@ class PalaceWindow(QMainWindow):
             test_meta_html = f'<div style="font-size:1px; color:#0b0d10;">{html.escape(meta_tag)}</div>'
 
         reply_idx = max(0, len(self.reply_archive) - 1)
+        ts_str = format_time_only(item.get('timestamp'))
+        ts_tag = f'&nbsp;&nbsp;<span style="color:#8b949e; font-size:11px;">· {ts_str}</span>' if ts_str else ''
         actions_row_html = (
             f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:10px; border-top:1px solid #161b22; padding-top:6px;">'
             f'<tr>'
-            f'<td align="left" style="vertical-align:middle;">{badges_html}</td>'
+            f'<td align="left" style="vertical-align:middle;">{badges_html}{ts_tag}</td>'
             f'<td align="right" style="vertical-align:middle; margin-right:6px; color:#6e7681; font-size:11.5px;">'
             f'<a href="speak:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Read response aloud">🔊 Speak</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
@@ -6431,7 +6583,31 @@ class PalaceWindow(QMainWindow):
             return
         scrollbar = self.chat.verticalScrollBar()
         prev_val = scrollbar.value() if scrollbar else 0
-        html_blocks = [self._render_single_chat_item(item) for item in self.chat_items]
+        html_blocks = []
+        for i, item in enumerate(self.chat_items):
+            curr_ts = item.get('timestamp')
+            prev_ts = self.chat_items[i - 1].get('timestamp') if i > 0 else None
+            if curr_ts:
+                try:
+                    from datetime import datetime
+                    dt_curr = datetime.fromisoformat(str(curr_ts).replace('Z', '').split('.')[0])
+                    show_sep = False
+                    if not prev_ts:
+                        show_sep = True
+                    else:
+                        dt_prev = datetime.fromisoformat(str(prev_ts).replace('Z', '').split('.')[0])
+                        if (dt_curr - dt_prev).total_seconds() > 1800 or dt_curr.date() != dt_prev.date():
+                            show_sep = True
+                    if show_sep:
+                        sep_txt = format_chat_timestamp(curr_ts)
+                        html_blocks.append(
+                            f'<div align="center" style="margin:24px 0 14px; font-size:11px; font-weight:600; color:#8b949e;">'
+                            f'{sep_txt}'
+                            f'</div>'
+                        )
+                except Exception:
+                    pass
+            html_blocks.append(self._render_single_chat_item(item))
         self.chat.setHtml(''.join(html_blocks))
         if scroll_to_bottom:
             # Scroll to the top of the latest card so the user reads from the beginning of the new reply
@@ -6922,13 +7098,22 @@ class PalaceWindow(QMainWindow):
 
     def _show_slash_commands_menu(self):
         menu = QMenu(self)
-        commands = [
+        from palace_config import IS_DEVELOPER_EDITION
+        commands = []
+        if IS_DEVELOPER_EDITION:
+            commands.extend([
+                ('/autopatch', '⚡ /autopatch — Read code, generate verified patch & hot-reboot'),
+                ('/restore', '♻ /restore — Roll back to previous verified code edition & hot-reboot'),
+                ('/restore list', '🕰️ /restore list — View all saved code editions & golden pins'),
+                ('/code', '{} /code — Attach Fairybread source code reference for this turn'),
+            ])
+        commands.extend([
             ('/search', '🔍 /search — Light web search'),
             ('/searchm', '🔎 /searchm — Moderate multi-angle sharded web search'),
             ('/searchd', '🌐 /searchd — Deep exhaustive 15–25 site web research'),
             ('/tangent', '↗ /tangent — Side question (ignore prior chat context, still saved)'),
             ('/fullrender', '🖼 /fullrender — Render 1 full-res master image immediately (skip 3 drafts)'),
-        ]
+        ])
         for cmd_token, label in commands:
             act = QAction(label, menu)
 
@@ -6997,13 +7182,24 @@ class PalaceWindow(QMainWindow):
             )
 
     def _show_busy_action_menu(self):
+        note_present = bool(self.composer.toPlainText().strip())
+        local_pos = self.steer_button.mapFromGlobal(QCursor.pos())
+        clicked_arrow = local_pos.x() >= max(24, self.steer_button.width() - 24)
+        if note_present and not clicked_arrow:
+            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
+                self.queue_next_turn()
+            else:
+                self.steer_active_turn()
+            return
         menu = QMenu(self)
-        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn)')
+        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn · Enter)')
         queue_act = menu.addAction('⏳ Queue for Next Turn (run after current turn)')
         chosen = menu.exec(self.steer_button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
         if chosen == steer_act:
+            self._busy_submit_mode = 'steer'
             self.steer_active_turn()
         elif chosen == queue_act:
+            self._busy_submit_mode = 'queue'
             self.queue_next_turn()
 
     @Slot()
@@ -7077,6 +7273,10 @@ class PalaceWindow(QMainWindow):
     @Slot()
     def send_message(self):
         if self.worker is not None:
+            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
+                self.queue_next_turn()
+            else:
+                self.steer_active_turn()
             return
         question = self.composer.toPlainText().strip()
         if not question:
@@ -7302,8 +7502,22 @@ class PalaceWindow(QMainWindow):
             if self.tangent_btn.isChecked() and self.pending_history and not result.context_error:
                 saved = 'Tangent saved to Palace (clean context)'
             contrib_badges = '&nbsp;&nbsp;'.join(format_ai_badge_html(c) for c in turn_contributors)
+
+            applied_ap = getattr(result, 'applied_autopatch_files', None) or []
+            ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
+
+            ans_upper = str(result.final_answer or '').upper()
+            if '[ALL TASKS COMPLETED' in ans_upper:
+                status_badge = '<span style="color:#3fb950; font-weight:700;">✓ All background tasks completed successfully</span>'
+            elif '[PAUSED' in ans_upper or 'WAITING FOR USER INPUT' in ans_upper:
+                status_badge = '<span style="color:#d29922; font-weight:700;">⏸ Paused — Waiting for your input</span>'
+            elif applied_ap or '[AUTOPATCH STAGED' in ans_upper:
+                status_badge = '<span style="color:#58a6ff; font-weight:700;">⚡ Autopatch Staged — Hot-Rebooting…</span>'
+            else:
+                status_badge = '<span style="color:#8b949e; font-weight:600;">✓ Turn Complete · Ready</span>'
+
             self.status_label.setTextFormat(Qt.TextFormat.RichText)
-            self.status_label.setText(f'{saved} · Contributors: {contrib_badges}')
+            self.status_label.setText(f'{status_badge} &nbsp;·&nbsp; {saved} &nbsp;·&nbsp; {contrib_badges}')
             elapsed_s = max(0.0, time.time() - getattr(self, '_turn_start_time', time.time()))
             self.trigger_completion_notifications(
                 title='Fairybread — Response Ready',
@@ -7341,19 +7555,32 @@ class PalaceWindow(QMainWindow):
         if applied_ap and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
             self.show_notice(f'⚡ /autopatch Verified & Staged ({", ".join(applied_ap)}): {ap_sum} — Hot-Rebooting in 1.5s…')
             try:
+                import re
                 from palace_ouroboros import write_post_reboot_task
-                is_already_cont = '[POST-REBOOT CONTINUATION' in (self.last_question or '')
-                if not is_already_cont:
+                last_q = self.last_question or ''
+                chain_match = re.search(r'\(Chain:\s*(\d+)/(\d+)\)', last_q)
+                cur_depth = int(chain_match.group(1)) if chain_match else (1 if '[POST-REBOOT CONTINUATION' in last_q else 0)
+                next_depth = cur_depth + 1
+                if next_depth <= 3:
+                    if next_depth < 3:
+                        instructions = [
+                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
+                            'Verify that the latest patch is working cleanly.',
+                            'If there are remaining planned improvements in your sequence, proceed autonomously to apply the next planned patch via /autopatch.',
+                            'If all planned improvements are complete, or if you hit any blocker/ambiguity, confirm to the user and report completion.',
+                        ]
+                    else:
+                        instructions = [
+                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
+                            'All chained patches in this sequence (up to 3) are complete. Confirm to the user that all updates are live and working.',
+                        ]
                     write_post_reboot_task(
                         origin='autopatch_hot_reboot',
                         chat_session_id=self.session_id,
-                        user_request_summary=self.last_question,
+                        user_request_summary=last_q,
                         what_was_attempted=ap_sum or f'Modified {", ".join(applied_ap)}',
-                        instructions_for_agents=[
-                            'Examine what just happened after the hot-reboot ([TOOL: inspect_palace_ui] or read the updated lines).',
-                            'Review what you were doing and confirm to the user that the update is live and working (do NOT call /autopatch again unless a fix failed).',
-                        ],
-                        chain_depth=1,
+                        instructions_for_agents=instructions,
+                        chain_depth=next_depth,
                     )
             except Exception:
                 pass

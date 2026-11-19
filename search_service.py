@@ -41,6 +41,25 @@ _NATURAL_MOD_SEARCH_RE = re.compile(
     re.IGNORECASE,
 )
 
+_NATURAL_AUTOPATCH_RE = re.compile(
+    r"\b(?:autopatch|auto[\s-]+patch(?:es|ing)?|apply\s+(?:the\s+|experimental\s+mode\s+)?patch(?:es)?|apply\s+for\s+real|self[\s-]+deploy)\b",
+    re.IGNORECASE,
+)
+
+_TERSE_CONFIRM_RE = re.compile(
+    r"^\s*(?:apply|proceed|go(?:\s+ahead)?|do\s+it|deploy|yes|ok|approved?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_terse_patch_confirmation(text: str) -> bool:
+    """Return True if the user message starts with or is a concise confirmation synonym (Apply, Proceed, Go, Do it, etc.)."""
+    clean = (text or "").strip()
+    if not clean:
+        return False
+    return bool(_TERSE_CONFIRM_RE.search(clean))
+
+
 
 def parse_turn_commands(
     question: str,
@@ -78,7 +97,9 @@ def parse_turn_commands(
     if not cleaned_user and user_part.strip():
         cleaned_user = user_part.strip()
 
-    autopatch = "autopatch" in found_cmds
+    autopatch = ("autopatch" in found_cmds) or bool(_NATURAL_AUTOPATCH_RE.search(cleaned_user))
+    if autopatch:
+        found_cmds.add("autopatch")
     include_code = autopatch or ("code" in found_cmds)
     tangent = "tangent" in found_cmds
     full_render = bool(found_cmds & {"fullrender", "single"})

@@ -26,7 +26,21 @@ def _archive_uploaded_bytes(raw: bytes, original_name: str) -> Path | None:
         suffix = Path(safe_name).suffix or ".bin"
         dest = up_dir / f"{stem}_{digest}{suffix}"
         if not dest.exists():
-            dest.write_bytes(raw)
+            tmp_path = dest.with_name(dest.name + ".tmp")
+            try:
+                tmp_path.write_bytes(raw)
+                fd = os.open(str(tmp_path), os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.replace(str(tmp_path), str(dest))
+            finally:
+                if tmp_path.exists():
+                    try:
+                        tmp_path.unlink()
+                    except OSError:
+                        pass
         return dest
     except OSError:
         return None
@@ -118,6 +132,26 @@ def extract_attachment(path: str | Path) -> Attachment:
     suffix = path.suffix.lower()
     if suffix in IMAGE_EXTENSIONS:
         raw = raw_all
+        # Ensure sRGB and 300 DPI metadata if processed via Pillow
+        try:
+            import io
+            from PIL import Image
+            img = Image.open(io.BytesIO(raw))
+            if img.mode not in ('RGB', 'RGBA'):
+                img = img.convert('RGB')
+            out_io = io.BytesIO()
+            save_kwargs = {'dpi': (300, 300)}
+            if 'icc_profile' in img.info:
+                save_kwargs['icc_profile'] = img.info['icc_profile']
+            elif 'sRGB' not in getattr(img, 'text', {}):
+                pass # Pillow default handles standard sRGB container
+            format_name = img.format if img.format in ('PNG', 'JPEG', 'WEBP') else 'PNG'
+            if format_name == 'JPEG':
+                save_kwargs['quality'] = 95
+            img.save(out_io, format=format_name, **save_kwargs)
+            raw = out_io.getvalue()
+        except Exception:
+            pass # Fall back to raw bytes if PIL processing encounters non-standard frames
         info = _detect_valid_image(raw)
         if info is None:
             raise ValueError('This file is not a valid image.')

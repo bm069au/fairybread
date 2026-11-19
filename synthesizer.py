@@ -116,6 +116,11 @@ Rules:
 - Remove unnecessary repetition and meta-commentary.
 - Correct obvious errors when possible.
 - Be direct and useful.
+- MANDATORY END-OF-TURN STATUS BANNER: Every final answer MUST conclude on its own line at the very end with one of these unambiguous status tags:
+  * If all requested/planned work is complete: `✓ [ALL TASKS COMPLETED SUCCESSFULLY]`
+  * If staging an autopatch or continuing an autonomous chain: `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]`
+  * If pausing because you explicitly need the user's decision or input: `⏸ [PAUSED — WAITING FOR USER INPUT: <specific reason>]`
+  * Never claim you are "continuing in the background" without an active autonomous task or staged patch.
 """.strip()
 
         candidates: list[tuple[str, AIProvider]] = [(self.provider_name, self.provider)]
