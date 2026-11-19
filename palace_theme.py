@@ -11,6 +11,7 @@ import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib import request as urllib_request
@@ -714,6 +715,39 @@ def _encode_multipart_form(
     return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
 
 
+def _is_permanent_image_error(err_text: str) -> bool:
+    """Return True when an image generation error is non-retryable (auth, quota, 400/404, safety block)."""
+    low = (err_text or "").lower()
+    if not low.strip():
+        return False
+    permanent_tokens = (
+        "missing ",
+        "api key",
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "permission",
+        "invalid_api_key",
+        "404",
+        "not found",
+        "400",
+        "invalid argument",
+        "bad request",
+        "safety",
+        "policy",
+        "content_policy",
+        "blocked",
+        "moderation",
+        "prohibited",
+        "quota",
+        "insufficient_quota",
+        "billing",
+        "credit",
+    )
+    return any(tok in low for tok in permanent_tokens)
+
+
 def generate_ai_image_to_png(
     prompt: str,
     title: str = "ai_image",
@@ -726,6 +760,7 @@ def generate_ai_image_to_png(
     reference_image_paths: list[Path | str] | None = None,
     primary_engine: str = "",
     fallback_engines: list[str] | None = None,
+    primary_retry_delay_sec: float = 1.5,
 ) -> Path | None:
     """Return cached image or generate using configurable primary graphic AI + explicit fallback chain
     with optional native reference-image byte threading and 300 DPI atomic PNG save.
@@ -988,20 +1023,29 @@ def generate_ai_image_to_png(
         if e and e not in engine_chain:
             engine_chain.append(e)
 
-    for idx, eng in enumerate(engine_chain):
-        res_path: Path | None = None
-        used_ref = False
-        badge_label = eng
+    def _run_engine(eng: str) -> tuple[Path | None, bool, str]:
         if eng.startswith("gemini"):
-            res_path, used_ref = _try_gemini_image(eng)
-        elif "gpt-image" in eng or eng.startswith("openai"):
-            res_path, used_ref = _try_openai_gpt_image_2()
-            badge_label = "gpt-image-2"
-        elif "flux" in eng:
-            res_path, used_ref = _try_deepinfra_flux(eng)
-            badge_label = "FLUX-1-schnell" if ("schnell" in eng or (is_low_quality and "dev" not in eng)) else "FLUX-1-dev"
-        else:
-            res_path, used_ref = _try_gemini_image(eng)
+            p, ref = _try_gemini_image(eng)
+            return p, ref, eng
+        if "gpt-image" in eng or eng.startswith("openai"):
+            p, ref = _try_openai_gpt_image_2()
+            return p, ref, "gpt-image-2"
+        if "flux" in eng:
+            p, ref = _try_deepinfra_flux(eng)
+            b_lbl = "FLUX-1-schnell" if ("schnell" in eng or (is_low_quality and "dev" not in eng)) else "FLUX-1-dev"
+            return p, ref, b_lbl
+        p, ref = _try_gemini_image(eng)
+        return p, ref, eng
+
+    for idx, eng in enumerate(engine_chain):
+        err_start = len(attempted_errors)
+        res_path, used_ref, badge_label = _run_engine(eng)
+        if res_path is None and idx == 0:
+            new_errs = attempted_errors[err_start:]
+            if not new_errs or not all(_is_permanent_image_error(e) for e in new_errs):
+                if primary_retry_delay_sec and primary_retry_delay_sec > 0:
+                    time.sleep(primary_retry_delay_sec)
+                res_path, used_ref, badge_label = _run_engine(eng)
 
         if res_path is not None:
             billed_eng = badge_label

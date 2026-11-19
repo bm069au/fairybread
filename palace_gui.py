@@ -357,10 +357,12 @@ class VoiceCompanionWorker(QThread):
 
     def __init__(
         self,
-        wav_path: Path,
+        wav_path: Path | None,
         companion,
         *,
+        text_input: str = "",
         companion_enabled: bool = True,
+        talk_only: bool = False,
         background_busy: bool = False,
         background_status: str = "",
         background_question: str = "",
@@ -370,7 +372,9 @@ class VoiceCompanionWorker(QThread):
         super().__init__(parent)
         self.wav_path = wav_path
         self.companion = companion
+        self.text_input = str(text_input or "")
         self.companion_enabled = bool(companion_enabled)
+        self.talk_only = bool(talk_only)
         self.background_busy = bool(background_busy)
         self.background_status = background_status
         self.background_question = background_question
@@ -378,23 +382,38 @@ class VoiceCompanionWorker(QThread):
 
     def run(self):
         try:
-            from voice_service import transcribe_audio_file
+            transcript = self.text_input.strip()
+            if not transcript:
+                if self.wav_path is None:
+                    self.completed.emit(None, "")
+                    return
+                from voice_service import transcribe_audio_file
 
-            transcript = transcribe_audio_file(self.wav_path)
-            if not transcript or not transcript.strip():
+                transcript = (transcribe_audio_file(self.wav_path) or "").strip()
+            if not transcript:
                 self.completed.emit(None, "")
                 return
             if not self.companion_enabled or self.companion is None:
-                self.completed.emit(None, transcript.strip())
+                self.completed.emit(None, transcript)
                 return
-            decision = self.companion.respond(
-                transcript.strip(),
-                background_busy=self.background_busy,
-                background_status=self.background_status,
-                background_question=self.background_question,
-                recent_chat_snippet=self.recent_chat_snippet,
-            )
-            self.completed.emit(decision, transcript.strip())
+            try:
+                decision = self.companion.respond(
+                    transcript,
+                    background_busy=self.background_busy,
+                    background_status=self.background_status,
+                    background_question=self.background_question,
+                    recent_chat_snippet=self.recent_chat_snippet,
+                    talk_only=self.talk_only,
+                )
+            except TypeError:
+                decision = self.companion.respond(
+                    transcript,
+                    background_busy=self.background_busy,
+                    background_status=self.background_status,
+                    background_question=self.background_question,
+                    recent_chat_snippet=self.recent_chat_snippet,
+                )
+            self.completed.emit(decision, transcript)
         except Exception as exc:
             self.failed.emit(str(exc) or type(exc).__name__)
 
@@ -3079,6 +3098,7 @@ class PalaceWindow(QMainWindow):
         self._voice_companion = None
         self._voice_threads = []
         self._background_delegated_from_voice = False
+        self._talk_only_mode = False
         self.last_answer = ''
         self.last_question = ''
         self.pending_prompt = ''
@@ -4666,6 +4686,13 @@ class PalaceWindow(QMainWindow):
             self.refresh_sessions()
 
     def _update_ai_pill_text(self):
+        if getattr(self, '_talk_only_mode', False):
+            self.ai_pill_button.setText('🎙️ Talk Only  ▾')
+            self.ai_pill_button.setToolTip(
+                'Talk Mode Only active — 1 fast voice AI, zero council/tools/delegation (click to switch modes)'
+            )
+            return
+        self.ai_pill_button.setToolTip('Select active AIs or Squad')
         active_names = [n for n, en in self.provider_states.items() if en is True]
         active_count = len(active_names)
         cap_suffix = f'/{self.max_ais_per_turn}' if self.max_ais_per_turn and self.max_ais_per_turn < active_count else ''
@@ -4689,20 +4716,39 @@ class PalaceWindow(QMainWindow):
         if not all_names:
             all_names = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral']
 
+        def _esc_amp(txt: str) -> str:
+            return re.sub(r'(?<!&)&(?!&)', '&&', str(txt or ''))
+
+        menu.setToolTipsVisible(True)
+        talk_only_act = QAction('🎙️  Talk Mode Only (Fast Voice Chat · No Council)', menu)
+        talk_only_act.setCheckable(True)
+        talk_only_act.setChecked(bool(getattr(self, '_talk_only_mode', False)))
+        talk_only_act.setToolTip(
+            '1 fast non-thinking voice AI only — skips council, deliberation, tools, and accidental delegation'
+        )
+        talk_only_act.triggered.connect(
+            lambda checked=False: self._activate_talk_only_mode(auto_start_live_voice=True)
+            if checked
+            else self._exit_talk_only_mode()
+        )
+        menu.addAction(talk_only_act)
+        menu.addSeparator()
+
         squad_dict = load_ai_squads(self.config_path)
         for _sq_key, sq_val in squad_dict.items():
             squad_title = str(sq_val.get('label') or _sq_key)
+            squad_title_menu = _esc_amp(squad_title)
             members = list(sq_val.get('providers') or [])
             default_delib = bool(sq_val.get('deliberate', True))
             default_code = bool(sq_val.get('code_access', False))
             max_cap = int(sq_val.get('max_ais') or 0)
             avail_members = [m for m in members if m in all_names] or members
-            sub = menu.addMenu(f'{squad_title}')
+            sub = menu.addMenu(f'{squad_title_menu}')
             if menu_style:
                 sub.setStyleSheet(menu_style)
-            joined_disp = ', '.join(provider_display_name(m) for m in avail_members)
+            joined_disp = ', '.join(_esc_amp(provider_display_name(m)) for m in avail_members)
             cap_note = f' [Max {max_cap}]' if max_cap > 0 else ''
-            all_act = QAction(f'All {squad_title}{cap_note}: {joined_disp}', sub)
+            all_act = QAction(f'All {squad_title_menu}{cap_note}: {joined_disp}', sub)
             all_act.triggered.connect(
                 lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap:
                 self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc)
@@ -4712,7 +4758,7 @@ class PalaceWindow(QMainWindow):
             for m in avail_members:
                 single_act = QAction(
                     provider_qicon(m, checked=(prov_states.get(m) is True)),
-                    f'Only {provider_display_name(m)} ({squad_title})',
+                    f'Only {_esc_amp(provider_display_name(m))} ({squad_title_menu})',
                     sub,
                 )
                 single_act.triggered.connect(
@@ -4739,26 +4785,26 @@ class PalaceWindow(QMainWindow):
         )
         menu.addAction(all_en_act)
 
-        custom_act = QAction('✋  Custom Selection & How Many AIs…', menu)
+        custom_act = QAction('✋  Custom Selection && How Many AIs…', menu)
         custom_act.triggered.connect(self._open_custom_ai_picker)
         menu.addAction(custom_act)
 
         menu.addSeparator()
         for name in all_names:
             is_active = (prov_states.get(name) is True)
-            disp = provider_display_name(name)
-            model_hint = configs.get(name, {}).get('model', '')
+            disp = _esc_amp(provider_display_name(name))
+            model_hint = _esc_amp(configs.get(name, {}).get('model', ''))
             label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
             act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
             act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
             menu.addAction(act)
 
         menu.addSeparator()
-        edit_prof_act = QAction('🎛  Customize Profiles & Squads…', menu)
+        edit_prof_act = QAction('🎛  Customize Profiles && Squads…', menu)
         edit_prof_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
         menu.addAction(edit_prof_act)
 
-        manage_act = QAction('⚙  Manage AI Keys, Models & Tools…', menu)
+        manage_act = QAction('⚙  Manage AI Keys, Models && Tools…', menu)
         manage_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         menu.addAction(manage_act)
 
@@ -4780,7 +4826,36 @@ class PalaceWindow(QMainWindow):
             pos = self.ai_pill_button.mapToGlobal(QPoint(0, self.ai_pill_button.height() + 4))
         menu.exec(pos)
 
+    def _activate_talk_only_mode(self, auto_start_live_voice: bool = True):
+        self._talk_only_mode = True
+        self.current_squad_label = '🎙️ Talk Only'
+        if self.idle_switch_btn.isChecked():
+            self.idle_switch_btn.setChecked(False)
+        self._update_ai_pill_text()
+        self.status_label.setTextFormat(Qt.TextFormat.RichText)
+        self.status_label.setText(
+            '<b>🎙️ Talk Mode Only</b> · 1 fast non-thinking voice AI · Zero council/tools/delegation '
+            '(switch mode or tick any AI to escalate)'
+        )
+        if (
+            auto_start_live_voice
+            and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
+            and hasattr(self, 'live_voice_button')
+            and not self.live_voice_button.isChecked()
+        ):
+            self.live_voice_button.setChecked(True)
+
+    def _exit_talk_only_mode(self, silent: bool = False):
+        self._talk_only_mode = False
+        if self.current_squad_label == '🎙️ Talk Only':
+            self.current_squad_label = ''
+        self._update_ai_pill_text()
+        if not silent:
+            self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.status_label.setText('Talk Mode Only OFF · Normal AI squad active')
+
     def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False, max_ais: int = 0):
+        self._talk_only_mode = False
         self.current_squad_label = label
         self.max_ais_per_turn = max(0, int(max_ais or 0))
         if self.idle_switch_btn.isChecked():
@@ -4826,6 +4901,7 @@ class PalaceWindow(QMainWindow):
             config_path=self.config_path,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._talk_only_mode = False
             chosen = dlg.selected_providers()
             self.max_ais_per_turn = dlg.selected_max_ais()
             self.current_squad_label = '✋ Custom'
@@ -4857,6 +4933,7 @@ class PalaceWindow(QMainWindow):
         self._toggle_provider_quick(name, not cur_active)
 
     def _toggle_provider_quick(self, name: str, enabled: bool):
+        self._talk_only_mode = False
         self.current_squad_label = ''
         self.provider_states[name] = enabled
         try:
@@ -6712,24 +6789,55 @@ class PalaceWindow(QMainWindow):
             self._voice_companion = VoiceCompanion(config_path=self.config_path)
         return self._voice_companion
 
-    def _on_live_voice_utterance(self, wav_path: Path):
-        from voice_service import load_voice_settings, speak_agent_response
-
-        v_cfg = load_voice_settings(self.config_path)
-        companion_on = bool(v_cfg.get('voice_companion_enabled', True))
-        if hasattr(self, 'voice_level_badge'):
-            self.voice_level_badge.setText('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…')
-
+    def _recent_voice_context_snippet(self) -> str:
         recent_lines = []
         for it in (self.chat_items or [])[-4:]:
             r_tag = 'User' if it.get('role') == 'user' else 'Assistant'
             recent_lines.append(f"{r_tag}: {str(it.get('content') or '')[:180]}")
-        recent_snip = '\n'.join(recent_lines)
+        return '\n'.join(recent_lines)
+
+    def _persist_voice_exchange(self, user_text: str, reply_text: str, provider_used: str = '') -> None:
+        is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
+        if is_no_history:
+            return
+        try:
+            ctx = self.store.context(self.session_id)
+            contribs = (
+                [provider_used]
+                if provider_used and provider_used not in {'local', 'fallback'}
+                else []
+            )
+            ctx.append_exchange(
+                user_text,
+                reply_text,
+                contributors=contribs,
+                answer_speaker_id='voice_companion',
+                answer_phase='voice_chat',
+            )
+            self.store.rename_from_question(self.session_id, user_text.lstrip('🎙 ').strip() or user_text)
+            self.refresh_projects()
+            self.refresh_sessions()
+        except OSError:
+            pass
+
+    def _on_live_voice_utterance(self, wav_path: Path):
+        from voice_service import load_voice_settings, speak_agent_response
+
+        v_cfg = load_voice_settings(self.config_path)
+        talk_only = bool(getattr(self, '_talk_only_mode', False))
+        companion_on = True if talk_only else bool(v_cfg.get('voice_companion_enabled', True))
+        if hasattr(self, 'voice_level_badge'):
+            self.voice_level_badge.setText(
+                '⏳ Talk Mode listening…' if talk_only else ('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…')
+            )
+
+        recent_snip = self._recent_voice_context_snippet()
 
         worker = VoiceCompanionWorker(
             wav_path,
             self._get_voice_companion() if companion_on else None,
             companion_enabled=companion_on,
+            talk_only=talk_only,
             background_busy=(self.worker is not None),
             background_status=str(getattr(self, 'pending_status_text', '') or ''),
             background_question=str(getattr(self, 'last_question', '') or ''),
@@ -6760,11 +6868,20 @@ class PalaceWindow(QMainWindow):
                 return
 
             # Render the spoken turn cleanly in chat without blocking Live Voice Mode
-            self.append_message('user', f'🎙 {text}', render=False)
+            user_disp = f'🎙 {text}'
+            self.append_message('user', user_disp, render=False)
             self.append_message('assistant', decision.spoken_reply, speaker='voice_companion', render=True)
-            speak_agent_response(decision.spoken_reply, config_path=self.config_path)
+            if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                speak_agent_response(decision.spoken_reply, config_path=self.config_path)
 
-            if decision.action == 'delegate' and decision.delegated_task:
+            if talk_only or decision.action != 'delegate':
+                self._persist_voice_exchange(
+                    user_disp,
+                    decision.spoken_reply,
+                    provider_used=getattr(decision, 'provider_used', ''),
+                )
+
+            if (not talk_only) and decision.action == 'delegate' and decision.delegated_task:
                 task_text = decision.delegated_task.strip()
                 if self.worker is None:
                     draft_backup = self.composer.toPlainText()
@@ -6787,7 +6904,7 @@ class PalaceWindow(QMainWindow):
                         )
                     self.show_notice(f'🎙 Voice Companion queued next task ({len(self.queued_prompts)}): "{task_text[:60]}"')
 
-            elif decision.action == 'steer' and decision.steer_note and self.worker is not None:
+            elif (not talk_only) and decision.action == 'steer' and decision.steer_note and self.worker is not None:
                 note = decision.steer_note.strip()
                 if getattr(self, 'active_steering_state', None) is None:
                     self.active_steering_state = {'notes': [], 'include_palace_code': self.palace_code_btn.isChecked()}
@@ -6833,7 +6950,7 @@ class PalaceWindow(QMainWindow):
                 speaker = message.get('speaker_id')
                 phase = message.get('phase')
                 msg_contribs = message.get('contributors') or []
-                if speaker and speaker not in {'user', 'assistant', 'palace'} and speaker not in self.conversation_contributors:
+                if speaker and speaker not in {'user', 'assistant', 'palace', 'voice_companion'} and speaker not in self.conversation_contributors:
                     self.conversation_contributors.append(speaker)
                 for c in msg_contribs:
                     if c and c not in self.conversation_contributors:
@@ -7876,6 +7993,61 @@ class PalaceWindow(QMainWindow):
                 return
             self.composer.clear()
             self.run_idle_exchange_step(operator_message=question)
+            return
+        if bool(getattr(self, '_talk_only_mode', False)):
+            if self.attachments:
+                self.show_notice(
+                    'Attachments require a full AI squad — switch out of Talk Mode Only (e.g., Generalist or Graphics & Vision) to analyze files/images.'
+                )
+                return
+            recent_snip = self._recent_voice_context_snippet()
+            self.last_question = question
+            self.composer.clear()
+            self.append_message('user', question, render=True)
+            self.status_label.setText('🎙️ Talk Mode Only — replying…')
+            worker = VoiceCompanionWorker(
+                None,
+                self._get_voice_companion(),
+                text_input=question,
+                companion_enabled=True,
+                talk_only=True,
+                recent_chat_snippet=recent_snip,
+                parent=self,
+            )
+            self._voice_threads.append(worker)
+
+            def _cleanup_talk_w(_w=worker):
+                try:
+                    if _w in self._voice_threads:
+                        self._voice_threads.remove(_w)
+                except Exception:
+                    pass
+                _w.deleteLater()
+
+            def _on_talk_done(decision, _transcript: str, q_text=question):
+                if decision is None or not str(getattr(decision, 'spoken_reply', '') or '').strip():
+                    return
+                reply = decision.spoken_reply
+                self.append_message('assistant', reply, speaker='voice_companion', render=True)
+                self.last_answer = reply
+                self.copy_button.setEnabled(True)
+                self._persist_voice_exchange(
+                    q_text,
+                    reply,
+                    provider_used=getattr(decision, 'provider_used', ''),
+                )
+                self.status_label.setText('🎙️ Talk Mode Only · Replied')
+                if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+                    from voice_service import speak_agent_response
+                    speak_agent_response(reply, config_path=self.config_path)
+
+            worker.completed.connect(_on_talk_done)
+            worker.failed.connect(lambda err: (
+                self.show_notice(f'Talk Mode notice: {err}'),
+                self.status_label.setText('🎙️ Talk Mode Only · Error'),
+            ))
+            worker.finished.connect(_cleanup_talk_w)
+            worker.start()
             return
         try:
             prompt = compose_question(question, self.attachments)

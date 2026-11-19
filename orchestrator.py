@@ -72,6 +72,118 @@ _CONTEXTUAL_VISUAL_FOLLOWUP_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ORDINAL_TO_DRAFT_NUM = {
+    "first": 1,
+    "1st": 1,
+    "second": 2,
+    "2nd": 2,
+    "third": 3,
+    "3rd": 3,
+    "fourth": 4,
+    "4th": 4,
+}
+
+_SINGLE_DRAFT_PICK_RE = re.compile(
+    r"^\s*(?:#|number\s+|no\.?\s*|draft\s+|option\s+|choice\s+|pick\s+|use\s+|go\s+with\s+|i\s+like\s+|let'?s\s+do\s+|render\s+)?"
+    r"([1-9]|first|1st|second|2nd|third|3rd|fourth|4th)"
+    r"(?:\s*(?:one|please|thanks|thank\s+you))?(?:\s*[.,!]+)?(?:\s*[,;:\-]\s*.*|\s+(?:in\s+)?(?:\d{3,4}x\d{3,4}|standard(?:\s+size)?|high[- ]?res(?:olution)?|full[- ]?res(?:olution)?|4k|wallpaper(?:_4k)?|facebook(?:_page|_cover)?|youtube_banner|print_(?:8x10|a4)|more\s+.*|less\s+.*|with\s+.*))?$",
+    re.IGNORECASE,
+)
+
+_DRAFT_MIX_RE = re.compile(
+    r"\b(?:mix|combine|blend|merge)\s+(?:draft\s*)?#?[1-9]\b.*\b[1-9]\b"
+    r"|\b(?:draft\s*)?#?[1-9]\s*(?:and|&|\+|with)\s*(?:draft\s*)?#?[1-9]\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_selected_draft_number(question: str) -> int | None:
+    q = (question or "").strip()
+    if not q or len(q) > 160:
+        return None
+    if _DRAFT_MIX_RE.search(q):
+        return None
+    m = _SINGLE_DRAFT_PICK_RE.match(q)
+    if not m:
+        return None
+    tok = m.group(1).strip().lower()
+    if tok.isdigit():
+        num = int(tok)
+        return num if 1 <= num <= 9 else None
+    return _ORDINAL_TO_DRAFT_NUM.get(tok)
+
+
+def _is_draft_mix_followup(question: str) -> bool:
+    q = (question or "").strip()
+    if not q or len(q) > 240:
+        return False
+    return bool(_DRAFT_MIX_RE.search(q))
+
+
+def _extract_requested_image_size(question: str) -> str:
+    q = (question or "").lower()
+    dim = re.search(r"\b(\d{3,4}\s*[x×]\s*\d{3,4})\b", q)
+    if dim:
+        return re.sub(r"\s*[×x]\s*", "x", dim.group(1).strip())
+    for preset in (
+        "wallpaper_4k",
+        "facebook_page",
+        "facebook_cover",
+        "facebook_group",
+        "youtube_banner",
+        "print_8x10",
+        "print_a4",
+        "portrait",
+        "landscape",
+    ):
+        if preset in q:
+            return preset
+    if "4k" in q or "wallpaper" in q:
+        return "wallpaper_4k"
+    return ""
+
+
+def _extract_prior_draft_tag_from_context(
+    session_context: str,
+    draft_num: int,
+    *,
+    requested_size: str = "",
+) -> str | None:
+    if not session_context or draft_num < 1:
+        return None
+    try:
+        from palace_theme import _GENERATE_IMAGE_TAG_PATTERN, _parse_generate_image_attrs
+    except Exception:
+        return None
+
+    last_assistant = session_context.rsplit("\n\nASSISTANT", 1)[-1]
+    matches = list(_GENERATE_IMAGE_TAG_PATTERN.finditer(last_assistant))
+    if not matches:
+        matches = list(_GENERATE_IMAGE_TAG_PATTERN.finditer(session_context))
+    if not matches:
+        return None
+
+    chosen_attrs: dict[str, str] | None = None
+    for m in matches:
+        attrs = _parse_generate_image_attrs(m.group(1))
+        title = attrs.get("title", "")
+        if re.search(rf"\b(?:draft|option|concept)\s*#?\s*{draft_num}\b", title, re.IGNORECASE):
+            chosen_attrs = attrs
+            break
+    if chosen_attrs is None and draft_num <= len(matches):
+        chosen_attrs = _parse_generate_image_attrs(matches[draft_num - 1].group(1))
+    if not chosen_attrs or not chosen_attrs.get("prompt"):
+        return None
+
+    def _esc_attr(val: str) -> str:
+        return str(val or "").replace('"', "'").strip()
+
+    prompt_val = _esc_attr(chosen_attrs["prompt"])
+    raw_title = chosen_attrs.get("title") or f"Draft {draft_num} Master"
+    master_title = _esc_attr(f"{raw_title} (Master)")
+    size_val = _esc_attr(requested_size or "1024x1024")
+    return f'[GENERATE_IMAGE prompt="{prompt_val}" title="{master_title}" size="{size_val}" quality="high"]'
+
 _EXPLICIT_ALL_AGENTS_RE = re.compile(
     r"\b(?:all\s+agents|all\s+ais|all\s+of\s+you|everyone)\b",
     re.IGNORECASE,
@@ -599,14 +711,37 @@ Instructions:
         )
         drawing_mode = "none" if is_autopatch else classify_drawing_request(effective_question)
         q_no_att = effective_question.split("\n\nATTACHED FILE EXCERPTS (user-provided reference material):", 1)[0]
-        if (
-            drawing_mode == "none"
-            and not is_autopatch
+        visual_follow_eligible = (
+            not is_autopatch
             and has_prior_image_context
             and not _CODE_OR_ARCH_EXCLUSION_RE.search(q_no_att)
-            and _CONTEXTUAL_VISUAL_FOLLOWUP_RE.search(q_no_att)
+        )
+        selected_draft_num = _extract_selected_draft_number(q_no_att) if visual_follow_eligible else None
+        is_draft_mix = _is_draft_mix_followup(q_no_att) if visual_follow_eligible else False
+        if (
+            drawing_mode == "none"
+            and visual_follow_eligible
+            and (
+                selected_draft_num is not None
+                or is_draft_mix
+                or _CONTEXTUAL_VISUAL_FOLLOWUP_RE.search(q_no_att)
+            )
         ):
             drawing_mode = "direct_draw"
+
+        if drawing_mode != "none" and (selected_draft_num is not None or is_draft_mix):
+            pick_label = (
+                f"Draft #{selected_draft_num}"
+                if selected_draft_num is not None
+                else "a mix of prior drafts"
+            )
+            extra_blocks.append(
+                f"[USER SELECTED DRAFT — RENDER HIGH-RES MASTER NOW]: "
+                f"The user selected {pick_label} from the previous drafts. "
+                f"Do NOT reply `[PASS]` or defer to another agent, and do NOT pause for more input. "
+                f"Emit the executable full-resolution `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` "
+                f"tag immediately (honoring any custom size or tweaks in the user's message)."
+            )
 
         effective_providers = list(provider_names) if provider_names is not None else None
         effective_max_rounds = max_rounds
@@ -746,11 +881,41 @@ Instructions:
 
         def _is_silent_pass_or_defer(raw_txt: str) -> bool:
             stripped = (raw_txt or "").strip()
-            if stripped.upper() in {"[PASS]", "PASS"}:
+            upper = stripped.upper()
+            if "[GENERATE_IMAGE" in upper or "[IDLE_PATCH" in upper:
+                return False
+            if upper in {"[PASS]", "PASS"} or re.match(r"^\[PASS\]\b", stripped, re.IGNORECASE):
                 return True
-            if stripped.upper().startswith("[DEFER EXECUTION TO:") and len(stripped) < 280 and "[GENERATE_IMAGE" not in stripped.upper():
+            if upper.startswith("[DEFER EXECUTION TO:") and len(stripped) < 280:
                 return True
             return False
+
+        def _has_image_tag_result(res: ProviderResult | None) -> bool:
+            return bool(
+                res is not None
+                and res.succeeded
+                and res.response is not None
+                and "[GENERATE_IMAGE" in (res.response.text or "").upper()
+            )
+
+        def _is_permanent_llm_error(err: str) -> bool:
+            low = (err or "").lower()
+            if not low.strip():
+                return False
+            return any(
+                tok in low
+                for tok in (
+                    "401",
+                    "403",
+                    "invalid_api_key",
+                    "authentication",
+                    "missing",
+                    "404",
+                    "quota",
+                    "billing",
+                    "insufficient_quota",
+                )
+            )
 
         def _emit_provider_cost(res: ProviderResult, prompt_txt: str, *, source: str = "chat") -> None:
             if not (res and res.succeeded and res.response is not None):
@@ -817,33 +982,41 @@ Instructions:
 
         p_timeout = float(agent_defaults.get("provider_timeout_sec", 45) or 45)
         s_grace = float(agent_defaults.get("straggler_grace_sec", 15) or 0)
-        try:
-            provider_results = (
-                self.dispatcher.dispatch(
-                    round1_prompt_arg,
-                    provider_names=effective_providers,
+
+        def _dispatch_with_compat(
+            prompt_arg: Any,
+            target_providers: list[str] | None,
+            *,
+            allow_grace: bool = True,
+        ) -> dict[str, ProviderResult]:
+            try:
+                return self.dispatcher.dispatch(
+                    prompt_arg,
+                    provider_names=target_providers,
                     on_result=_record_initial,
                     images=attached_images or None,
                     per_provider_timeout=p_timeout,
-                    straggler_grace_seconds=s_grace if s_grace > 0 else None,
-                )
-            )
-        except TypeError:
-            try:
-                provider_results = self.dispatcher.dispatch(
-                    round1_prompt_arg,
-                    provider_names=effective_providers,
-                    on_result=_record_initial,
+                    straggler_grace_seconds=(s_grace if (allow_grace and s_grace > 0) else None),
                 )
             except TypeError:
-                provider_results = self.dispatcher.dispatch(
-                    round1_prompt_arg,
-                    provider_names=effective_providers,
-                )
-                for name, res in provider_results.items():
-                    if not hasattr(res, "provider_name"):
-                        res.provider_name = name
-                    _record_initial(res)
+                try:
+                    return self.dispatcher.dispatch(
+                        prompt_arg,
+                        provider_names=target_providers,
+                        on_result=_record_initial,
+                    )
+                except TypeError:
+                    res_map = self.dispatcher.dispatch(
+                        prompt_arg,
+                        provider_names=target_providers,
+                    )
+                    for name, res in res_map.items():
+                        if not hasattr(res, "provider_name"):
+                            res.provider_name = name
+                        _record_initial(res)
+                    return res_map
+
+        provider_results = _dispatch_with_compat(round1_prompt_arg, effective_providers, allow_grace=True)
 
         if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
             return PalaceRunResult(
@@ -859,26 +1032,86 @@ Instructions:
                 peer_rounds=[],
             )
 
-        # Fault-tolerant failover for Graphic Prompt Duo if all selected specialists failed
+        # Graphics-only 1 retry on the primary graphic specialist BEFORE handing off to lower-priority fallback AIs
         if drawing_mode in {"direct_draw", "council_draw"} and not any(
-            r.succeeded and r.response is not None and (r.response.text or "").strip()
+            _has_image_tag_result(r) for r in provider_results.values()
+        ):
+            tried_draw = set(provider_results.keys())
+            if architect_order:
+                prim_arch = architect_order[0]
+                prim_res = provider_results.get(prim_arch)
+                prim_err = getattr(prim_res, "error", "") or ""
+                if not _is_permanent_llm_error(prim_err) and not (
+                    cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()
+                ):
+                    if on_phase_status is not None:
+                        try:
+                            on_phase_status({"event": "phase", "text": f"Retrying {prim_arch.upper()} graphics render once before fallback…"})
+                        except Exception:
+                            pass
+                    retry_prompt = (
+                        f"{prompt}\n\n"
+                        "[GRAPHICS RETRY]: Your previous attempt did not produce an executable `[GENERATE_IMAGE ...]` tag. "
+                        "Do NOT `[PASS]` or defer — emit the executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly now."
+                    )
+                    retry_map = _dispatch_with_compat(retry_prompt, [prim_arch], allow_grace=False)
+                    r_prim = retry_map.get(prim_arch)
+                    if _has_image_tag_result(r_prim) or (
+                        prim_res is not None
+                        and not prim_res.succeeded
+                        and r_prim is not None
+                        and r_prim.succeeded
+                        and (r_prim.response.text if r_prim.response else "").strip()
+                    ):
+                        provider_results.update(retry_map)
+                    tried_draw.add(prim_arch)
+
+            # Fail over sequentially through remaining graphic specialists if still no executable [GENERATE_IMAGE] tag
+            if not any(_has_image_tag_result(r) for r in provider_results.values()):
+                for fallback_arch in [p for p in architect_order if p not in tried_draw]:
+                    if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                        break
+                    fb_results = _dispatch_with_compat(prompt, [fallback_arch], allow_grace=False)
+                    fb_r = fb_results.get(fallback_arch)
+                    had_any_substantive = any(
+                        r.succeeded
+                        and r.response is not None
+                        and (r.response.text or "").strip()
+                        and not _is_silent_pass_or_defer(r.response.text or "")
+                        for r in provider_results.values()
+                    )
+                    if _has_image_tag_result(fb_r) or (
+                        not had_any_substantive
+                        and fb_r is not None
+                        and fb_r.succeeded
+                        and fb_r.response is not None
+                        and (fb_r.response.text or "").strip()
+                        and not _is_silent_pass_or_defer(fb_r.response.text or "")
+                    ):
+                        provider_results.update(fb_results)
+                    if any(_has_image_tag_result(r) for r in provider_results.values()):
+                        break
+        elif drawing_mode == "none" and not any(
+            r.succeeded
+            and r.response is not None
+            and (r.response.text or "").strip()
+            and not _is_silent_pass_or_defer(r.response.text or "")
             for r in provider_results.values()
         ):
-            for fallback_arch in architect_order[2 if len(architect_order) >= 2 else 1:]:
-                try:
-                    fb_results = self.dispatcher.dispatch(
-                        prompt,
-                        provider_names=[fallback_arch],
-                        on_result=_record_initial,
-                    )
-                except TypeError:
-                    fb_results = self.dispatcher.dispatch(prompt, provider_names=[fallback_arch])
-                    for name, res in fb_results.items():
-                        if not hasattr(res, "provider_name"):
-                            res.provider_name = name
-                        _record_initial(res)
+            # Non-drawing turns: no retry; only fail over if zero substantive non-[PASS] answers succeeded
+            tried_non_draw = set(provider_results.keys())
+            for fb_p in [p for p in pool if p not in tried_non_draw]:
+                if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+                    break
+                fb_results = _dispatch_with_compat(prompt, [fb_p], allow_grace=False)
                 provider_results.update(fb_results)
-                if any(r.succeeded and r.response is not None and (r.response.text or "").strip() for r in fb_results.values()):
+                if any(
+                    r.succeeded
+                    and r.response is not None
+                    and (r.response.text or "").strip()
+                    and not _is_silent_pass_or_defer(r.response.text or "")
+                    for r in fb_results.values()
+                ):
                     break
 
         peer_rounds: list[dict[str, ProviderResult]] = []
@@ -1116,6 +1349,16 @@ Instructions:
                 "using the exact lines from the source file so the Autopatch engine can verify and apply the fix now."
             )
 
+        non_pass_results = {
+            k: v
+            for k, v in active_results.items()
+            if v.succeeded
+            and v.response is not None
+            and (v.response.text or "").strip()
+            and not _is_silent_pass_or_defer(v.response.text or "")
+        }
+        synth_inputs = non_pass_results if non_pass_results else active_results
+
         if self.synthesizer:
             if on_phase_status is not None:
                 try:
@@ -1126,7 +1369,7 @@ Instructions:
                 synthesis = (
                     self.synthesizer.synthesize(
                         synth_question,
-                        active_results,
+                        synth_inputs,
                         session_context=session_context,
                         detail_directive=detail_directive,
                     )
@@ -1135,7 +1378,7 @@ Instructions:
                 synthesis = (
                     self.synthesizer.synthesize(
                         synth_question,
-                        active_results,
+                        synth_inputs,
                         session_context=session_context
                     )
                 )
@@ -1310,6 +1553,36 @@ Instructions:
             except Exception as exc:
                 if synthesis and synthesis.text:
                     synthesis.text += f"\n\n---\n⚠ **Autopatch Error**: {exc}"
+
+        # Deterministic backstop: if the user selected a prior draft (#N) and neither Duo retry nor failover
+        # produced an executable [GENERATE_IMAGE] tag, extract Draft #N directly from history and render high-res.
+        if (
+            drawing_mode != "none"
+            and selected_draft_num is not None
+            and session_context
+            and not (cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set())
+        ):
+            cur_final = ""
+            if synthesis and synthesis.succeeded and synthesis.text:
+                cur_final = synthesis.text
+            else:
+                for _r in provider_results.values():
+                    if _r.succeeded and _r.response is not None and (_r.response.text or "").strip():
+                        cur_final = _r.response.text or ""
+                        break
+            if "[GENERATE_IMAGE" not in cur_final.upper():
+                upgraded_tag = _extract_prior_draft_tag_from_context(
+                    session_context,
+                    selected_draft_num,
+                    requested_size=_extract_requested_image_size(q_no_att),
+                )
+                if upgraded_tag:
+                    synthesis = SynthesisResult(
+                        text=f"Rendering the full-resolution master from Draft {selected_draft_num}:\n\n{upgraded_tag}",
+                        provider_name="palace",
+                        contributors=tuple(succeeded_initial) or ("palace",),
+                        error=None,
+                    )
 
         result = PalaceRunResult(
             question=question,

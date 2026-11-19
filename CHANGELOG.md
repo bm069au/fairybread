@@ -1,3 +1,20 @@
+# Fairybread — Beta v0.9.1g (Win_x64) Changelog
+**Release Date:** 2026-11-19
+**Version:** `v0.9.1g_beta_Win_x64` (Minor Letter Iteration `g` of `v0.9.1`)
+
+## Summary of Changes in `v0.9.1g`
+1. **🎙️ Talk Mode Only & Persistent Voice History (`voice_companion.py`, `context_service.py`, `palace_gui.py`):**
+   - Added **Talk Mode Only (Fast Voice Chat · No Council)** to the top of the Mode / Choose AIs menu (compact pill badge `🎙️ Talk Only  ▾` so zero controls clip).
+   - Routes both spoken and typed messages strictly to 1 low-latency non-reasoning AI (`groq` -> `deepseek-chat` forcing off `deepseek-reasoner` -> `gemini-4-hydrogen`/`2.5-flash` -> `openai` -> `cerebras`) without JSON router wrappers, council deliberation, tools, or accidental background delegation.
+   - Persists Voice Companion & Talk Mode turns into `SessionStore` (`speaker_id="voice_companion"`, `phase="voice_chat"`) so switching modes or adding agents mid-conversation carries over full spoken context seamlessly.
+   - Escaped Qt mnemonic `&` characters (`&&`) across the Choose AIs / Squads menu so `&` renders properly on every entry.
+2. **Graphics Draft-Selection, 1-Retry-Before-Downgrade & Verbose `[PASS]` Failover (`palace_theme.py`, `orchestrator.py`):**
+   - Recognized bare and natural draft picks (`1`, `2`, `3`, `#1`, `go with 2`, `first one`, `mix 1 and 3`) as `direct_draw` visual turns when prior drafts exist in session history, instructing graphic specialists to emit the full-resolution master immediately.
+   - Added a **1-retry-before-downgrade policy scoped strictly to graphics** on both the primary image engine (`generate_ai_image_to_png`) and the primary graphic prompt specialist (`orchestrator`), retrying transient misses once before dropping to lower-priority/fallback engines while skipping retry immediately on permanent auth/quota/safety errors.
+   - Updated `_is_silent_pass_or_defer()` to catch verbose `[PASS] — ...` messages, filtered `[PASS]` replies out of synthesis, enabled failover when peers only `[PASS]` or fail, and added a deterministic Draft #N master upgrade backstop if all specialists fail or `[PASS]`.
+
+---
+
 # Fairybread — Beta v0.9.1f (Win_x64) Changelog
 **Release Date:** 2026-11-19
 **Version:** `v0.9.1f_beta_Win_x64` (Minor Letter Iteration `f` of `v0.9.1`)

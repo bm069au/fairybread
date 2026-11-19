@@ -85,7 +85,7 @@ class VoiceCompanion:
     def reset(self) -> None:
         self._history.clear()
 
-    def _build_provider_candidates(self) -> list[tuple[str, Callable[[str], str]]]:
+    def _build_provider_candidates(self, *, talk_only: bool = False) -> list[tuple[str, Callable[[str], str]]]:
         if self._injected_llm is not None:
             return [("injected", self._injected_llm)]
 
@@ -97,12 +97,14 @@ class VoiceCompanion:
             p_cfgs = {}
             enabled = {"deepseek", "gemini", "openai", "groq", "cerebras"}
 
-        candidates: list[tuple[str, Callable[[str], str]]] = []
+        by_name: dict[str, Callable[[str], str]] = {}
 
-        # 1. DeepSeek (fast, natural, zero-bloat conversational routing)
+        # DeepSeek (fast, natural, zero-bloat conversational routing; skip reasoner in talk_only)
         ds_key = store.get_api_key("deepseek")
         if ds_key and ("deepseek" in enabled or not enabled):
             ds_model = str((p_cfgs.get("deepseek") or {}).get("model") or "deepseek-chat").strip() or "deepseek-chat"
+            if talk_only and "reasoner" in ds_model.lower():
+                ds_model = "deepseek-chat"
 
             def _call_deepseek(prompt_text: str, _k=ds_key, _m=ds_model) -> str:
                 from openai import OpenAI
@@ -119,25 +121,30 @@ class VoiceCompanion:
                 emit_llm_cost("deepseek", _m, in_t, out_t, source="voice_companion")
                 return txt
 
-            candidates.append(("deepseek", _call_deepseek))
+            by_name["deepseek"] = _call_deepseek
 
-        # 2. Gemini (gemini-4-hydrogen -> configured gemini-4-neon / 2.5-flash)
+        # Gemini (in talk_only, prefer hydrogen & 2.5-flash ahead of configured model to avoid thinking lag)
         gem_key = store.get_api_key("gemini")
         if gem_key and ("gemini" in enabled or not enabled):
             gem_cfg_model = str((p_cfgs.get("gemini") or {}).get("model") or "").strip()
+            if talk_only:
+                gem_models = ["gemini-4-hydrogen", "gemini-2.5-flash"]
+                if gem_cfg_model and gem_cfg_model not in gem_models:
+                    gem_models.append(gem_cfg_model)
+            else:
+                gem_models = ["gemini-4-hydrogen"]
+                if gem_cfg_model and gem_cfg_model not in gem_models:
+                    gem_models.append(gem_cfg_model)
+                if "gemini-2.5-flash" not in gem_models:
+                    gem_models.append("gemini-2.5-flash")
 
-            def _call_gemini(prompt_text: str, _k=gem_key, _cfg_m=gem_cfg_model) -> str:
+            def _call_gemini(prompt_text: str, _k=gem_key, _models=tuple(gem_models)) -> str:
                 from google import genai
                 from google.genai import types
 
                 cli = genai.Client(api_key=_k, http_options=types.HttpOptions(timeout=18000))
-                models_to_try = ["gemini-4-hydrogen"]
-                if _cfg_m and _cfg_m not in models_to_try:
-                    models_to_try.append(_cfg_m)
-                if "gemini-2.5-flash" not in models_to_try:
-                    models_to_try.append("gemini-2.5-flash")
                 last_err: Exception | None = None
-                for gm in models_to_try:
+                for gm in _models:
                     try:
                         r = cli.models.generate_content(model=gm, contents=prompt_text)
                         txt = (getattr(r, "text", "") or "").strip()
@@ -150,9 +157,9 @@ class VoiceCompanion:
                         continue
                 raise RuntimeError(f"Gemini voice companion call failed: {last_err}")
 
-            candidates.append(("gemini", _call_gemini))
+            by_name["gemini"] = _call_gemini
 
-        # 3. OpenAI (gpt-5-mini)
+        # OpenAI (gpt-5-mini)
         oai_key = store.get_api_key("openai")
         if oai_key and ("openai" in enabled or not enabled):
             oai_model = str((p_cfgs.get("openai") or {}).get("model") or "gpt-5-mini").strip() or "gpt-5-mini"
@@ -167,12 +174,12 @@ class VoiceCompanion:
                 emit_llm_cost("openai", _m, in_t, out_t, source="voice_companion")
                 return txt
 
-            candidates.append(("openai", _call_openai))
+            by_name["openai"] = _call_openai
 
-        # 4. Groq / Cerebras fast fallbacks
+        # Groq / Cerebras ultra-low-latency conversational endpoints
         groq_key = store.get_api_key("groq")
         if groq_key and ("groq" in enabled or not enabled):
-            groq_model = str((p_cfgs.get("groq") or {}).get("model") or "llama-3.3-70b-versatile").strip()
+            groq_model = str((p_cfgs.get("groq") or {}).get("model") or "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
 
             def _call_groq(prompt_text: str, _k=groq_key, _m=groq_model) -> str:
                 from openai import OpenAI
@@ -189,11 +196,11 @@ class VoiceCompanion:
                 emit_llm_cost("groq", _m, in_t, out_t, source="voice_companion")
                 return txt
 
-            candidates.append(("groq", _call_groq))
+            by_name["groq"] = _call_groq
 
         cer_key = store.get_api_key("cerebras")
         if cer_key and ("cerebras" in enabled or not enabled):
-            cer_model = str((p_cfgs.get("cerebras") or {}).get("model") or "gpt-oss-120b").strip()
+            cer_model = str((p_cfgs.get("cerebras") or {}).get("model") or "gpt-oss-120b").strip() or "gpt-oss-120b"
 
             def _call_cerebras(prompt_text: str, _k=cer_key, _m=cer_model) -> str:
                 from cerebras.cloud.sdk import Cerebras
@@ -209,19 +216,24 @@ class VoiceCompanion:
                 emit_llm_cost("cerebras", _m, in_t, out_t, source="voice_companion")
                 return txt
 
-            candidates.append(("cerebras", _call_cerebras))
+            by_name["cerebras"] = _call_cerebras
 
-        return candidates
+        order = (
+            ("groq", "deepseek", "gemini", "openai", "cerebras")
+            if talk_only
+            else ("deepseek", "gemini", "openai", "groq", "cerebras")
+        )
+        return [(name, by_name[name]) for name in order if name in by_name]
 
-    def _get_fast_callable(self) -> tuple[str, Callable[[str], str]]:
-        cands = self._build_provider_candidates()
+    def _get_fast_callable(self, *, talk_only: bool = False) -> tuple[str, Callable[[str], str]]:
+        cands = self._build_provider_candidates(talk_only=talk_only)
         if not cands:
             raise RuntimeError("No fast conversational provider available for Voice Companion.")
         return cands[0]
 
-    def _invoke_fast_llm(self, prompt_text: str) -> tuple[str, str]:
+    def _invoke_fast_llm(self, prompt_text: str, *, talk_only: bool = False) -> tuple[str, str]:
         last_err: Exception | None = None
-        for pname, fn in self._build_provider_candidates():
+        for pname, fn in self._build_provider_candidates(talk_only=talk_only):
             try:
                 out = (fn(prompt_text) or "").strip()
                 if out:
@@ -287,6 +299,7 @@ class VoiceCompanion:
         background_status: str = "",
         background_question: str = "",
         recent_chat_snippet: str = "",
+        talk_only: bool = False,
     ) -> VoiceCompanionDecision:
         utterance = (user_utterance or "").strip()
         if not utterance:
@@ -301,6 +314,46 @@ class VoiceCompanion:
             hist_lines.append(f"User: {u_prev}")
             hist_lines.append(f"You: {a_prev}")
         hist_block = "\n".join(hist_lines) if hist_lines else "(new voice conversation)"
+
+        if talk_only:
+            prompt = (
+                "You are Fairybread in Talk Mode Only — a warm, relaxed, fast conversational companion.\n"
+                "There is NO background council, NO code execution, NO image generation, and NO web tools active right now.\n"
+                "Have a natural conversation directly with the user. If they ask for deep coding, image generation, or multi-AI analysis, "
+                "give a brief friendly answer and mention they can switch back to Work Mode, Code AIs, or Graphics anytime.\n\n"
+                f"RECENT VOICE HISTORY:\n{hist_block}\n"
+                f"RECENT WORKSPACE CONTEXT:\n{(recent_chat_snippet or '(none)')[:500]}\n\n"
+                f"USER JUST SAID: {utterance}\n\n"
+                "SPOKEN STYLE RULES:\n"
+                "- Reply in plain natural conversational sentences only (1-3 short everyday sentences, contractions okay).\n"
+                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags]."
+            )
+            try:
+                raw_out, pname = self._invoke_fast_llm(prompt, talk_only=True)
+            except Exception:
+                dec = VoiceCompanionDecision(
+                    action="chat",
+                    spoken_reply=(
+                        "I heard you, though I couldn't reach a quick chat model just now. "
+                        "Try saying that again in a second."
+                    ),
+                    provider_used="fallback",
+                )
+                self._remember(utterance, dec.spoken_reply)
+                return dec
+
+            obj = _extract_json_obj(raw_out)
+            candidate_txt = str(obj.get("spoken_reply") or raw_out) if (isinstance(obj, dict) and obj.get("spoken_reply")) else raw_out
+            spoken = clean_text_for_speech(candidate_txt) or "Gotcha."
+            dec = VoiceCompanionDecision(
+                action="chat",
+                spoken_reply=spoken,
+                delegated_task="",
+                steer_note="",
+                provider_used=pname,
+            )
+            self._remember(utterance, dec.spoken_reply)
+            return dec
 
         bg_block = (
             f"ACTIVE BACKGROUND CREW STATUS: BUSY\n"
@@ -331,7 +384,7 @@ class VoiceCompanion:
         )
 
         try:
-            raw_out, pname = self._invoke_fast_llm(prompt)
+            raw_out, pname = self._invoke_fast_llm(prompt, talk_only=False)
         except Exception:
             dec = self._fallback_decision(
                 utterance,

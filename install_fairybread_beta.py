@@ -1,7 +1,7 @@
-"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.9.1f).
+"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.9.1g).
 
 Complies with all strict installer rules:
-(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.9.1f (editable + Browse button)
+(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.9.1g (editable + Browse button)
 (b) Checks for and refuses to overwrite any existing installation
 (c) Accounts for Windows Program Files standard-user write permissions (ACL + %LOCALAPPDATA%\\Palace runtime storage)
 (d) Shows a post-install summary of the exact folder and files installed + One-Click USD Donation ($5/$10/$20/$50/Other) & Corporate License banner
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import webbrowser
 
-APP_VERSION = "0.9.1f"
+APP_VERSION = "0.9.1g"
 VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION}"
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files") / VERSION_STAMPED_NAME
 UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERSION_STAMPED_NAME}"

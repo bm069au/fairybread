@@ -140,7 +140,9 @@ class ContextService:
         answer: str,
         *,
         speaker_messages: list[dict[str, Any]] | None = None,
-        contributors: list[str] | None = None
+        contributors: list[str] | None = None,
+        answer_speaker_id: str = "palace",
+        answer_phase: str = "synthesis",
     ) -> tuple[str, str]:
         """Persist the user's question, any peer speaker messages, and the final answer."""
         timestamp = datetime.now().isoformat()
@@ -209,11 +211,11 @@ class ContextService:
                 "session_id": self.session_id,
                 "exchange_id": exchange_id,
                 "sequence": seq,
-                "speaker_id": "palace",
+                "speaker_id": answer_speaker_id or "palace",
                 "role": "assistant",
-                "provider_id": "palace",
+                "provider_id": answer_speaker_id or "palace",
                 "model_id": "",
-                "phase": "synthesis",
+                "phase": answer_phase or "synthesis",
                 "reply_to": question_id,
                 "reply_to_message_id": question_id,
                 "context_message_ids": [question_id, *peer_ids],

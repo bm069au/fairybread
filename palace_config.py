@@ -23,7 +23,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.9.1"
-FAIRYBREAD_VERSION = "0.9.1f"
+FAIRYBREAD_VERSION = "0.9.1g"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 

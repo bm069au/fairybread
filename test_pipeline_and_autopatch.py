@@ -888,6 +888,376 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             win.close()
             app.processEvents()
 
+    def test_talk_mode_only_no_delegation_persistence_and_menu_escaping(self):
+        from PySide6.QtWidgets import QMenu
+        from palace_config import save_provider_config
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+        from voice_companion import VoiceCompanion
+
+        seen_prompts: list[str] = []
+
+        def _fake_chat(prompt_text: str) -> str:
+            seen_prompts.append(prompt_text)
+            return "Sounds good, we can just talk through your ideas naturally."
+
+        vc_talk = VoiceCompanion(llm_callable=_fake_chat)
+        dec = vc_talk.respond("Please refactor and draw a banner for the code", talk_only=True)
+        self.assertEqual(dec.action, "chat")
+        self.assertEqual(dec.delegated_task, "")
+        self.assertEqual(dec.steer_note, "")
+        self.assertTrue(seen_prompts)
+        self.assertNotIn("delegated_task", seen_prompts[-1])
+
+        def _raising_llm(_prompt: str) -> str:
+            raise RuntimeError("network down")
+
+        vc_err = VoiceCompanion(llm_callable=_raising_llm)
+        dec_err = vc_err.respond("Please refactor and draw a banner for the code", talk_only=True)
+        self.assertEqual(dec_err.action, "chat")
+        self.assertEqual(dec_err.delegated_task, "")
+
+        # Verify Talk Mode Only candidate order prioritizes Groq over DeepSeek and avoids deepseek-reasoner
+        with tempfile.TemporaryDirectory() as cfg_tmp:
+            cfg_file = Path(cfg_tmp) / "palace_config.json"
+            save_provider_config("groq", enabled=True, model="llama-3.3-70b-versatile", config_path=cfg_file)
+            save_provider_config("deepseek", enabled=True, model="deepseek-reasoner", config_path=cfg_file)
+
+            class _FakeCredStore:
+                def get_api_key(self, name: str) -> str:
+                    return {"groq": "gsk_fake", "deepseek": "sk_fake"}.get(name, "")
+
+            vc_order = VoiceCompanion(config_path=cfg_file, credential_store=_FakeCredStore())
+            talk_cands = vc_order._build_provider_candidates(talk_only=True)
+            talk_names = [pname for pname, _fn in talk_cands]
+            self.assertGreaterEqual(len(talk_names), 2)
+            self.assertLess(talk_names.index("groq"), talk_names.index("deepseek"))
+
+            used_models: list[str] = []
+
+            class _FakeOpenAI:
+                def __init__(self, **_kwargs):
+                    self.chat = SimpleNamespace(
+                        completions=SimpleNamespace(
+                            create=lambda **kw: (
+                                used_models.append(kw.get("model", "")),
+                                SimpleNamespace(
+                                    choices=[SimpleNamespace(message=SimpleNamespace(content="Hi back!"))],
+                                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3),
+                                ),
+                            )[1]
+                        )
+                    )
+
+            ds_fn = dict(talk_cands)["deepseek"]
+            with patch("openai.OpenAI", _FakeOpenAI):
+                out_ds = ds_fn("Hello there")
+            self.assertEqual(out_ds, "Hi back!")
+            self.assertEqual(used_models, ["deepseek-chat"])
+
+        # Verify PalaceWindow Talk Mode Only UI, typed send, persistence, escalation & menu & escaping
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            store = SessionStore(tmp_p)
+            sid1 = store.selected
+            factory_calls = 0
+
+            def _counting_factory(_ctx):
+                nonlocal factory_calls
+                factory_calls += 1
+                return PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry()))
+
+            win = PalaceWindow(
+                store=store,
+                palace_factory=_counting_factory,
+                provider_states={"gemini": True, "deepseek": True},
+                config_path=cfg,
+            )
+            win.show()
+            app.processEvents()
+
+            menu = QMenu(win)
+            win._populate_profiles_and_ais_menu(menu)
+            top_actions = menu.actions()
+            self.assertIn("Talk Mode Only", top_actions[0].text())
+            self.assertTrue(top_actions[0].isCheckable())
+
+            all_menu_texts: list[str] = []
+            for act in top_actions:
+                all_menu_texts.append(act.text())
+                if act.menu() is not None:
+                    for sub_act in act.menu().actions():
+                        all_menu_texts.append(sub_act.text())
+            joined_texts = "\n".join(all_menu_texts)
+            self.assertIn("Graphics && Vision", joined_texts)
+            self.assertIn("Custom Selection && How Many AIs", joined_texts)
+            self.assertIn("Customize Profiles && Squads", joined_texts)
+            self.assertIn("Manage AI Keys, Models && Tools", joined_texts)
+
+            win._activate_talk_only_mode(auto_start_live_voice=False)
+            app.processEvents()
+            self.assertTrue(win._talk_only_mode)
+            self.assertEqual(win.ai_pill_button.text(), "🎙️ Talk Only  ▾")
+            self.assertIn("Talk Mode Only", win.ai_pill_button.toolTip())
+            self.assertEqual(win.provider_states, {"gemini": True, "deepseek": True})
+
+            audit = audit_palace_window_geometry(win)
+            self.assertEqual(audit["clipped_widget_count"], 0, msg=str(audit.get("clipped_widgets")))
+
+            win._voice_companion = VoiceCompanion(
+                llm_callable=lambda _p: "Sure thing, let's keep chatting casually."
+            )
+            win.composer.setPlainText("Hey, let's just brainstorm for a minute.")
+            win.send_message()
+
+            deadline = time.monotonic() + 5.0
+            while win._voice_threads and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.02)
+            app.processEvents()
+
+            self.assertEqual(factory_calls, 0)
+            saved_msgs = store.messages(sid1)
+            self.assertTrue(
+                any(m.get("speaker_id") == "voice_companion" and "keep chatting casually" in m.get("content", "") for m in saved_msgs),
+                msg=f"Expected voice_companion message in store: {saved_msgs}",
+            )
+
+            win.load_history()
+            app.processEvents()
+            self.assertIn("keep chatting casually", win.chat.toHtml())
+            self.assertNotIn("voice_companion", win.conversation_contributors)
+
+            # Switching mode via squad preset or toggling another AI exits Talk Mode Only while keeping context
+            win._apply_squad_preset("🛠 Work Mode", ["deepseek", "gemini"], deliberate=True)
+            app.processEvents()
+            self.assertFalse(win._talk_only_mode)
+
+            win._activate_talk_only_mode(auto_start_live_voice=False)
+            self.assertTrue(win._talk_only_mode)
+            win._toggle_provider_quick("openai", True)
+            app.processEvents()
+            self.assertFalse(win._talk_only_mode)
+
+            ctx_txt = store.context(sid1).load_recent()
+            self.assertIn("brainstorm for a minute", ctx_txt)
+            self.assertIn("keep chatting casually", ctx_txt)
+
+            for vw in list(win._voice_threads):
+                vw.wait(1000)
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+    def test_bare_draft_pick_verbose_pass_failover_and_deterministic_master_upgrade(self):
+        prior_ctx = (
+            "USER: Draw me an alien sunflower, 3 drafts.\n\n"
+            "ASSISTANT: Here are three 512x512 drafts:\n"
+            '[GENERATE_IMAGE prompt="A glowing macro alien sunflower with cyan veins" title="Draft 1 - Bioluminescent Macro" size="512x512" quality="low"]\n'
+            '[GENERATE_IMAGE prompt="Whole tall alien sunflower in jungle clearing" title="Draft 2 - Whole Plant" size="512x512" quality="low"]\n'
+            '[GENERATE_IMAGE prompt="Wide alien sunflower field panorama at sunrise" title="Draft 3 - Panorama" size="512x512" quality="low"]\n'
+            "⏸ [PAUSED — WAITING FOR USER INPUT: which draft (1/2/3)]"
+        )
+
+        class _CountingFailThenSucceedProvider(AIProvider):
+            def __init__(self, name: str, outcomes: list[str | Exception]):
+                self.name = name
+                self._outcomes = list(outcomes)
+                self.calls: list[str] = []
+
+            def generate(self, prompt: str) -> ProviderResponse:
+                self.calls.append(prompt)
+                idx = min(len(self.calls) - 1, len(self._outcomes) - 1)
+                val = self._outcomes[idx]
+                if isinstance(val, Exception):
+                    raise val
+                return ProviderResponse(text=val, model=f"{self.name}-test", provider=self.name)
+
+        # Subtest A: Bare "1" classified as direct_draw -> Gemini fails once transiently, succeeds on 1 graphics retry
+        reg_a = ProviderRegistry()
+        gem_a = _CountingFailThenSucceedProvider(
+            "gemini",
+            [
+                RuntimeError("503 Service Unavailable"),
+                '[GENERATE_IMAGE prompt="Sunflower Draft 1 High-Res Master" title="Alien Sunflower Master" size="1024x1024" quality="high"]',
+            ],
+        )
+        oai_a = _CountingFailThenSucceedProvider("openai", [RuntimeError("503 Service Unavailable")])
+        ds_a = _StubProvider("deepseek", lambda _p: "[PASS] — Handing over for the 1024x1024 master.")
+        reg_a.register("gemini", gem_a)
+        reg_a.register("openai", oai_a)
+        reg_a.register("deepseek", ds_a)
+        synth_a = PalaceSynthesizer("palace_synth", _StubProvider("palace_synth", lambda p: p), fallback_providers={})
+
+        class _StaticCtx:
+            session_id = "sunflower_test"
+            def load_recent(self, max_chars: int = 12000):
+                return prior_ctx
+            def append_exchange(self, *args, **kwargs):
+                return ("q1", "a1")
+
+        orch_a = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg_a), synthesizer=synth_a, context_service=_StaticCtx())
+        with patch("palace_theme.prewarm_generated_images") as mock_prewarm_a:
+            res_a = orch_a.run(
+                "1",
+                provider_names=["gemini", "openai", "deepseek"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=2,
+            )
+        self.assertEqual(len(gem_a.calls), 2)
+        self.assertIn("[GRAPHICS RETRY]", gem_a.calls[1])
+        self.assertEqual(len(ds_a.calls), 0)
+        self.assertIn("[GENERATE_IMAGE", res_a.final_answer or "")
+        self.assertIn("Sunflower Draft 1 High-Res Master", res_a.final_answer or "")
+        mock_prewarm_a.assert_called_once()
+
+        # Subtest B: Both graphic specialists fail + DeepSeek returns verbose [PASS] -> deterministic Draft 1 high-res upgrade
+        reg_b = ProviderRegistry()
+        gem_b = _CountingFailThenSucceedProvider("gemini", [RuntimeError("503 retry fail"), RuntimeError("503 second fail")])
+        oai_b = _CountingFailThenSucceedProvider("openai", [RuntimeError("503 oai fail")])
+        ds_b = _StubProvider(
+            "deepseek",
+            lambda _p: "[PASS] — The user's '1' is a draft selection. Handing over for the 1024x1024 master.",
+        )
+        reg_b.register("gemini", gem_b)
+        reg_b.register("openai", oai_b)
+        reg_b.register("deepseek", ds_b)
+        synth_b = PalaceSynthesizer(
+            "palace_synth",
+            _StubProvider("palace_synth", lambda _p: "UNEXPECTED_SYNTH_CALL"),
+            fallback_providers={},
+        )
+        orch_b = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg_b), synthesizer=synth_b, context_service=_StaticCtx())
+        with patch("palace_theme.prewarm_generated_images") as mock_prewarm_b:
+            res_b = orch_b.run(
+                "1",
+                provider_names=["gemini", "openai", "deepseek"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=2,
+            )
+        self.assertEqual(len(gem_b.calls), 2)
+        self.assertEqual(len(ds_b.calls), 1)
+        ans_b = res_b.final_answer or ""
+        self.assertIn("A glowing macro alien sunflower with cyan veins", ans_b)
+        self.assertIn('size="1024x1024"', ans_b)
+        self.assertIn('quality="high"', ans_b)
+        self.assertNotIn("[PASS]", ans_b)
+        mock_prewarm_b.assert_called_once()
+
+        # Non-drawing turns must NOT retry on errors, but DO fail over cleanly when peers only [PASS]
+        reg_c = ProviderRegistry()
+        ds_c = _CountingFailThenSucceedProvider("deepseek", ["[PASS] — Outside my specialty."])
+        gem_c = _CountingFailThenSucceedProvider("gemini", [RuntimeError("503 temporary")])
+        oai_c = _StubProvider("openai", lambda _p: "Direct real answer from OpenAI failover.")
+        reg_c.register("deepseek", ds_c)
+        reg_c.register("gemini", gem_c)
+        reg_c.register("openai", oai_c)
+        synth_c = PalaceSynthesizer("palace_synth", _StubProvider("palace_synth", lambda p: p), fallback_providers={})
+        orch_c = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg_c), synthesizer=synth_c)
+        res_c = orch_c.run("Briefly explain photosynthetic quantum efficiency", provider_names=["deepseek", "gemini", "openai"], include_context=False, max_rounds=1)
+        self.assertEqual(len(ds_c.calls), 1)
+        self.assertEqual(len(gem_c.calls), 1)
+        self.assertEqual(len(oai_c.calls), 1)
+        self.assertIn("Direct real answer from OpenAI failover.", res_c.final_answer or "")
+
+    def test_primary_image_engine_retries_once_before_downgrading_to_fallback(self):
+        sample_png = _make_sample_png_bytes(64, 64, 0xFF33AA55)
+
+        class _FakeResp:
+            def __init__(self, body_dict):
+                self._raw = json.dumps(body_dict).encode("utf-8")
+            def read(self):
+                return self._raw
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+
+        class _FakeCreds:
+            def get_api_key(self, name):
+                return "fake-key" if name == "gemini" else None
+
+        def _ok_body():
+            return {
+                "candidates": [{
+                    "content": {
+                        "parts": [{
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": base64.b64encode(sample_png).decode("ascii"),
+                            }
+                        }]
+                    }
+                }]
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gen_dir = Path(tmp) / "generated_images"
+            gen_dir.mkdir()
+
+            # Case 1: Transient 503 on primary attempt 1 -> retries primary ONCE and succeeds without downgrading
+            seen_case1: list[str] = []
+
+            def fake_urlopen_retry_ok(req, timeout=75):
+                url = req.full_url
+                seen_case1.append(url)
+                if "gemini-3-pro-image" in url and seen_case1.count(url) == 1:
+                    raise RuntimeError("HTTP Error 503: Service Unavailable")
+                return _FakeResp(_ok_body())
+
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme.CredentialStore", return_value=_FakeCreds()), \
+                 patch("palace_theme.urllib_request.urlopen", side_effect=fake_urlopen_retry_ok):
+                out1 = generate_ai_image_to_png(
+                    "Retry case 1 unique cosmic bloom prompt",
+                    title="RetryPrimaryOK",
+                    size="256x256",
+                    quality="high",
+                    allow_network=True,
+                    primary_engine="gemini-3-pro-image",
+                    fallback_engines=["gemini-3.1-flash-image"],
+                    primary_retry_delay_sec=0.0,
+                )
+            self.assertIsNotNone(out1)
+            self.assertEqual(sum(1 for u in seen_case1 if "gemini-3-pro-image" in u), 2)
+            self.assertEqual(sum(1 for u in seen_case1 if "gemini-3.1-flash-image" in u), 0)
+            badge1 = get_image_engine_badge(out1)
+            self.assertEqual(badge1, "gemini-3-pro-image")
+
+            # Case 2: Permanent 403 Forbidden -> skips retry and falls back immediately
+            seen_case2: list[str] = []
+
+            def fake_urlopen_perm_err(req, timeout=75):
+                url = req.full_url
+                seen_case2.append(url)
+                if "gemini-3-pro-image" in url:
+                    raise RuntimeError("HTTP Error 403: Forbidden")
+                return _FakeResp(_ok_body())
+
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme.CredentialStore", return_value=_FakeCreds()), \
+                 patch("palace_theme.urllib_request.urlopen", side_effect=fake_urlopen_perm_err):
+                out2 = generate_ai_image_to_png(
+                    "Retry case 2 permanent error prompt",
+                    title="PermNoRetry",
+                    size="256x256",
+                    quality="high",
+                    allow_network=True,
+                    primary_engine="gemini-3-pro-image",
+                    fallback_engines=["gemini-3.1-flash-image"],
+                    primary_retry_delay_sec=0.0,
+                )
+            self.assertIsNotNone(out2)
+            self.assertEqual(sum(1 for u in seen_case2 if "gemini-3-pro-image" in u), 1)
+            self.assertEqual(sum(1 for u in seen_case2 if "gemini-3.1-flash-image" in u), 1)
+            badge2 = get_image_engine_badge(out2)
+            self.assertIn("(fallback)", badge2)
+
 
 if __name__ == "__main__":
     unittest.main()
