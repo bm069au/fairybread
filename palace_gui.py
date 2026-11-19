@@ -3053,6 +3053,8 @@ class ManageAIsDialog(QDialog):
 
 
 class PalaceWindow(QMainWindow):
+    _cost_event_signal = Signal(object)
+
     def __init__(
         self,
         store=None,
@@ -4007,14 +4009,14 @@ class PalaceWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
 
-        self.bottom_token_label = ResponsiveBarLabel('Tokens: 0.0k · Spend: $0.000', on_change=self._relayout_agent_bar)
+        self.bottom_token_label = ResponsiveBarLabel('Tokens: 0.0k · Conv: ~$0.000', on_change=self._relayout_agent_bar)
         self.bottom_token_label.setWordWrap(False)
         self.bottom_token_label.setMaximumHeight(22)
         self.bottom_token_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.bottom_token_label.setStyleSheet(
             'font-family: Consolas, monospace; font-size: 11.5px; color: #8b949e; padding: 1px 6px;'
         )
-        self.bottom_token_label.setToolTip('Live Session Token & Credit Monitor')
+        self.bottom_token_label.setToolTip('Live Conversation Cost Estimate (API Usage)')
 
         self.right_status_grid.addWidget(self.status_label, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.right_status_grid.addWidget(self.bottom_token_label, 0, 1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -4120,6 +4122,11 @@ class PalaceWindow(QMainWindow):
         self.update_privacy_label()
         self.refresh_projects()
         self.refresh_sessions()
+        from cost_service import ConversationCostLedger, register_cost_listener
+        self._cost_ledger = ConversationCostLedger()
+        self._cost_event_signal.connect(self._on_cost_event)
+        self._cost_listener_cb = lambda ev: self._cost_event_signal.emit(ev)
+        register_cost_listener(self._cost_listener_cb)
         self.load_history()
         self._refresh_idle_view()
         self._backfill_shared_memory_once()
@@ -5109,7 +5116,36 @@ class PalaceWindow(QMainWindow):
             self.peer_rounds_toggle.setChecked(False)
         else:
             self.peer_rounds_toggle.setChecked(True)
+        self._refresh_bottom_cost_label()
         self.status_label.setText(f'Mode: {profile_text}')
+
+    def _refresh_bottom_cost_label(self):
+        if getattr(self, 'current_profile', '') == 'Idle' or not hasattr(self, 'bottom_token_label'):
+            return
+        ledger = getattr(self, '_cost_ledger', None)
+        if ledger is None:
+            return
+        self.bottom_token_label.setText(ledger.format_bottom_bar())
+        self.bottom_token_label.setToolTip(ledger.format_tooltip())
+
+    @Slot(object)
+    def _on_cost_event(self, event):
+        if getattr(self, 'current_profile', '') == 'Idle':
+            return
+        ledger = getattr(self, '_cost_ledger', None)
+        if ledger is None:
+            return
+        ledger.record(event)
+        no_hist = bool(
+            (hasattr(self, 'no_history_btn') and self.no_history_btn.isChecked())
+            or (hasattr(self, 'history_toggle') and not self.history_toggle.isChecked())
+        )
+        if not no_hist and hasattr(self.store, 'save_cost_ledger'):
+            try:
+                self.store.save_cost_ledger(self.session_id, ledger.to_dict())
+            except Exception:
+                pass
+        self._refresh_bottom_cost_label()
 
     # --- IDLE MODE SANCTUARY & AGENT MAIL METHODS ---
 
@@ -5384,7 +5420,11 @@ class PalaceWindow(QMainWindow):
         budget_str = self.idle_manager.format_budget_status()
         self.idle_budget_label.setText(budget_str)
         if hasattr(self, 'bottom_token_label'):
-            self.bottom_token_label.setText(budget_str)
+            if self.current_profile == 'Idle':
+                self.bottom_token_label.setText(budget_str)
+                self.bottom_token_label.setToolTip('Live Experimental Mode Token & Credit Monitor')
+            else:
+                self._refresh_bottom_cost_label()
 
         active_agents = [name for name, en in self.provider_states.items() if en is True]
         if active_agents:
@@ -5882,8 +5922,15 @@ class PalaceWindow(QMainWindow):
                 f'color: #8b949e; font-size: {font_sz}; padding: {status_pad};'
             )
             self.bottom_token_label.setMaximumHeight(lbl_h)
+            ledger = getattr(self, '_cost_ledger', None)
+            has_conv_cost = bool(
+                ledger is not None
+                and getattr(ledger, 'total_cost_usd', 0.0) > 0.0
+                and getattr(self, 'current_profile', '') != 'Idle'
+            )
+            cost_col = '#90d7c1' if has_conv_cost else '#8b949e'
             self.bottom_token_label.setStyleSheet(
-                f'font-family: Consolas, monospace; font-size: {font_sz}; color: #8b949e; padding: {token_pad};'
+                f'font-family: Consolas, monospace; font-size: {font_sz}; color: {cost_col}; padding: {token_pad};'
             )
 
             used_left_px = (left_compact_px // 2 + 40) if chip_rows == 2 else (left_compact_px if compact else left_normal_px)
@@ -6763,6 +6810,13 @@ class PalaceWindow(QMainWindow):
     def load_history(self):
         if getattr(self, '_voice_companion', None) is not None:
             self._voice_companion.reset()
+        try:
+            from cost_service import ConversationCostLedger
+            raw_ledger = self.store.get_cost_ledger(self.session_id) if hasattr(self.store, 'get_cost_ledger') else {}
+            self._cost_ledger = ConversationCostLedger.from_dict(raw_ledger)
+            self._refresh_bottom_cost_label()
+        except Exception:
+            pass
         self.chat.clear()
         self.last_answer = ''
         self.reply_archive = []
@@ -8349,6 +8403,13 @@ class PalaceWindow(QMainWindow):
         try:
             from voice_service import stop_speaking
             stop_speaking()
+        except Exception:
+            pass
+        try:
+            from cost_service import unregister_cost_listener
+            cb = getattr(self, '_cost_listener_cb', None)
+            if cb is not None:
+                unregister_cost_listener(cb)
         except Exception:
             pass
         for vw in list(getattr(self, '_voice_threads', []) or []):

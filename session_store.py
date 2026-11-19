@@ -297,3 +297,19 @@ class SessionStore:
             )
             seq += 1
         return messages
+
+    def get_cost_ledger(self, key: str) -> dict:
+        for item in self.sessions:
+            if item.get('id') == key:
+                raw = item.get('cost_ledger')
+                return dict(raw) if isinstance(raw, dict) else {}
+        return {}
+
+    def save_cost_ledger(self, key: str, ledger: dict) -> None:
+        if not isinstance(ledger, dict):
+            return
+        for item in self.sessions:
+            if item.get('id') == key:
+                item['cost_ledger'] = dict(ledger)
+                self.save()
+                return

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from typing import Callable
 
+from cost_service import emit_llm_cost, extract_sdk_usage_tokens
 from credential_store import CredentialStore
 from palace_config import CONFIG_PATH, load_enabled_provider_names, load_provider_configs
 from voice_service import clean_text_for_speech
@@ -113,7 +114,10 @@ class VoiceCompanion:
                     temperature=0.4,
                     max_tokens=450,
                 )
-                return (resp.choices[0].message.content or "").strip()
+                txt = (resp.choices[0].message.content or "").strip()
+                in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
+                emit_llm_cost("deepseek", _m, in_t, out_t, source="voice_companion")
+                return txt
 
             candidates.append(("deepseek", _call_deepseek))
 
@@ -138,6 +142,8 @@ class VoiceCompanion:
                         r = cli.models.generate_content(model=gm, contents=prompt_text)
                         txt = (getattr(r, "text", "") or "").strip()
                         if txt:
+                            in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=prompt_text, output_text=txt)
+                            emit_llm_cost("gemini", gm, in_t, out_t, source="voice_companion")
                             return txt
                     except Exception as exc:
                         last_err = exc
@@ -156,7 +162,10 @@ class VoiceCompanion:
 
                 cli = OpenAI(api_key=_k, timeout=18.0)
                 r = cli.responses.create(model=_m, input=prompt_text)
-                return (getattr(r, "output_text", "") or "").strip()
+                txt = (getattr(r, "output_text", "") or "").strip()
+                in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=prompt_text, output_text=txt)
+                emit_llm_cost("openai", _m, in_t, out_t, source="voice_companion")
+                return txt
 
             candidates.append(("openai", _call_openai))
 
@@ -175,7 +184,10 @@ class VoiceCompanion:
                     temperature=0.4,
                     max_tokens=450,
                 )
-                return (resp.choices[0].message.content or "").strip()
+                txt = (resp.choices[0].message.content or "").strip()
+                in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
+                emit_llm_cost("groq", _m, in_t, out_t, source="voice_companion")
+                return txt
 
             candidates.append(("groq", _call_groq))
 
@@ -192,7 +204,10 @@ class VoiceCompanion:
                     messages=[{"role": "user", "content": prompt_text}],
                     max_tokens=450,
                 )
-                return (resp.choices[0].message.content or "").strip()
+                txt = (resp.choices[0].message.content or "").strip()
+                in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
+                emit_llm_cost("cerebras", _m, in_t, out_t, source="voice_companion")
+                return txt
 
             candidates.append(("cerebras", _call_cerebras))
 

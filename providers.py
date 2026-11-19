@@ -8,6 +8,8 @@ class ProviderResponse:
     text: str
     model: Optional[str] = None
     provider: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 class AIProvider(ABC):

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from cost_service import extract_sdk_usage_tokens
 from provider_result import ProviderResult
 from providers import AIProvider
 
@@ -11,6 +12,10 @@ class SynthesisResult:
     provider_name: str
     contributors: tuple[str, ...]
     error: Optional[str] = None
+    api_called: bool = False
+    model_name: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def succeeded(self) -> bool:
@@ -147,10 +152,18 @@ Rules:
         for cand_name, cand_prov in candidates:
             try:
                 response = cand_prov.generate(prompt)
+                in_tok = int(getattr(response, "input_tokens", 0) or 0)
+                out_tok = int(getattr(response, "output_tokens", 0) or 0)
+                if in_tok <= 0 and out_tok <= 0:
+                    in_tok, out_tok = extract_sdk_usage_tokens(response, prompt_text=prompt, output_text=response.text or "")
                 return SynthesisResult(
                     text=response.text,
                     provider_name=cand_name,
                     contributors=contributors,
+                    api_called=True,
+                    model_name=str(getattr(response, "model", "") or getattr(cand_prov, "model", "") or ""),
+                    input_tokens=in_tok,
+                    output_tokens=out_tok,
                 )
             except Exception as exc:
                 last_err = str(exc)

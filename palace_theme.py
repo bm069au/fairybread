@@ -1004,12 +1004,18 @@ def generate_ai_image_to_png(
             res_path, used_ref = _try_gemini_image(eng)
 
         if res_path is not None:
+            billed_eng = badge_label
             if idx > 0:
                 badge_label += " (fallback)"
             if used_ref:
                 badge_label += " +ref"
             _save_engine_badge(out_path, badge_label)
             _record_recent_render(base_key, out_path)
+            try:
+                from cost_service import emit_image_cost
+                emit_image_cost(billed_eng)
+            except Exception:
+                pass
             return res_path
 
     return None

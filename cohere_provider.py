@@ -1,5 +1,6 @@
 import cohere
 
+from cost_service import extract_sdk_usage_tokens
 from providers import AIProvider, ProviderResponse
 
 
@@ -29,9 +30,12 @@ class CohereProvider(AIProvider):
         )
 
         text = response.message.content[0].text
+        in_tok, out_tok = extract_sdk_usage_tokens(response, prompt_text=prompt, output_text=text or "")
 
         return ProviderResponse(
             text=text,
             model=self.model,
-            provider="cohere"
+            provider="cohere",
+            input_tokens=in_tok,
+            output_tokens=out_tok,
         )

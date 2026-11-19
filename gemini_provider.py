@@ -4,6 +4,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
+from cost_service import extract_sdk_usage_tokens
 from providers import AIProvider, ProviderResponse
 
 
@@ -63,10 +64,13 @@ class GeminiProvider(AIProvider):
             txt = getattr(resp, "text", None) or ""
             if not txt.strip():
                 raise RuntimeError(f"gemini ({self.model}) returned empty multimodal response")
+            in_tok, out_tok = extract_sdk_usage_tokens(resp, prompt_text=prompt, output_text=txt)
             return ProviderResponse(
                 text=txt,
                 model=self.model,
                 provider="gemini",
+                input_tokens=in_tok,
+                output_tokens=out_tok,
             )
 
         interaction = self.client.interactions.create(
@@ -77,8 +81,11 @@ class GeminiProvider(AIProvider):
         if not out_txt.strip():
             raise RuntimeError(f"gemini ({self.model}) returned empty output")
 
+        in_tok, out_tok = extract_sdk_usage_tokens(interaction, prompt_text=prompt, output_text=out_txt)
         return ProviderResponse(
             text=out_txt,
             model=self.model,
-            provider="gemini"
+            provider="gemini",
+            input_tokens=in_tok,
+            output_tokens=out_tok,
         )

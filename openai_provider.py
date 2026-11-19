@@ -3,6 +3,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
+from cost_service import extract_sdk_usage_tokens
 from providers import AIProvider, ProviderResponse
 
 
@@ -66,10 +67,13 @@ class OpenAIProvider(AIProvider):
                     f"{self.provider_name} ({self.model}) returned empty output "
                     f"(finish_reason={finish_reason}, reasoning_chars={len(str(reasoning or ''))}, max_tokens={self.max_tokens})"
                 )
+            in_tok, out_tok = extract_sdk_usage_tokens(completion, prompt_text=prompt, output_text=text)
             return ProviderResponse(
                 text=text,
                 model=self.model,
-                provider=self.provider_name
+                provider=self.provider_name,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
             )
 
         image_items: list[dict[str, str]] = []
@@ -105,8 +109,11 @@ class OpenAIProvider(AIProvider):
         if not out_text.strip():
             raise RuntimeError(f"{self.provider_name} ({self.model}) returned empty output")
 
+        in_tok, out_tok = extract_sdk_usage_tokens(response, prompt_text=prompt, output_text=out_text)
         return ProviderResponse(
             text=out_text,
             model=self.model,
-            provider=self.provider_name
+            provider=self.provider_name,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
         )

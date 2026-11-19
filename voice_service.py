@@ -1169,6 +1169,7 @@ def speak_agent_response(
                         for ch_txt in chunks:
                             if cancel_ev.is_set():
                                 break
+                            ch_pcm_bytes = 0
                             for pcm_piece in _stream_openai_pcm(
                                 ch_txt,
                                 api_key=oai_key,
@@ -1180,7 +1181,14 @@ def speak_agent_response(
                                 if cancel_ev.is_set():
                                     break
                                 stream.write(_scale_pcm16_volume(pcm_piece, vol), cancel_ev)
+                                ch_pcm_bytes += len(pcm_piece)
                                 played_any = True
+                            if ch_pcm_bytes > 0:
+                                try:
+                                    from cost_service import emit_tts_cost
+                                    emit_tts_cost("openai:gpt-4o-mini-tts", ch_pcm_bytes / 48000.0)
+                                except Exception:
+                                    pass
                         if not cancel_ev.is_set() and played_any:
                             stream.drain(cancel_ev)
                         if played_any:
@@ -1235,11 +1243,19 @@ def speak_agent_response(
                                         except Exception:
                                             pass
                                 scaled = _scale_pcm16_volume(pcm, vol)
+                                ch_played = False
                                 for pos in range(0, len(scaled), 16384):
                                     if cancel_ev.is_set():
                                         break
                                     stream.write(scaled[pos : pos + 16384], cancel_ev)
                                     played_any = True
+                                    ch_played = True
+                                if ch_played and pcm:
+                                    try:
+                                        from cost_service import emit_tts_cost
+                                        emit_tts_cost(f"gemini:{gm}", len(pcm) / (float(sr or 24000) * 2.0))
+                                    except Exception:
+                                        pass
                                 fut = next_fut
                         if stream is not None and not cancel_ev.is_set() and played_any:
                             stream.drain(cancel_ev)
@@ -1300,9 +1316,13 @@ def transcribe_audio_file(
         raise ValueError("No audio was recorded. Check your microphone in Settings → Voice & Audio.")
     store = credential_store or CredentialStore()
 
+    audio_dur_sec = 0.0
     try:
         with wave.open(str(audio_path), "rb") as wf:
-            frames = wf.readframes(wf.getnframes())
+            nframes = wf.getnframes()
+            fr = float(wf.getframerate() or 16000)
+            audio_dur_sec = max(0.2, nframes / max(1.0, fr))
+            frames = wf.readframes(nframes)
             _, lvl = pcm_chunk_to_int16_mono_and_level(frames, "Int16", wf.getnchannels(), gain_percent=100)
             if lvl < 2:
                 raise ValueError(
@@ -1311,7 +1331,14 @@ def transcribe_audio_file(
     except ValueError:
         raise
     except Exception:
-        pass
+        audio_dur_sec = max(0.5, max(0, audio_path.stat().st_size - 44) / 32000.0)
+
+    def _emit_stt(eng_id: str) -> None:
+        try:
+            from cost_service import emit_stt_cost
+            emit_stt_cost(eng_id, audio_dur_sec)
+        except Exception:
+            pass
 
     groq_key = store.get_api_key("groq")
     if groq_key:
@@ -1323,6 +1350,7 @@ def transcribe_audio_file(
                 tr = client.audio.transcriptions.create(model="whisper-large-v3-turbo", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()
             if txt:
+                _emit_stt("groq:whisper-large-v3-turbo")
                 return txt
         except Exception:
             pass
@@ -1337,6 +1365,7 @@ def transcribe_audio_file(
                 tr = client.audio.transcriptions.create(model="whisper-1", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()
             if txt:
+                _emit_stt("openai:whisper-1")
                 return txt
         except Exception:
             pass
@@ -1359,6 +1388,7 @@ def transcribe_audio_file(
                 )
                 txt = (getattr(resp, "text", "") or "").strip()
                 if txt:
+                    _emit_stt(f"gemini:{gm}")
                     return txt
             except Exception:
                 continue

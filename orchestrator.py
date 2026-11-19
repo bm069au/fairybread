@@ -752,11 +752,35 @@ Instructions:
                 return True
             return False
 
+        def _emit_provider_cost(res: ProviderResult, prompt_txt: str, *, source: str = "chat") -> None:
+            if not (res and res.succeeded and res.response is not None):
+                return
+            try:
+                from cost_service import emit_llm_cost
+                emit_llm_cost(
+                    res.provider_name or getattr(res.response, "provider", "") or "",
+                    str(getattr(res.response, "model", None) or ""),
+                    int(getattr(res.response, "input_tokens", 0) or 0),
+                    int(getattr(res.response, "output_tokens", 0) or 0),
+                    prompt_text=prompt_txt,
+                    output_text=res.response.text or "",
+                    source=source,
+                )
+            except Exception:
+                pass
+
         r1_done_count = [0]
         r1_total = len(effective_providers) if effective_providers else 6
 
         def _record_initial(res: ProviderResult) -> None:
             r1_done_count[0] += 1
+            if res.succeeded and res.response is not None:
+                p_used = (
+                    round1_prompt_arg.get(res.provider_name, prompt)
+                    if isinstance(round1_prompt_arg, dict)
+                    else str(round1_prompt_arg)
+                )
+                _emit_provider_cost(res, p_used, source="chat")
             if on_phase_status is not None:
                 try:
                     on_phase_status({
@@ -944,6 +968,7 @@ Instructions:
 
                 def _record_peer(res: ProviderResult) -> None:
                     r2_done_count[0] += 1
+                    _emit_provider_cost(res, peer_prompt, source="peer")
                     if on_phase_status is not None:
                         try:
                             on_phase_status({
@@ -1114,6 +1139,20 @@ Instructions:
                         session_context=session_context
                     )
                 )
+            if synthesis and synthesis.succeeded and getattr(synthesis, "api_called", False):
+                try:
+                    from cost_service import emit_llm_cost
+                    emit_llm_cost(
+                        synthesis.provider_name,
+                        getattr(synthesis, "model_name", ""),
+                        int(getattr(synthesis, "input_tokens", 0) or 0),
+                        int(getattr(synthesis, "output_tokens", 0) or 0),
+                        prompt_text=synth_question,
+                        output_text=synthesis.text or "",
+                        source="synthesis",
+                    )
+                except Exception:
+                    pass
             is_visual_turn = (
                 drawing_mode != "none"
                 or bool(_VISUAL_TOPIC_RE.search(q_no_att))
@@ -1223,6 +1262,7 @@ Instructions:
                     )
                     heal_res_map = self.dispatcher.dispatch(heal_prompt, provider_names=[lead_coder])
                     heal_res = heal_res_map.get(lead_coder)
+                    _emit_provider_cost(heal_res, heal_prompt, source="autopatch")
                     if heal_res and heal_res.succeeded and heal_res.response and heal_res.response.text:
                         heal_txt = heal_res.response.text
                         if "[TOOL:" in heal_txt and "[IDLE_PATCH" not in heal_txt.upper():
@@ -1234,6 +1274,7 @@ Instructions:
                                 )
                                 hop2_map = self.dispatcher.dispatch(hop2_prompt, provider_names=[lead_coder])
                                 hop2_res = hop2_map.get(lead_coder)
+                                _emit_provider_cost(hop2_res, hop2_prompt, source="autopatch")
                                 if hop2_res and hop2_res.succeeded and hop2_res.response and hop2_res.response.text:
                                     heal_txt = hop2_res.response.text
                         if "[IDLE_PATCH" in heal_txt.upper():

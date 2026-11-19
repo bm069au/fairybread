@@ -754,6 +754,140 @@ class PipelineAndAutopatchTests(unittest.TestCase):
         self.assertGreater(len(sess._pcm_buffer), 0)
         self.assertGreater(seen_levels[-1], 0)
 
+    def test_cost_service_rates_ledger_formatting_and_persistence(self):
+        from cost_service import (
+            ConversationCostLedger,
+            estimate_image_cost_usd,
+            estimate_llm_cost_usd,
+            estimate_stt_cost_usd,
+            estimate_tts_cost_usd,
+            format_usd_compact,
+        )
+        from session_store import SessionStore
+
+        # Per-model pricing & sub-cent vs cent formatting
+        c_gem = estimate_llm_cost_usd("gemini", "gemini-4-neon", 1_000_000, 1_000_000)
+        self.assertAlmostEqual(c_gem, 3.50, places=4)
+        c_mini = estimate_llm_cost_usd("openai", "gpt-5-mini-2026-01", 1000, 500)
+        self.assertGreater(c_mini, 0.0)
+        self.assertEqual(format_usd_compact(0.0), "~$0.000")
+        self.assertEqual(format_usd_compact(0.00084), "~$0.0008")
+        self.assertEqual(format_usd_compact(0.0184), "~$0.018")
+        self.assertEqual(format_usd_compact(1.425), "~$1.43")
+
+        self.assertAlmostEqual(estimate_tts_cost_usd("openai:gpt-4o-mini-tts", 60.0), 0.015, places=5)
+        self.assertEqual(estimate_tts_cost_usd("system:sapi5", 30.0), 0.0)
+        self.assertAlmostEqual(estimate_stt_cost_usd("openai:whisper-1", 60.0), 0.006, places=5)
+        self.assertAlmostEqual(estimate_image_cost_usd("gemini-3-pro-image"), 0.06, places=5)
+
+        ledger = ConversationCostLedger()
+        ledger.record({"kind": "llm", "provider": "deepseek", "model": "deepseek-chat", "input_tokens": 1200, "output_tokens": 300, "cost_usd": 0.00065})
+        ledger.record({"kind": "tts", "provider": "openai", "model": "openai:gpt-4o-mini-tts", "duration_sec": 12.0, "cost_usd": 0.003})
+        ledger.record({"kind": "stt", "provider": "groq", "model": "groq:whisper-large-v3-turbo", "duration_sec": 10.0, "cost_usd": 0.00011})
+        ledger.record({"kind": "image", "provider": "gemini", "model": "gemini-3-pro-image", "cost_usd": 0.06})
+
+        bar = ledger.format_bottom_bar()
+        self.assertIn("1.5k", bar)
+        self.assertIn("~$0.064", bar)
+        tip = ledger.format_tooltip()
+        self.assertIn("Voice Audio:", tip)
+        self.assertIn("1 render(s)", tip)
+        self.assertIn("deepseek", tip)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore(Path(tmp))
+            sid = store.selected
+            store.save_cost_ledger(sid, ledger.to_dict())
+            reloaded_store = SessionStore(Path(tmp))
+            restored = ConversationCostLedger.from_dict(reloaded_store.get_cost_ledger(sid))
+            self.assertEqual(restored.total_tokens, 1500)
+            self.assertEqual(restored.image_count, 1)
+            self.assertAlmostEqual(restored.total_cost_usd, ledger.total_cost_usd, places=6)
+
+    def test_provider_usage_extraction_and_live_bottom_bar_updates(self):
+        from cost_service import emit_image_cost, emit_llm_cost, emit_stt_cost, emit_tts_cost
+        from PySide6.QtCore import Qt
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        # Verify OpenAI & Gemini usage extraction
+        op = OpenAIProvider("ok", model="gpt-5-mini")
+        op.client = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda model, input: SimpleNamespace(
+                    output_text="Hi",
+                    usage=SimpleNamespace(input_tokens=1200, output_tokens=300),
+                )
+            )
+        )
+        ores = op.generate("Hello")
+        self.assertEqual((ores.input_tokens, ores.output_tokens), (1200, 300))
+
+        gp = GeminiProvider("gk", model="gemini-4-neon")
+        gp.client = SimpleNamespace(
+            interactions=SimpleNamespace(
+                create=lambda model, input: SimpleNamespace(
+                    output_text="Hi there",
+                    usage=SimpleNamespace(input_tokens=900, output_tokens=150),
+                )
+            )
+        )
+        gres = gp.generate("Hello")
+        self.assertEqual((gres.input_tokens, gres.output_tokens), (900, 150))
+
+        # Verify live PalaceWindow bottom bar updates and per-session persistence
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            store = SessionStore(tmp_p)
+            sid1 = store.selected
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True},
+                config_path=cfg,
+            )
+            win.show()
+            app.processEvents()
+            self.assertIn("Conv: ~$0.000", win.bottom_token_label.text())
+
+            emit_llm_cost("gemini", "gemini-4-neon", 1200, 300)
+            emit_tts_cost("openai:gpt-4o-mini-tts", 12.0)
+            emit_stt_cost("groq:whisper-large-v3-turbo", 6.0)
+            emit_image_cost("gemini-3-pro-image")
+            app.processEvents()
+
+            txt1 = win.bottom_token_label.text()
+            self.assertIn("1.5k", txt1)
+            self.assertNotIn("~$0.000", txt1)
+            tip1 = win.bottom_token_label.toolTip()
+            self.assertIn("1,200 in / 300 out", tip1)
+            self.assertIn("1 render(s)", tip1)
+
+            audit = audit_palace_window_geometry(win)
+            self.assertEqual(audit["clipped_widget_count"], 0, msg=str(audit.get("clipped_widgets")))
+
+            # Creating a new session switches to clean zero ledger; selecting sid1 restores previous ledger
+            win.new_conversation()
+            app.processEvents()
+            self.assertIn("Conv: ~$0.000", win.bottom_token_label.text())
+
+            target_item = next(
+                win.session_list.item(i)
+                for i in range(win.session_list.count())
+                if win.session_list.item(i).data(Qt.ItemDataRole.UserRole) == sid1
+            )
+            win.change_session(target_item, None)
+            app.processEvents()
+            self.assertIn("1.5k", win.bottom_token_label.text())
+            self.assertNotIn("~$0.000", win.bottom_token_label.text())
+
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

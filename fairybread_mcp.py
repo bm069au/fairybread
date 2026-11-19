@@ -272,7 +272,7 @@ def run_stdio_mcp_server() -> None:
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "fairybread-mcp", "version": "0.9.1e"},
+                    "serverInfo": {"name": "fairybread-mcp", "version": "0.9.1f"},
                 },
             }
         elif method == "tools/list":

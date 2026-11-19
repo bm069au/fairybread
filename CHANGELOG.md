@@ -1,3 +1,15 @@
+# Fairybread — Beta v0.9.1f (Win_x64) Changelog
+**Release Date:** 2026-11-19
+**Version:** `v0.9.1f_beta_Win_x64` (Minor Letter Iteration `f` of `v0.9.1`)
+
+## Summary of Changes in `v0.9.1f`
+1. **Live Multi-Modal Conversation Cost Meter (`cost_service.py`, `providers.py`, `orchestrator.py`, `palace_gui.py`):**
+   - Added real API token extraction (`input_tokens`, `output_tokens` from `usage` / `usage_metadata`) across OpenAI, Gemini, DeepSeek, Groq, Qwen, Mistral, Cerebras, Cohere, and Voice Companion turns via `extract_sdk_usage_tokens()`.
+   - Metered all four cost buckets incrementally in real time as calls finish: (1) Chat / Council / Synthesizer / Voice Companion LLMs using per-model pricing, (2) Neural TTS duration from actual spoken PCM bytes, (3) Speech-to-Text WAV duration (`whisper-large-v3-turbo`, `whisper-1`, Gemini), and (4) Network image renders (`gemini-3-pro-image`, `gemini-3.1-flash-image`, `gpt-image-2`, `flux-1-dev`).
+   - Wired live updates into the bottom status bar (`Tokens: ... · Conv: ~$...`) with a detailed hover tooltip breakdown (Chat LLMs, Voice TTS + Mic, Images, Last Step, By Provider) and per-session persistence in `SessionStore` (`session_store.py`).
+
+---
+
 # Fairybread — Beta v0.9.1e (Win_x64) Changelog
 **Release Date:** 2026-11-19
 **Version:** `v0.9.1e_beta_Win_x64` (Minor Letter Iteration `e` of `v0.9.1`)
