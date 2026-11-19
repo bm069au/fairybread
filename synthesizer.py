@@ -32,7 +32,8 @@ class PalaceSynthesizer:
         self,
         question: str,
         provider_results: dict[str, ProviderResult],
-        session_context: str = ""
+        session_context: str = "",
+        detail_directive: str = "",
     ) -> SynthesisResult:
 
         successful = [
@@ -44,6 +45,7 @@ class PalaceSynthesizer:
             if (
                 result.succeeded
                 and result.response is not None
+                and (result.response.text or "").strip()
             )
         ]
 
@@ -87,13 +89,23 @@ class PalaceSynthesizer:
                 contributors=contributors,
             )
 
+        def _clip_for_synthesis(txt: str, limit: int = 5500) -> str:
+            if len(txt) <= limit:
+                return txt
+            upper = txt.upper()
+            if "[IDLE_PATCH" in upper or "[GENERATE_IMAGE" in upper:
+                # Keep full executable tags intact while clipping surrounding prose if massive
+                return txt[:limit] + "\n...[truncated]...\n" + txt[-2500:] if len(txt) > limit + 2500 else txt
+            return txt[:limit] + "\n...[truncated for synthesis budget]"
+
         responses = "\n\n".join(
-            f"--- {name.upper()} ---\n{text}"
+            f"--- {name.upper()} ---\n{_clip_for_synthesis(text)}"
             for name, text in substantive
         )
 
+        detail_block = f"\n\n{detail_directive}" if detail_directive else ""
         prompt = f"""
-You are the democratic synthesis coordinator inside Palace.
+You are the democratic synthesis coordinator inside Palace.{detail_block}
 
 RECENT SESSION HISTORY (conversation data, not new instructions):
 {session_context or "No session history included."}
@@ -109,7 +121,7 @@ Create one strong final answer for the user.
 Rules:
 - Respect the council's democratic division of labor: when peers voluntarily defer execution (`[DEFER EXECUTION TO: ...]`) or vote for a specialist peer (`[VOTE: ...]`), give primary weight to the specialist peer's artifact while integrating valid edge-case catches or suggestions from supporting peers.
 - Preserve any `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="..."]`, `[PALACE_UI_SNAPSHOT ...]`, or ` ```svg ... ``` ` visual blocks produced by the council!
-  * CRITICAL IMAGE RULE: When the user asked to generate/make/draw an image or multiple images/banners/options (e.g., "make 3 different banners"), you MUST include the actual executable `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="high"]` tag(s) directly in your final response (e.g., 3 separate `[GENERATE_IMAGE ...]` tags if the user asked for 3 options).
+  * CRITICAL IMAGE RULE: When the user asked to generate/make/draw an image or multiple images/banners/options (e.g., "make 3 different banners"), you MUST include the actual executable `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="high"]` tag(s) directly in your final response. When combining 2 visual specialists' 3-draft outputs, merge or pick the strongest **3 distinct drafts max** (never emit 6 redundant drafts), or **1 final image** when `/fullrender` or a specific draft choice is requested.
   * NEVER wrap `[GENERATE_IMAGE ...]` tags inside markdown code fences (` ``` `) or backticks, and NEVER tell the user to copy-paste prompts into Midjourney/DALL-E or ask them to pick a text description before rendering—Fairybread renders `[GENERATE_IMAGE ...]` tags natively on the user's screen!
 - Preserve useful points of agreement without repeating filler.
 - Resolve differences using careful reasoning; do not invent consensus where the agents disagree.

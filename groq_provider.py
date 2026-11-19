@@ -7,12 +7,15 @@ class GroqProvider(AIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "openai/gpt-oss-120b"
+        model: str = "openai/gpt-oss-120b",
+        timeout: float = 45.0,
     ):
         self.client = Groq(
-            api_key=api_key
+            api_key=api_key,
+            timeout=timeout,
         )
         self.model = model
+        self.timeout = timeout
 
     def generate(self, prompt: str) -> ProviderResponse:
         completion = self.client.chat.completions.create(

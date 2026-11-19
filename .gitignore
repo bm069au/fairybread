@@ -1,0 +1,16 @@
+key.txt
+capture.txt
+palace_config.json
+ask_gpt_WORKING_BACKUP.py
+*.db
+*.jsonl
+*.pyc
+__pycache__/
+.idea/
+.vs/
+.learning/
+build/
+dist/
+memory/
+gpt_palace/
+grok_palace/

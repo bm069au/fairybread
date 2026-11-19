@@ -28,27 +28,43 @@ def load_configured_providers(
     def _build_mistral(api_key: str) -> AIProvider:
         cfg = configs.get("mistral", {})
         if cfg.get("model"):
-            return MistralProvider(api_key=api_key, model=cfg["model"])
+            return MistralProvider(api_key=api_key, model=str(cfg["model"]).strip())
         return MistralProvider(api_key=api_key)
+
+    def _build_gemini(api_key: str) -> AIProvider:
+        cfg = configs.get("gemini", {})
+        if cfg.get("model"):
+            return GeminiProvider(api_key=api_key, model=str(cfg["model"]).strip())
+        return GeminiProvider(api_key=api_key)
+
+    def _build_groq(api_key: str) -> AIProvider:
+        cfg = configs.get("groq", {})
+        if cfg.get("model"):
+            return GroqProvider(api_key=api_key, model=str(cfg["model"]).strip())
+        return GroqProvider(api_key=api_key)
+
+    def _build_cerebras(api_key: str) -> AIProvider:
+        cfg = configs.get("cerebras", {})
+        if cfg.get("model"):
+            return CerebrasProvider(api_key=api_key, model=str(cfg["model"]).strip())
+        return CerebrasProvider(api_key=api_key)
+
+    def _build_cohere(api_key: str) -> AIProvider:
+        cfg = configs.get("cohere", {})
+        if cfg.get("model"):
+            return CohereProvider(api_key=api_key, model=str(cfg["model"]).strip())
+        return CohereProvider(api_key=api_key)
 
     factories: dict[
         str,
         Callable[[str], AIProvider]
     ] = {
-        "gemini": lambda api_key: GeminiProvider(
-            api_key=api_key
-        ),
+        "gemini": _build_gemini,
         "openai": _build_openai,
-        "groq": lambda api_key: GroqProvider(
-            api_key=api_key
-        ),
+        "groq": _build_groq,
         "mistral": _build_mistral,
-        "cerebras": lambda api_key: CerebrasProvider(
-            api_key=api_key
-        ),
-        "cohere": lambda api_key: CohereProvider(
-            api_key=api_key
-        )
+        "cerebras": _build_cerebras,
+        "cohere": _build_cohere,
     }
 
     for custom_name, cfg in configs.items():

@@ -283,61 +283,88 @@ class ContextService:
 
         Council optimization: Prioritizes HOT entries ('prompt' and 'synthesis' phases) and skips
         redundant intermediate peer drafts ('initial', 'peer_reply') whenever an exchange already
-        has a synthesized final answer, preventing 6-AI peer drafts from exhausting the context budget.
+        has a synthesized final answer, and uses tail-seek chunk reading on large (>128 KB) logs.
         """
         if max_chars <= 0 or not self.path.exists():
             return ""
-        lines = self.path.read_text(encoding="utf-8").splitlines()
-        parsed_entries: list[dict[str, Any]] = []
-        exchanges_with_synthesis: set[str] = set()
-        for idx, line in enumerate(lines, start=1):
-            if not line.strip():
-                continue
-            raw = json.loads(line)
-            entry = normalize_message_entry(
-                raw,
-                default_session_id=self.session_id,
-                default_sequence=idx,
-            )
-            parsed_entries.append(entry)
-            if entry.get("phase") == "synthesis" and entry.get("exchange_id"):
-                exchanges_with_synthesis.add(str(entry["exchange_id"]))
 
-        entries = []
-        remaining = max_chars
-        for entry in reversed(parsed_entries):
-            phase = entry.get("phase")
-            eid = str(entry.get("exchange_id") or "")
-            if (
-                not include_peer_drafts
-                and phase in {"initial", "peer_reply"}
-                and eid in exchanges_with_synthesis
-            ):
-                continue
-            speaker = entry.get("speaker_id") or entry["role"]
-            label = (
-                "USER"
-                if entry["role"] == "user"
-                else (
-                    "ASSISTANT"
-                    if speaker in {"assistant", "palace"}
-                    else f"ASSISTANT ({speaker.upper()})"
+        def _collect_from_text(raw_text: str, *, drop_first_partial: bool) -> tuple[str, bool]:
+            lines = raw_text.splitlines()
+            if drop_first_partial and lines:
+                lines = lines[1:]
+            parsed_entries: list[dict[str, Any]] = []
+            exchanges_with_synthesis: set[str] = set()
+            for idx, line in enumerate(lines, start=1):
+                if not line.strip():
+                    continue
+                raw = json.loads(line)
+                entry = normalize_message_entry(
+                    raw,
+                    default_session_id=self.session_id,
+                    default_sequence=idx,
                 )
+                parsed_entries.append(entry)
+                if entry.get("phase") == "synthesis" and entry.get("exchange_id"):
+                    exchanges_with_synthesis.add(str(entry["exchange_id"]))
+
+            entries: list[str] = []
+            remaining = max_chars
+            hit_budget = False
+            for entry in reversed(parsed_entries):
+                phase = entry.get("phase")
+                eid = str(entry.get("exchange_id") or "")
+                if (
+                    not include_peer_drafts
+                    and phase in {"initial", "peer_reply"}
+                    and eid in exchanges_with_synthesis
+                ):
+                    continue
+                speaker = entry.get("speaker_id") or entry["role"]
+                label = (
+                    "USER"
+                    if entry["role"] == "user"
+                    else (
+                        "ASSISTANT"
+                        if speaker in {"assistant", "palace"}
+                        else f"ASSISTANT ({speaker.upper()})"
+                    )
+                )
+                prefix = f"{label}: "
+                separator = 2 if entries else 0
+                available = remaining - separator
+                if available <= len(prefix):
+                    hit_budget = True
+                    break
+                text = prefix + entry["content"]
+                clipped = len(text) > available
+                if clipped:
+                    text = prefix + entry["content"][:available - len(prefix)]
+                entries.append(text)
+                remaining -= separator + len(text)
+                if clipped or remaining <= 0:
+                    hit_budget = True
+                    break
+            return "\n\n".join(reversed(entries)), hit_budget
+
+        file_size = self.path.stat().st_size
+        if file_size <= 131_072:
+            res_txt, _ = _collect_from_text(self.path.read_text(encoding="utf-8"), drop_first_partial=False)
+            return res_txt
+
+        chunk_bytes = max(131_072, max_chars * 12)
+        while True:
+            read_from = max(0, file_size - chunk_bytes)
+            with self.path.open("rb") as fh:
+                if read_from > 0:
+                    fh.seek(read_from)
+                raw_bytes = fh.read()
+            res_txt, hit_budget = _collect_from_text(
+                raw_bytes.decode("utf-8", errors="replace"),
+                drop_first_partial=(read_from > 0),
             )
-            prefix = f"{label}: "
-            separator = 2 if entries else 0
-            available = remaining - separator
-            if available <= len(prefix):
-                break
-            text = prefix + entry["content"]
-            clipped = len(text) > available
-            if clipped:
-                text = prefix + entry["content"][:available - len(prefix)]
-            entries.append(text)
-            remaining -= separator + len(text)
-            if clipped or remaining <= 0:
-                break
-        return "\n\n".join(reversed(entries))
+            if hit_budget or read_from == 0:
+                return res_txt
+            chunk_bytes *= 2
 
     def get_peer_drafts(self, exchange_id: str | None = None, message_id: str | None = None) -> list[dict[str, Any]]:
         """Retrieve intermediate peer deliberation drafts ('initial', 'peer_reply') on demand by ID."""

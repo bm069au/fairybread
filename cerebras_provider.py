@@ -11,12 +11,14 @@ class CerebrasProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gpt-oss-120b",
+        timeout: float = 45.0,
     ):
-        self.client = Cerebras(api_key=api_key)
+        self.client = Cerebras(api_key=api_key, timeout=timeout)
         clean_model = (model or "gpt-oss-120b").strip()
         if clean_model.lower() in _RETIRED_CEREBRAS_MODELS:
             clean_model = "gpt-oss-120b"
         self.model = clean_model
+        self.timeout = timeout
 
     def generate(self, prompt: str) -> ProviderResponse:
         candidates = [self.model]

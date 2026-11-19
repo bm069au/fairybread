@@ -7,12 +7,15 @@ class MistralProvider(AIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "mistral-small-latest"
+        model: str = "mistral-small-latest",
+        timeout: float = 45.0,
     ):
         self.client = Mistral(
-            api_key=api_key
+            api_key=api_key,
+            timeout_ms=max(5000, int(timeout * 1000)),
         )
         self.model = model
+        self.timeout = timeout
 
     def generate(self, prompt: str) -> ProviderResponse:
         response = self.client.chat.complete(

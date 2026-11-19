@@ -22,7 +22,7 @@ _SLASH_SEARCH_RE = re.compile(
 )
 
 _INLINE_COMMAND_RE = re.compile(
-    r"(?:^|(?<=\s))/(autopatch|code|tangent|fullrender|single|searchd|deepsearch|searchm|msearch|search)(?=\b|\s|$|[.,!?;:])",
+    r"(?:^|(?<=\s))/(autopatch|auto-patch|authpatch|code|tangent|fullrender|single|searchd|deepsearch|searchm|msearch|search)(?=\b|\s|$|[.,!?;:])",
     re.IGNORECASE,
 )
 
@@ -42,7 +42,12 @@ _NATURAL_MOD_SEARCH_RE = re.compile(
 )
 
 _NATURAL_AUTOPATCH_RE = re.compile(
-    r"\b(?:autopatch|auto[\s-]+patch(?:es|ing)?|apply\s+(?:the\s+|experimental\s+mode\s+)?patch(?:es)?|apply\s+for\s+real|self[\s-]+deploy)\b",
+    r"\b(?:"
+    r"autopatch|authpatch|auto[\s-]+patch(?:es|ing)?|"
+    r"(?:apply|deploy|push|run|execute)\s+(?:the\s+|this\s+|staged\s+|experimental\s+mode\s+)?patch(?:es)?|"
+    r"deploy\s+and\s+(?:auto[\s-]?patch|authpatch|patch)|"
+    r"apply\s+for\s+real|self[\s-]+deploy|self[\s-]+patch"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -50,6 +55,74 @@ _TERSE_CONFIRM_RE = re.compile(
     r"^\s*(?:apply|proceed|go(?:\s+ahead)?|do\s+it|deploy|yes|ok|approved?)\b",
     re.IGNORECASE,
 )
+
+_ORGANIC_AUTO_APPROVE_RE = re.compile(
+    r"\b(?:"
+    r"no\s+need\s+to\s+ask(?:\s+for)?(?:\s+my)?\s+approval|"
+    r"don'?t\s+(?:need\s+to\s+)?ask(?:\s+for)?(?:\s+my)?\s+approval|"
+    r"without\s+asking(?:\s+for)?\s+approval|"
+    r"no\s+approval\s+(?:needed|required)|"
+    r"(?:you\s+have|got)\s+(?:my\s+|the\s+)?(?:green\s+light|approval|go[- ]ahead)|"
+    r"pre-?approved|"
+    r"just\s+(?:do|fix|patch|apply|deploy|update|change|ship|run)\s+(?:it|them|this|that|everything|all(?:\s+of\s+(?:it|them|three))?)|"
+    r"go\s+ahead\s+and\s+(?:fix|patch|apply|deploy|update|change|make|run|do)|"
+    r"(?:handle|take\s+care\s+of)\s+(?:it|this|everything)\s+yourself|"
+    r"do\s+(?:it|this)\s+yourself|"
+    r"run\s+all\s+(?:three|of\s+(?:them|these|those))|"
+    r"make\s+(?:those|these|the)\s+changes|"
+    r"(?:put|push)\s+(?:it|this|them)\s+live"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_FAIRYBREAD_SELF_TARGET_RE = re.compile(
+    r"\b(?:"
+    r"fairybread|palace|this\s+app|control\s+panel|settings\s+(?:tab|page|panel|dialog)|"
+    r"autopatch|authpatch|image\s+(?:pipeline|renderer|engine)|graphics\s+engine|"
+    r"orchestrator|synthesizer|dispatcher|provider_loader|palace_gui|palace_theme|"
+    r"palace_config|idle_service|search_service|memory_service|context_service|attachment_service"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_CODE_MODIFY_VERB_RE = re.compile(
+    r"\b(?:fix|patch|update|change|add|remove|optimize|optimise|upgrade|improve|wire|implement|deploy|apply|refactor|enable|disable|build|make)\b",
+    re.IGNORECASE,
+)
+
+_ORGANIC_DETAIL_CONCISE_RE = re.compile(
+    r"\b(?:keep\s+it\s+(?:short|brief|concise)|short\s+answer|briefly|tl;?dr|one[- ]liner|quick\s+summary)\b",
+    re.IGNORECASE,
+)
+
+_ORGANIC_DETAIL_HIGH_RE = re.compile(
+    r"\b(?:in\s+full\s+detail|full\s+detail|deep\s+dive|explain\s+thoroughly|walk\s+me\s+through\s+everything)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_organic_turn_intents(text: str) -> dict[str, Any]:
+    """Infer natural-language authorization, Fairybread self-modification intent, and detail preference."""
+    raw = (text or "").strip()
+    if not raw:
+        return {"auto_approved": False, "self_code_change_intent": False, "output_detail_override": ""}
+    att_marker = "\n\nATTACHED FILE EXCERPTS (user-provided reference material):"
+    clean = raw.split(att_marker, 1)[0].strip()
+    auto_approved = bool(_ORGANIC_AUTO_APPROVE_RE.search(clean))
+    self_code_change_intent = bool(
+        _FAIRYBREAD_SELF_TARGET_RE.search(clean) and _CODE_MODIFY_VERB_RE.search(clean)
+    )
+    if _ORGANIC_DETAIL_CONCISE_RE.search(clean):
+        detail_ov = "concise"
+    elif _ORGANIC_DETAIL_HIGH_RE.search(clean):
+        detail_ov = "high"
+    else:
+        detail_ov = ""
+    return {
+        "auto_approved": auto_approved,
+        "self_code_change_intent": self_code_change_intent,
+        "output_detail_override": detail_ov,
+    }
 
 
 def is_terse_patch_confirmation(text: str) -> bool:
@@ -89,11 +162,21 @@ def parse_turn_commands(
     user_part = _RESTORE_COMMAND_RE.sub(_strip_restore, user_part)
 
     def _strip_cmd(m: re.Match) -> str:
-        found_cmds.add(m.group(1).lower())
+        cmd_tok = m.group(1).lower()
+        if cmd_tok in {"auto-patch", "authpatch"}:
+            cmd_tok = "autopatch"
+        found_cmds.add(cmd_tok)
         return ""
 
     cleaned_user = _INLINE_COMMAND_RE.sub(_strip_cmd, user_part).strip()
-    cleaned_user = re.sub(r"[ \t]{2,}", " ", cleaned_user).strip(" ,")
+    cleaned_user = re.sub(r"[ \t]{2,}", " ", cleaned_user).strip(" ,;:-")
+    if found_cmds:
+        cleaned_user = re.sub(
+            r"(?:\s+\b(?:and|then|with|to|please|now))+\s*$",
+            "",
+            cleaned_user,
+            flags=re.IGNORECASE,
+        ).strip(" ,;:-")
     if not cleaned_user and user_part.strip():
         cleaned_user = user_part.strip()
 
@@ -113,6 +196,7 @@ def parse_turn_commands(
     else:
         resolved_depth, cleaned_user = parse_search_command(cleaned_user, ui_search_depth)
 
+    organic = detect_organic_turn_intents(user_part)
     final_q = (cleaned_user + att_tail) if att_tail else cleaned_user
     return {
         "cleaned_question": final_q,
@@ -123,6 +207,9 @@ def parse_turn_commands(
         "full_render": full_render,
         "restore_target": restore_target,
         "commands": sorted(found_cmds),
+        "auto_approved": organic["auto_approved"],
+        "self_code_change_intent": organic["self_code_change_intent"],
+        "output_detail_override": organic["output_detail_override"],
     }
 
 

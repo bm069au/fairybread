@@ -1,5 +1,6 @@
 """Palace desktop interface. Provider and memory work remains in core services."""
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -14,7 +15,7 @@ from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QImage, QK
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSlider, QSpinBox,
+    QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -33,7 +34,9 @@ from palace_config import (
     IDLE_CREDIT_LIMIT_CHOICES,
     IDLE_DURATION_CHOICES,
     IDLE_TOKEN_LIMIT_CHOICES,
+    IS_DEVELOPER_EDITION,
     PROVIDER_CATALOG,
+    load_agent_defaults,
     load_ai_squads,
     load_idle_settings,
     load_mission_ethics,
@@ -41,6 +44,7 @@ from palace_config import (
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
+    save_agent_defaults,
     save_ai_squads,
     save_idle_settings,
     save_mission_ethics,
@@ -346,6 +350,84 @@ class TaskThread(QThread):
             self.failed.emit(str(exc) or type(exc).__name__)
 
 
+class VoiceCompanionWorker(QThread):
+    """Transcribes microphone speech and runs the conversational Voice Companion off the UI thread."""
+    completed = Signal(object, str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        wav_path: Path,
+        companion,
+        *,
+        companion_enabled: bool = True,
+        background_busy: bool = False,
+        background_status: str = "",
+        background_question: str = "",
+        recent_chat_snippet: str = "",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.wav_path = wav_path
+        self.companion = companion
+        self.companion_enabled = bool(companion_enabled)
+        self.background_busy = bool(background_busy)
+        self.background_status = background_status
+        self.background_question = background_question
+        self.recent_chat_snippet = recent_chat_snippet
+
+    def run(self):
+        try:
+            from voice_service import transcribe_audio_file
+
+            transcript = transcribe_audio_file(self.wav_path)
+            if not transcript or not transcript.strip():
+                self.completed.emit(None, "")
+                return
+            if not self.companion_enabled or self.companion is None:
+                self.completed.emit(None, transcript.strip())
+                return
+            decision = self.companion.respond(
+                transcript.strip(),
+                background_busy=self.background_busy,
+                background_status=self.background_status,
+                background_question=self.background_question,
+                recent_chat_snippet=self.recent_chat_snippet,
+            )
+            self.completed.emit(decision, transcript.strip())
+        except Exception as exc:
+            self.failed.emit(str(exc) or type(exc).__name__)
+
+
+class VoiceSummaryWorker(QThread):
+    """Summarizes completed multi-AI background output into concise spoken sentences."""
+    summary_ready = Signal(str)
+
+    def __init__(self, companion, question: str, final_answer: str, contributors: list[str], parent=None):
+        super().__init__(parent)
+        self.companion = companion
+        self.question = question
+        self.final_answer = final_answer
+        self.contributors = list(contributors or [])
+
+    def run(self):
+        try:
+            if self.companion is not None:
+                spoken = self.companion.summarize_completed_work(
+                    self.question,
+                    self.final_answer,
+                    contributors=self.contributors,
+                )
+            else:
+                from voice_service import clean_text_for_speech
+
+                spoken = clean_text_for_speech(self.final_answer)[:360]
+            if spoken:
+                self.summary_ready.emit(spoken)
+        except Exception:
+            pass
+
+
 class Composer(QTextEdit):
     files_added = Signal(list)
     image_pasted = Signal(bytes)
@@ -528,6 +610,7 @@ class ManageAIsDialog(QDialog):
 
     SETTINGS_PAGES = [
         'General',
+        'Agent Defaults',
         'Voice & Audio',
         'Appearance',
         'Email & Notifications',
@@ -575,6 +658,7 @@ class ManageAIsDialog(QDialog):
         right_col.addWidget(self.pages, 1)
 
         self._build_general_page()
+        self._build_agent_defaults_page()
         self._build_voice_audio_page()
         self._build_appearance_page()
         self._build_notifications_page()
@@ -603,6 +687,10 @@ class ManageAIsDialog(QDialog):
 
         self.nav_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         page_aliases = {
+            'Configuration': 'Agent Defaults',
+            'Control Panel': 'Agent Defaults',
+            'Approval': 'Agent Defaults',
+            'Defaults': 'Agent Defaults',
             'Voice': 'Voice & Audio',
             'Audio': 'Voice & Audio',
             'Microphone': 'Voice & Audio',
@@ -618,7 +706,11 @@ class ManageAIsDialog(QDialog):
             'Memory': 'Memory & Personalization',
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
-        target_idx = self.SETTINGS_PAGES.index(resolved_page) if resolved_page in self.SETTINGS_PAGES else 4
+        target_idx = (
+            self.SETTINGS_PAGES.index(resolved_page)
+            if resolved_page in self.SETTINGS_PAGES
+            else self.SETTINGS_PAGES.index('AI Providers')
+        )
         self.nav_list.setCurrentRow(target_idx)
 
     def _stop_settings_mic_test(self):
@@ -703,20 +795,163 @@ class ManageAIsDialog(QDialog):
         enter_form.addRow('Composer Enter key behavior:', self.enter_mode_combo)
         lay.addLayout(enter_form)
 
-        jump_voice_btn = QPushButton('🎙️ Open Voice & Audio Settings (Select Microphone, Live Level Meter & Speaker Volume)…')
+        jump_defaults_btn = QPushButton('⚙ Open Agent Defaults & Approval Control Panel…')
+        jump_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        jump_defaults_btn.setToolTip('Configure Approval Policy (Auto-deploy vs On request), Sandbox Mode, Output Detail & Speed')
+        jump_defaults_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Agent Defaults')))
+        lay.addWidget(jump_defaults_btn)
+
+        jump_voice_btn = QPushButton('🎙️ Open Voice & Audio Settings (Human Voice, Accent, Microphone & Companion)…')
         jump_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        jump_voice_btn.setToolTip('Switch to the dedicated Voice & Audio tab to test your microphone and speaker')
+        jump_voice_btn.setToolTip('Choose your neural voice, accent/style, speed, companion mode, and test your microphone & speaker')
         jump_voice_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Voice & Audio')))
         lay.addWidget(jump_voice_btn)
 
         lay.addStretch()
         self.pages.addWidget(w)
 
+    def _build_agent_defaults_page(self):
+        w, lay = self._make_simple_page(
+            'Agent Defaults',
+            'Configure approval behavior, sandbox scope, web search defaults, output detail, and speed routing without needing / switches.'
+        )
+        ad_cfg = load_agent_defaults(self.config_path)
+
+        # Card 1: Approval, Sandbox, Web Search, Output Detail & Reasoning Summary
+        core_card = QFrame()
+        core_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        c_lay = QVBoxLayout(core_card)
+        c_lay.setSpacing(8)
+        c_hdr = QLabel('<b>Agent Behavior &amp; Approval Policy</b>')
+        c_hdr.setTextFormat(Qt.TextFormat.RichText)
+        c_lay.addWidget(c_hdr)
+
+        form1 = QFormLayout()
+        self.ad_approval_combo = QComboBox()
+        self.ad_approval_combo.setToolTip('Choose when Fairybread asks for approval before patching sandbox code')
+        if IS_DEVELOPER_EDITION:
+            self.ad_approval_combo.addItem('On request (Ask before patching)', 'on_request')
+            self.ad_approval_combo.addItem('Auto-deploy (Tier 1 Sandbox & Live — no /autopatch needed)', 'auto_deploy')
+            self.ad_approval_combo.addItem('Read-only (Never self-patch)', 'read_only')
+        else:
+            self.ad_approval_combo.addItem('Read-only (Public Edition — self-patching locked off)', 'read_only')
+            self.ad_approval_combo.setEnabled(False)
+        cur_ap = str(ad_cfg.get('approval_policy', 'on_request'))
+        ap_idx = self.ad_approval_combo.findData(cur_ap)
+        if ap_idx >= 0:
+            self.ad_approval_combo.setCurrentIndex(ap_idx)
+        form1.addRow('Approval policy:', self.ad_approval_combo)
+
+        self.ad_sandbox_combo = QComboBox()
+        self.ad_sandbox_combo.setToolTip('Choose where Fairybread agents may stage updates (Master E: stays owner-protected)')
+        if IS_DEVELOPER_EDITION:
+            self.ad_sandbox_combo.addItem('Sandbox write (Tier 1 Sandbox & Live; E: protected)', 'sandbox_write')
+        self.ad_sandbox_combo.addItem('Read-only (Inspect source code only)', 'read_only')
+        if not IS_DEVELOPER_EDITION:
+            self.ad_sandbox_combo.setEnabled(False)
+        sb_idx = self.ad_sandbox_combo.findData(str(ad_cfg.get('sandbox_mode', 'sandbox_write')))
+        if sb_idx >= 0:
+            self.ad_sandbox_combo.setCurrentIndex(sb_idx)
+        form1.addRow('Sandbox settings:', self.ad_sandbox_combo)
+
+        self.ad_web_search_combo = QComboBox()
+        self.ad_web_search_combo.setToolTip('Default web search behavior when no /search switch is typed')
+        self.ad_web_search_combo.addItem('Off (No automatic web search)', 'off')
+        self.ad_web_search_combo.addItem('Default (Light)', 'default')
+        self.ad_web_search_combo.addItem('Moderate (/searchm)', 'moderate')
+        self.ad_web_search_combo.addItem('Deep (/searchd)', 'deep')
+        ws_idx = self.ad_web_search_combo.findData(str(ad_cfg.get('web_search_default', 'default')))
+        if ws_idx >= 0:
+            self.ad_web_search_combo.setCurrentIndex(ws_idx)
+        form1.addRow('Web search:', self.ad_web_search_combo)
+
+        self.ad_output_detail_combo = QComboBox()
+        self.ad_output_detail_combo.setToolTip('Choose how much detail Fairybread AIs include in responses')
+        self.ad_output_detail_combo.addItem('Concise (Tight bullets, minimal prose)', 'concise')
+        self.ad_output_detail_combo.addItem('Balanced (Clear structured answers)', 'balanced')
+        self.ad_output_detail_combo.addItem('High (Thorough technical detail)', 'high')
+        od_idx = self.ad_output_detail_combo.findData(str(ad_cfg.get('output_detail', 'high')))
+        if od_idx >= 0:
+            self.ad_output_detail_combo.setCurrentIndex(od_idx)
+        form1.addRow('Output detail:', self.ad_output_detail_combo)
+
+        self.ad_reasoning_combo = QComboBox()
+        self.ad_reasoning_combo.setToolTip('Choose how Fairybread AIs present their reasoning & tradeoffs')
+        self.ad_reasoning_combo.addItem('Off (Direct final answer only)', 'off')
+        self.ad_reasoning_combo.addItem('Auto (Brief tradeoffs when helpful)', 'auto')
+        self.ad_reasoning_combo.addItem('Detailed (Explicit step-by-step reasoning)', 'detailed')
+        rs_idx = self.ad_reasoning_combo.findData(str(ad_cfg.get('reasoning_summary', 'auto')))
+        if rs_idx >= 0:
+            self.ad_reasoning_combo.setCurrentIndex(rs_idx)
+        form1.addRow('Reasoning summary:', self.ad_reasoning_combo)
+        c_lay.addLayout(form1)
+        lay.addWidget(core_card)
+
+        # Card 2: Performance, Fast Synthesizer & Smart Intent Routing
+        perf_card = QFrame()
+        perf_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        p_lay = QVBoxLayout(perf_card)
+        p_lay.setSpacing(8)
+        p_hdr = QLabel('<b>Speed, Synthesizer &amp; Smart Intent Routing</b>')
+        p_hdr.setTextFormat(Qt.TextFormat.RichText)
+        p_lay.addWidget(p_hdr)
+
+        form2 = QFormLayout()
+        self.ad_synth_combo = QComboBox()
+        self.ad_synth_combo.setToolTip('Model used to merge multi-AI council replies at the end of a turn')
+        self.ad_synth_combo.addItem('Auto Fast (DeepSeek / Cerebras / fastest enabled)', 'auto_fast')
+        self.ad_synth_combo.addItem('DeepSeek', 'deepseek')
+        self.ad_synth_combo.addItem('Gemini', 'gemini')
+        self.ad_synth_combo.addItem('OpenAI', 'openai')
+        self.ad_synth_combo.addItem('Cerebras (Ultra-fast)', 'cerebras')
+        self.ad_synth_combo.addItem('Match Primary (First enabled provider)', 'match_primary')
+        sm_idx = self.ad_synth_combo.findData(str(ad_cfg.get('synthesizer_mode', 'auto_fast')))
+        if sm_idx >= 0:
+            self.ad_synth_combo.setCurrentIndex(sm_idx)
+        form2.addRow('Fast Synthesizer:', self.ad_synth_combo)
+
+        self.ad_smart_routing_check = QCheckBox('Enabled (Use 2 fast AIs for quick lookups, 3–4 specialists for code/graphics)')
+        self.ad_smart_routing_check.setChecked(bool(ad_cfg.get('smart_routing', True)))
+        self.ad_smart_routing_check.setToolTip('Avoids waking all 8 AIs when a quick lookup or focused coding task only needs 2–4 specialists')
+        form2.addRow('Smart intent routing:', self.ad_smart_routing_check)
+
+        self.ad_timeout_spin = QSpinBox()
+        self.ad_timeout_spin.setRange(15, 120)
+        self.ad_timeout_spin.setSuffix(' s')
+        self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 45)))
+        self.ad_timeout_spin.setToolTip('Hard per-provider HTTP timeout so a stalled upstream model never hangs a turn')
+        form2.addRow('Provider timeout:', self.ad_timeout_spin)
+
+        self.ad_straggler_spin = QSpinBox()
+        self.ad_straggler_spin.setRange(0, 60)
+        self.ad_straggler_spin.setSuffix(' s (0 = off)')
+        self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 15)))
+        self.ad_straggler_spin.setToolTip('After majority quorum succeeds, wait at most this many seconds for slow stragglers')
+        form2.addRow('Straggler cutoff:', self.ad_straggler_spin)
+        p_lay.addLayout(form2)
+        lay.addWidget(perf_card)
+
+        organic_hint = QLabel(
+            '<span style="color:#8b949e; font-size:11.5px;">'
+            '💡 <b>Organic Intent Understanding:</b> Even with <i>On request</i> active, natural phrases like '
+            '<i>"no need to ask for approval"</i>, <i>"just fix it"</i>, or <i>"keep it short"</i> are understood automatically without typing <code>/</code> switches.'
+            '</span>'
+        )
+        organic_hint.setWordWrap(True)
+        organic_hint.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(organic_hint)
+
+        lay.addStretch()
+        self.pages.addWidget(w)
+
     def _build_voice_audio_page(self):
         from voice_service import (
+            GEMINI_TTS_VOICES,
+            TTS_ENGINES,
+            VOICE_STYLE_PRESETS,
             LiveAudioSession,
             list_audio_input_devices,
-            list_available_tts_voices,
+            list_voices_for_engine,
             load_voice_settings,
             save_voice_settings,
             speak_agent_response,
@@ -724,18 +959,192 @@ class ManageAIsDialog(QDialog):
             transcribe_audio_file,
         )
 
-        w, lay = self._make_simple_page(
-            '🎙️ Voice & Audio (Live Voice Mode, Microphone & Speaker)',
-            'Select and test your microphone with a live visual volume meter, boost quiet mic gain, and configure agent voice output.'
+        w, outer_lay = self._make_simple_page(
+            '🎙️ Voice & Audio (Human Neural Voice, Companion & Microphone)',
+            'Choose how Fairybread sounds (default Warm American), configure the always-on Voice Companion, and test your microphone & speaker.'
         )
         v_cfg = load_voice_settings(self.config_path)
 
-        # --- SECTION 1: MICROPHONE & LIVE VOICE INPUT ---
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        scroll_inner = QWidget()
+        lay = QVBoxLayout(scroll_inner)
+        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setSpacing(10)
+
+        # --- SECTION 1: HUMAN VOICE, ACCENT & COMPANION OUTPUT (TTS) ---
+        spk_card = QFrame()
+        spk_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+        sc_lay = QVBoxLayout(spk_card)
+        sc_lay.setSpacing(8)
+        sc_hdr = QLabel('<b>1. Human Voice, Accent &amp; Conversational Companion (Speaker Output)</b>')
+        sc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        sc_lay.addWidget(sc_hdr)
+
+        s_form = QFormLayout()
+
+        self.tts_engine_combo = QComboBox()
+        self.tts_engine_combo.setToolTip('Auto streams OpenAI neural voice first, falls back cleanly to Gemini neural, then Windows System offline')
+        for eid, elabel in TTS_ENGINES:
+            self.tts_engine_combo.addItem(elabel, eid)
+        cur_eng = str(v_cfg.get('tts_engine', 'auto') or 'auto')
+        e_idx = self.tts_engine_combo.findData(cur_eng)
+        if e_idx >= 0:
+            self.tts_engine_combo.setCurrentIndex(e_idx)
+        s_form.addRow('Voice Engine:', self.tts_engine_combo)
+
+        voice_row = QHBoxLayout()
+        self.voice_name_combo = QComboBox()
+        self.voice_name_combo.setToolTip('Choose the primary voice character for the selected engine')
+
+        self.gemini_voice_combo = QComboBox()
+        self.gemini_voice_combo.setToolTip('Gemini neural voice used as fallback under Auto mode (or primary when Gemini engine is selected)')
+        for gvid, gvlabel in GEMINI_TTS_VOICES:
+            self.gemini_voice_combo.addItem(gvlabel, gvid)
+        cur_gv = str(v_cfg.get('gemini_voice_name', 'Kore') or 'Kore')
+        gv_idx = self.gemini_voice_combo.findData(cur_gv)
+        if gv_idx >= 0:
+            self.gemini_voice_combo.setCurrentIndex(gv_idx)
+
+        self._saved_primary_voice = str(v_cfg.get('voice_name', 'coral') or 'coral')
+
+        def _refresh_combo_popup(combo_box: QComboBox):
+            view = combo_box.view()
+            if view is not None:
+                view.setTextElideMode(Qt.TextElideMode.ElideNone)
+                fm = combo_box.fontMetrics()
+                max_px = max([fm.horizontalAdvance(combo_box.itemText(i)) for i in range(combo_box.count())] or [320])
+                view.setMinimumWidth(max(420, max_px + 56))
+
+        def _populate_voice_combo(selected_override: str | None = None):
+            eng_id = str(self.tts_engine_combo.currentData() or 'auto')
+            target_id = selected_override or (
+                str(self.gemini_voice_combo.currentData() or 'Kore')
+                if eng_id == 'gemini'
+                else self._saved_primary_voice
+            )
+            self.voice_name_combo.blockSignals(True)
+            self.voice_name_combo.clear()
+            for vid, vlabel in list_voices_for_engine(eng_id):
+                self.voice_name_combo.addItem(vlabel, vid)
+            idx_v = self.voice_name_combo.findData(target_id)
+            if idx_v < 0:
+                idx_v = self.voice_name_combo.findText(target_id)
+            if idx_v >= 0:
+                self.voice_name_combo.setCurrentIndex(idx_v)
+            _refresh_combo_popup(self.voice_name_combo)
+            self.voice_name_combo.blockSignals(False)
+
+        _populate_voice_combo(self._saved_primary_voice if cur_eng != 'gemini' else cur_gv)
+
+        def _on_engine_changed():
+            _populate_voice_combo()
+
+        def _on_primary_voice_changed():
+            eng_id = str(self.tts_engine_combo.currentData() or 'auto')
+            chosen = str(self.voice_name_combo.currentData() or self.voice_name_combo.currentText() or '')
+            if eng_id == 'gemini' and chosen:
+                g_i = self.gemini_voice_combo.findData(chosen)
+                if g_i >= 0:
+                    self.gemini_voice_combo.setCurrentIndex(g_i)
+            elif eng_id in {'auto', 'openai'} and chosen:
+                self._saved_primary_voice = chosen
+
+        self.tts_engine_combo.currentIndexChanged.connect(_on_engine_changed)
+        self.voice_name_combo.currentIndexChanged.connect(_on_primary_voice_changed)
+
+        test_voice_btn = QPushButton('🔊 Test Speaker Voice')
+        test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_voice_btn.setToolTip('Synthesize and play a sample using your selected neural voice, accent, and speed')
+
+        stop_voice_btn = QPushButton('⏹ Stop Voice')
+        stop_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_voice_btn.setToolTip('Immediately interrupt any active spoken response')
+        stop_voice_btn.clicked.connect(stop_speaking)
+
+        voice_row.addWidget(self.voice_name_combo, 1)
+        voice_row.addWidget(test_voice_btn)
+        voice_row.addWidget(stop_voice_btn)
+        s_form.addRow('Primary Voice:', voice_row)
+        s_form.addRow('Fallback Gemini Voice:', self.gemini_voice_combo)
+
+        self.voice_style_combo = QComboBox()
+        self.voice_style_combo.setToolTip('Choose default accent & conversational delivery preset')
+        for sid, (slabel, _) in VOICE_STYLE_PRESETS.items():
+            self.voice_style_combo.addItem(slabel, sid)
+        cur_style = str(v_cfg.get('voice_style', 'warm_american') or 'warm_american')
+        st_idx = self.voice_style_combo.findData(cur_style)
+        if st_idx >= 0:
+            self.voice_style_combo.setCurrentIndex(st_idx)
+        s_form.addRow('Accent & Style:', self.voice_style_combo)
+
+        self.voice_custom_style_edit = QLineEdit(str(v_cfg.get('custom_style_prompt', '') or ''))
+        self.voice_custom_style_edit.setPlaceholderText('Optional extra tone/accent hint (e.g., "Calm, slightly upbeat conversational tone")')
+        self.voice_custom_style_edit.setToolTip('Optional fine-tuning instructions passed to OpenAI and Gemini neural voices')
+        s_form.addRow('Custom Tone Note:', self.voice_custom_style_edit)
+
+        speed_row = QHBoxLayout()
+        self.voice_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.voice_speed_slider.setRange(80, 130)
+        cur_speed_pct = max(80, min(130, int(round(float(v_cfg.get('speech_speed', 1.0)) * 100))))
+        self.voice_speed_slider.setValue(cur_speed_pct)
+        self.voice_speed_slider.setToolTip('Adjust how fast Fairybread speaks (0.80x relaxed – 1.30x brisk)')
+        self.voice_speed_label = QLabel(f'{cur_speed_pct / 100.0:.2f}x')
+        self.voice_speed_label.setFixedWidth(48)
+        self.voice_speed_slider.valueChanged.connect(lambda val: self.voice_speed_label.setText(f'{val / 100.0:.2f}x'))
+        speed_row.addWidget(self.voice_speed_slider, 1)
+        speed_row.addWidget(self.voice_speed_label)
+        s_form.addRow('Speaking Speed:', speed_row)
+
+        vol_row = QHBoxLayout()
+        self.voice_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.voice_vol_slider.setRange(0, 100)
+        self.voice_vol_slider.setToolTip('Adjust how loud Fairybread’s spoken voice is (0% – 100%)')
+        cur_vol = int(v_cfg.get('volume_percent', 100))
+        self.voice_vol_slider.setValue(cur_vol)
+        self.voice_vol_label = QLabel(f'{cur_vol}%')
+        self.voice_vol_label.setFixedWidth(48)
+        self.voice_vol_slider.valueChanged.connect(lambda val: self.voice_vol_label.setText(f'{val}%'))
+        vol_row.addWidget(self.voice_vol_slider, 1)
+        vol_row.addWidget(self.voice_vol_label)
+        s_form.addRow('Speaker Volume:', vol_row)
+        sc_lay.addLayout(s_form)
+
+        self.tts_test_status_label = QLabel('Default is Warm American neural streaming (OpenAI → Gemini fallback → Windows offline).')
+        self.tts_test_status_label.setWordWrap(True)
+        self.tts_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
+        sc_lay.addWidget(self.tts_test_status_label)
+
+        self.voice_companion_check = QCheckBox(
+            'Conversational Voice Companion: keep talking naturally while background AIs work, delegate complex tasks & live-steer them',
+            checked=bool(v_cfg.get('voice_companion_enabled', True)),
+        )
+        self.voice_companion_check.setToolTip('When enabled in Live Voice Mode, Fairybread talks back in ~1–2s and hands heavy tasks to the AI crew in the background')
+        sc_lay.addWidget(self.voice_companion_check)
+
+        self.spoken_summary_check = QCheckBox(
+            'Speak concise human summaries when background tasks finish (instead of reading raw markdown/code aloud)',
+            checked=bool(v_cfg.get('spoken_summary_for_background', True)),
+        )
+        self.spoken_summary_check.setToolTip('Reads a friendly 2–3 sentence summary aloud while showing the full details on screen')
+        sc_lay.addWidget(self.spoken_summary_check)
+
+        self.auto_speak_check = QCheckBox(
+            'Always read final synthesized agent responses aloud (Note: Live Voice Mode automatically speaks replies aloud even if this is unchecked)',
+            checked=bool(v_cfg.get('auto_speak_responses', False)),
+        )
+        self.auto_speak_check.setToolTip('When checked, even typed prompts will have their final answer read aloud automatically')
+        sc_lay.addWidget(self.auto_speak_check)
+        lay.addWidget(spk_card)
+
+        # --- SECTION 2: MICROPHONE & LIVE VOICE INPUT ---
         mic_card = QFrame()
         mic_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         mc_lay = QVBoxLayout(mic_card)
         mc_lay.setSpacing(8)
-        mc_hdr = QLabel('<b>1. Microphone Input &amp; Live Level Meter (Used by Live Voice Mode &amp; Dictation)</b>')
+        mc_hdr = QLabel('<b>2. Microphone Input &amp; Live Level Meter (Used by Live Voice Mode &amp; Dictation)</b>')
         mc_hdr.setTextFormat(Qt.TextFormat.RichText)
         mc_lay.addWidget(mc_hdr)
 
@@ -831,18 +1240,51 @@ class ManageAIsDialog(QDialog):
         self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
         mc_lay.addWidget(self.mic_test_status_label)
 
+        def _collect_voice_payload() -> dict:
+            eng = str(self.tts_engine_combo.currentData() or 'auto')
+            chosen_voice = str(self.voice_name_combo.currentData() or self.voice_name_combo.currentText() or 'coral')
+            gemini_voice = chosen_voice if eng == 'gemini' else str(self.gemini_voice_combo.currentData() or 'Kore')
+            primary_voice = self._saved_primary_voice if eng == 'gemini' else chosen_voice
+            return {
+                'tts_engine': eng,
+                'voice_name': primary_voice,
+                'gemini_voice_name': gemini_voice,
+                'voice_style': str(self.voice_style_combo.currentData() or 'warm_american'),
+                'custom_style_prompt': self.voice_custom_style_edit.text().strip(),
+                'speech_speed': round(int(self.voice_speed_slider.value()) / 100.0, 2),
+                'microphone_device': self.mic_device_combo.currentText(),
+                'mic_gain_percent': int(self.mic_gain_slider.value()),
+                'silence_timeout_ms': int(self.silence_timeout_slider.value()),
+                'volume_percent': int(self.voice_vol_slider.value()),
+                'voice_companion_enabled': self.voice_companion_check.isChecked(),
+                'spoken_summary_for_background': self.spoken_summary_check.isChecked(),
+                'auto_speak_responses': self.auto_speak_check.isChecked(),
+            }
+
+        self._collect_voice_payload = _collect_voice_payload
+
         def _save_current_voice_fields():
-            save_voice_settings(
-                {
-                    'voice_name': self.voice_name_combo.currentText(),
-                    'microphone_device': self.mic_device_combo.currentText(),
-                    'mic_gain_percent': int(self.mic_gain_slider.value()),
-                    'silence_timeout_ms': int(self.silence_timeout_slider.value()),
-                    'volume_percent': int(self.voice_vol_slider.value()),
-                    'auto_speak_responses': self.auto_speak_check.isChecked(),
-                },
+            save_voice_settings(_collect_voice_payload(), config_path=self.config_path)
+
+        def _test_tts():
+            _save_current_voice_fields()
+            self.tts_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+            self.tts_test_status_label.setText('⏳ Generating natural speech sample…')
+
+            def _on_eng(eng_label: str):
+                QTimer.singleShot(0, lambda: (
+                    self.tts_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e; font-weight: 600;'),
+                    self.tts_test_status_label.setText(f'🔊 Speaking via {eng_label}'),
+                ))
+
+            speak_agent_response(
+                "Hey Brett, Fairybread's human voice and conversational companion are ready whenever you want to talk.",
                 config_path=self.config_path,
+                credential_store=self.credential_store,
+                on_engine_status=_on_eng,
             )
+
+        test_voice_btn.clicked.connect(_test_tts)
 
         def _on_test_level(lvl: int, bars: str, speech: bool):
             self.mic_level_bar.setValue(lvl)
@@ -924,69 +1366,10 @@ class ManageAIsDialog(QDialog):
         self.mic_live_test_btn.toggled.connect(_toggle_live_mic_test)
         self.mic_transcribe_test_btn.clicked.connect(_run_3s_transcription_test)
         lay.addWidget(mic_card)
-
-        # --- SECTION 2: SPEAKER / AGENT VOICE OUTPUT ---
-        spk_card = QFrame()
-        spk_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
-        sc_lay = QVBoxLayout(spk_card)
-        sc_lay.setSpacing(8)
-        sc_hdr = QLabel('<b>2. Speaker &amp; Agent Voice Output (TTS)</b>')
-        sc_hdr.setTextFormat(Qt.TextFormat.RichText)
-        sc_lay.addWidget(sc_hdr)
-
-        s_form = QFormLayout()
-        voice_row = QHBoxLayout()
-        self.voice_name_combo = QComboBox()
-        self.voice_name_combo.setToolTip('Choose the system voice used when Fairybread speaks responses aloud')
-        for vname in list_available_tts_voices():
-            self.voice_name_combo.addItem(vname, vname)
-        cur_v = str(v_cfg.get('voice_name', 'System Default'))
-        v_idx = self.voice_name_combo.findText(cur_v)
-        if v_idx >= 0:
-            self.voice_name_combo.setCurrentIndex(v_idx)
-
-        test_voice_btn = QPushButton('🔊 Test Speaker Voice')
-        test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_voice_btn.setToolTip('Play a test sentence through your speakers at the selected volume')
-
-        stop_voice_btn = QPushButton('⏹ Stop Voice')
-        stop_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        stop_voice_btn.setToolTip('Immediately stop any active spoken response')
-        stop_voice_btn.clicked.connect(stop_speaking)
-
-        def _test_tts():
-            _save_current_voice_fields()
-            speak_agent_response('Hello Brett, Fairybread live voice mode and speaker output are working clearly.', config_path=self.config_path)
-
-        test_voice_btn.clicked.connect(_test_tts)
-        voice_row.addWidget(self.voice_name_combo, 1)
-        voice_row.addWidget(test_voice_btn)
-        voice_row.addWidget(stop_voice_btn)
-        s_form.addRow('Speaker Voice:', voice_row)
-
-        vol_row = QHBoxLayout()
-        self.voice_vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self.voice_vol_slider.setRange(0, 100)
-        self.voice_vol_slider.setToolTip('Adjust how loud Fairybread’s spoken voice is (0% – 100%)')
-        cur_vol = int(v_cfg.get('volume_percent', 100))
-        self.voice_vol_slider.setValue(cur_vol)
-        self.voice_vol_label = QLabel(f'{cur_vol}%')
-        self.voice_vol_label.setFixedWidth(48)
-        self.voice_vol_slider.valueChanged.connect(lambda val: self.voice_vol_label.setText(f'{val}%'))
-        vol_row.addWidget(self.voice_vol_slider, 1)
-        vol_row.addWidget(self.voice_vol_label)
-        s_form.addRow('Speaker Volume:', vol_row)
-        sc_lay.addLayout(s_form)
-
-        self.auto_speak_check = QCheckBox(
-            'Always read final synthesized agent responses aloud (Note: Live Voice Mode automatically speaks replies aloud even if this is unchecked)',
-            checked=bool(v_cfg.get('auto_speak_responses', False)),
-        )
-        self.auto_speak_check.setToolTip('When checked, even typed prompts will have their final answer read aloud automatically')
-        sc_lay.addWidget(self.auto_speak_check)
-        lay.addWidget(spk_card)
-
         lay.addStretch()
+
+        scroll.setWidget(scroll_inner)
+        outer_lay.addWidget(scroll, 1)
         self.pages.addWidget(w)
 
     def _build_appearance_page(self):
@@ -2634,11 +3017,29 @@ class ManageAIsDialog(QDialog):
             {k: chk.isChecked() for k, chk in self.tool_checks.items()},
             config_path=self.config_path,
         )
-        if hasattr(self, 'voice_name_combo'):
+        if hasattr(self, 'ad_approval_combo'):
+            save_agent_defaults(
+                {
+                    'approval_policy': str(self.ad_approval_combo.currentData() or 'on_request'),
+                    'sandbox_mode': str(self.ad_sandbox_combo.currentData() or 'sandbox_write'),
+                    'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
+                    'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
+                    'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
+                    'synthesizer_mode': str(self.ad_synth_combo.currentData() or 'auto_fast'),
+                    'smart_routing': bool(self.ad_smart_routing_check.isChecked()),
+                    'provider_timeout_sec': int(self.ad_timeout_spin.value()),
+                    'straggler_grace_sec': int(self.ad_straggler_spin.value()),
+                },
+                config_path=self.config_path,
+            )
+        if hasattr(self, '_collect_voice_payload'):
+            from voice_service import save_voice_settings
+            save_voice_settings(self._collect_voice_payload(), config_path=self.config_path)
+        elif hasattr(self, 'voice_name_combo'):
             from voice_service import save_voice_settings
             save_voice_settings(
                 {
-                    'voice_name': self.voice_name_combo.currentText(),
+                    'voice_name': str(self.voice_name_combo.currentData() or self.voice_name_combo.currentText()),
                     'microphone_device': self.mic_device_combo.currentText(),
                     'mic_gain_percent': int(self.mic_gain_slider.value()) if hasattr(self, 'mic_gain_slider') else 150,
                     'silence_timeout_ms': int(self.silence_timeout_slider.value()) if hasattr(self, 'silence_timeout_slider') else 1500,
@@ -2673,6 +3074,9 @@ class PalaceWindow(QMainWindow):
         self.palace_factory = palace_factory or self._build_palace
         self.attachments = []
         self.worker = None
+        self._voice_companion = None
+        self._voice_threads = []
+        self._background_delegated_from_voice = False
         self.last_answer = ''
         self.last_question = ''
         self.pending_prompt = ''
@@ -2681,6 +3085,7 @@ class PalaceWindow(QMainWindow):
         self.provider_details = {}
         self.reply_archive = []
         self.chat_items = []
+        self._item_html_cache = {}
         self.expanded_deliberations = set()
         self.conversation_contributors = []
         self.current_profile = 'Multi-AI · Deliberate'
@@ -3925,10 +4330,13 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
+        agent_defaults_act = QAction('⚙ Agent Defaults && Approval Control Panel…', self)
+        agent_defaults_act.triggered.connect(lambda: self.open_manage_ais('Agent Defaults'))
+        settings_menu.addAction(agent_defaults_act)
         profiles_settings_act = QAction('🎛 Profiles && AI Squads…', self)
         profiles_settings_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
         settings_menu.addAction(profiles_settings_act)
-        voice_settings_act = QAction('🎙️ Voice && Audio (Microphone && Speaker)…', self)
+        voice_settings_act = QAction('🎙️ Voice && Audio (Human Voice, Microphone && Speaker)…', self)
         voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
         settings_menu.addAction(voice_settings_act)
         email_settings_act = QAction('📧 Email && Notifications…', self)
@@ -5292,6 +5700,7 @@ class PalaceWindow(QMainWindow):
             idle_memory=self.idle_memory,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._item_html_cache.clear()
             ui_cfg = load_ui_settings(self.config_path)
             self.composer.enter_to_send = bool(ui_cfg.get('enter_to_send', True))
             self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
@@ -5332,6 +5741,8 @@ class PalaceWindow(QMainWindow):
 
     def apply_theme(self, theme_id: str, render_chat: bool = True):
         self.active_theme = str(theme_id or 'dark')
+        if hasattr(self, '_item_html_cache'):
+            self._item_html_cache.clear()
         t_dict = load_theme_dict(self.active_theme)
         self.setStyleSheet(build_theme_stylesheet(self.active_theme))
         if hasattr(self, 'chat') and isinstance(self.chat, ChatBrowser):
@@ -6248,30 +6659,115 @@ class PalaceWindow(QMainWindow):
             stop_speaking()
             self.show_notice('Live Voice Mode turned OFF.')
 
+    def _get_voice_companion(self):
+        if getattr(self, '_voice_companion', None) is None:
+            from voice_companion import VoiceCompanion
+            self._voice_companion = VoiceCompanion(config_path=self.config_path)
+        return self._voice_companion
+
     def _on_live_voice_utterance(self, wav_path: Path):
-        from voice_service import transcribe_audio_file
+        from voice_service import load_voice_settings, speak_agent_response
+
+        v_cfg = load_voice_settings(self.config_path)
+        companion_on = bool(v_cfg.get('voice_companion_enabled', True))
         if hasattr(self, 'voice_level_badge'):
-            self.voice_level_badge.setText('⏳ Transcribing spoken prompt…')
-        QApplication.processEvents()
-        try:
-            text = transcribe_audio_file(wav_path)
-        except Exception as exc:
-            self.show_notice(f'Live Voice notice: {exc}')
-            return
-        if not text:
-            return
-        self.composer.setPlainText(text)
-        if self.worker is None:
-            self._turn_triggered_by_live_voice = True
-            self.send_message()
-        else:
-            self.queue_next_turn()
+            self.voice_level_badge.setText('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…')
+
+        recent_lines = []
+        for it in (self.chat_items or [])[-4:]:
+            r_tag = 'User' if it.get('role') == 'user' else 'Assistant'
+            recent_lines.append(f"{r_tag}: {str(it.get('content') or '')[:180]}")
+        recent_snip = '\n'.join(recent_lines)
+
+        worker = VoiceCompanionWorker(
+            wav_path,
+            self._get_voice_companion() if companion_on else None,
+            companion_enabled=companion_on,
+            background_busy=(self.worker is not None),
+            background_status=str(getattr(self, 'pending_status_text', '') or ''),
+            background_question=str(getattr(self, 'last_question', '') or ''),
+            recent_chat_snippet=recent_snip,
+            parent=self,
+        )
+        self._voice_threads.append(worker)
+
+        def _cleanup_vw():
+            try:
+                if worker in self._voice_threads:
+                    self._voice_threads.remove(worker)
+            except Exception:
+                pass
+            worker.deleteLater()
+
+        def _on_vw_done(decision, transcript: str):
+            text = (transcript or '').strip()
+            if not text:
+                return
+            if decision is None:
+                self.composer.setPlainText(text)
+                if self.worker is None:
+                    self._turn_triggered_by_live_voice = True
+                    self.send_message()
+                else:
+                    self.queue_next_turn()
+                return
+
+            # Render the spoken turn cleanly in chat without blocking Live Voice Mode
+            self.append_message('user', f'🎙 {text}', render=False)
+            self.append_message('assistant', decision.spoken_reply, speaker='voice_companion', render=True)
+            speak_agent_response(decision.spoken_reply, config_path=self.config_path)
+
+            if decision.action == 'delegate' and decision.delegated_task:
+                task_text = decision.delegated_task.strip()
+                if self.worker is None:
+                    draft_backup = self.composer.toPlainText()
+                    self._background_delegated_from_voice = True
+                    self._turn_triggered_by_live_voice = True
+                    self.composer.setPlainText(task_text)
+                    self.send_message()
+                    if draft_backup and draft_backup.strip() != task_text:
+                        self.composer.setPlainText(draft_backup)
+                    self.show_notice(f'🎙 Voice Companion handed task to AI team in background: "{task_text[:65]}"')
+                else:
+                    if not hasattr(self, 'queued_prompts'):
+                        self.queued_prompts = []
+                    self.queued_prompts.append(task_text)
+                    if hasattr(self, 'steer_button'):
+                        self.steer_button.setText(f'⏳ Queued ({len(self.queued_prompts)}) ▾')
+                        self.steer_button.setStyleSheet(
+                            'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
+                            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                        )
+                    self.show_notice(f'🎙 Voice Companion queued next task ({len(self.queued_prompts)}): "{task_text[:60]}"')
+
+            elif decision.action == 'steer' and decision.steer_note and self.worker is not None:
+                note = decision.steer_note.strip()
+                if getattr(self, 'active_steering_state', None) is None:
+                    self.active_steering_state = {'notes': [], 'include_palace_code': self.palace_code_btn.isChecked()}
+                self.active_steering_state.setdefault('notes', []).append(note)
+                cnt = len(self.active_steering_state['notes'])
+                if hasattr(self, 'steer_button'):
+                    self.steer_button.setText(f'🧭 Steer ({cnt}) ▾')
+                    self.steer_button.setStyleSheet(
+                        'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+                        'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                    )
+                self.append_message('user', f'[LIVE STEER #{cnt}]: {note}', render=True)
+                self.show_notice(f'✓ Voice Companion injected Live Steer #{cnt}: "{note[:60]}"')
+
+        worker.completed.connect(_on_vw_done)
+        worker.failed.connect(lambda err: self.show_notice(f'Live Voice notice: {err}'))
+        worker.finished.connect(_cleanup_vw)
+        worker.start()
 
     def load_history(self):
+        if getattr(self, '_voice_companion', None) is not None:
+            self._voice_companion.reset()
         self.chat.clear()
         self.last_answer = ''
         self.reply_archive = []
         self.chat_items = []
+        self._item_html_cache = {}
         self.expanded_deliberations = set()
         self.conversation_contributors = []
         self.copy_button.setEnabled(False)
@@ -6442,7 +6938,10 @@ class PalaceWindow(QMainWindow):
 
         safe = html.escape(content).replace('\n', '<br>')
 
-        if speaker and speaker not in {'assistant', 'palace'}:
+        if speaker == 'voice_companion':
+            active_contribs = []
+            meta_tag = 'VOICE COMPANION'
+        elif speaker and speaker not in {'assistant', 'palace'}:
             active_contribs = [speaker]
             phase_tag = ' (PEER REPLY)' if phase == 'peer_reply' else ''
             meta_tag = f'{speaker.upper()}{phase_tag}'
@@ -6453,7 +6952,9 @@ class PalaceWindow(QMainWindow):
             meta_tag = 'PALACE'
 
         chat_mode = getattr(self, 'badge_display_mode', 'icons_only')
-        if active_contribs:
+        if speaker == 'voice_companion':
+            badges_html = '<span style="color:#38bdf8; font-size:12px; font-weight:600;" title="Conversational Voice Companion">🎙 Voice Companion</span>'
+        elif active_contribs:
             if chat_mode == 'names_only':
                 badges_html = '&nbsp;&nbsp;'.join(
                     f'<span style="color:{provider_color(c)}; font-size:12px; font-weight:600;" '
@@ -6607,7 +7108,32 @@ class PalaceWindow(QMainWindow):
                         )
                 except Exception:
                     pass
-            html_blocks.append(self._render_single_chat_item(item))
+            item_content = str(item.get('content') or '')
+            can_cache_item = (
+                '[PALACE_UI_SNAPSHOT' not in item_content
+                and '[GENERATE_IMAGE' not in item_content.upper()
+            )
+            cache_key = (
+                i,
+                item.get('role'),
+                item.get('timestamp'),
+                hashlib.sha1(item_content.encode('utf-8', errors='replace')).hexdigest()[:12],
+                i in self.expanded_deliberations,
+                getattr(self, 'badge_display_mode', 'icons_only'),
+                getattr(self, 'active_theme', 'dark'),
+                len(item.get('speaker_messages') or []),
+                len(self.reply_archive),
+            )
+            cached_html = self._item_html_cache.get(cache_key) if (can_cache_item and hasattr(self, '_item_html_cache')) else None
+            if cached_html is not None:
+                html_blocks.append(cached_html)
+            else:
+                rendered_item = self._render_single_chat_item(item)
+                if can_cache_item and hasattr(self, '_item_html_cache'):
+                    if len(self._item_html_cache) >= 400:
+                        self._item_html_cache.clear()
+                    self._item_html_cache[cache_key] = rendered_item
+                html_blocks.append(rendered_item)
         self.chat.setHtml(''.join(html_blocks))
         if scroll_to_bottom:
             # Scroll to the top of the latest card so the user reads from the beginning of the new reply
@@ -7319,9 +7845,9 @@ class PalaceWindow(QMainWindow):
             selected_providers = selected_providers[:self.max_ais_per_turn]
 
         tool_cfg = load_tool_settings(self.config_path)
-        use_palace_code = bool(self.palace_code_btn.isChecked() or tool_cfg.get('palace_source_read', False) and self.current_squad_label == '🛠 Work Mode')
+        use_palace_code = bool(self.palace_code_btn.isChecked() or tool_cfg.get('palace_source_tool', False) and self.current_squad_label == '🛠 Work Mode')
         proj_folder = ''
-        if tool_cfg.get('project_folder_read', True) and hasattr(self.store, 'get_project_folder'):
+        if tool_cfg.get('project_folder_tool', True) and hasattr(self.store, 'get_project_folder'):
             proj_folder = self.store.get_project_folder()
 
         from email_service import extract_email_search_query, is_email_configured
@@ -7337,7 +7863,7 @@ class PalaceWindow(QMainWindow):
         elif draw_mode == 'direct_draw':
             self.pending_status_text = '1-Pass Drawing Mode: Crafting rich visual prompt & rendering high-res image'
         elif draw_mode == 'council_draw':
-            self.pending_status_text = 'Council Drawing Mode: All agents collaborating on prompt → 1 final image'
+            self.pending_status_text = 'Graphic Prompt Duo (2 Specialists) → Primary Renderer + Fallback'
         elif selected_providers:
             disp_list = ', '.join(provider_display_name(n) for n in selected_providers)
             self.pending_status_text = f'Consulting {disp_list}'
@@ -7458,10 +7984,45 @@ class PalaceWindow(QMainWindow):
                 self.conversation_contributors.append(c)
         if result.final_answer:
             try:
-                from voice_service import load_voice_settings, speak_agent_response
-                live_active = bool(getattr(self, '_turn_triggered_by_live_voice', False) or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()))
+                from voice_service import clean_text_for_speech, load_voice_settings, speak_agent_response
+                v_cfg = load_voice_settings(self.config_path)
+                live_active = bool(
+                    getattr(self, '_turn_triggered_by_live_voice', False)
+                    or getattr(self, '_background_delegated_from_voice', False)
+                    or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+                )
                 self._turn_triggered_by_live_voice = False
-                if live_active or load_voice_settings(self.config_path).get('auto_speak_responses'):
+                self._background_delegated_from_voice = False
+                if live_active:
+                    if (
+                        bool(v_cfg.get('spoken_summary_for_background', True))
+                        and len(clean_text_for_speech(result.final_answer)) > 260
+                    ):
+                        sum_w = VoiceSummaryWorker(
+                            self._get_voice_companion(),
+                            str(getattr(self, 'last_question', '') or ''),
+                            result.final_answer,
+                            turn_contributors,
+                            parent=self,
+                        )
+                        self._voice_threads.append(sum_w)
+
+                        def _cleanup_sw(_sw=sum_w):
+                            try:
+                                if _sw in self._voice_threads:
+                                    self._voice_threads.remove(_sw)
+                            except Exception:
+                                pass
+                            _sw.deleteLater()
+
+                        sum_w.summary_ready.connect(
+                            lambda spoken_sum: speak_agent_response(spoken_sum, config_path=self.config_path)
+                        )
+                        sum_w.finished.connect(_cleanup_sw)
+                        sum_w.start()
+                    else:
+                        speak_agent_response(result.final_answer, config_path=self.config_path)
+                elif v_cfg.get('auto_speak_responses'):
                     speak_agent_response(result.final_answer, config_path=self.config_path)
             except Exception:
                 pass
@@ -7785,6 +8346,16 @@ class PalaceWindow(QMainWindow):
                     'Fairybread is still running in the system tray. Right-click the tray icon to Expand or Exit.',
                 )
             return
+        try:
+            from voice_service import stop_speaking
+            stop_speaking()
+        except Exception:
+            pass
+        for vw in list(getattr(self, '_voice_threads', []) or []):
+            try:
+                vw.wait(1200)
+            except Exception:
+                pass
         self.idle_timer.stop()
         self.idle_manager.wipe_ram()
         if hasattr(self, '_tray_icon') and self._tray_icon is not None:

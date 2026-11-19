@@ -527,19 +527,22 @@ def ai_update_memory_summary(
                 updated_md = (resp.choices[0].message.content or "").strip()
             except Exception:
                 pass
-        # 3. Try Gemini
+        # 3. Try Gemini (Hydrogen fast model -> 2.5-flash fallback)
         gem_key = store.get_api_key("gemini")
         if gem_key and not updated_md:
-            try:
-                from google import genai
-                client = genai.Client(api_key=gem_key)
-                resp = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=f"{sys_prompt}\n\n{user_prompt}",
-                )
-                updated_md = (getattr(resp, "text", "") or "").strip()
-            except Exception:
-                pass
+            from google import genai
+            client = genai.Client(api_key=gem_key)
+            for gm in ("gemini-4-hydrogen", "gemini-2.5-flash"):
+                try:
+                    resp = client.models.generate_content(
+                        model=gm,
+                        contents=f"{sys_prompt}\n\n{user_prompt}",
+                    )
+                    updated_md = (getattr(resp, "text", "") or "").strip()
+                    if updated_md:
+                        break
+                except Exception:
+                    continue
 
     if not updated_md:
         # Offline fallback: append user's update note cleanly
@@ -703,7 +706,7 @@ class MemoryService:
         clean_q = re.sub(r"\s+", " ", (question or "").strip())
         if len(clean_q) < 4 or clean_q.lower() in {".", "..", "...", "test", "hi", "hello"}:
             return ""
-        clean_a = re.sub(r"\[GENERATE_IMAGE[^\]]*\]", "[Generated Image]", answer or "", flags=re.IGNORECASE)
+        clean_a = re.sub(r'\[GENERATE_IMAGE\s+(?:[^\]"]|"[^"]*")*\]', "[Generated Image]", answer or "", flags=re.IGNORECASE)
         clean_a = re.sub(r"\[PALACE_UI_SNAPSHOT[^\]]*\]", "[UI Snapshot]", clean_a, flags=re.IGNORECASE).strip()
         if not clean_a:
             return ""

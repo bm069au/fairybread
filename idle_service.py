@@ -89,7 +89,7 @@ _IDLE_TOOL_PATTERN = re.compile(
 
 _IDLE_PATCH_PATTERN = re.compile(
     r'\[IDLE_PATCH\s+file="(?P<file>[^"]+)"(?:\s+summary="(?P<summary>[^"]*)")?\s*\]\s*'
-    r'<<<TARGET\r?\n(?P<target>.*?)\r?\n===REPLACE\r?\n(?P<replacement>.*?)\r?\n>>>'
+    r'<<<TARGET[ \t]*\r?\n(?P<target>.*?)\r?\n?===REPLACE[ \t]*\r?\n(?P<replacement>.*?)\r?\n>>>'
     r'(?:\s*\[/IDLE_PATCH\])?',
     re.IGNORECASE | re.DOTALL,
 )
@@ -329,8 +329,18 @@ def execute_live_autopatches_in_text(
         p_sum = (match.group("summary") or f"Autopatch to {p_file} by {author}").strip()
         p_target = match.group("target") or ""
         p_repl = match.group("replacement") or ""
-        if not p_target.strip() or p_target.strip() == "exact existing lines":
-            return ""
+        if not p_target.strip() or p_target.strip() in {"exact existing lines", "# No existing file to replace"}:
+            try:
+                from palace_ouroboros import EDITABLE_PALACE_FILES
+                allow_str = ", ".join(sorted(EDITABLE_PALACE_FILES))
+            except Exception:
+                allow_str = "allowlisted Palace .py files"
+            rej_msg = (
+                f"<<<TARGET cannot be empty or placeholder; [IDLE_PATCH] only modifies existing lines "
+                f"in allowlisted files ({allow_str})."
+            )
+            status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {rej_msg}")
+            return f"[⚠ Autopatch Rejected: `{p_file}` — {rej_msg}]"
         try:
             from palace_ouroboros import LIVE_DIR, SANDBOX_ROOT, SOURCE_REPO_DIR, STAGING_DIR, stage_palace_replace, sync_live_to_staging
             if not applied_files:
@@ -372,7 +382,7 @@ def execute_live_autopatches_in_text(
                 return f"[⚠ Autopatch Rejected: `{p_file}` — {msg}]"
         except Exception as exc:
             status_notes.append(f"⚠ **Autopatch Error (`{p_file}`)**: {exc}")
-            return ""
+            return f"[⚠ Autopatch Error: `{p_file}` — {exc}]"
 
     cleaned = _IDLE_PATCH_PATTERN.sub(_run_patch, response_text).strip()
     if status_notes:

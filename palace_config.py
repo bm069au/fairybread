@@ -127,8 +127,15 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#132038",
         "key_url": "https://aistudio.google.com/app/apikey",
         "default_base_url": "",
-        "default_model": "gemini-2.5-flash",
-        "suggested_models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+        "default_model": "gemini-4-neon",
+        "suggested_models": [
+            "gemini-4-neon",
+            "gemini-4-hydrogen",
+            "gemini-4-carbon",
+            "gemini-3.8-flash",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ],
         "billing_note": "Free tier available via Google AI Studio, or pay-as-you-go via Google Cloud.",
     },
     "openai": {
@@ -781,6 +788,161 @@ def save_ai_squads(
     data["ai_squads"] = cleaned or {k: dict(v) for k, v in DEFAULT_AI_SQUADS.items()}
     _write_raw_config(data, config_path)
     return load_ai_squads(config_path)
+
+
+DEFAULT_GRAPHICS_SETTINGS: dict[str, Any] = {
+    "prompt_duo": ["gemini", "openai"],
+    "prompt_duo_fallback": ["deepseek", "qwen", "cerebras", "groq"],
+    "primary_image_engine": "gemini-3-pro-image",
+    "draft_image_engine": "gemini-3.1-flash-image",
+    "fallback_image_engines": ["gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+}
+
+
+def load_graphics_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("graphics_settings", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    out = {
+        "prompt_duo": [str(p).strip().lower() for p in (raw.get("prompt_duo") or DEFAULT_GRAPHICS_SETTINGS["prompt_duo"]) if str(p).strip()],
+        "prompt_duo_fallback": [str(p).strip().lower() for p in (raw.get("prompt_duo_fallback") or DEFAULT_GRAPHICS_SETTINGS["prompt_duo_fallback"]) if str(p).strip()],
+        "primary_image_engine": str(raw.get("primary_image_engine") or DEFAULT_GRAPHICS_SETTINGS["primary_image_engine"]).strip().lower(),
+        "draft_image_engine": str(raw.get("draft_image_engine") or DEFAULT_GRAPHICS_SETTINGS["draft_image_engine"]).strip().lower(),
+        "fallback_image_engines": [str(e).strip().lower() for e in (raw.get("fallback_image_engines") or DEFAULT_GRAPHICS_SETTINGS["fallback_image_engines"]) if str(e).strip()],
+    }
+    if not out["prompt_duo"]:
+        out["prompt_duo"] = list(DEFAULT_GRAPHICS_SETTINGS["prompt_duo"])
+    if not out["prompt_duo_fallback"]:
+        out["prompt_duo_fallback"] = list(DEFAULT_GRAPHICS_SETTINGS["prompt_duo_fallback"])
+    if not out["fallback_image_engines"]:
+        out["fallback_image_engines"] = list(DEFAULT_GRAPHICS_SETTINGS["fallback_image_engines"])
+    return out
+
+
+def save_graphics_settings(
+    settings: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    merged = load_graphics_settings(config_path)
+    for k in ("prompt_duo", "prompt_duo_fallback", "fallback_image_engines"):
+        if k in settings and isinstance(settings[k], list):
+            vals = [str(v).strip().lower() for v in settings[k] if str(v).strip()]
+            if vals:
+                merged[k] = vals
+    for k in ("primary_image_engine", "draft_image_engine"):
+        if k in settings and str(settings[k] or "").strip():
+            merged[k] = str(settings[k]).strip().lower()
+    data["graphics_settings"] = merged
+    _write_raw_config(data, config_path)
+    return load_graphics_settings(config_path)
+
+
+DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
+    "approval_policy": "on_request",     # "on_request" | "auto_deploy" | "read_only"
+    "sandbox_mode": "sandbox_write",     # "read_only" | "sandbox_write"
+    "web_search_default": "default",     # "off" | "default" | "moderate" | "deep"
+    "output_detail": "high",             # "concise" | "balanced" | "high"
+    "reasoning_summary": "auto",         # "off" | "auto" | "detailed"
+    "synthesizer_mode": "auto_fast",     # "auto_fast" | "deepseek" | "gemini" | "openai" | "cerebras" | "match_primary"
+    "smart_routing": True,
+    "provider_timeout_sec": 45,
+    "straggler_grace_sec": 15,
+}
+
+
+def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("agent_defaults", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    out = dict(DEFAULT_AGENT_DEFAULTS)
+
+    ap = str(raw.get("approval_policy") or out["approval_policy"]).strip().lower()
+    if ap in {"on_request", "auto_deploy", "read_only"}:
+        out["approval_policy"] = ap
+    if not IS_DEVELOPER_EDITION and out["approval_policy"] == "auto_deploy":
+        out["approval_policy"] = "read_only"
+
+    sb = str(raw.get("sandbox_mode") or out["sandbox_mode"]).strip().lower()
+    if sb in {"read_only", "sandbox_write"}:
+        out["sandbox_mode"] = sb
+    if not IS_DEVELOPER_EDITION:
+        out["sandbox_mode"] = "read_only"
+
+    ws = str(raw.get("web_search_default") or out["web_search_default"]).strip().lower()
+    if ws in {"off", "default", "moderate", "deep"}:
+        out["web_search_default"] = ws
+
+    od = str(raw.get("output_detail") or out["output_detail"]).strip().lower()
+    if od in {"concise", "balanced", "high"}:
+        out["output_detail"] = od
+
+    rs = str(raw.get("reasoning_summary") or out["reasoning_summary"]).strip().lower()
+    if rs in {"off", "auto", "detailed"}:
+        out["reasoning_summary"] = rs
+
+    sm = str(raw.get("synthesizer_mode") or out["synthesizer_mode"]).strip().lower()
+    if sm:
+        out["synthesizer_mode"] = sm
+
+    if "smart_routing" in raw:
+        out["smart_routing"] = bool(raw["smart_routing"])
+
+    try:
+        t_sec = int(raw.get("provider_timeout_sec", out["provider_timeout_sec"]))
+        out["provider_timeout_sec"] = max(15, min(120, t_sec))
+    except (TypeError, ValueError):
+        pass
+    try:
+        g_sec = int(raw.get("straggler_grace_sec", out["straggler_grace_sec"]))
+        out["straggler_grace_sec"] = max(0, min(60, g_sec))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def save_agent_defaults(
+    settings: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    merged = load_agent_defaults(config_path)
+    merged.update(settings or {})
+    data["agent_defaults"] = merged
+    _write_raw_config(data, config_path)
+    return load_agent_defaults(config_path)
+
+
+def format_agent_defaults_prompt_block(
+    output_detail_override: str = "",
+    config_path: Path = CONFIG_PATH,
+) -> str:
+    """Return a concise directive block for Output detail & Reasoning summary."""
+    cfg = load_agent_defaults(config_path)
+    detail = (output_detail_override or cfg.get("output_detail") or "high").strip().lower()
+    reasoning = str(cfg.get("reasoning_summary") or "auto").strip().lower()
+
+    if detail == "concise":
+        detail_txt = "Concise (tight bullets, minimal prose, jump straight to the answer)"
+    elif detail == "balanced":
+        detail_txt = "Balanced (clear structured response without unnecessary fluff)"
+    else:
+        detail_txt = "High (thorough technical detail, exact specifics, and actionable verification)"
+
+    if reasoning == "off":
+        reason_txt = "Off (deliver the direct final answer only without reasoning commentary)"
+    elif reasoning == "detailed":
+        reason_txt = "Detailed (explicitly explain key steps, system rules, and tradeoffs)"
+    else:
+        reason_txt = "Auto (briefly note tradeoffs/assumptions only when non-obvious)"
+
+    return (
+        "[RESPONSE DETAIL & REASONING PREFERENCES]:\n"
+        f"- Output detail: {detail_txt}\n"
+        f"- Reasoning summary: {reason_txt}"
+    )
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "enter_to_send": True,  # True: Enter sends, Shift+Enter newline; False: Shift+Enter sends, Enter newline

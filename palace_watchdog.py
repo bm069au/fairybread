@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from palace_ouroboros import (
@@ -36,6 +37,19 @@ from palace_ouroboros import (
     write_crash_report,
     write_reboot_handoff,
 )
+
+WATCHDOG_LOG_PATH = SANDBOX_ROOT / "watchdog_last.log"
+
+
+def _log(msg: str, *, err: bool = False) -> None:
+    stream = sys.stderr if err else sys.stdout
+    print(msg, file=stream)
+    try:
+        SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
+        with WATCHDOG_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{datetime.now().isoformat()}] {msg}\n")
+    except OSError:
+        pass
 
 
 def _stop_existing_palace_gui() -> None:
@@ -88,11 +102,15 @@ def perform_hot_reboot(
                 shutil.copy2(repo_f, staged_f)
 
     # 1. Preflight Gate (L3)
-    print("[Watchdog] Running Preflight Gate (py_compile + unittest)...")
+    try:
+        WATCHDOG_LOG_PATH.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+    _log("[Watchdog] Running Preflight Gate (py_compile + unittest)...")
     test_res = validate_staged_palace(run_unit_tests=not skip_tests)
     if not test_res.get("passed"):
         msg = f"Preflight gate failed — aborting hot-reboot:\n{json.dumps(test_res, indent=2)}"
-        print(f"[Watchdog] {msg}", file=sys.stderr)
+        _log(f"[Watchdog] {msg}", err=True)
         return False, msg
 
     # 2. Ensure golden baseline v0001 exists and backup current live files to last_known_good/
@@ -114,11 +132,11 @@ def perform_hot_reboot(
         resumption_prompt=resumption_prompt,
     )
     if not ok_handoff:
-        print(f"[Watchdog] {handoff_msg}", file=sys.stderr)
+        _log(f"[Watchdog] {handoff_msg}", err=True)
         return False, handoff_msg
 
     # 4. Stop old Palace window & atomically swap allowlisted files from staging/ -> Live & Repo
-    print("[Watchdog] Stopping previous Palace instance and swapping staged files...")
+    _log("[Watchdog] Stopping previous Palace instance and swapping staged files...")
     _stop_existing_palace_gui()
     time.sleep(0.6)
 
@@ -140,7 +158,7 @@ def perform_hot_reboot(
     _launch_palace_on_interactive_desktop()
 
     # 6. Wait up to 10 seconds for READY heartbeat (L5)
-    print("[Watchdog] Waiting for READY heartbeat from upgraded PalaceWindow...")
+    _log("[Watchdog] Waiting for READY heartbeat from upgraded PalaceWindow...")
     deadline = time.time() + 10.0
     while time.time() < deadline:
         if READY_HEARTBEAT_PATH.exists():
@@ -156,14 +174,14 @@ def perform_hot_reboot(
                     except Exception:
                         pass
                     msg = f"SUCCESS: Upgraded Palace process (PID {hb.get('pid')}) verified READY on desktop!"
-                    print(f"[Watchdog] {msg}")
+                    _log(f"[Watchdog] {msg}")
                     return True, msg
             except Exception:
                 pass
         time.sleep(0.4)
 
     # 7. Automatic Zero-Touch Rollback on Timeout/Crash!
-    print("[Watchdog] ERROR: READY heartbeat timed out! Rolling back to last_known_good...", file=sys.stderr)
+    _log("[Watchdog] ERROR: READY heartbeat timed out! Rolling back to last_known_good...", err=True)
     _stop_existing_palace_gui()
     rollback_to_last_known_good()
     try:

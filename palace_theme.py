@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import html
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any
 from urllib import request as urllib_request
+from uuid import uuid4
 
 from PySide6.QtCore import QByteArray, QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import (
@@ -353,7 +357,7 @@ _SVG_FENCE_PATTERN = re.compile(
 )
 
 _GENERATE_IMAGE_TAG_PATTERN = re.compile(
-    r"\[GENERATE_IMAGE\s+([^\]]+)\]",
+    r'\[GENERATE_IMAGE\s+((?:[^\]"]|"[^"]*")*)\]',
     re.IGNORECASE,
 )
 
@@ -488,10 +492,38 @@ def _fit_and_save_target_png(raw_bytes: bytes, out_path: Path, target_w: int, ta
     # Stamp 300 DPI (11811 pixels per meter) so print apps respect exact physical dimensions
     qimg.setDotsPerMeterX(11811)
     qimg.setDotsPerMeterY(11811)
-    return bool(qimg.save(str(out_path), "PNG"))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_name(f"{out_path.name}.{uuid4().hex[:6]}.tmp.png")
+    try:
+        if not qimg.save(str(tmp_path), "PNG"):
+            return False
+        os.replace(str(tmp_path), str(out_path))
+        return True
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
-_MARKDOWN_HTML_CACHE: dict[str, str] = {}
+_MARKDOWN_HTML_CACHE: OrderedDict[str, str] = OrderedDict()
+_MARKDOWN_HTML_CACHE_MAX = 256
+_RENDER_INDEX_LOCK = threading.Lock()
+
+
+def _md_cache_get(key: str) -> str | None:
+    val = _MARKDOWN_HTML_CACHE.get(key)
+    if val is not None:
+        _MARKDOWN_HTML_CACHE.move_to_end(key)
+    return val
+
+
+def _md_cache_put(key: str, val: str) -> None:
+    _MARKDOWN_HTML_CACHE[key] = val
+    _MARKDOWN_HTML_CACHE.move_to_end(key)
+    while len(_MARKDOWN_HTML_CACHE) > _MARKDOWN_HTML_CACHE_MAX:
+        _MARKDOWN_HTML_CACHE.popitem(last=False)
 
 
 def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | None:
@@ -567,6 +599,121 @@ def get_image_engine_badge(out_path: Path) -> str:
     return ""
 
 
+_RECENT_RENDER_MAP: dict[str, Path] = {}
+
+
+def _render_index_path() -> Path:
+    return get_generated_images_dir() / "_render_index.json"
+
+
+def _record_recent_render(base_key: str, out_path: Path) -> None:
+    with _RENDER_INDEX_LOCK:
+        _RECENT_RENDER_MAP[base_key] = out_path
+        try:
+            idx_p = _render_index_path()
+            data: dict[str, str] = {}
+            if idx_p.exists():
+                try:
+                    loaded = json.loads(idx_p.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = {str(k): str(v) for k, v in list(loaded.items())[-120:]}
+                except Exception:
+                    data = {}
+            data[base_key] = str(out_path)
+            idx_p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _lookup_recent_render(base_key: str) -> Path | None:
+    with _RENDER_INDEX_LOCK:
+        cached = _RECENT_RENDER_MAP.get(base_key)
+        if cached is not None and cached.exists() and cached.stat().st_size > 100:
+            return cached
+        try:
+            idx_p = _render_index_path()
+            if idx_p.exists():
+                loaded = json.loads(idx_p.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and base_key in loaded:
+                    cand = Path(loaded[base_key])
+                    if cand.exists() and cand.stat().st_size > 100:
+                        _RECENT_RENDER_MAP[base_key] = cand
+                        return cand
+        except Exception:
+            pass
+    return None
+
+
+def extract_reference_image_paths(text: str, max_images: int = 2) -> list[Path]:
+    """Extract existing local image file Paths from [ATTACHED_FILE_META kind="image" ...] markers."""
+    if not text or "ATTACHED_FILE_META" not in text:
+        return []
+    try:
+        from attachment_service import IMAGE_EXTENSIONS, get_uploaded_files_dir
+    except Exception:
+        return []
+    up_dir = get_uploaded_files_dir()
+    found: list[Path] = []
+    seen: set[str] = set()
+    matches = list(
+        re.finditer(
+            r'\[ATTACHED_FILE_META\s+kind="([^"]+)"\s+name="([^"]+)"\s+stored="([^"]*)"\]',
+            text,
+        )
+    )
+    for m in reversed(matches):
+        kind, name, stored_name = m.group(1), m.group(2), m.group(3)
+        if kind.lower() != "image":
+            continue
+        cand: Path | None = (up_dir / stored_name) if stored_name else None
+        if (cand is None or not cand.is_file()) and name:
+            p_name = Path(name)
+            if p_name.suffix.lower() in IMAGE_EXTENSIONS:
+                cands = sorted(
+                    up_dir.glob(f"{p_name.stem[:48]}_*{p_name.suffix}"),
+                    key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                    reverse=True,
+                )
+                if cands:
+                    cand = cands[0]
+        if cand is not None and cand.is_file():
+            res = str(cand.resolve())
+            if res not in seen:
+                seen.add(res)
+                found.append(cand)
+                if len(found) >= max_images:
+                    break
+    return list(reversed(found))
+
+
+def _encode_multipart_form(
+    fields: dict[str, str],
+    files: list[tuple[str, str, str, bytes]],
+) -> tuple[bytes, str]:
+    boundary = f"----FairybreadBoundary{uuid4().hex}"
+    chunks: list[bytes] = []
+    for k, v in fields.items():
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{k}"\r\n\r\n'
+                f"{v}\r\n"
+            ).encode("utf-8")
+        )
+    for field_name, filename, content_type, data in files:
+        chunks.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8")
+            + data
+            + b"\r\n"
+        )
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), f"multipart/form-data; boundary={boundary}"
+
+
 def generate_ai_image_to_png(
     prompt: str,
     title: str = "ai_image",
@@ -576,13 +723,12 @@ def generate_ai_image_to_png(
     *,
     model: str = "",
     allow_network: bool = False,
+    reference_image_paths: list[Path | str] | None = None,
+    primary_engine: str = "",
+    fallback_engines: list[str] | None = None,
 ) -> Path | None:
-    """Return cached image or generate at highest quality by default using the verified frontier engines:
-    1. Google Gemini `gemini-3-pro-image` (Nano Banana Pro, ~15s)
-    2. Google Gemini `gemini-3.1-flash-image` (Nano Banana 2, ~8.5s — primary when fast/draft requested)
-    3. OpenAI `gpt-image-2` (2nd-gen High-Res, ~90s)
-    4. DeepInfra `FLUX-1-dev` (fallback)
-    Scaled to the exact requested preset/custom/print dimensions and stamped at 300 DPI.
+    """Return cached image or generate using configurable primary graphic AI + explicit fallback chain
+    with optional native reference-image byte threading and 300 DPI atomic PNG save.
     """
     clean_prompt = (prompt or "").strip()
     if not clean_prompt:
@@ -592,7 +738,25 @@ def generate_ai_image_to_png(
     q_norm = (quality or "high").strip().lower()
     is_low_quality = q_norm in {"low", "draft", "fast", "standard", "medium"}
 
-    cache_key = f"{clean_prompt}|{target_w}x{target_h}|{'std' if is_low_quality else 'hd'}|v2"
+    valid_refs: list[Path] = []
+    ref_hasher = hashlib.sha256()
+    for rp in (reference_image_paths or [])[:2]:
+        try:
+            p_obj = Path(rp)
+            if p_obj.is_file() and 0 < p_obj.stat().st_size <= 6 * 1024 * 1024:
+                valid_refs.append(p_obj)
+                ref_hasher.update(p_obj.read_bytes())
+        except OSError:
+            pass
+    ref_hash = ref_hasher.hexdigest()[:12] if valid_refs else "noref"
+
+    base_key = f"{clean_prompt}|{target_w}x{target_h}|{'std' if is_low_quality else 'hd'}"
+    if not allow_network and not valid_refs:
+        recent = _lookup_recent_render(base_key)
+        if recent is not None:
+            return recent
+
+    cache_key = f"{base_key}|{ref_hash}|v3"
     digest = hashlib.sha1(cache_key.encode("utf-8", errors="replace")).hexdigest()[:10]
     safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (title or "image").strip())[:24] or "image"
     out_path = get_generated_images_dir() / f"{safe_slug}_{target_w}x{target_h}_{digest}.png"
@@ -627,14 +791,39 @@ def generate_ai_image_to_png(
     gem_key = cs.get_api_key("gemini")
     openai_key = cs.get_api_key("openai")
     req_model = (model or "").strip().lower()
+    attempted_errors: list[str] = []
 
-    def _try_gemini_image(gem_model: str) -> Path | None:
+    def _mime_for(p: Path) -> str:
+        ext = p.suffix.lower()
+        if ext in {".jpg", ".jpeg"}:
+            return "image/jpeg"
+        if ext == ".webp":
+            return "image/webp"
+        return "image/png"
+
+    def _try_gemini_image(gem_model: str) -> tuple[Path | None, bool]:
         if not gem_key:
-            return None
+            attempted_errors.append(f"{gem_model}: missing gemini API key")
+            return None, False
+        parts: list[dict[str, Any]] = []
+        used_ref = False
+        for rp in valid_refs:
+            try:
+                raw_ref = rp.read_bytes()
+                parts.append({
+                    "inlineData": {
+                        "mimeType": _mime_for(rp),
+                        "data": base64.b64encode(raw_ref).decode("ascii"),
+                    }
+                })
+                used_ref = True
+            except OSError:
+                pass
+        parts.append({"text": clean_prompt})
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{gem_model}:generateContent?key={gem_key}"
             payload = json.dumps({
-                "contents": [{"parts": [{"text": clean_prompt}]}],
+                "contents": [{"parts": parts}],
                 "generationConfig": {
                     "responseModalities": ["IMAGE"],
                     "imageConfig": {"aspectRatio": gemini_aspect},
@@ -654,22 +843,56 @@ def generate_ai_image_to_png(
                         if inline and inline.get("data"):
                             raw_bytes = base64.b64decode(inline["data"])
                             if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
-                                _save_engine_badge(out_path, gem_model)
-                                return out_path
-        except Exception:
-            pass
-        return None
+                                return out_path, used_ref
+            attempted_errors.append(f"{gem_model}: response contained no image bytes")
+        except Exception as exc:
+            attempted_errors.append(f"{gem_model}: {exc}")
+        return None, False
 
-    def _try_openai_gpt_image_2() -> Path | None:
+    def _try_openai_gpt_image_2() -> tuple[Path | None, bool]:
         if not openai_key:
-            return None
+            attempted_errors.append("gpt-image-2: missing openai API key")
+            return None, False
+        oai_q = "low" if q_norm in {"low", "draft", "fast"} else ("medium" if q_norm in {"medium", "standard"} else "high")
+        if valid_refs:
+            try:
+                rp0 = valid_refs[0]
+                body_bytes, ctype = _encode_multipart_form(
+                    {
+                        "model": "gpt-image-2",
+                        "prompt": clean_prompt,
+                        "n": "1",
+                        "size": gpt_img_size,
+                        "quality": oai_q,
+                    },
+                    [("image", rp0.name, _mime_for(rp0), rp0.read_bytes())],
+                )
+                req_ed = urllib_request.Request(
+                    "https://api.openai.com/v1/images/edits",
+                    data=body_bytes,
+                    headers={
+                        "Content-Type": ctype,
+                        "Authorization": f"Bearer {openai_key}",
+                    },
+                    method="POST",
+                )
+                with urllib_request.urlopen(req_ed, timeout=115) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    item0 = body["data"][0]
+                    b64_data = item0.get("b64_json")
+                    if b64_data:
+                        raw_bytes = base64.b64decode(b64_data)
+                        if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                            return out_path, True
+            except Exception as exc:
+                attempted_errors.append(f"gpt-image-2(edits): {exc}")
         try:
             payload = json.dumps({
                 "model": "gpt-image-2",
                 "prompt": clean_prompt,
                 "n": 1,
                 "size": gpt_img_size,
-                "quality": "low" if q_norm in {"low", "draft", "fast"} else ("medium" if q_norm in {"medium", "standard"} else "high"),
+                "quality": oai_q,
             }).encode("utf-8")
             req = urllib_request.Request(
                 "https://api.openai.com/v1/images/generations",
@@ -687,44 +910,25 @@ def generate_ai_image_to_png(
                 if b64_data:
                     raw_bytes = base64.b64decode(b64_data)
                     if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
-                        _save_engine_badge(out_path, "gpt-image-2")
-                        return out_path
-        except Exception:
-            pass
-        return None
+                        return out_path, False
+            attempted_errors.append("gpt-image-2: empty image payload")
+        except Exception as exc:
+            attempted_errors.append(f"gpt-image-2: {exc}")
+        return None, False
 
-    # Honor explicit gpt-image-2 model request if specified
-    if req_model == "gpt-image-2":
-        res = _try_openai_gpt_image_2()
-        if res is not None:
-            return res
-
-    # 1 & 2. Try Google Gemini Nano Banana Pro (gemini-3-pro-image) & Nano Banana 2 (gemini-3.1-flash-image)
-    gem_order = (
-        ["gemini-3.1-flash-image", "gemini-3-pro-image"]
-        if is_low_quality or "flash" in req_model
-        else ["gemini-3-pro-image", "gemini-3.1-flash-image"]
-    )
-    for gm in gem_order:
-        res = _try_gemini_image(gm)
-        if res is not None:
-            return res
-
-    # 3. Try OpenAI 2nd-Gen gpt-image-2 (High-Res)
-    res = _try_openai_gpt_image_2()
-    if res is not None:
-        return res
-
-    # 4. Fallback to DeepInfra FLUX (FLUX-1-dev for high quality, FLUX-1-schnell for draft/fast)
-    di_key = cs.get_api_key("deepinfra") or cs.get_api_key("qwen")
-    if di_key:
+    def _try_deepinfra_flux(flux_eng: str) -> tuple[Path | None, bool]:
+        di_key = cs.get_api_key("deepinfra") or cs.get_api_key("qwen")
+        if not di_key:
+            attempted_errors.append(f"{flux_eng}: missing deepinfra/qwen key")
+            return None, False
         try:
-            flux_model = "black-forest-labs/FLUX-1-schnell" if is_low_quality else "black-forest-labs/FLUX-1-dev"
+            use_schnell = ("schnell" in flux_eng) or (is_low_quality and "dev" not in flux_eng)
+            flux_model = "black-forest-labs/FLUX-1-schnell" if use_schnell else "black-forest-labs/FLUX-1-dev"
             payload = json.dumps({
                 "prompt": clean_prompt,
                 "width": flux_w,
                 "height": flux_h,
-                "num_inference_steps": 4 if is_low_quality else 28,
+                "num_inference_steps": 4 if use_schnell else 28,
             }).encode("utf-8")
             req = urllib_request.Request(
                 f"https://api.deepinfra.com/v1/inference/{flux_model}",
@@ -744,10 +948,69 @@ def generate_ai_image_to_png(
                         b64_str = b64_str.split(",", 1)[1]
                     raw_bytes = base64.b64decode(b64_str)
                     if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
-                        _save_engine_badge(out_path, "FLUX-1-dev")
-                        return out_path
-        except Exception:
-            pass
+                        return out_path, False
+            attempted_errors.append(f"{flux_model}: empty images list")
+        except Exception as exc:
+            attempted_errors.append(f"{flux_eng}: {exc}")
+        return None, False
+
+    try:
+        from palace_config import load_graphics_settings
+        g_cfg = load_graphics_settings()
+    except Exception:
+        g_cfg = {
+            "primary_image_engine": "gemini-3-pro-image",
+            "draft_image_engine": "gemini-3.1-flash-image",
+            "fallback_image_engines": ["gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+        }
+
+    prim = (primary_engine or "").strip().lower()
+    if not prim:
+        if is_low_quality or "flash" in req_model:
+            prim = str(g_cfg.get("draft_image_engine") or "gemini-3.1-flash-image").strip().lower()
+        else:
+            prim = str(g_cfg.get("primary_image_engine") or "gemini-3-pro-image").strip().lower()
+
+    raw_chain: list[str] = []
+    if req_model:
+        raw_chain.append(req_model)
+    if prim:
+        raw_chain.append(prim)
+    if fallback_engines is not None:
+        raw_chain.extend(str(e).strip().lower() for e in fallback_engines if str(e).strip())
+    else:
+        raw_chain.extend(str(e).strip().lower() for e in (g_cfg.get("fallback_image_engines") or []) if str(e).strip())
+        for default_eng in ("gemini-3.1-flash-image", "gemini-3-pro-image", "gpt-image-2", "flux-1-dev"):
+            raw_chain.append(default_eng)
+
+    engine_chain: list[str] = []
+    for e in raw_chain:
+        if e and e not in engine_chain:
+            engine_chain.append(e)
+
+    for idx, eng in enumerate(engine_chain):
+        res_path: Path | None = None
+        used_ref = False
+        badge_label = eng
+        if eng.startswith("gemini"):
+            res_path, used_ref = _try_gemini_image(eng)
+        elif "gpt-image" in eng or eng.startswith("openai"):
+            res_path, used_ref = _try_openai_gpt_image_2()
+            badge_label = "gpt-image-2"
+        elif "flux" in eng:
+            res_path, used_ref = _try_deepinfra_flux(eng)
+            badge_label = "FLUX-1-schnell" if ("schnell" in eng or (is_low_quality and "dev" not in eng)) else "FLUX-1-dev"
+        else:
+            res_path, used_ref = _try_gemini_image(eng)
+
+        if res_path is not None:
+            if idx > 0:
+                badge_label += " (fallback)"
+            if used_ref:
+                badge_label += " +ref"
+            _save_engine_badge(out_path, badge_label)
+            _record_recent_render(base_key, out_path)
+            return res_path
 
     return None
 
@@ -785,7 +1048,7 @@ def _unwrap_real_image_tags(text: str) -> str:
             return tag
         return m.group(0)
 
-    out = re.sub(r"`+(\[GENERATE_IMAGE\b[^`\n]+?\])`+", _unwrap_backticked_tag, out)
+    out = re.sub(r'`+(\[GENERATE_IMAGE\s+(?:[^\]"`]|"[^"]*")*\])`+', _unwrap_backticked_tag, out, flags=re.IGNORECASE)
     return out
 
 
@@ -809,23 +1072,35 @@ def neutralize_intermediate_image_tags(text: str) -> str:
     return _GENERATE_IMAGE_TAG_PATTERN.sub(_wrap_if_bare, text)
 
 
-def prewarm_generated_images(content: str) -> list[Path]:
-    """Run on background worker thread before UI render: pre-generates any real (non-backticked)
-    [GENERATE_IMAGE ...] tags with allow_network=True so UI rendering is 100% instant and non-blocking.
+def prewarm_generated_images(
+    content: str,
+    *,
+    reference_image_paths: list[Path | str] | None = None,
+) -> list[Path]:
+    """Run on background worker thread before UI render: pre-generates real (non-backticked)
+    [GENERATE_IMAGE ...] tags concurrently with allow_network=True so UI rendering is instant.
     """
     scannable = _strip_code_spans_for_tag_scan(content or "")
-    generated: list[Path] = []
+    specs: list[tuple[str, str, str, str, str, str]] = []
     for match in _GENERATE_IMAGE_TAG_PATTERN.finditer(scannable):
         attrs = _parse_generate_image_attrs(match.group(1))
         img_prompt = attrs.get("prompt", "")
         if not img_prompt:
             continue
-        img_title = attrs.get("title") or img_prompt[:40]
-        img_size = attrs.get("size") or attrs.get("preset") or ""
-        img_quality = attrs.get("quality") or "high"
-        img_style = attrs.get("style") or ""
-        img_model = attrs.get("model") or ""
-        path = generate_ai_image_to_png(
+        specs.append((
+            img_prompt,
+            attrs.get("title") or img_prompt[:40],
+            attrs.get("size") or attrs.get("preset") or "",
+            attrs.get("quality") or "high",
+            attrs.get("style") or "",
+            attrs.get("model") or "",
+        ))
+    if not specs:
+        return []
+
+    def _run_one(sp: tuple[str, str, str, str, str, str]) -> Path | None:
+        img_prompt, img_title, img_size, img_quality, img_style, img_model = sp
+        return generate_ai_image_to_png(
             img_prompt,
             title=img_title,
             size=img_size,
@@ -833,17 +1108,25 @@ def prewarm_generated_images(content: str) -> list[Path]:
             style=img_style,
             model=img_model,
             allow_network=True,
+            reference_image_paths=reference_image_paths,
         )
-        if path is not None:
-            generated.append(path)
-    return generated
+
+    if len(specs) == 1:
+        res = _run_one(specs[0])
+        return [res] if res is not None else []
+
+    with ThreadPoolExecutor(max_workers=min(3, len(specs))) as pool:
+        results = list(pool.map(_run_one, specs))
+    return [p for p in results if p is not None]
 
 
 def format_markdown_and_drawings(content: str) -> str:
     """Convert AI response text into clean HTML with rendered SVG/Image pictures, headings, bold, and code blocks."""
     raw = content or ""
-    if raw in _MARKDOWN_HTML_CACHE and "[PALACE_UI_SNAPSHOT" not in raw and "[GENERATE_IMAGE" not in raw:
-        return _MARKDOWN_HTML_CACHE[raw]
+    if "[PALACE_UI_SNAPSHOT" not in raw and "[GENERATE_IMAGE" not in raw:
+        cached = _md_cache_get(raw)
+        if cached is not None:
+            return cached
     rendered_images_html: list[str] = []
     code_blocks: list[str] = []
     inline_codes: list[str] = []
@@ -1060,9 +1343,7 @@ def format_markdown_and_drawings(content: str) -> str:
     for idx, iblock in enumerate(rendered_images_html):
         formatted = formatted.replace(f"@@PALACE_IMG_{idx}@@", iblock)
 
-    if len(_MARKDOWN_HTML_CACHE) > 250:
-        _MARKDOWN_HTML_CACHE.clear()
-    _MARKDOWN_HTML_CACHE[raw] = formatted
+    _md_cache_put(raw, formatted)
     return formatted
 
 

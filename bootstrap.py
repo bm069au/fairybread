@@ -40,9 +40,20 @@ def build_palace(
     )
 
     if synthesis_provider_name is None:
-        synthesis_provider_name = next(
-            iter(providers)
-        )
+        try:
+            from palace_config import load_agent_defaults
+            synth_mode = str(load_agent_defaults().get("synthesizer_mode") or "auto_fast").strip().lower()
+        except Exception:
+            synth_mode = "auto_fast"
+        if synth_mode == "match_primary":
+            synthesis_provider_name = next(iter(providers))
+        elif synth_mode in providers:
+            synthesis_provider_name = synth_mode
+        else:
+            synthesis_provider_name = next(
+                (p for p in ("deepseek", "cerebras", "groq", "gemini", "openai") if p in providers),
+                next(iter(providers)),
+            )
 
     if synthesis_provider_name not in providers:
         raise ValueError(

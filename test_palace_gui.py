@@ -999,10 +999,10 @@ class WindowTests(unittest.TestCase):
         d_coh = RoundAwareProvider('cohere', 'Cohere dog note', '[PASS]')
         draw_palace = build_palace({'deepseek': d_ds, 'openai': d_oai, 'cohere': d_coh})
 
-        # Direct draw: only 1 Prompt Architect (deepseek) runs in 1 pass
+        # Direct draw: 2-provider Graphic Prompt Duo (openai + deepseek when gemini is absent), 1 pass, skipping cohere
         direct_res = draw_palace.run('Draw me a brown dog on a black carpet in front of a fireplace', max_rounds=2)
-        self.assertEqual(list(direct_res.provider_results.keys()), ['deepseek'])
-        self.assertEqual(d_oai.calls, 0)
+        self.assertEqual(set(direct_res.provider_results.keys()), {'openai', 'deepseek'})
+        self.assertEqual(d_oai.calls, 1)
         self.assertEqual(d_coh.calls, 0)
 
         # Council draw: all agents collaborate on prompt, intermediate speaker bubbles neutralize [GENERATE_IMAGE] tags

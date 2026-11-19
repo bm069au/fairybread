@@ -28,12 +28,10 @@ def _archive_uploaded_bytes(raw: bytes, original_name: str) -> Path | None:
         if not dest.exists():
             tmp_path = dest.with_name(dest.name + ".tmp")
             try:
-                tmp_path.write_bytes(raw)
-                fd = os.open(str(tmp_path), os.O_RDONLY)
-                try:
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
+                with tmp_path.open("wb") as fh:
+                    fh.write(raw)
+                    fh.flush()
+                    os.fsync(fh.fileno())
                 os.replace(str(tmp_path), str(dest))
             finally:
                 if tmp_path.exists():
