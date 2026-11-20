@@ -1,27 +1,46 @@
 import argparse
+from pathlib import Path
 import sys
 
 from context_service import ContextService
 
 from bootstrap import build_palace
 from credential_store import CredentialStore
+from local_cli_provider import CLI_PROVIDER_TO_PLATFORM
 from provider_loader import load_configured_providers
 from palace_config import load_enabled_provider_names, load_provider_configs
 
-def build_configured_palace(*, include_context=True, context_service=None):
+
+def build_configured_palace(
+    *,
+    include_context=True,
+    context_service=None,
+    exclude_local_cli_providers: bool = False,
+    config_path: Path | None = None,
+):
     credentials = CredentialStore()
-    provider_configs = load_provider_configs()
+    provider_configs = (
+        load_provider_configs(config_path=config_path)
+        if config_path is not None
+        else load_provider_configs()
+    )
 
     providers = load_configured_providers(
         credentials,
-        provider_configs=provider_configs
+        provider_configs=provider_configs,
+        config_path=config_path,
+        include_local_cli=not exclude_local_cli_providers,
     )
-    enabled_names = load_enabled_provider_names()
+    enabled_names = (
+        load_enabled_provider_names(config_path=config_path)
+        if config_path is not None
+        else load_enabled_provider_names()
+    )
 
     providers = {
         name: provider
         for name, provider in providers.items()
-        if name in enabled_names
+        if name in enabled_names or name in CLI_PROVIDER_TO_PLATFORM
     }
 
     if not providers:

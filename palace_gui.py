@@ -8,15 +8,26 @@ from pathlib import Path
 import re
 import sys
 import time
+from typing import Any
 import webbrowser
 
 from PySide6.QtCore import QBuffer, QIODevice, QPoint, QRect, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QFrame, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget,
+    QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
-    QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+)
+
+from access_policy import (
+    PERMISSION_MODE_META,
+    PERMISSION_MODES,
+    list_local_drives,
+    load_access_permissions,
+    normalize_exclusion_path_str,
+    normalize_permission_mode,
+    save_access_permissions,
 )
 
 from attachment_service import (
@@ -624,21 +635,117 @@ class CustomAIPickerDialog(QDialog):
         return int(self.max_spin.value())
 
 
+class RestoreDefaultSettingsDialog(QDialog):
+    """Fail-safe settings reset dialog protecting Memory Palaces, chats, API keys, and exclusions by default."""
+
+    def __init__(
+        self,
+        parent=None,
+        config_path: Path = CONFIG_PATH,
+        backup_dir: Path | None = None,
+        bridge_home_dir: Path | None = None,
+        bridge_appdata_dir: Path | None = None,
+    ):
+        super().__init__(parent)
+        self.config_path = config_path
+        self._backup_dir = backup_dir
+        self._bridge_home_dir = bridge_home_dir
+        self._bridge_appdata_dir = bridge_appdata_dir
+        self.reset_result: dict[str, Any] = {}
+
+        self.setWindowTitle('Restore Default Settings')
+        self.resize(560, 400)
+        self.setModal(True)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+
+        hdr = QLabel('<b>↺ Restore Default Settings</b>')
+        hdr.setTextFormat(Qt.TextFormat.RichText)
+        hdr.setStyleSheet('font-size: 15px; color: #f0f6fc;')
+        lay.addWidget(hdr)
+
+        info_box = QLabel(
+            '<b>Always kept safe (never modified):</b><br>'
+            '• Normal &amp; Idle Memory Palaces, conversations, and projects<br>'
+            '• Saved API keys (Windows DPAPI vault) and configured provider keys<br><br>'
+            '<b>Reset to factory defaults:</b><br>'
+            '• Appearance &amp; theme, Agent Defaults, Voice &amp; Audio, Profiles/Squads, '
+            'AI Access Mode (back to <i>Default</i>), and Experimental Mode toggles.<br><br>'
+            '<span style="color:#8b949e;">An automatic pre-reset JSON snapshot is saved first so you can undo any reset.</span>'
+        )
+        info_box.setTextFormat(Qt.TextFormat.RichText)
+        info_box.setWordWrap(True)
+        info_box.setStyleSheet(
+            'background:#131720; color:#c9d1d9; border:1px solid #262c3a; '
+            'border-radius:8px; padding:12px; font-size:12.5px;'
+        )
+        lay.addWidget(info_box)
+
+        try:
+            ap = load_access_permissions(self.config_path)
+            excl_n = len(ap.get('write_exclusions') or [])
+        except Exception:
+            excl_n = 0
+
+        self.clear_exclusions_check = QCheckBox(
+            f'Also clear my Write Exclusion List ({excl_n} protected path(s))'
+        )
+        self.clear_exclusions_check.setChecked(False)
+        lay.addWidget(self.clear_exclusions_check)
+
+        self.unlink_bridges_check = QCheckBox(
+            'Also unlink External Agent Bridge (MCP) configs'
+        )
+        self.unlink_bridges_check.setChecked(False)
+        lay.addWidget(self.unlink_bridges_check)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.clicked.connect(self.reject)
+        apply_btn = QPushButton('↺ Restore Defaults')
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setStyleSheet(
+            'QPushButton { background:#b62324; color:#ffffff; border:1px solid #da3633; '
+            'padding:7px 14px; border-radius:6px; font-weight:700; } '
+            'QPushButton:hover { background:#da3633; }'
+        )
+        apply_btn.clicked.connect(self._execute_reset)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(apply_btn)
+        lay.addLayout(btn_row)
+
+    def _execute_reset(self):
+        from palace_config import restore_default_settings
+
+        self.reset_result = restore_default_settings(
+            self.config_path,
+            clear_write_exclusions=self.clear_exclusions_check.isChecked(),
+            unlink_external_bridges=self.unlink_bridges_check.isChecked(),
+            backup_dir=self._backup_dir,
+            bridge_home_dir=self._bridge_home_dir,
+            bridge_appdata_dir=self._bridge_appdata_dir,
+        )
+        self.accept()
+
+
 class ManageAIsDialog(QDialog):
     """Multi-page Palace Settings dialog (including AI Providers and dedicated Idle Mode page)."""
 
     SETTINGS_PAGES = [
         'General',
+        'AI Access Permissions',
         'Agent Defaults',
         'Voice & Audio',
         'Appearance',
         'Email & Notifications',
         'AI Providers',
         'Profiles',
-        'Work Mode & Tools',
         'Memory & Personalization',
         'Experimental Mode',
-        'Agent Bridge & Permissions',
+        'External Agent Bridge (MCP)',
         'Backup & Restore',
     ]
 
@@ -649,11 +756,15 @@ class ManageAIsDialog(QDialog):
         credential_store: CredentialStore | None = None,
         initial_page: str = 'AI Providers',
         idle_memory: IdleMemoryStore | None = None,
+        bridge_home_dir: Path | None = None,
+        bridge_appdata_dir: Path | None = None,
     ):
         super().__init__(parent)
         self.config_path = config_path
         self.credential_store = credential_store or CredentialStore()
         self.idle_memory = idle_memory or IdleMemoryStore()
+        self._bridge_home_dir = bridge_home_dir
+        self._bridge_appdata_dir = bridge_appdata_dir
         self._settings_mic_session = None
         self.setWindowTitle('Fairybread Settings')
         self.resize(960, 720)
@@ -677,13 +788,13 @@ class ManageAIsDialog(QDialog):
         right_col.addWidget(self.pages, 1)
 
         self._build_general_page()
+        self._build_ai_access_permissions_page()
         self._build_agent_defaults_page()
         self._build_voice_audio_page()
         self._build_appearance_page()
         self._build_notifications_page()
         self._build_ai_providers_page()
         self._build_profiles_page()
-        self._build_work_tools_page()
         self._build_memory_history_page()
         self._build_idle_mode_page()
         self._build_permissions_page()
@@ -706,17 +817,21 @@ class ManageAIsDialog(QDialog):
 
         self.nav_list.currentRowChanged.connect(self.pages.setCurrentIndex)
         page_aliases = {
+            'Permissions': 'AI Access Permissions',
+            'Approval': 'AI Access Permissions',
+            'Access Permissions': 'AI Access Permissions',
+            'Work Mode & Tools': 'AI Access Permissions',
+            'Work Mode': 'AI Access Permissions',
             'Configuration': 'Agent Defaults',
             'Control Panel': 'Agent Defaults',
-            'Approval': 'Agent Defaults',
             'Defaults': 'Agent Defaults',
             'Voice': 'Voice & Audio',
             'Audio': 'Voice & Audio',
             'Microphone': 'Voice & Audio',
             'Notifications': 'Email & Notifications',
             'Email': 'Email & Notifications',
-            'Permissions': 'Agent Bridge & Permissions',
-            'Agent Bridge': 'Agent Bridge & Permissions',
+            'Agent Bridge': 'External Agent Bridge (MCP)',
+            'Agent Bridge & Permissions': 'External Agent Bridge (MCP)',
             'Idle Mode': 'Experimental Mode',
             'Idle': 'Experimental Mode',
             'Experimental': 'Experimental Mode',
@@ -806,6 +921,13 @@ class ManageAIsDialog(QDialog):
         self.close_to_tray_check.setToolTip('Keep Fairybread running in the system tray when closed')
         lay.addWidget(self.close_to_tray_check)
 
+        self.auto_refresh_catalog_check = QCheckBox(
+            'Auto-refresh model list, pricing rates && update notices from fairybread.me (JSON only, no telemetry)',
+            checked=bool(ui_cfg.get('auto_refresh_catalog', True)),
+        )
+        self.auto_refresh_catalog_check.setToolTip('Silently refreshes token/voice/image rate tables & checks for new Fairybread releases on startup (6h cache)')
+        lay.addWidget(self.auto_refresh_catalog_check)
+
         enter_form = QFormLayout()
         self.enter_mode_combo = QComboBox()
         self.enter_mode_combo.addItem('Enter submits message · Shift+Enter adds new line (Default)', True)
@@ -814,13 +936,19 @@ class ManageAIsDialog(QDialog):
         enter_form.addRow('Composer Enter key behavior:', self.enter_mode_combo)
         lay.addLayout(enter_form)
 
-        jump_defaults_btn = QPushButton('⚙ Open Agent Defaults & Approval Control Panel…')
+        jump_perm_btn = QPushButton('🛡 AI Access Permissions (Request Review / Default / Auto / Turbo && Write Exclusions)…')
+        jump_perm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        jump_perm_btn.setToolTip('Configure execution permissions, Write Exclusion List, and project tool capabilities')
+        jump_perm_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('AI Access Permissions')))
+        lay.addWidget(jump_perm_btn)
+
+        jump_defaults_btn = QPushButton('⚙ Open Agent Defaults (Web Search, Detail, Reasoning && Speed)…')
         jump_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        jump_defaults_btn.setToolTip('Configure Approval Policy (Auto-deploy vs On request), Sandbox Mode, Output Detail & Speed')
+        jump_defaults_btn.setToolTip('Configure web search depth, output detail, reasoning summary, synthesizer, and timeouts')
         jump_defaults_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Agent Defaults')))
         lay.addWidget(jump_defaults_btn)
 
-        jump_voice_btn = QPushButton('🎙️ Open Voice & Audio Settings (Human Voice, Accent, Microphone & Companion)…')
+        jump_voice_btn = QPushButton('🎙️ Open Voice && Audio Settings (Human Voice, Accent, Microphone && Companion)…')
         jump_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         jump_voice_btn.setToolTip('Choose your neural voice, accent/style, speed, companion mode, and test your microphone & speaker')
         jump_voice_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Voice & Audio')))
@@ -829,50 +957,277 @@ class ManageAIsDialog(QDialog):
         lay.addStretch()
         self.pages.addWidget(w)
 
+    def _build_ai_access_permissions_page(self):
+        w, outer_lay = self._make_simple_page(
+            '🛡 AI Access Permissions',
+            'Control how agents execute edits and commands on your computer, and maintain an unlimited Write Exclusion List that ALWAYS requires approval — even in Turbo mode.'
+        )
+        ap_cfg = load_access_permissions(self.config_path)
+        tool_cfg = load_tool_settings(self.config_path)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 8, 4)
+        lay.setSpacing(10)
+
+        # Card 1: Permissions · This Computer
+        mode_card = QFrame()
+        mode_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        mc_lay = QVBoxLayout(mode_card)
+        mc_lay.setSpacing(8)
+        mc_hdr = QLabel('<b>Permissions · This Computer</b>')
+        mc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        mc_lay.addWidget(mc_hdr)
+
+        form_mode = QFormLayout()
+        self.perm_mode_combo = QComboBox()
+        self.perm_mode_combo.setToolTip('Select how Fairybread handles file edits, patches, and shell commands')
+        for mk in PERMISSION_MODES:
+            meta = PERMISSION_MODE_META[mk]
+            self.perm_mode_combo.addItem(f"{meta['label']} — {meta['description']}", mk)
+        cur_pm = normalize_permission_mode(ap_cfg.get('permission_mode', 'default'))
+        pm_idx = self.perm_mode_combo.findData(cur_pm)
+        if pm_idx >= 0:
+            self.perm_mode_combo.setCurrentIndex(pm_idx)
+        form_mode.addRow('Execution mode:', self.perm_mode_combo)
+        mc_lay.addLayout(form_mode)
+
+        self.perm_mode_desc_label = QLabel('')
+        self.perm_mode_desc_label.setWordWrap(True)
+        self.perm_mode_desc_label.setTextFormat(Qt.TextFormat.RichText)
+        self.perm_mode_desc_label.setStyleSheet('color:#8b949e; font-size:11.5px;')
+
+        def _sync_mode_desc():
+            mk = str(self.perm_mode_combo.currentData() or 'default')
+            meta = PERMISSION_MODE_META.get(mk, PERMISSION_MODE_META['default'])
+            self.perm_mode_desc_label.setText(
+                f"<b>{html.escape(meta['label'])}:</b> {html.escape(meta['description'])} "
+                "<span style='color:#6e7681;'>(File tools and command targets are checked against your Write Exclusion List before running; shell commands execute under your Windows user account.)</span>"
+            )
+
+        self.perm_mode_combo.currentIndexChanged.connect(lambda _i: _sync_mode_desc())
+        _sync_mode_desc()
+        mc_lay.addWidget(self.perm_mode_desc_label)
+        lay.addWidget(mode_card)
+
+        # Card 2: Write Exclusion List (Always On Top — Overrides Turbo & Auto)
+        excl_card = QFrame()
+        excl_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        ec_lay = QVBoxLayout(excl_card)
+        ec_lay.setSpacing(8)
+        ec_hdr = QLabel('<b>Write Exclusion List (Always On Top — Overrides Turbo &amp; Auto)</b>')
+        ec_hdr.setTextFormat(Qt.TextFormat.RichText)
+        ec_lay.addWidget(ec_hdr)
+
+        ec_sub = QLabel(
+            'No matter what mode is selected above (even <b>Turbo</b>), any file write, edit, patch, rename, or delete touching paths in this list forces Fairybread to ask your explicit approval first. Starts empty — add drives or folders with or without subdirectories.'
+        )
+        ec_sub.setWordWrap(True)
+        ec_sub.setTextFormat(Qt.TextFormat.RichText)
+        ec_sub.setStyleSheet('color:#8b949e; font-size:11.5px;')
+        ec_lay.addWidget(ec_sub)
+
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        self.excl_path_input = QLineEdit()
+        self.excl_path_input.setPlaceholderText(r'Enter folder or drive path (e.g. M:\, E:\, C:\CriticalFolder)…')
+        self.excl_path_input.setToolTip('Type or paste any drive letter or folder path to add to the Write Exclusion List')
+        add_row.addWidget(self.excl_path_input, 1)
+
+        self.excl_add_btn = QPushButton('Add Path')
+        self.excl_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.excl_add_btn.setToolTip('Add the typed path to the Write Exclusion List')
+        add_row.addWidget(self.excl_add_btn)
+
+        self.excl_browse_btn = QPushButton('Browse Folder…')
+        self.excl_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.excl_browse_btn.setToolTip('Choose a folder or drive root via folder picker')
+        add_row.addWidget(self.excl_browse_btn)
+
+        self.excl_drive_btn = QPushButton('Add Drive ▾')
+        self.excl_drive_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.excl_drive_btn.setToolTip('Pick an available local drive root without browsing its contents')
+        add_row.addWidget(self.excl_drive_btn)
+        ec_lay.addLayout(add_row)
+
+        self.excl_table = QTableWidget(0, 3)
+        self.excl_table.setHorizontalHeaderLabels(['Protected Folder or Drive', 'Include Subdirectories', 'Action'])
+        self.excl_table.verticalHeader().setVisible(False)
+        self.excl_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.excl_table.setMinimumHeight(180)
+        self.excl_table.setStyleSheet(
+            'QTableWidget { background:#0d1117; color:#e6edf3; border:1px solid #262c3a; border-radius:6px; gridline-color:#21262d; } '
+            'QHeaderView::section { background:#161b22; color:#8b949e; border:none; border-bottom:1px solid #262c3a; padding:6px; font-weight:600; }'
+        )
+        hdr = self.excl_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.excl_table.setColumnWidth(2, 88)
+        ec_lay.addWidget(self.excl_table)
+
+        def _add_exclusion_row(raw_path: str, include_subdirs: bool = True):
+            clean = normalize_exclusion_path_str(raw_path)
+            if not clean:
+                return
+            for r in range(self.excl_table.rowCount()):
+                item0 = self.excl_table.item(r, 0)
+                if item0 is not None and os.path.normcase(item0.text().strip()) == os.path.normcase(clean):
+                    existing_chk = item0.data(Qt.ItemDataRole.UserRole)
+                    if existing_chk is not None:
+                        existing_chk.setChecked(bool(include_subdirs))
+                    return
+            row = self.excl_table.rowCount()
+            self.excl_table.insertRow(row)
+            self.excl_table.setRowHeight(row, 34)
+
+            p_item = QTableWidgetItem(clean)
+            p_item.setFlags(p_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+            chk = QCheckBox()
+            chk.setChecked(bool(include_subdirs))
+            chk.setToolTip(
+                'Checked: covers this path and every subfolder underneath it. '
+                'Unchecked: protects this folder/drive root only (nested subfolders remain open).'
+            )
+            p_item.setData(Qt.ItemDataRole.UserRole, chk)
+            self.excl_table.setItem(row, 0, p_item)
+
+            chk_host = QWidget()
+            chk_lay = QHBoxLayout(chk_host)
+            chk_lay.setContentsMargins(0, 0, 0, 0)
+            chk_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chk_lay.addWidget(chk)
+            self.excl_table.setCellWidget(row, 1, chk_host)
+
+            rm_btn = QPushButton('Remove')
+            rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm_btn.setToolTip(f'Remove {clean} from Write Exclusion List')
+
+            def _remove_this(_c=False, btn=rm_btn):
+                for rr in range(self.excl_table.rowCount()):
+                    if self.excl_table.cellWidget(rr, 2) is btn:
+                        self.excl_table.removeRow(rr)
+                        break
+
+            rm_btn.clicked.connect(_remove_this)
+            self.excl_table.setCellWidget(row, 2, rm_btn)
+
+        self._add_exclusion_row = _add_exclusion_row
+
+        def _on_add_typed():
+            txt = self.excl_path_input.text().strip()
+            if txt:
+                _add_exclusion_row(txt, include_subdirs=True)
+                self.excl_path_input.clear()
+
+        def _on_browse_folder():
+            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder or Drive to Protect')
+            if chosen:
+                _add_exclusion_row(chosen, include_subdirs=True)
+
+        def _on_drive_menu():
+            menu = QMenu(self)
+            for drv in list_local_drives():
+                act = QAction(drv, menu)
+                act.triggered.connect(lambda _c=False, d=drv: _add_exclusion_row(d, include_subdirs=True))
+                menu.addAction(act)
+            menu.exec(self.excl_drive_btn.mapToGlobal(QPoint(0, self.excl_drive_btn.height() + 2)))
+
+        self.excl_add_btn.clicked.connect(_on_add_typed)
+        self.excl_path_input.returnPressed.connect(_on_add_typed)
+        self.excl_browse_btn.clicked.connect(_on_browse_folder)
+        self.excl_drive_btn.clicked.connect(_on_drive_menu)
+
+        for entry in ap_cfg.get('write_exclusions', []) or []:
+            _add_exclusion_row(entry.get('path', ''), include_subdirs=bool(entry.get('include_subdirs', True)))
+
+        lay.addWidget(excl_card)
+
+        # Card 3: Agent Capabilities & Recursive Self-Improvement Safety
+        cap_card = QFrame()
+        cap_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        cc_lay = QVBoxLayout(cap_card)
+        cc_lay.setSpacing(6)
+        cc_hdr = QLabel('<b>Agent Capabilities &amp; Workspace Tools</b>')
+        cc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        cc_lay.addWidget(cc_hdr)
+
+        self.cap_workspace_writes_check = QCheckBox('📁 Project File Editing (Read, write & patch files in user projects)')
+        self.cap_workspace_writes_check.setChecked(bool(ap_cfg.get('allow_workspace_writes', True)))
+        cc_lay.addWidget(self.cap_workspace_writes_check)
+
+        self.cap_shell_cmds_check = QCheckBox('💻 Terminal / Shell Commands (Run build, test & workspace commands)')
+        self.cap_shell_cmds_check.setChecked(bool(ap_cfg.get('allow_shell_commands', True)))
+        cc_lay.addWidget(self.cap_shell_cmds_check)
+
+        self.tool_checks: dict[str, QCheckBox] = {}
+        items = [
+            ('palace_source_tool', '🔧 App Source Code Inspection (Read-only inspection of Fairybread source)'),
+            ('shared_palace_files_tool', '🏛 Shared Memory File Tools (Read/write persistent notes & proposals)'),
+            ('project_folder_tool', '📂 Attached Project Folder Context (Index attached project folders)'),
+            ('owner_email_tool', '✉ Agent-to-Owner Email Tool (Send requests & file links to Agent Mail)'),
+            ('github_tool', '🐙 GitHub & Git Workflow Tools'),
+            ('external_mail_tool', '📬 External Mail & Web Research Tools'),
+        ]
+        for key, label in items:
+            chk = QCheckBox(label)
+            chk.setChecked(bool(tool_cfg.get(key, False)))
+            self.tool_checks[key] = chk
+            cc_lay.addWidget(chk)
+
+        self_heal_note = QLabel(
+            '<span style="color:#8b949e; font-size:11.5px;">'
+            '♻ <b>Recursive Self-Improvement Safety:</b> When Fairybread patches its own source files, automatic backups, syntax checks, and rollback recovery stay enabled by default.'
+            '</span>'
+        )
+        self_heal_note.setWordWrap(True)
+        self_heal_note.setTextFormat(Qt.TextFormat.RichText)
+        cc_lay.addWidget(self_heal_note)
+        lay.addWidget(cap_card)
+
+        lay.addStretch()
+        scroll.setWidget(inner)
+        outer_lay.addWidget(scroll, 1)
+        self.pages.addWidget(w)
+
+    def _collect_exclusions(self) -> list[dict[str, Any]]:
+        if not hasattr(self, 'excl_table'):
+            return []
+        rows: list[dict[str, Any]] = []
+        for r in range(self.excl_table.rowCount()):
+            item0 = self.excl_table.item(r, 0)
+            if item0 is None:
+                continue
+            p_str = normalize_exclusion_path_str(item0.text())
+            if not p_str:
+                continue
+            chk = item0.data(Qt.ItemDataRole.UserRole)
+            inc = bool(chk.isChecked()) if chk is not None else True
+            rows.append({'path': p_str, 'include_subdirs': inc})
+        return rows
+
     def _build_agent_defaults_page(self):
         w, lay = self._make_simple_page(
             'Agent Defaults',
-            'Configure approval behavior, sandbox scope, web search defaults, output detail, and speed routing without needing / switches.'
+            'Configure web search defaults, output detail, reasoning style, and speed routing without needing / switches.'
         )
         ad_cfg = load_agent_defaults(self.config_path)
 
-        # Card 1: Approval, Sandbox, Web Search, Output Detail & Reasoning Summary
+        # Card 1: Response, Web Search, Output Detail & Reasoning Summary
         core_card = QFrame()
         core_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         c_lay = QVBoxLayout(core_card)
         c_lay.setSpacing(8)
-        c_hdr = QLabel('<b>Agent Behavior &amp; Approval Policy</b>')
+        c_hdr = QLabel('<b>Response Style &amp; Web Search Defaults</b>')
         c_hdr.setTextFormat(Qt.TextFormat.RichText)
         c_lay.addWidget(c_hdr)
 
         form1 = QFormLayout()
-        self.ad_approval_combo = QComboBox()
-        self.ad_approval_combo.setToolTip('Choose when Fairybread asks for approval before patching sandbox code')
-        if IS_DEVELOPER_EDITION:
-            self.ad_approval_combo.addItem('On request (Ask before patching)', 'on_request')
-            self.ad_approval_combo.addItem('Auto-deploy (Tier 1 Sandbox & Live — no /autopatch needed)', 'auto_deploy')
-            self.ad_approval_combo.addItem('Read-only (Never self-patch)', 'read_only')
-        else:
-            self.ad_approval_combo.addItem('Read-only (Public Edition — self-patching locked off)', 'read_only')
-            self.ad_approval_combo.setEnabled(False)
-        cur_ap = str(ad_cfg.get('approval_policy', 'on_request'))
-        ap_idx = self.ad_approval_combo.findData(cur_ap)
-        if ap_idx >= 0:
-            self.ad_approval_combo.setCurrentIndex(ap_idx)
-        form1.addRow('Approval policy:', self.ad_approval_combo)
-
-        self.ad_sandbox_combo = QComboBox()
-        self.ad_sandbox_combo.setToolTip('Choose where Fairybread agents may stage updates (Master E: stays owner-protected)')
-        if IS_DEVELOPER_EDITION:
-            self.ad_sandbox_combo.addItem('Sandbox write (Tier 1 Sandbox & Live; E: protected)', 'sandbox_write')
-        self.ad_sandbox_combo.addItem('Read-only (Inspect source code only)', 'read_only')
-        if not IS_DEVELOPER_EDITION:
-            self.ad_sandbox_combo.setEnabled(False)
-        sb_idx = self.ad_sandbox_combo.findData(str(ad_cfg.get('sandbox_mode', 'sandbox_write')))
-        if sb_idx >= 0:
-            self.ad_sandbox_combo.setCurrentIndex(sb_idx)
-        form1.addRow('Sandbox settings:', self.ad_sandbox_combo)
-
         self.ad_web_search_combo = QComboBox()
         self.ad_web_search_combo.setToolTip('Default web search behavior when no /search switch is typed')
         self.ad_web_search_combo.addItem('Off (No automatic web search)', 'off')
@@ -904,6 +1259,11 @@ class ManageAIsDialog(QDialog):
             self.ad_reasoning_combo.setCurrentIndex(rs_idx)
         form1.addRow('Reasoning summary:', self.ad_reasoning_combo)
         c_lay.addLayout(form1)
+
+        perm_jump_btn = QPushButton('🛡 AI Access Permissions (Request Review / Default / Auto / Turbo && Write Exclusions) →')
+        perm_jump_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        perm_jump_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('AI Access Permissions')))
+        c_lay.addWidget(perm_jump_btn)
         lay.addWidget(core_card)
 
         # Card 2: Performance, Fast Synthesizer & Smart Intent Routing
@@ -952,7 +1312,7 @@ class ManageAIsDialog(QDialog):
 
         organic_hint = QLabel(
             '<span style="color:#8b949e; font-size:11.5px;">'
-            '💡 <b>Organic Intent Understanding:</b> Even with <i>On request</i> active, natural phrases like '
+            '💡 <b>Organic Intent Understanding:</b> Even with <i>Default</i> mode active, natural phrases like '
             '<i>"no need to ask for approval"</i>, <i>"just fix it"</i>, or <i>"keep it short"</i> are understood automatically without typing <code>/</code> switches.'
             '</span>'
         )
@@ -1244,7 +1604,7 @@ class ManageAIsDialog(QDialog):
         self.mic_live_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_live_test_btn.setToolTip('Click and speak into your microphone to watch the green level meter move in real time')
 
-        self.mic_transcribe_test_btn = QPushButton('🧪 Record 3s & Test Transcription')
+        self.mic_transcribe_test_btn = QPushButton('🧪 Record 3s && Test Transcription')
         self.mic_transcribe_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_transcribe_test_btn.setToolTip('Record 3 seconds of your voice and transcribe it live to verify end-to-end voice input')
 
@@ -1608,7 +1968,7 @@ class ManageAIsDialog(QDialog):
         _on_email_provider_changed()
 
         test_row = QHBoxLayout()
-        test_btn = QPushButton('🧪 Save & Send Test Notification (Desktop + Email)')
+        test_btn = QPushButton('🧪 Save && Send Test Notification (Desktop + Email)')
         test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.email_test_status_label = QLabel('')
         self.email_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
@@ -1962,33 +2322,6 @@ class ManageAIsDialog(QDialog):
         reset_sq_btn.clicked.connect(_restore_default_squads)
         _populate_squad_list(select_key=self._active_squad_key)
 
-        self.pages.addWidget(w)
-
-    def _build_work_tools_page(self):
-        w, lay = self._make_simple_page(
-            'Work Mode & Agent Tools',
-            'Configure the sandboxed tools available to AIs in Work Mode, Normal Mode, and Idle Mode.'
-        )
-        tool_cfg = load_tool_settings(self.config_path)
-        self.tool_checks: dict[str, QCheckBox] = {}
-
-        items = [
-            ('palace_source_tool', '🔧 Fairybread Source Code Tool (Read-only inspection of C:\\Palace_Idle_Sandbox\\source_mirror\\)'),
-            ('shared_palace_files_tool', '🏛 Shared Memory File Tools (Read/write persistent notes & proposals)'),
-            ('project_folder_tool', '📁 Attached Project Folder Tool (Read-only workspace access to folders attached to Projects; M: blocked)'),
-            ('owner_email_tool', '✉ Agent-to-Owner Email Tool (Send requests & file links to Agent Mail, max 5 per 30m)'),
-            ('github_tool', '🐙 GitHub & Git Workflow Tools (Stage 3 Roadmap — Read/PR staging with Owner Approval)'),
-            ('external_mail_tool', '📬 Gmail / MS Mail & Web Research Tools (Stage 4 Roadmap — Read & Draft-only with Owner Approval)'),
-        ]
-        for key, label in items:
-            chk = QCheckBox(label)
-            chk.setChecked(bool(tool_cfg.get(key, False)))
-            if key in {'github_tool', 'external_mail_tool'}:
-                chk.setToolTip('Planned for Stage 3 / Stage 4 tool expansion.')
-            self.tool_checks[key] = chk
-            lay.addWidget(chk)
-
-        lay.addStretch()
         self.pages.addWidget(w)
 
     def _build_memory_history_page(self):
@@ -2381,81 +2714,241 @@ class ManageAIsDialog(QDialog):
 
     def _build_permissions_page(self):
         from fairybread_mcp import (
+            EXTERNAL_PLATFORMS,
             get_mcp_json_snippet,
-            install_antigravity_bridge,
-            install_claude_desktop_bridge,
+            get_mcp_server_entry,
+            get_platform_copy_snippet,
+            link_platform_foreman,
             load_bridge_settings,
-            save_bridge_settings,
+            test_mcp_bridge_live,
+            unlink_platform_foreman,
         )
+        from local_cli_provider import detect_external_platforms
 
-        w, lay = self._make_simple_page(
-            '🔗 External Agent Bridge (MCP) & Permissions',
-            'Let your Google Antigravity, Anthropic Claude Desktop / Claude Code, or OpenAI ChatGPT Desktop / Codex CLI consult your Fairybread council and render high-res graphics.'
+        w, outer_lay = self._make_simple_page(
+            '🔗 External Agent Bridge (MCP)',
+            'Connect ChatGPT Desktop / Codex, Google Antigravity, Grok (xAI), or Claude Desktop — pick either Foreman Mode or Council Member Mode per app.'
         )
         b_cfg = load_bridge_settings(self.config_path)
+        home_override = getattr(self, '_bridge_home_dir', None)
+        appdata_override = getattr(self, '_bridge_appdata_dir', None)
+        detected = detect_external_platforms(home_dir=home_override, appdata_dir=appdata_override)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 8, 4)
+        lay.setSpacing(10)
+
+        # Card 1: Clear built-in guide explaining Foreman vs Council Member modes & benefits
+        guide_card = QFrame()
+        guide_card.setObjectName('externalBridgeGuideCard')
+        guide_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        g_lay = QVBoxLayout(guide_card)
+        g_lay.setSpacing(6)
+        guide_hdr = QLabel('<b>How External AI Links Work — Pick One Mode Per App</b>')
+        guide_hdr.setTextFormat(Qt.TextFormat.RichText)
+        g_lay.addWidget(guide_hdr)
+
+        self.bridge_guide_label = QLabel(
+            '• <b>Foreman Mode (External AI drives Fairybread):</b> Stay inside ChatGPT Desktop, Antigravity, Grok, or Claude '
+            'and outsource jobs to Fairybread — multi-AI peer-reviewed answers, 300-DPI graphics, Shared Memory lookups, and '
+            'exhaustive email searches. <i>Setup:</i> Flip <b>Foreman</b> ON (Fairybread writes the config automatically), '
+            'restart that app once, then ask it to use Fairybread.<br>'
+            '• <b>Council Member Mode (External AI joins Fairybread\'s Council):</b> Use your existing local CLI subscription '
+            '(<code>codex</code>, <code>agy</code>, <code>grok</code>, <code>claude</code>) inside Fairybread\'s council '
+            'without paying for a separate per-token API key. <i>Setup:</i> Install and sign in to that CLI once, then flip '
+            '<b>Council Member</b> ON. <i>(Tip: direct API keys in AI Providers are faster when you have them.)</i><br>'
+            '• <b>One-or-the-Other Safety Rule:</b> Turning one switch ON automatically locks (greys out) the other for that '
+            'app so an AI can never trigger an infinite feedback loop. Turn the active switch OFF first to switch roles.'
+        )
+        self.bridge_guide_label.setTextFormat(Qt.TextFormat.RichText)
+        self.bridge_guide_label.setWordWrap(True)
+        self.bridge_guide_label.setStyleSheet('color: #c9d1d9; font-size: 12px; line-height: 1.45;')
+        g_lay.addWidget(self.bridge_guide_label)
+        lay.addWidget(guide_card)
+
+        # Card 2: Platform Link Cards
+        self.bridge_platform_controls: dict[str, dict[str, Any]] = {}
+        platform_meta = {
+            'codex': {
+                'title': 'ChatGPT Desktop / Codex CLI',
+                'note': 'Writes ~/.codex/config.toml → restart ChatGPT Desktop → switch to Codex / Work mode → type /mcp. (Standard browser chat cannot access local tools.)',
+            },
+            'antigravity': {
+                'title': 'Google Antigravity',
+                'note': 'Writes ~/.gemini/config/mcp_config.json + SKILL.md → restart Antigravity to see fairybread_* tools natively.',
+            },
+            'grok': {
+                'title': 'Grok (xAI Build CLI / Grok Bot)',
+                'note': 'Writes ~/.grok/config.toml for Grok Build CLI or Grok Bot (x.ai/bot). Plain grok.com browser chat cannot access local tools.',
+            },
+            'claude': {
+                'title': 'Claude Desktop / Claude Code CLI',
+                'note': 'Writes %APPDATA%\\Claude\\claude_desktop_config.json → restart Claude Desktop.',
+            },
+        }
+
+        chk_style = (
+            'QCheckBox { color: #e6edf3; font-size: 12px; font-weight: 600; spacing: 6px; } '
+            'QCheckBox:disabled { color: #6e7681; }'
+        )
+
+        self.bridge_status_label = QLabel('')
+        self.bridge_status_label.setWordWrap(True)
+        self.bridge_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+
+        def _format_badge(pk: str, info: dict[str, Any], linked: bool) -> str:
+            parts = [
+                'App Config Found' if (info.get('config_dir_exists') or info.get('config_file_exists')) else 'App Not Detected',
+                'CLI Ready' if info.get('cli_available') else 'CLI Not Installed',
+            ]
+            if linked:
+                parts.append('MCP Linked')
+            return ' · '.join(parts)
+
+        saved_platforms = b_cfg.get('platforms') or {}
+
+        for pk in EXTERNAL_PLATFORMS:
+            info = detected.get(pk, {})
+            meta = platform_meta[pk]
+            card = QFrame()
+            card.setObjectName(f'bridgePlatformCard_{pk}')
+            card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
+            c_lay = QVBoxLayout(card)
+            c_lay.setSpacing(6)
+
+            top_row = QHBoxLayout()
+            title_lbl = QLabel(f"<b>{html.escape(meta['title'])}</b>")
+            title_lbl.setTextFormat(Qt.TextFormat.RichText)
+            top_row.addWidget(title_lbl, 1)
+
+            badge_lbl = QLabel(_format_badge(pk, info, bool(info.get('mcp_linked'))))
+            badge_lbl.setStyleSheet(
+                'font-size: 11px; color: #9ca3af; background: #0d1117; '
+                'border: 1px solid #21262d; border-radius: 5px; padding: 2px 8px;'
+            )
+            top_row.addWidget(badge_lbl)
+            c_lay.addLayout(top_row)
+
+            switch_row = QHBoxLayout()
+            switch_row.setSpacing(14)
+            foreman_chk = QCheckBox('Foreman Mode (Drives Fairybread)')
+            foreman_chk.setStyleSheet(chk_style)
+            council_chk = QCheckBox('Council Member (Joins Council)')
+            council_chk.setStyleSheet(chk_style)
+
+            saved_mode = str(saved_platforms.get(pk, 'off') or 'off').lower()
+            is_foreman_init = (saved_mode == 'foreman') or bool(info.get('mcp_linked'))
+            cli_avail = bool(info.get('cli_available'))
+            is_council_init = (not is_foreman_init) and (saved_mode == 'council') and cli_avail
+
+            foreman_chk.setChecked(is_foreman_init)
+            council_chk.setChecked(is_council_init)
+
+            switch_row.addWidget(foreman_chk)
+            switch_row.addWidget(council_chk)
+            switch_row.addStretch()
+
+            if pk == 'grok':
+                copy_grok_btn = QPushButton('📋 Copy Command')
+                copy_grok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+                copy_grok_btn.setToolTip('Copy TOML and command/args for Grok Bot custom connector setup')
+
+                def _copy_grok_cmd():
+                    entry = get_mcp_server_entry()
+                    snippet = get_platform_copy_snippet('grok')
+                    QApplication.clipboard().setText(
+                        f"{snippet}\n# Command: {entry['command']}\n# Args: {entry['args'][0]}"
+                    )
+                    self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                    self.bridge_status_label.setText('✓ Copied Grok MCP config and command/args to clipboard.')
+
+                copy_grok_btn.clicked.connect(_copy_grok_cmd)
+                switch_row.addWidget(copy_grok_btn)
+
+            c_lay.addLayout(switch_row)
+
+            note_lbl = QLabel(meta['note'])
+            note_lbl.setWordWrap(True)
+            note_lbl.setObjectName('muted')
+            note_lbl.setStyleSheet('font-size: 11.5px; color: #8b949e;')
+            c_lay.addWidget(note_lbl)
+
+            self.bridge_platform_controls[pk] = {
+                'foreman': foreman_chk,
+                'council': council_chk,
+                'badge': badge_lbl,
+                'hint': note_lbl,
+                'info': info,
+                'cli_available': cli_avail,
+                'install_hint': str(info.get('install_hint') or ''),
+                'title': meta['title'],
+            }
+
+            foreman_chk.toggled.connect(lambda checked, p=pk: self._on_bridge_foreman_toggled(p, checked))
+            council_chk.toggled.connect(lambda checked, p=pk: self._on_bridge_council_toggled(p, checked))
+            self._sync_platform_interlock(pk)
+
+            lay.addWidget(card)
+
+        # Card 3: Shared MCP Capabilities & Diagnostics
+        cap_card = QFrame()
+        cap_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
+        cap_lay = QVBoxLayout(cap_card)
+        cap_lay.setSpacing(6)
+        cap_hdr = QLabel('<b>Shared Bridge Capabilities &amp; Diagnostics</b>')
+        cap_hdr.setTextFormat(Qt.TextFormat.RichText)
+        cap_lay.addWidget(cap_hdr)
 
         self.bridge_enabled_check = QCheckBox(
-            'Enable External Agent Bridge (MCP Server & Local CLI Bridge)',
+            'Enable External Agent Bridge (MCP Server && Local CLI Bridge)',
             checked=bool(b_cfg.get('enabled', True)),
         )
-        lay.addWidget(self.bridge_enabled_check)
+        cap_lay.addWidget(self.bridge_enabled_check)
 
         self.bridge_council_check = QCheckBox(
             'Allow external agents to consult the Fairybread Multi-AI Council (fairybread_ask_council)',
             checked=bool(b_cfg.get('allow_council_query', True)),
         )
-        lay.addWidget(self.bridge_council_check)
+        cap_lay.addWidget(self.bridge_council_check)
 
         self.bridge_image_check = QCheckBox(
-            'Allow external agents to render 300-DPI images, social banners & wallpapers (fairybread_generate_image)',
+            'Allow external agents to render 300-DPI images, social banners && wallpapers (fairybread_generate_image)',
             checked=bool(b_cfg.get('allow_image_generation', True)),
         )
-        lay.addWidget(self.bridge_image_check)
+        cap_lay.addWidget(self.bridge_image_check)
 
         self.bridge_email_check = QCheckBox(
             'Allow external agents to run Exhaustive Email Searches when configured (fairybread_search_email)',
             checked=bool(b_cfg.get('allow_email_search', True)),
         )
-        lay.addWidget(self.bridge_email_check)
+        cap_lay.addWidget(self.bridge_email_check)
 
         self.bridge_memory_check = QCheckBox(
             'Allow external agents to query Shared Memory (fairybread_search_memory)',
             checked=bool(b_cfg.get('allow_memory_search', True)),
         )
-        lay.addWidget(self.bridge_memory_check)
-
-        self.bridge_code_upgrade_check = QCheckBox(
-            'Developer Mode: Allow external agent to stage Fairybread code upgrades (Locked by default)',
-            checked=bool(b_cfg.get('allow_code_self_upgrade', False)),
-        )
-        lay.addWidget(self.bridge_code_upgrade_check)
+        cap_lay.addWidget(self.bridge_memory_check)
 
         btn_row = QHBoxLayout()
-        ag_btn = QPushButton('🔗 Connect Google Antigravity')
-        ag_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        claude_btn = QPushButton('🔗 Connect Claude Desktop / Claude Code')
-        claude_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_mcp_btn = QPushButton('📋 Copy MCP Config (ChatGPT Desktop / Cursor)')
+        test_bridge_btn = QPushButton('🧪 Test MCP Bridge')
+        test_bridge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_bridge_btn.setToolTip('Spawn python.exe fairybread_mcp.py over stdio and verify initialize, tools/list, and fairybread_status')
+        copy_mcp_btn = QPushButton('📋 Copy Generic MCP JSON (Cursor / Windsurf)')
         copy_mcp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_row.addWidget(ag_btn)
-        btn_row.addWidget(claude_btn)
+        copy_mcp_btn.setToolTip('Copy generic stdio JSON config (uses console python.exe)')
+        btn_row.addWidget(test_bridge_btn)
         btn_row.addWidget(copy_mcp_btn)
-        lay.addLayout(btn_row)
+        cap_lay.addLayout(btn_row)
+        cap_lay.addWidget(self.bridge_status_label)
 
-        self.bridge_status_label = QLabel('')
-        self.bridge_status_label.setWordWrap(True)
-        self.bridge_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
-        lay.addWidget(self.bridge_status_label)
-
-        def _connect_ag():
+        def _run_bridge_test():
             self._save_bridge_fields()
-            ok, msg = install_antigravity_bridge()
-            self.bridge_status_label.setStyleSheet(f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};')
-            self.bridge_status_label.setText(f'{"✓" if ok else "⚠"} {msg}')
-
-        def _connect_claude():
-            self._save_bridge_fields()
-            ok, msg = install_claude_desktop_bridge()
+            ok, msg = test_mcp_bridge_live()
             self.bridge_status_label.setStyleSheet(f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};')
             self.bridge_status_label.setText(f'{"✓" if ok else "⚠"} {msg}')
 
@@ -2463,24 +2956,149 @@ class ManageAIsDialog(QDialog):
             self._save_bridge_fields()
             QApplication.clipboard().setText(get_mcp_json_snippet())
             self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
-            self.bridge_status_label.setText('✓ Copied MCP server JSON snippet to clipboard!')
+            self.bridge_status_label.setText('✓ Copied generic MCP JSON snippet (using python.exe) to clipboard.')
 
-        ag_btn.clicked.connect(_connect_ag)
-        claude_btn.clicked.connect(_connect_claude)
+        test_bridge_btn.clicked.connect(_run_bridge_test)
         copy_mcp_btn.clicked.connect(_copy_mcp)
+        lay.addWidget(cap_card)
 
-        lay.addWidget(QLabel(
+        priv_lbl = QLabel(
             '<b>Idle Mode Privacy &amp; Storage Boundaries:</b>\n'
             '• Idle Mode live transcripts are strictly isolated from Normal Mode.\n'
             '• Shared Idle Memory is capped by your Idle storage slider.'
-        ))
+        )
+        priv_lbl.setWordWrap(True)
+        lay.addWidget(priv_lbl)
         lay.addStretch()
+
+        scroll.setWidget(inner)
+        outer_lay.addWidget(scroll, 1)
         self.pages.addWidget(w)
 
+    def _sync_platform_interlock(self, platform_key: str):
+        ctrl = getattr(self, 'bridge_platform_controls', {}).get(platform_key)
+        if not ctrl:
+            return
+        foreman_chk: QCheckBox = ctrl['foreman']
+        council_chk: QCheckBox = ctrl['council']
+        cli_avail = bool(ctrl.get('cli_available', False))
+        install_hint = str(ctrl.get('install_hint') or '')
+
+        if foreman_chk.isChecked():
+            council_chk.blockSignals(True)
+            council_chk.setChecked(False)
+            council_chk.blockSignals(False)
+            council_chk.setEnabled(False)
+            council_chk.setToolTip('Turn Foreman Mode OFF first to switch roles (prevents feedback loops)')
+            foreman_chk.setEnabled(True)
+            foreman_chk.setToolTip('Foreman Mode active — turn OFF to unlink MCP config and unlock Council Member')
+        elif council_chk.isChecked():
+            foreman_chk.blockSignals(True)
+            foreman_chk.setChecked(False)
+            foreman_chk.blockSignals(False)
+            foreman_chk.setEnabled(False)
+            foreman_chk.setToolTip('Turn Council Member OFF first to switch roles (prevents feedback loops)')
+            council_chk.setEnabled(True)
+            council_chk.setToolTip('Council Member active — turn OFF to unlock Foreman Mode')
+        else:
+            foreman_chk.setEnabled(True)
+            foreman_chk.setToolTip('Link Fairybread MCP so this app can drive Fairybread (locks Council Member while ON)')
+            council_chk.setEnabled(cli_avail)
+            if cli_avail:
+                council_chk.setToolTip('Add this local CLI inside Fairybread Council (locks Foreman Mode while ON)')
+            else:
+                council_chk.setToolTip(f'CLI not installed. {install_hint}')
+
+    def _on_bridge_foreman_toggled(self, platform_key: str, checked: bool):
+        from fairybread_mcp import link_platform_foreman, unlink_platform_foreman
+
+        ctrl = getattr(self, 'bridge_platform_controls', {}).get(platform_key)
+        if not ctrl:
+            return
+        foreman_chk: QCheckBox = ctrl['foreman']
+        council_chk: QCheckBox = ctrl['council']
+        badge_lbl: QLabel = ctrl['badge']
+        info = dict(ctrl.get('info') or {})
+        home_override = getattr(self, '_bridge_home_dir', None)
+        appdata_override = getattr(self, '_bridge_appdata_dir', None)
+
+        if checked:
+            council_chk.blockSignals(True)
+            council_chk.setChecked(False)
+            council_chk.blockSignals(False)
+            ok, msg = link_platform_foreman(
+                platform_key,
+                home_dir=home_override,
+                appdata_dir=appdata_override,
+            )
+            if not ok:
+                foreman_chk.blockSignals(True)
+                foreman_chk.setChecked(False)
+                foreman_chk.blockSignals(False)
+                self.bridge_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.bridge_status_label.setText(f'⚠ {msg}')
+            else:
+                self.bridge_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+                self.bridge_status_label.setText(f'✓ {msg}')
+                info['mcp_linked'] = True
+        else:
+            ok, msg = unlink_platform_foreman(
+                platform_key,
+                home_dir=home_override,
+                appdata_dir=appdata_override,
+            )
+            if not ok:
+                foreman_chk.blockSignals(True)
+                foreman_chk.setChecked(True)
+                foreman_chk.blockSignals(False)
+                self.bridge_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.bridge_status_label.setText(f'⚠ {msg}')
+            else:
+                self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                self.bridge_status_label.setText(f'✓ {msg}')
+                info['mcp_linked'] = False
+
+        ctrl['info'] = info
+        parts = [
+            'App Config Found' if (info.get('config_dir_exists') or info.get('config_file_exists')) else 'App Not Detected',
+            'CLI Ready' if ctrl.get('cli_available') else 'CLI Not Installed',
+        ]
+        if info.get('mcp_linked'):
+            parts.append('MCP Linked')
+        badge_lbl.setText(' · '.join(parts))
+        self._sync_platform_interlock(platform_key)
+
+    def _on_bridge_council_toggled(self, platform_key: str, checked: bool):
+        ctrl = getattr(self, 'bridge_platform_controls', {}).get(platform_key)
+        if not ctrl:
+            return
+        self._sync_platform_interlock(platform_key)
+        title = ctrl.get('title', platform_key)
+        if checked:
+            self.bridge_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+            self.bridge_status_label.setText(
+                f'✓ {title} set to Council Member (Foreman Mode locked). Click Save to add it to the Council.'
+            )
+        else:
+            self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+            self.bridge_status_label.setText(f'✓ {title} Council Member OFF — Foreman Mode unlocked.')
+
     def _save_bridge_fields(self):
-        from fairybread_mcp import save_bridge_settings
+        from fairybread_mcp import EXTERNAL_PLATFORMS, save_bridge_settings
         if not hasattr(self, 'bridge_enabled_check'):
             return
+        platforms_payload: dict[str, str] = {}
+        controls = getattr(self, 'bridge_platform_controls', {})
+        for pk in EXTERNAL_PLATFORMS:
+            ctrl = controls.get(pk)
+            if not ctrl:
+                continue
+            if ctrl['foreman'].isChecked():
+                platforms_payload[pk] = 'foreman'
+            elif ctrl['council'].isChecked():
+                platforms_payload[pk] = 'council'
+            else:
+                platforms_payload[pk] = 'off'
         save_bridge_settings(
             {
                 'enabled': self.bridge_enabled_check.isChecked(),
@@ -2488,7 +3106,7 @@ class ManageAIsDialog(QDialog):
                 'allow_image_generation': self.bridge_image_check.isChecked(),
                 'allow_email_search': self.bridge_email_check.isChecked(),
                 'allow_memory_search': self.bridge_memory_check.isChecked(),
-                'allow_code_self_upgrade': self.bridge_code_upgrade_check.isChecked(),
+                'platforms': platforms_payload,
             },
             config_path=self.config_path,
         )
@@ -2705,8 +3323,8 @@ class ManageAIsDialog(QDialog):
         lay.addWidget(bak_hdr)
 
         chk_row = QHBoxLayout()
-        self.backup_include_memory_check = QCheckBox('Shared Memory, Chats & Idle Memory', checked=True)
-        self.backup_include_settings_check = QCheckBox('All Settings & API Keys (AES-256 Password Locked)', checked=True)
+        self.backup_include_memory_check = QCheckBox('Shared Memory, Chats && Idle Memory', checked=True)
+        self.backup_include_settings_check = QCheckBox('All Settings && API Keys (AES-256 Password Locked)', checked=True)
         self.backup_include_images_check = QCheckBox('Generated PNG Pictures', checked=True)
         self.backup_include_creds_check = self.backup_include_settings_check
         chk_row.addWidget(self.backup_include_memory_check)
@@ -2727,8 +3345,12 @@ class ManageAIsDialog(QDialog):
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         restore_btn = QPushButton('♻ Restore From Backup Archive (.zip)…')
         restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        restore_defaults_btn = QPushButton('↺ Restore Default Settings…')
+        restore_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        restore_defaults_btn.setToolTip('Reset app settings to factory defaults while keeping Memory Palaces, chats, API keys, and Write Exclusions')
         btn_row.addWidget(export_btn)
         btn_row.addWidget(restore_btn)
+        btn_row.addWidget(restore_defaults_btn)
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
@@ -2842,8 +3464,26 @@ class ManageAIsDialog(QDialog):
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
                 self.backup_status_label.setText(f'⚠ Restore failed: {exc}')
 
+        def _do_restore_defaults():
+            rd = RestoreDefaultSettingsDialog(
+                self,
+                config_path=self.config_path,
+                bridge_home_dir=self._bridge_home_dir,
+                bridge_appdata_dir=self._bridge_appdata_dir,
+            )
+            if rd.exec() == QDialog.DialogCode.Accepted:
+                self._restore_defaults_result = rd.reset_result
+                bak_p = rd.reset_result.get('backup_path') or ''
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+                self.backup_status_label.setText(
+                    f'✓ Default settings restored (Memory & API keys kept). Pre-reset backup: {bak_p}'
+                )
+                self._stop_settings_mic_test()
+                self.accept()
+
         export_btn.clicked.connect(_do_export)
         restore_btn.clicked.connect(_do_restore)
+        restore_defaults_btn.clicked.connect(_do_restore_defaults)
         _refresh_storage_summary_labels()
         _refresh_stored_files_list()
 
@@ -3019,6 +3659,7 @@ class ManageAIsDialog(QDialog):
         ui_updates = {
             'enter_to_send': bool(self.enter_mode_combo.currentData()),
             'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else True,
+            'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
             'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
             'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
         }
@@ -3032,15 +3673,24 @@ class ManageAIsDialog(QDialog):
             ui_updates,
             config_path=self.config_path,
         )
-        save_tool_settings(
-            {k: chk.isChecked() for k, chk in self.tool_checks.items()},
-            config_path=self.config_path,
-        )
-        if hasattr(self, 'ad_approval_combo'):
+        if hasattr(self, 'tool_checks'):
+            save_tool_settings(
+                {k: chk.isChecked() for k, chk in self.tool_checks.items()},
+                config_path=self.config_path,
+            )
+        if hasattr(self, 'perm_mode_combo'):
+            save_access_permissions(
+                {
+                    'permission_mode': str(self.perm_mode_combo.currentData() or 'default'),
+                    'write_exclusions': self._collect_exclusions(),
+                    'allow_workspace_writes': bool(self.cap_workspace_writes_check.isChecked()) if hasattr(self, 'cap_workspace_writes_check') else True,
+                    'allow_shell_commands': bool(self.cap_shell_cmds_check.isChecked()) if hasattr(self, 'cap_shell_cmds_check') else True,
+                },
+                config_path=self.config_path,
+            )
+        if hasattr(self, 'ad_web_search_combo'):
             save_agent_defaults(
                 {
-                    'approval_policy': str(self.ad_approval_combo.currentData() or 'on_request'),
-                    'sandbox_mode': str(self.ad_sandbox_combo.currentData() or 'sandbox_write'),
                     'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
                     'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
                     'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
@@ -3073,6 +3723,7 @@ class ManageAIsDialog(QDialog):
 
 class PalaceWindow(QMainWindow):
     _cost_event_signal = Signal(object)
+    _catalog_sync_done = Signal(object, bool)
 
     def __init__(
         self,
@@ -3086,6 +3737,7 @@ class PalaceWindow(QMainWindow):
     ):
         super().__init__()
         self.config_path = config_path
+        self._latest_catalog_info: dict[str, Any] = {}
         self.store = store or SessionStore()
         self.proposal_service = proposal_service or MemoryProposalService()
         default_idle_mem_path = (self.store.root / 'idle_notebooks' / 'ai_idle_memory.json') if store is not None else None
@@ -3099,6 +3751,7 @@ class PalaceWindow(QMainWindow):
         self._voice_threads = []
         self._background_delegated_from_voice = False
         self._talk_only_mode = False
+        self._pending_workspace_actions = []
         self.last_answer = ''
         self.last_question = ''
         self.pending_prompt = ''
@@ -3321,6 +3974,19 @@ class PalaceWindow(QMainWindow):
         self.profile_combo.hide()
         top_strip.addWidget(self.profile_combo)
 
+        self.update_available_btn = QPushButton('⬆ Update')
+        self.update_available_btn.setObjectName('updateAvailableButton')
+        self.update_available_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_available_btn.setToolTip('A newer version of Fairybread is available — click for details and download')
+        self.update_available_btn.setStyleSheet(
+            'QPushButton { background: #12281c; color: #3fb950; border: 1px solid #2ea043; '
+            'padding: 4px 8px; border-radius: 6px; font-weight: 700; font-size: 11.5px; } '
+            'QPushButton:hover { background: #193b28; color: #7ee787; border-color: #3fb950; }'
+        )
+        self.update_available_btn.clicked.connect(self.show_update_available_dialog)
+        self.update_available_btn.hide()
+        top_strip.addWidget(self.update_available_btn)
+
         self.no_history_btn = QPushButton(' No-History')
         self.no_history_btn.setIcon(no_history_qicon(False))
         self.no_history_btn.setIconSize(QSize(16, 16))
@@ -3428,6 +4094,50 @@ class PalaceWindow(QMainWindow):
         self.chat.anchor_action_requested.connect(lambda s: self._on_chat_anchor_clicked(QUrl(s)))
         normal_lay.addWidget(self.chat, 1)
 
+        # Inline Pending Action Approval Banner (triggered by Request Review / Default / Auto / Write Exclusion List)
+        self.approval_banner = QFrame()
+        self.approval_banner.setObjectName('approvalBanner')
+        self.approval_banner.setStyleSheet(
+            'QFrame#approvalBanner { background: #1e1610; border: 1px solid #d29922; border-radius: 8px; padding: 8px 12px; }'
+        )
+        app_row = QHBoxLayout(self.approval_banner)
+        app_row.setContentsMargins(6, 4, 6, 4)
+        app_row.setSpacing(10)
+        app_txt_col = QVBoxLayout()
+        app_txt_col.setSpacing(2)
+        self.approval_title_lbl = QLabel('🛡 Approval Required')
+        self.approval_title_lbl.setStyleSheet('color: #f0b849; font-weight: 700; font-size: 12.5px;')
+        self.approval_detail_lbl = QLabel('')
+        self.approval_detail_lbl.setWordWrap(True)
+        self.approval_detail_lbl.setStyleSheet('color: #e6edf3; font-size: 11.5px;')
+        app_txt_col.addWidget(self.approval_title_lbl)
+        app_txt_col.addWidget(self.approval_detail_lbl)
+        app_row.addLayout(app_txt_col, 1)
+
+        self.approve_actions_btn = QPushButton('✓ Approve && Execute')
+        self.approve_actions_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.approve_actions_btn.setToolTip('Execute these pending file writes, patches, or commands now')
+        self.approve_actions_btn.setStyleSheet(
+            'QPushButton { background: #1f6feb; color: #ffffff; border: 1px solid #388bfd; '
+            'padding: 6px 12px; border-radius: 6px; font-weight: 700; font-size: 12px; } '
+            'QPushButton:hover { background: #388bfd; }'
+        )
+        self.approve_actions_btn.clicked.connect(self._approve_pending_workspace_actions)
+        app_row.addWidget(self.approve_actions_btn)
+
+        self.reject_actions_btn = QPushButton('✕ Reject')
+        self.reject_actions_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reject_actions_btn.setToolTip('Cancel pending actions — nothing will be written or run')
+        self.reject_actions_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #f87171; border: 1px solid #da3633; '
+            'padding: 6px 10px; border-radius: 6px; font-weight: 600; font-size: 12px; } '
+            'QPushButton:hover { background: #2c1517; }'
+        )
+        self.reject_actions_btn.clicked.connect(self._reject_pending_workspace_actions)
+        app_row.addWidget(self.reject_actions_btn)
+        self.approval_banner.hide()
+        normal_lay.addWidget(self.approval_banner)
+
         # --- UNIFIED ROUNDED COMPOSER CARD ---
         composer_card = QFrame()
         composer_card.setObjectName('composerCard')
@@ -3460,7 +4170,7 @@ class PalaceWindow(QMainWindow):
 
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 2, 0, 0)
-        controls.setSpacing(6)
+        controls.setSpacing(4)
         self.attach_button = QPushButton('+')
         self.attach_button.setObjectName('plusAttachButton')
         self.attach_button.setToolTip('Attach files or pictures (Ctrl+O)')
@@ -3468,11 +4178,12 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.attach_button)
 
         self.slash_cmd_btn = QPushButton('/ Commands ▾')
+        self.slash_cmd_btn.setMinimumWidth(88)
         self.slash_cmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.slash_cmd_btn.setToolTip('Insert slash command switch (/autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, /fullrender)')
         self.slash_cmd_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
         )
         self.slash_cmd_btn.clicked.connect(self._show_slash_commands_menu)
@@ -3501,7 +4212,7 @@ class PalaceWindow(QMainWindow):
         self.deliberate_pill_btn.setToolTip('2-round peer review (ON) / Direct (OFF)')
         self.deliberate_pill_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #c9d1d9; } '
             'QPushButton:checked { background: #231536; color: #a855f7; border: 1px solid #a855f7; }'
         )
@@ -3516,7 +4227,7 @@ class PalaceWindow(QMainWindow):
         self.tangent_btn.setToolTip('Side question (ignores prior chat context)')
         self.tangent_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #c9d1d9; } '
             'QPushButton:checked { background: #29230f; color: #eab308; border: 1px solid #eab308; }'
         )
@@ -3531,7 +4242,7 @@ class PalaceWindow(QMainWindow):
         self.palace_code_btn.setToolTip('Let AIs read Fairybread source code')
         self.palace_code_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #c9d1d9; } '
             'QPushButton:checked { background: #0f2930; color: #06b6d4; border: 1px solid #06b6d4; }'
         )
@@ -3540,11 +4251,12 @@ class PalaceWindow(QMainWindow):
 
         self.current_search_depth = 'default'
         self.search_depth_btn = QPushButton('🔍 Default ▾')
+        self.search_depth_btn.setMinimumWidth(82)
         self.search_depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.search_depth_btn.setToolTip('Web search depth (Default / Moderate / Deep)')
         self.search_depth_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
         )
         self.search_depth_btn.clicked.connect(self._show_search_depth_menu)
@@ -3605,6 +4317,19 @@ class PalaceWindow(QMainWindow):
         self.stop_button.clicked.connect(self.stop_active_turn)
         self.stop_button.hide()
         controls.addWidget(self.stop_button)
+
+        self.permission_pill_btn = QPushButton('🛡 Default ▾')
+        self.permission_pill_btn.setObjectName('permissionPillButton')
+        self.permission_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.permission_pill_btn.setMinimumWidth(86)
+        self.permission_pill_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
+            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.permission_pill_btn.clicked.connect(self._show_permission_mode_menu)
+        controls.addWidget(self.permission_pill_btn)
+        self._refresh_permission_pill_text()
 
         self.mic_button = QPushButton()
         self.mic_button.setIcon(mic_qicon(False))
@@ -3970,6 +4695,12 @@ class PalaceWindow(QMainWindow):
                     for name, settings in raw_provs.items()
                     if name not in {'test', 'off'}
                 }
+                from fairybread_mcp import get_council_cli_platforms
+                from local_cli_provider import PLATFORM_TO_CLI_PROVIDER, find_cli_binary
+                for pk in get_council_cli_platforms(self.config_path):
+                    prov_key = PLATFORM_TO_CLI_PROVIDER.get(pk)
+                    if prov_key and find_cli_binary(pk):
+                        provider_states[prov_key] = True
             except (OSError, ValueError, KeyError) as exc:
                 provider_states = {}
                 self.config_warning = str(exc)
@@ -4058,7 +4789,7 @@ class PalaceWindow(QMainWindow):
         memory_note.setObjectName('muted')
         memory_layout.addWidget(memory_note)
 
-        self.open_memory_summary_btn = QPushButton('📝 Memory Summary (View & Edit)…')
+        self.open_memory_summary_btn = QPushButton('📝 Memory Summary (View && Edit)…')
         self.open_memory_summary_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.open_memory_summary_btn.setToolTip('View & edit your personal Memory summary')
         self.open_memory_summary_btn.setStyleSheet(
@@ -4103,7 +4834,7 @@ class PalaceWindow(QMainWindow):
         memory_layout.addLayout(mem_act_row)
 
         prop_btn_row = QHBoxLayout()
-        self.approve_proposal_btn = QPushButton('✓ Approve & Store')
+        self.approve_proposal_btn = QPushButton('✓ Approve && Store')
         self.approve_proposal_btn.setToolTip('Approve proposal')
         self.approve_proposal_btn.clicked.connect(self.approve_selected_proposal)
         self.approve_proposal_btn.hide()
@@ -4152,8 +4883,10 @@ class PalaceWindow(QMainWindow):
         self._backfill_shared_memory_once()
         self._force_quit = False
         self._tray_hint_shown = False
+        self._catalog_sync_done.connect(self._apply_catalog_sync_result)
         if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
             self._ensure_system_tray()
+            QTimer.singleShot(1500, lambda: self.check_for_updates_and_catalog(manual=False))
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
 
     def _ensure_system_tray(self):
@@ -4357,7 +5090,10 @@ class PalaceWindow(QMainWindow):
         settings_act = QAction('Fairybread Settings…', self)
         settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
         settings_menu.addAction(settings_act)
-        agent_defaults_act = QAction('⚙ Agent Defaults && Approval Control Panel…', self)
+        access_perm_act = QAction('🛡 AI Access Permissions (Modes && Write Exclusions)…', self)
+        access_perm_act.triggered.connect(lambda: self.open_manage_ais('AI Access Permissions'))
+        settings_menu.addAction(access_perm_act)
+        agent_defaults_act = QAction('⚙ Agent Defaults (Response && Speed)…', self)
         agent_defaults_act.triggered.connect(lambda: self.open_manage_ais('Agent Defaults'))
         settings_menu.addAction(agent_defaults_act)
         profiles_settings_act = QAction('🎛 Profiles && AI Squads…', self)
@@ -4369,12 +5105,16 @@ class PalaceWindow(QMainWindow):
         email_settings_act = QAction('📧 Email && Notifications…', self)
         email_settings_act.triggered.connect(lambda: self.open_manage_ais('Email & Notifications'))
         settings_menu.addAction(email_settings_act)
-        bridge_settings_act = QAction('🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…', self)
-        bridge_settings_act.triggered.connect(lambda: self.open_manage_ais('Agent Bridge & Permissions'))
+        bridge_settings_act = QAction('🔗 External Agent Bridge (ChatGPT / Antigravity / Grok / Claude)…', self)
+        bridge_settings_act.triggered.connect(lambda: self.open_manage_ais('External Agent Bridge (MCP)'))
         settings_menu.addAction(bridge_settings_act)
         idle_settings_act = QAction('🧪 Experimental Mode Settings…', self)
         idle_settings_act.triggered.connect(lambda: self.open_manage_ais('Experimental Mode'))
         settings_menu.addAction(idle_settings_act)
+        settings_menu.addSeparator()
+        restore_defaults_act = QAction('↺ Restore Default Settings…', self)
+        restore_defaults_act.triggered.connect(self.show_restore_defaults_dialog)
+        settings_menu.addAction(restore_defaults_act)
 
         help_menu = menubar.addMenu('Help')
         guide_act = QAction('📖 User Guide && Drawing Instructions…\tF1', self)
@@ -4384,6 +5124,9 @@ class PalaceWindow(QMainWindow):
         web_act = QAction('🌐 Fairybread.me (Community Forums, Skins && News) ↗', self)
         web_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
         help_menu.addAction(web_act)
+        check_updates_act = QAction('🔄 Check for Updates && Refresh Model Rates…', self)
+        check_updates_act.triggered.connect(lambda: self.check_for_updates_and_catalog(manual=True))
+        help_menu.addAction(check_updates_act)
         donate_act = QAction('❤️ Donate (USD) / Corporate License…', self)
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
@@ -4933,14 +5676,16 @@ class PalaceWindow(QMainWindow):
         self._toggle_provider_quick(name, not cur_active)
 
     def _toggle_provider_quick(self, name: str, enabled: bool):
+        from local_cli_provider import CLI_PROVIDER_TO_PLATFORM
         self._talk_only_mode = False
         self.current_squad_label = ''
         self.provider_states[name] = enabled
-        try:
-            if self.config_path.exists():
-                set_provider_enabled(name, enabled, config_path=self.config_path)
-        except Exception:
-            pass
+        if name not in CLI_PROVIDER_TO_PLATFORM:
+            try:
+                if self.config_path.exists():
+                    set_provider_enabled(name, enabled, config_path=self.config_path)
+            except Exception:
+                pass
         if name not in self.provider_labels:
             label = QPushButton()
             label.setFlat(True)
@@ -5806,6 +6551,30 @@ class PalaceWindow(QMainWindow):
         self._refresh_idle_view()
         self.status_label.setText(f'Reply sent to {sender.upper()} and stored in Shared Idle Memory.')
 
+    def _reload_all_ui_after_settings_change(self, notice: str = 'Fairybread settings updated.'):
+        self._item_html_cache.clear()
+        ui_cfg = load_ui_settings(self.config_path)
+        self.composer.enter_to_send = bool(ui_cfg.get('enter_to_send', True))
+        self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
+        self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
+        self.reload_provider_bar()
+        self.idle_manager.reload_settings()
+        if hasattr(self, 'idle_code_btn'):
+            idle_s = load_idle_settings(self.config_path)
+            share_c = bool(idle_s.get('share_source_code', False))
+            self.idle_code_btn.blockSignals(True)
+            self.idle_code_btn.setChecked(share_c)
+            self.idle_code_btn.setIcon(code_shield_qicon(share_c))
+            self.idle_code_btn.blockSignals(False)
+            if hasattr(self, 'idle_live_patch_btn'):
+                self.idle_live_patch_btn.blockSignals(True)
+                self.idle_live_patch_btn.setChecked(bool(idle_s.get('allow_live_self_modify', False)))
+                self.idle_live_patch_btn.blockSignals(False)
+        self._refresh_idle_view()
+        self._refresh_permission_pill_text()
+        self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.status_label.setText(notice)
+
     @Slot()
     def open_manage_ais(self, initial_page: str = 'AI Providers'):
         if not isinstance(initial_page, str):
@@ -5817,26 +6586,311 @@ class PalaceWindow(QMainWindow):
             idle_memory=self.idle_memory,
         )
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._item_html_cache.clear()
-            ui_cfg = load_ui_settings(self.config_path)
-            self.composer.enter_to_send = bool(ui_cfg.get('enter_to_send', True))
-            self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
-            self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
-            self.reload_provider_bar()
-            self.idle_manager.reload_settings()
-            if hasattr(self, 'idle_code_btn'):
-                idle_s = load_idle_settings(self.config_path)
-                share_c = bool(idle_s.get('share_source_code', False))
-                self.idle_code_btn.blockSignals(True)
-                self.idle_code_btn.setChecked(share_c)
-                self.idle_code_btn.setIcon(code_shield_qicon(share_c))
-                self.idle_code_btn.blockSignals(False)
-                if hasattr(self, 'idle_live_patch_btn'):
-                    self.idle_live_patch_btn.blockSignals(True)
-                    self.idle_live_patch_btn.setChecked(bool(idle_s.get('allow_live_self_modify', False)))
-                    self.idle_live_patch_btn.blockSignals(False)
-            self._refresh_idle_view()
-            self.status_label.setText('Fairybread settings updated.')
+            reset_res = getattr(dlg, '_restore_defaults_result', None)
+            if isinstance(reset_res, dict) and reset_res:
+                bak_p = reset_res.get('backup_path') or ''
+                note = f'↺ Default settings restored (Memory & API keys preserved). Snapshot: {bak_p}' if bak_p else '↺ Default settings restored (Memory & API keys preserved).'
+                self._reload_all_ui_after_settings_change(note)
+            else:
+                self._reload_all_ui_after_settings_change('Fairybread settings updated.')
+
+    def show_restore_defaults_dialog(self):
+        dlg = RestoreDefaultSettingsDialog(self, config_path=self.config_path)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            bak_p = dlg.reset_result.get('backup_path') or ''
+            note = (
+                f'↺ Default settings restored (Memory & API keys kept). Pre-reset backup: {bak_p}'
+                if bak_p
+                else '↺ Default settings restored (Memory & API keys kept).'
+            )
+            self._reload_all_ui_after_settings_change(note)
+
+    def check_for_updates_and_catalog(self, manual: bool = False):
+        import threading
+        from catalog_sync import sync_remote_catalog
+
+        if manual and hasattr(self, 'status_label'):
+            self.status_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.status_label.setText('🔄 Checking fairybread.me for updates & live model rates…')
+
+        def _worker():
+            try:
+                res = sync_remote_catalog(config_path=self.config_path, force=bool(manual))
+            except Exception as exc:
+                res = {'ok': False, 'error': str(exc), 'update_available': False, 'has_newer_version': False}
+            try:
+                self._catalog_sync_done.emit(res, bool(manual))
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(object, bool)
+    def _apply_catalog_sync_result(self, res: dict, manual: bool = False):
+        data = dict(res or {})
+        self._latest_catalog_info = data
+        if data.get('update_available'):
+            ver = str(data.get('latest_app_version') or '').lstrip('vV')
+            txt = f'⬆ v{ver} — Update'
+            self.update_available_btn.setText(txt)
+            self.update_available_btn.setMinimumWidth(max(118, int(len(txt) * 6.5 + 18)))
+            summary = str(data.get('release_summary') or 'A newer Fairybread release is available.').strip()
+            self.update_available_btn.setToolTip(f'Fairybread v{ver} available — click to download.\n{summary}')
+            self.update_available_btn.show()
+        else:
+            self.update_available_btn.hide()
+
+        if manual:
+            if data.get('has_newer_version') or data.get('update_available'):
+                self.show_update_available_dialog()
+            else:
+                cur_v = str(data.get('current_version') or '').lstrip('vV')
+                rates_n = int(data.get('rates_updated') or 0)
+                provs_n = int(data.get('providers_updated') or 0)
+                src = str(data.get('source') or 'offline_fallback')
+                err = str(data.get('error') or '').strip()
+                msg = (
+                    f"You're running Fairybread v{cur_v}.\n\n"
+                    f"Catalog sync: {src} ({rates_n} rate entries, {provs_n} provider lists updated)."
+                )
+                if err and src == 'offline_fallback':
+                    msg += f"\n\nNote: Could not reach update feed right now ({err}); using bundled/cached defaults."
+                QMessageBox.information(self, 'Updates & Model Catalog', msg)
+
+    def show_update_available_dialog(self):
+        from catalog_sync import DEFAULT_RELEASES_URL, download_and_verify_installer
+        from palace_config import FAIRYBREAD_VERSION
+
+        info = dict(getattr(self, '_latest_catalog_info', {}) or {})
+        latest_ver = str(info.get('latest_app_version') or FAIRYBREAD_VERSION).lstrip('vV')
+        cur_ver = str(info.get('current_version') or FAIRYBREAD_VERSION).lstrip('vV')
+        summary = str(info.get('release_summary') or 'Newer version available on GitHub Releases.').strip()
+        dl_url = str(info.get('download_url') or '').strip()
+        rel_url = str(info.get('release_page_url') or DEFAULT_RELEASES_URL).strip()
+        exp_sha = str(info.get('installer_sha256') or '').strip()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Fairybread Update Available')
+        dlg.resize(520, 320)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+
+        hdr = QLabel(f'<b>⬆ Fairybread v{html.escape(latest_ver)} Available</b> (installed: v{html.escape(cur_ver)})')
+        hdr.setTextFormat(Qt.TextFormat.RichText)
+        hdr.setStyleSheet('font-size: 14.5px; color: #f0f6fc;')
+        lay.addWidget(hdr)
+
+        notes_lbl = QLabel(html.escape(summary).replace('\n', '<br>'))
+        notes_lbl.setTextFormat(Qt.TextFormat.RichText)
+        notes_lbl.setWordWrap(True)
+        notes_lbl.setStyleSheet(
+            'background:#131720; color:#c9d1d9; border:1px solid #262c3a; '
+            'border-radius:8px; padding:12px; font-size:12.5px;'
+        )
+        lay.addWidget(notes_lbl, 1)
+
+        dl_status = QLabel('')
+        dl_status.setWordWrap(True)
+        dl_status.setStyleSheet('font-size: 12px; color: #8b949e;')
+        lay.addWidget(dl_status)
+
+        btn_row = QHBoxLayout()
+        dl_btn = QPushButton('⬇ Download && Verify Installer')
+        dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dl_btn.setStyleSheet(
+            'QPushButton { background:#238636; color:#ffffff; border:none; '
+            'padding:7px 12px; border-radius:6px; font-weight:700; }'
+        )
+        rel_btn = QPushButton('🌐 Open Release Page')
+        rel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_btn = QPushButton('Skip This Version')
+        close_btn = QPushButton('Close')
+        btn_row.addWidget(dl_btn)
+        btn_row.addWidget(rel_btn)
+        btn_row.addWidget(skip_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        lay.addLayout(btn_row)
+
+        def _do_download():
+            if not dl_url:
+                webbrowser.open(rel_url)
+                dl_status.setText(f'Opened release page in browser: {rel_url}')
+                return
+            dl_btn.setEnabled(False)
+            dl_status.setStyleSheet('font-size: 12px; color: #58a6ff;')
+            dl_status.setText('Downloading installer archive to Downloads folder & verifying SHA-256…')
+            QApplication.processEvents()
+            ok, msg, saved_path = download_and_verify_installer(
+                dl_url,
+                Path.home() / 'Downloads',
+                expected_sha256=exp_sha,
+            )
+            dl_btn.setEnabled(True)
+            dl_status.setStyleSheet(f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};')
+            dl_status.setText(f'{"✓" if ok else "⚠"} {msg}')
+            if ok and saved_path is not None and hasattr(os, 'startfile'):
+                try:
+                    os.startfile(str(saved_path.parent))
+                except OSError:
+                    pass
+
+        def _do_skip():
+            save_ui_settings({'dismissed_update_version': latest_ver}, config_path=self.config_path)
+            self.update_available_btn.hide()
+            dlg.accept()
+
+        dl_btn.clicked.connect(_do_download)
+        rel_btn.clicked.connect(lambda: webbrowser.open(rel_url))
+        skip_btn.clicked.connect(_do_skip)
+        close_btn.clicked.connect(dlg.reject)
+        dlg.exec()
+
+    def _refresh_permission_pill_text(self):
+        if not hasattr(self, 'permission_pill_btn'):
+            return
+        try:
+            ap = load_access_permissions(self.config_path)
+        except Exception:
+            ap = {'permission_mode': 'default', 'write_exclusions': []}
+        mk = normalize_permission_mode(ap.get('permission_mode'))
+        meta = PERMISSION_MODE_META.get(mk, PERMISSION_MODE_META['default'])
+        excl_n = len(ap.get('write_exclusions') or [])
+        self.permission_pill_btn.setText(f"🛡 {meta['pill']} ▾")
+        if mk == 'turbo':
+            self.permission_pill_btn.setStyleSheet(
+                'QPushButton { background: #1c1b29; color: #c084fc; border: 1px solid #9333ea; '
+                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 700; } '
+                'QPushButton:hover { color: #f3e8ff; border-color: #a855f7; }'
+            )
+        elif mk == 'auto':
+            self.permission_pill_btn.setStyleSheet(
+                'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+                'QPushButton:hover { color: #dbeafe; border-color: #60a5fa; }'
+            )
+        elif mk == 'request_review':
+            self.permission_pill_btn.setStyleSheet(
+                'QPushButton { background: #261b10; color: #f0b849; border: 1px solid #d29922; '
+                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+                'QPushButton:hover { color: #fef3c7; border-color: #eab308; }'
+            )
+        else:
+            self.permission_pill_btn.setStyleSheet(
+                'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
+                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+                'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+            )
+        excl_note = f' · {excl_n} Write Exclusion(s) active' if excl_n else ' · 0 Write Exclusions'
+        self.permission_pill_btn.setToolTip(
+            f"AI Access Permissions: {meta['label']} — {meta['description']}{excl_note}"
+        )
+
+    def _set_permission_mode_quick(self, mode_key: str):
+        mk = normalize_permission_mode(mode_key)
+        save_access_permissions({'permission_mode': mk}, config_path=self.config_path)
+        self._refresh_permission_pill_text()
+        meta = PERMISSION_MODE_META.get(mk, PERMISSION_MODE_META['default'])
+        self.status_label.setTextFormat(Qt.TextFormat.RichText)
+        self.status_label.setText(f"🛡 <b>AI Access Mode:</b> {html.escape(meta['label'])} — {html.escape(meta['description'])}")
+
+    def _show_permission_mode_menu(self):
+        if self.worker is not None:
+            return
+        ap = load_access_permissions(self.config_path)
+        cur_mk = normalize_permission_mode(ap.get('permission_mode'))
+        menu_style = (
+            'QMenu { background: #161922; color: #e6edf3; border: 1px solid #2b313e; padding: 6px; border-radius: 8px; } '
+            'QMenu::item { padding: 6px 14px 6px 10px; border-radius: 5px; font-size: 12.5px; } '
+            'QMenu::item:selected { background: #232938; }'
+        )
+        menu = QMenu(self)
+        menu.setStyleSheet(menu_style)
+        menu.setToolTipsVisible(True)
+        for mk in PERMISSION_MODES:
+            meta = PERMISSION_MODE_META[mk]
+            act = QAction(f"{meta['label']} — {meta['description']}", menu)
+            act.setCheckable(True)
+            act.setChecked(cur_mk == mk)
+            act.triggered.connect(lambda _c=False, target=mk: self._set_permission_mode_quick(target))
+            menu.addAction(act)
+        menu.addSeparator()
+        excl_n = len(ap.get('write_exclusions') or [])
+        manage_excl_act = QAction(f'🛡 Manage Write Exclusion List ({excl_n})…', menu)
+        manage_excl_act.triggered.connect(lambda: self.open_manage_ais('AI Access Permissions'))
+        menu.addAction(manage_excl_act)
+
+        pos = self.permission_pill_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4))
+        if pos.y() < 40:
+            pos = self.permission_pill_btn.mapToGlobal(QPoint(0, self.permission_pill_btn.height() + 4))
+        menu.exec(pos)
+
+    def _show_pending_actions_banner(self, pending_actions: list[dict[str, Any]]):
+        self._pending_workspace_actions = list(pending_actions or [])
+        if not self._pending_workspace_actions or not hasattr(self, 'approval_banner'):
+            if hasattr(self, 'approval_banner'):
+                self.approval_banner.hide()
+            return
+        any_excluded = any(bool(a.get('excluded')) for a in self._pending_workspace_actions)
+        cnt = len(self._pending_workspace_actions)
+        if any_excluded:
+            self.approval_banner.setStyleSheet(
+                'QFrame#approvalBanner { background: #261414; border: 1px solid #f85149; border-radius: 8px; padding: 8px 12px; }'
+            )
+            self.approval_title_lbl.setStyleSheet('color: #ff7b72; font-weight: 700; font-size: 12.5px;')
+            self.approval_title_lbl.setText(f'🛡 Write Exclusion Intercept — {cnt} Action(s) Require Your Approval')
+        else:
+            self.approval_banner.setStyleSheet(
+                'QFrame#approvalBanner { background: #1e1610; border: 1px solid #d29922; border-radius: 8px; padding: 8px 12px; }'
+            )
+            self.approval_title_lbl.setStyleSheet('color: #f0b849; font-weight: 700; font-size: 12.5px;')
+            self.approval_title_lbl.setText(f'🛡 Permission Required — {cnt} Pending Agent Action(s)')
+        lines = []
+        for idx, act in enumerate(self._pending_workspace_actions[:4], 1):
+            lines.append(f"{idx}. {act.get('preview', act.get('summary', 'Action'))} — {act.get('reason', '')}")
+        if cnt > 4:
+            lines.append(f"... (+{cnt - 4} more)")
+        self.approval_detail_lbl.setText('\n'.join(lines))
+        self.approval_banner.show()
+
+    def _approve_pending_workspace_actions(self):
+        pending = list(getattr(self, '_pending_workspace_actions', []) or [])
+        self._pending_workspace_actions = []
+        if hasattr(self, 'approval_banner'):
+            self.approval_banner.hide()
+        if not pending:
+            return
+        from workspace_tools import execute_approved_action
+        out_lines: list[str] = []
+        for act in pending:
+            ok, msg = execute_approved_action(act)
+            icon = '✓' if ok else '⚠'
+            out_lines.append(f"{icon} **{act.get('summary') or act.get('preview', 'Action')}**: {msg}")
+        summary_md = '**Approved Action Execution Results:**\n\n' + '\n'.join(out_lines)
+        self.append_message('assistant', summary_md, speaker='palace', render=True)
+        is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
+        if not is_no_history:
+            try:
+                self.store.context(self.session_id).append_exchange(
+                    '[APPROVED WORKSPACE ACTIONS]',
+                    summary_md,
+                    contributors=['palace'],
+                )
+            except OSError:
+                pass
+        self.status_label.setText(f'✓ Executed {len(pending)} approved action(s).')
+
+    def _reject_pending_workspace_actions(self):
+        pending = list(getattr(self, '_pending_workspace_actions', []) or [])
+        self._pending_workspace_actions = []
+        if hasattr(self, 'approval_banner'):
+            self.approval_banner.hide()
+        if not pending:
+            return
+        msg = f'Cancelled {len(pending)} pending action(s) — nothing was written or executed.'
+        self.status_label.setText(msg)
+        self.append_message('assistant', f'✕ **Action Rejected**: {msg}', speaker='palace', render=True)
 
     def reload_providers_from_config(self):
         self.reload_provider_bar()
@@ -5868,15 +6922,24 @@ class PalaceWindow(QMainWindow):
             self._render_chat_items()
 
     def reload_provider_bar(self):
+        from fairybread_mcp import get_council_cli_platforms
+        from local_cli_provider import CLI_PROVIDER_TO_PLATFORM, PLATFORM_TO_CLI_PROVIDER, find_cli_binary
         try:
             configs = load_provider_configs(self.config_path)
             self.provider_states = {
                 name: bool(settings.get('enabled', False))
                 for name, settings in configs.items()
             }
+            for pk in get_council_cli_platforms(self.config_path):
+                prov_key = PLATFORM_TO_CLI_PROVIDER.get(pk)
+                if prov_key and find_cli_binary(pk):
+                    self.provider_states[prov_key] = True
         except Exception as exc:
             self.show_notice(str(exc))
             return
+        for cli_prov_key in CLI_PROVIDER_TO_PLATFORM:
+            if cli_prov_key not in self.provider_states and cli_prov_key in self.provider_labels:
+                self.set_provider_status(cli_prov_key, 'Off', '#6e7681')
         for name, enabled in self.provider_states.items():
             if name not in self.provider_labels:
                 label = QPushButton()
@@ -6927,6 +7990,9 @@ class PalaceWindow(QMainWindow):
     def load_history(self):
         if getattr(self, '_voice_companion', None) is not None:
             self._voice_companion.reset()
+        self._pending_workspace_actions = []
+        if hasattr(self, 'approval_banner'):
+            self.approval_banner.hide()
         try:
             from cost_service import ConversationCostLedger
             raw_ledger = self.store.get_cost_ledger(self.session_id) if hasattr(self.store, 'get_cost_ledger') else {}
@@ -8344,6 +9410,8 @@ class PalaceWindow(QMainWindow):
             warnings.append(f'Synthesis: {result.synthesis.error}')
         if any(warnings):
             self.show_notice('\n'.join(w for w in warnings if w))
+        pending_acts = list(getattr(result, 'pending_actions', None) or [])
+        self._show_pending_actions_banner(pending_acts)
         applied_ap = getattr(result, 'applied_autopatch_files', None) or []
         ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
         if applied_ap and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
@@ -8481,10 +9549,13 @@ class PalaceWindow(QMainWindow):
             self.deliberate_pill_btn,
             self.tangent_btn,
             self.search_depth_btn,
+            self.permission_pill_btn,
             self.mic_button,
             self.send_button,
         ):
             setup_w.setVisible(not busy)
+        if hasattr(self, 'permission_pill_btn'):
+            self.permission_pill_btn.setEnabled(not busy)
         # Keep composer, Settings & AIs, and Fairybread Code toggle unlocked during work!
         self.manage_ais_button.setEnabled(True)
         self.composer.setEnabled(True)

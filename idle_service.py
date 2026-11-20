@@ -343,6 +343,16 @@ def execute_live_autopatches_in_text(
             return f"[⚠ Autopatch Rejected: `{p_file}` — {rej_msg}]"
         try:
             from palace_ouroboros import LIVE_DIR, SANDBOX_ROOT, SOURCE_REPO_DIR, STAGING_DIR, stage_palace_replace, sync_live_to_staging
+            try:
+                from access_policy import evaluate_path_access
+                live_target = LIVE_DIR / Path(p_file).name
+                acc_dec = evaluate_path_access(live_target, "patch")
+                if acc_dec.excluded:
+                    excl_msg = f"🛡 Write Exclusion (`{live_target}`): {acc_dec.reason}"
+                    status_notes.append(f"⏸ **Approval Required (`{p_file}`)**: {excl_msg}")
+                    return f"[⏸ Approval Required: `{p_file}` — {excl_msg}]"
+            except Exception:
+                pass
             if not applied_files:
                 sync_live_to_staging()
             ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=author)

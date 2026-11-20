@@ -1300,7 +1300,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.9.1g')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.92')
         self.assertEqual(bump_minor_letter_version('0.9.1'), '0.9.1a')
         self.assertEqual(bump_minor_letter_version('0.9.1a'), '0.9.1b')
         self.assertEqual(bump_minor_letter_version('0.9.1y'), '0.9.1z')

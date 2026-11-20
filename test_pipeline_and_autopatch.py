@@ -428,9 +428,13 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             self.assertEqual(saved["output_detail"], "concise")
             self.assertEqual(saved["straggler_grace_sec"], 10)
 
+            dlg_perm = ManageAIsDialog(config_path=cfg, initial_page="AI Access Permissions")
+            self.assertEqual(dlg_perm.nav_list.currentItem().text(), "AI Access Permissions")
+            self.assertEqual(dlg_perm.perm_mode_combo.currentData(), "turbo")
+            dlg_perm.close()
+
             dlg = ManageAIsDialog(config_path=cfg, initial_page="Agent Defaults")
-            self.assertEqual(dlg.PAGES_COUNT if hasattr(dlg, "PAGES_COUNT") else dlg.nav_list.currentItem().text(), "Agent Defaults")
-            self.assertEqual(dlg.ad_approval_combo.currentData(), "auto_deploy")
+            self.assertEqual(dlg.nav_list.currentItem().text(), "Agent Defaults")
             self.assertEqual(dlg.ad_output_detail_combo.currentData(), "concise")
             idx_bal = dlg.ad_output_detail_combo.findData("balanced")
             dlg.ad_output_detail_combo.setCurrentIndex(idx_bal)
@@ -1257,6 +1261,723 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             self.assertEqual(sum(1 for u in seen_case2 if "gemini-3.1-flash-image" in u), 1)
             badge2 = get_image_engine_badge(out2)
             self.assertIn("(fallback)", badge2)
+
+    def test_access_policy_modes_and_exclusion_subdirs_override_turbo(self):
+        from access_policy import (
+            evaluate_command_access,
+            evaluate_path_access,
+            load_access_permissions,
+            save_access_permissions,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            init_ap = load_access_permissions(cfg)
+            self.assertEqual(init_ap["permission_mode"], "default")
+            self.assertEqual(init_ap["write_exclusions"], [])
+
+            # Set mode to Turbo with non-recursive C:\ & E:\ and recursive M:\
+            save_access_permissions(
+                {
+                    "permission_mode": "turbo",
+                    "write_exclusions": [
+                        {"path": "C:\\", "include_subdirs": False},
+                        {"path": "E:\\", "include_subdirs": False},
+                        {"path": "M:\\", "include_subdirs": True},
+                    ],
+                },
+                config_path=cfg,
+            )
+
+            # Root-only C:\ & E:\ protect root items even in Turbo, while allowing subdirs
+            c_root = evaluate_path_access(r"C:\boot.txt", "write", config_path=cfg)
+            self.assertEqual((c_root.decision, c_root.excluded), ("ask", True))
+            c_sub = evaluate_path_access(r"C:\Palace_Live\palace_gui.py", "write", config_path=cfg)
+            self.assertEqual((c_sub.decision, c_sub.excluded), ("allow", False))
+
+            e_root = evaluate_path_access(r"E:\root.txt", "delete", config_path=cfg)
+            self.assertEqual((e_root.decision, e_root.excluded), ("ask", True))
+            e_sub = evaluate_path_access(r"E:\Visual_studio\Palace\foo.py", "write", config_path=cfg)
+            self.assertEqual((e_sub.decision, e_sub.excluded), ("allow", False))
+
+            # Recursive M:\ catches direct files, deeply nested trees, .. traversal & shell commands even in Turbo
+            m_direct = evaluate_path_access(r"M:\file.txt", "write", config_path=cfg)
+            self.assertEqual((m_direct.decision, m_direct.excluded), ("ask", True))
+            m_nested = evaluate_path_access(r"M:\BACK_UP E DRIVE\nested\data.bin", "write", config_path=cfg)
+            self.assertEqual((m_nested.decision, m_nested.excluded), ("ask", True))
+            m_trav = evaluate_path_access(r"M:\sub\..\secret.txt", "patch", config_path=cfg)
+            self.assertEqual((m_trav.decision, m_trav.excluded), ("ask", True))
+
+            cmd_m = evaluate_command_access(r"Remove-Item M:\backup\file.txt", cwd=r"E:\Visual_studio", config_path=cfg)
+            self.assertEqual((cmd_m.decision, cmd_m.excluded), ("ask", True))
+
+            cmd_e_proj = evaluate_command_access("python -m unittest", cwd=r"E:\Visual_studio\Palace", config_path=cfg)
+            self.assertEqual((cmd_e_proj.decision, cmd_e_proj.excluded), ("allow", False))
+
+            # Verify mode behavior on unprotected paths across request_review, default, auto, turbo
+            unprot = {"write_exclusions": []}
+            self.assertEqual(evaluate_path_access(r"E:\proj\a.py", "write", permissions={**unprot, "permission_mode": "request_review"}).decision, "ask")
+            self.assertEqual(evaluate_path_access(r"E:\proj\a.py", "write", permissions={**unprot, "permission_mode": "default"}).decision, "ask")
+            self.assertEqual(evaluate_path_access(r"E:\proj\a.py", "write", permissions={**unprot, "permission_mode": "auto"}).decision, "allow")
+            self.assertEqual(evaluate_path_access(r"E:\proj\a.py", "delete", permissions={**unprot, "permission_mode": "auto"}).decision, "ask")
+            self.assertEqual(evaluate_command_access("git push origin main", permissions={**unprot, "permission_mode": "auto"}).decision, "ask")
+            self.assertEqual(evaluate_command_access("python -m pytest", permissions={**unprot, "permission_mode": "auto"}).decision, "allow")
+            self.assertEqual(evaluate_path_access(r"E:\proj\a.py", "delete", permissions={**unprot, "permission_mode": "turbo"}).decision, "allow")
+
+    def test_workspace_tools_exclusion_approval_ui_and_zero_clipping(self):
+        from PySide6.QtCore import Qt
+        from access_policy import PERMISSION_MODES, load_access_permissions
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+        from workspace_tools import execute_approved_action, process_workspace_actions_in_text
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "palace_config.json"
+            work_dir = root / "work_proj"
+            work_dir.mkdir()
+            prot_dir = root / "protected_vault"
+            prot_dir.mkdir()
+
+            perms = {
+                "permission_mode": "turbo",
+                "write_exclusions": [{"path": str(prot_dir), "include_subdirs": True}],
+                "allow_workspace_writes": True,
+                "allow_shell_commands": True,
+            }
+
+            agent_reply = (
+                f'[FILE_WRITE path="{work_dir / "hello.py"}" summary="Create helper"]\n'
+                "<<<CONTENT\nvalue = 1\n>>>\n[/FILE_WRITE]\n"
+                f'[FILE_PATCH path="{work_dir / "hello.py"}" summary="Bump helper"]\n'
+                "<<<TARGET\nvalue = 1\n===REPLACE\nvalue = 42\n>>>\n[/FILE_PATCH]\n"
+                f'[FILE_WRITE path="{prot_dir / "secret.txt"}" summary="Write excluded file"]\n'
+                "<<<CONTENT\nlocked-write\n>>>\n[/FILE_WRITE]"
+            )
+
+            executed, pending, _md = process_workspace_actions_in_text(
+                agent_reply,
+                project_folder=str(work_dir),
+                config_path=cfg,
+                permissions=perms,
+            )
+            self.assertEqual(len(executed), 2)
+            self.assertEqual((work_dir / "hello.py").read_text(encoding="utf-8"), "value = 42")
+            self.assertEqual(len(pending), 1)
+            self.assertTrue(pending[0]["excluded"])
+            self.assertFalse((prot_dir / "secret.txt").exists())
+
+            ok_app, _msg_app = execute_approved_action(pending[0])
+            self.assertTrue(ok_app)
+            self.assertEqual((prot_dir / "secret.txt").read_text(encoding="utf-8"), "locked-write")
+
+            # Verify AI Access Permissions UI has zero leaked internal strings & saves unlimited exclusions cleanly
+            app = QApplication.instance() or QApplication([])
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="AI Access Permissions")
+            self.assertEqual(dlg.nav_list.currentItem().text(), "AI Access Permissions")
+            labels_text = "\n".join(
+                getattr(lbl, "text", lambda: "")()
+                for lbl in dlg.findChildren(type(dlg.perm_mode_desc_label))
+            ) + "\n" + "\n".join(chk.text() for chk in dlg.tool_checks.values())
+            for leaked in ("E: protected", "Tier 1 Sandbox", "M: blocked", r"C:\Palace_Idle_Sandbox"):
+                self.assertNotIn(leaked, labels_text)
+
+            dlg._add_exclusion_row("E:\\", include_subdirs=False)
+            dlg._add_exclusion_row("M:\\", include_subdirs=True)
+            dlg.save_settings()
+            dlg.close()
+
+            reloaded = load_access_permissions(cfg)
+            self.assertEqual(
+                reloaded["write_exclusions"],
+                [
+                    {"path": "E:\\", "include_subdirs": False},
+                    {"path": "M:\\", "include_subdirs": True},
+                ],
+            )
+
+            # Verify PalaceWindow permission pill geometry across all 4 modes + inline approval banner
+            store = SessionStore(root / "sessions")
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "deepseek": True},
+                config_path=cfg,
+            )
+            win.show()
+            app.processEvents()
+
+            for mk in PERMISSION_MODES:
+                win._set_permission_mode_quick(mk)
+                app.processEvents()
+                audit = audit_palace_window_geometry(win)
+                self.assertEqual(audit["clipped_widget_count"], 0, msg=f"Clipped on mode={mk}: {audit.get('clipped_widgets')}")
+
+            # Pending action banner shows exclusion notice and Approve executes on click
+            target_after_approve = prot_dir / "approved_banner.txt"
+            self.assertFalse(target_after_approve.exists())
+            win._show_pending_actions_banner([
+                {
+                    "id": "act-1",
+                    "kind": "file_write",
+                    "path": str(target_after_approve),
+                    "cwd": str(prot_dir),
+                    "summary": "Write after UI approve",
+                    "preview": f"Write `{target_after_approve}`",
+                    "excluded": True,
+                    "reason": "Protected by Write Exclusion List",
+                    "payload": {"content": "banner-ok"},
+                }
+            ])
+            app.processEvents()
+            self.assertTrue(win.approval_banner.isVisible())
+            win.approve_actions_btn.click()
+            app.processEvents()
+            self.assertFalse(win.approval_banner.isVisible())
+            self.assertEqual(target_after_approve.read_text(encoding="utf-8"), "banner-ok")
+
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+    def test_external_bridge_mcp_stdio_python_fix_toml_json_and_recursion_guard(self):
+        import tomllib
+        from fairybread_mcp import (
+            execute_bridge_tool,
+            get_mcp_server_entry,
+            get_platform_copy_snippet,
+            install_antigravity_bridge,
+            install_claude_desktop_bridge,
+            install_codex_bridge,
+            install_grok_bridge,
+            is_mcp_server_registered,
+            resolve_console_python_executable,
+            save_bridge_settings,
+            test_mcp_bridge_live,
+            uninstall_antigravity_bridge,
+            uninstall_claude_desktop_bridge,
+            uninstall_codex_bridge,
+            uninstall_grok_bridge,
+        )
+        from local_cli_provider import LocalCLIProvider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            py_dir = root / "pybin"
+            py_dir.mkdir()
+            py_exe = py_dir / "python.exe"
+            pyw_exe = py_dir / "pythonw.exe"
+            py_exe.write_text("", encoding="utf-8")
+            pyw_exe.write_text("", encoding="utf-8")
+            self.assertEqual(Path(resolve_console_python_executable(str(pyw_exe))), py_exe)
+
+            fake_entry = get_mcp_server_entry(
+                python_exe=str(pyw_exe),
+                script_path=Path(__file__).with_name("fairybread_mcp.py"),
+            )
+            self.assertEqual(Path(fake_entry["command"]), py_exe)
+            self.assertIn("[mcp_servers.fairybread]", get_platform_copy_snippet("codex"))
+            self.assertIn('"mcpServers"', get_platform_copy_snippet("antigravity"))
+
+            temp_home = root / "home"
+            temp_appdata = root / "appdata"
+
+            # 1) Codex / ChatGPT Desktop TOML merge + preserve existing sections + .bak + clean unlink
+            codex_toml = temp_home / ".codex" / "config.toml"
+            codex_toml.parent.mkdir(parents=True)
+            codex_toml.write_text(
+                '[desktop]\ntheme = "dark"\n\n[mcp_servers.node_repl]\ncommand = \'node.exe\'\nargs = []\n',
+                encoding="utf-8",
+            )
+            ok, _msg = install_codex_bridge(home_dir=temp_home, entry=fake_entry)
+            self.assertTrue(ok)
+            self.assertTrue((codex_toml.parent / "config.toml.fairybread.bak").exists())
+            parsed_toml = tomllib.loads(codex_toml.read_text(encoding="utf-8"))
+            self.assertIn("node_repl", parsed_toml["mcp_servers"])
+            self.assertIn("fairybread", parsed_toml["mcp_servers"])
+            self.assertEqual(parsed_toml["desktop"]["theme"], "dark")
+            self.assertTrue(is_mcp_server_registered("codex", home_dir=temp_home, appdata_dir=temp_appdata))
+
+            ok, _msg = uninstall_codex_bridge(home_dir=temp_home)
+            self.assertTrue(ok)
+            parsed_after = tomllib.loads(codex_toml.read_text(encoding="utf-8"))
+            self.assertIn("node_repl", parsed_after["mcp_servers"])
+            self.assertNotIn("fairybread", parsed_after["mcp_servers"])
+            self.assertFalse(is_mcp_server_registered("codex", home_dir=temp_home, appdata_dir=temp_appdata))
+
+            # 2) Antigravity JSON merge (preserving existing rea) + SKILL.md + clean unlink
+            ag_json = temp_home / ".gemini" / "config" / "mcp_config.json"
+            ag_json.parent.mkdir(parents=True)
+            ag_json.write_text(json.dumps({"mcpServers": {"rea": {"command": "cmd.exe"}}}, indent=2), encoding="utf-8")
+            ok, _msg = install_antigravity_bridge(home_dir=temp_home, entry=fake_entry)
+            self.assertTrue(ok)
+            skill_md = temp_home / ".gemini" / "config" / "skills" / "fairybread-council" / "SKILL.md"
+            self.assertTrue(skill_md.exists())
+            ag_data = json.loads(ag_json.read_text(encoding="utf-8"))
+            self.assertIn("rea", ag_data["mcpServers"])
+            self.assertIn("fairybread", ag_data["mcpServers"])
+
+            ok, _msg = uninstall_antigravity_bridge(home_dir=temp_home)
+            self.assertTrue(ok)
+            ag_after = json.loads(ag_json.read_text(encoding="utf-8"))
+            self.assertIn("rea", ag_after["mcpServers"])
+            self.assertNotIn("fairybread", ag_after["mcpServers"])
+            self.assertFalse(skill_md.exists())
+
+            # 3) Grok & Claude Desktop merge + clean unlink
+            ok, _ = install_grok_bridge(home_dir=temp_home, entry=fake_entry)
+            self.assertTrue(ok)
+            self.assertTrue(is_mcp_server_registered("grok", home_dir=temp_home, appdata_dir=temp_appdata))
+            ok, _ = uninstall_grok_bridge(home_dir=temp_home)
+            self.assertTrue(ok)
+            self.assertFalse(is_mcp_server_registered("grok", home_dir=temp_home, appdata_dir=temp_appdata))
+
+            ok, _ = install_claude_desktop_bridge(appdata_dir=temp_appdata, entry=fake_entry)
+            self.assertTrue(ok)
+            self.assertTrue(is_mcp_server_registered("claude", home_dir=temp_home, appdata_dir=temp_appdata))
+            ok, _ = uninstall_claude_desktop_bridge(appdata_dir=temp_appdata)
+            self.assertTrue(ok)
+            self.assertFalse(is_mcp_server_registered("claude", home_dir=temp_home, appdata_dir=temp_appdata))
+
+            # 4) Real stdio JSON-RPC handshake test
+            live_ok, live_msg = test_mcp_bridge_live(script_path=Path(__file__).with_name("fairybread_mcp.py"))
+            self.assertTrue(live_ok, msg=live_msg)
+
+            # 5) Recursion guard blocks re-entrant MCP calls and LocalCLIProvider execution
+            cfg = root / "cfg.json"
+            save_bridge_settings({"enabled": True}, config_path=cfg)
+            with patch.dict(os.environ, {"FAIRYBREAD_MCP_DEPTH": "1"}):
+                blocked = execute_bridge_tool("fairybread_ask_council", {"question": "loop"}, config_path=cfg)
+                self.assertIn("error", blocked)
+                self.assertIn("FAIRYBREAD_MCP_DEPTH", blocked["error"])
+                with self.assertRaises(RuntimeError):
+                    LocalCLIProvider("codex", cli_path="codex").generate("hello")
+
+            # 6) Output parsing for Grok JSON and plain text
+            grok_cli = LocalCLIProvider("grok", cli_path="grok")
+            self.assertEqual(grok_cli.parse_output('{"result": "Grok JSON answer"}'), "Grok JSON answer")
+            self.assertEqual(grok_cli.parse_output('{"text": "part1"}\n{"text": "part2"}'), "part1\npart2")
+            self.assertEqual(grok_cli.parse_output("Plain text reply"), "Plain text reply")
+
+    def test_external_bridge_ui_interlock_guide_and_zero_clipping(self):
+        import tomllib
+        from access_policy import PERMISSION_MODES
+        from bootstrap import build_palace
+        from dispatcher import ProviderDispatcher
+        from fairybread_mcp import load_bridge_settings, save_bridge_settings
+        from orchestrator import PalaceOrchestrator
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from provider_registry import ProviderRegistry
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "config.json"
+            temp_home = root / "home"
+            temp_appdata = root / "appdata"
+            (temp_home / ".codex").mkdir(parents=True)
+            save_bridge_settings({"enabled": True}, config_path=cfg)
+
+            # Pretend codex CLI is installed so both switches start unlocked for testing
+            with patch("local_cli_provider.find_cli_binary", side_effect=lambda pk, **kw: ("codex.exe" if pk == "codex" else None)):
+                dlg = ManageAIsDialog(
+                    config_path=cfg,
+                    initial_page="External Agent Bridge (MCP)",
+                    bridge_home_dir=temp_home,
+                    bridge_appdata_dir=temp_appdata,
+                )
+                app.processEvents()
+
+                self.assertFalse(hasattr(dlg, "bridge_code_upgrade_check"))
+                guide_txt = dlg.bridge_guide_label.text()
+                self.assertIn("Foreman Mode", guide_txt)
+                self.assertIn("Council Member Mode", guide_txt)
+
+                ctrls = dlg.bridge_platform_controls["codex"]
+                foreman_chk = ctrls["foreman"]
+                council_chk = ctrls["council"]
+
+                self.assertFalse(foreman_chk.isChecked())
+                self.assertFalse(council_chk.isChecked())
+                self.assertTrue(foreman_chk.isEnabled())
+                self.assertTrue(council_chk.isEnabled())
+
+                # Turn Foreman ON -> writes temp config.toml & disables Council Member
+                foreman_chk.setChecked(True)
+                app.processEvents()
+                self.assertFalse(council_chk.isEnabled())
+                self.assertFalse(council_chk.isChecked())
+                codex_toml = temp_home / ".codex" / "config.toml"
+                self.assertTrue(codex_toml.exists())
+                self.assertIn("fairybread", tomllib.loads(codex_toml.read_text(encoding="utf-8"))["mcp_servers"])
+
+                # Turn Foreman OFF -> cleanly unlinks config.toml & unlocks Council Member
+                foreman_chk.setChecked(False)
+                app.processEvents()
+                self.assertTrue(council_chk.isEnabled())
+                self.assertNotIn("fairybread", (tomllib.loads(codex_toml.read_text(encoding="utf-8")) if codex_toml.read_text(encoding="utf-8").strip() else {}).get("mcp_servers", {}))
+
+                # Turn Council Member ON -> disables Foreman Mode and persists via save_settings()
+                council_chk.setChecked(True)
+                app.processEvents()
+                self.assertFalse(foreman_chk.isEnabled())
+                self.assertFalse(foreman_chk.isChecked())
+
+                dlg.save_settings()
+                saved = load_bridge_settings(cfg)
+                self.assertEqual(saved["platforms"]["codex"], "council")
+
+                # Turn Council Member OFF -> unlocks Foreman Mode again
+                council_chk.setChecked(False)
+                app.processEvents()
+                self.assertTrue(foreman_chk.isEnabled())
+                dlg.close()
+                app.processEvents()
+
+            class _FakeMemory:
+                def build_prompt_context(self, _q):
+                    return ""
+
+            win = PalaceWindow(
+                store=SessionStore(root / "sessions"),
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "deepseek": True},
+                config_path=cfg,
+            )
+            win.show()
+            app.processEvents()
+            audit = audit_palace_window_geometry(win)
+            self.assertEqual(audit["clipped_widget_count"], 0, msg=f"Clipped widgets: {audit.get('clipped_widgets')}")
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+    def test_catalog_sync_rates_models_version_compare_and_sha256_verify(self):
+        import hashlib
+        import cost_service
+        from catalog_sync import (
+            compare_versions,
+            download_and_verify_installer,
+            sync_remote_catalog,
+            validate_catalog_payload,
+        )
+        from palace_config import PROVIDER_CATALOG, save_ui_settings
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        self.assertEqual(compare_versions("0.9.1", "0.9.1a"), -1)
+        self.assertEqual(compare_versions("0.9.1g", "0.9.1h"), -1)
+        self.assertEqual(compare_versions("0.9.1g", "0.92"), -1)
+        self.assertEqual(compare_versions("0.92", "0.93"), -1)
+        self.assertEqual(compare_versions("v0.9.1g", "0.9.1g"), 0)
+        self.assertEqual(compare_versions("0.9.2", "0.9.1z"), 1)
+
+        bad_payload = {
+            "latest_app_version": "0.9.1h",
+            "download_url": "http://insecure.example.com/setup.zip",
+            "installer_sha256": "not-a-sha",
+            "model_token_rates_per_1m": {"bad-neg": [-1.0, 2.0], "good-m": [0.42, 1.25]},
+            "unknown_code_hook": "rm -rf /",
+        }
+        cleaned = validate_catalog_payload(bad_payload)
+        self.assertEqual(cleaned["download_url"], "")
+        self.assertEqual(cleaned["installer_sha256"], "")
+        self.assertNotIn("unknown_code_hook", cleaned)
+        self.assertNotIn("bad-neg", cleaned["model_token_rates_per_1m"])
+        self.assertEqual(cleaned["model_token_rates_per_1m"]["good-m"], (0.42, 1.25))
+
+        orig_rates = dict(cost_service.MODEL_TOKEN_RATES_PER_1M)
+        orig_openai_meta = json.loads(json.dumps(PROVIDER_CATALOG["openai"]))
+        app = QApplication.instance() or QApplication([])
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                cfg = root / "config.json"
+                cache_p = root / "cache.json"
+                save_ui_settings({"auto_refresh_catalog": True}, config_path=cfg)
+
+                fake_bin = b"FAIRYBREAD-TEST-INSTALLER-BYTES"
+                good_sha = hashlib.sha256(fake_bin).hexdigest()
+                remote_doc = {
+                    "schema_version": 1,
+                    "latest_app_version": "0.9.1h",
+                    "release_summary": "Live catalog + VLC fail-safe upgrade.",
+                    "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.9.1h/setup.zip",
+                    "installer_sha256": good_sha,
+                    "model_token_rates_per_1m": {"gpt-test-new": [0.11, 0.55]},
+                    "provider_catalog_updates": {
+                        "openai": {"suggested_models": ["gpt-4o-mini", "gpt-5-mini"]}
+                    },
+                }
+
+                # 1) Fresh network fetch updates rate tables & PROVIDER_CATALOG in memory
+                res1 = sync_remote_catalog(
+                    config_path=cfg,
+                    cache_path=cache_p,
+                    current_version="0.9.1g",
+                    fetcher=lambda _u, _e, _t: (200, remote_doc, '"etag-1"'),
+                )
+                self.assertEqual(res1["source"], "network")
+                self.assertTrue(res1["update_available"])
+                self.assertEqual(cost_service.MODEL_TOKEN_RATES_PER_1M["gpt-test-new"], (0.11, 0.55))
+                self.assertIn("gpt-5-mini", PROVIDER_CATALOG["openai"]["suggested_models"])
+
+                # 2) Warm 6h cache avoids network call
+                def _fail_fetch(_u, _e, _t):
+                    raise AssertionError("Network should not be called while cache is warm")
+
+                res2 = sync_remote_catalog(
+                    config_path=cfg,
+                    cache_path=cache_p,
+                    current_version="0.9.1g",
+                    fetcher=_fail_fetch,
+                )
+                self.assertEqual(res2["source"], "cache")
+                self.assertTrue(res2["update_available"])
+
+                # 3) Force HTTP 304 preserves cache cleanly
+                res3 = sync_remote_catalog(
+                    config_path=cfg,
+                    cache_path=cache_p,
+                    current_version="0.9.1g",
+                    force=True,
+                    fetcher=lambda _u, et, _t: (304, None, et),
+                )
+                self.assertEqual(res3["source"], "not_modified")
+
+                # 4) Offline network failure falls back gracefully
+                res_off = sync_remote_catalog(
+                    config_path=cfg,
+                    cache_path=root / "missing_cache.json",
+                    current_version="0.9.1g",
+                    force=True,
+                    fetcher=lambda _u, _e, _t: (_ for _ in ()).throw(ConnectionError("offline")),
+                )
+                self.assertEqual(res_off["source"], "offline_fallback")
+                self.assertFalse(res_off["update_available"])
+
+                # 5) Dismissed version stays hidden until newer version arrives
+                save_ui_settings({"dismissed_update_version": "0.9.1h"}, config_path=cfg)
+                res_dis = sync_remote_catalog(
+                    config_path=cfg,
+                    cache_path=cache_p,
+                    current_version="0.9.1g",
+                    force=False,
+                    fetcher=_fail_fetch,
+                )
+                self.assertFalse(res_dis["update_available"])
+                self.assertTrue(res_dis["has_newer_version"])
+
+                # 6) SHA-256 download verifier deletes mismatched files & keeps verified ones
+                dl_dir = root / "downloads"
+                ok_http, _m, _p = download_and_verify_installer(
+                    "http://bad.example.com/x.zip", dl_dir
+                )
+                self.assertFalse(ok_http)
+                ok_bad_sha, msg_bad, path_bad = download_and_verify_installer(
+                    remote_doc["download_url"],
+                    dl_dir,
+                    expected_sha256="0" * 64,
+                    downloader=lambda _u, dst, _t: dst.write_bytes(fake_bin),
+                )
+                self.assertFalse(ok_bad_sha)
+                self.assertIsNone(path_bad)
+                self.assertIn("SHA-256 mismatch", msg_bad)
+                self.assertEqual(list(dl_dir.glob("*")), [])
+
+                ok_good, _m_ok, path_good = download_and_verify_installer(
+                    remote_doc["download_url"],
+                    dl_dir,
+                    expected_sha256=good_sha,
+                    downloader=lambda _u, dst, _t: dst.write_bytes(fake_bin),
+                )
+                self.assertTrue(ok_good)
+                self.assertTrue(path_good.is_file())
+                self.assertEqual(path_good.read_bytes(), fake_bin)
+
+                # 7) PalaceWindow update pill renders without clipping when shown
+                class _FakeMemory:
+                    def build_prompt_context(self, _q):
+                        return ""
+
+                win = PalaceWindow(
+                    store=SessionStore(root / "sessions"),
+                    palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                    provider_states={"gemini": True, "deepseek": True},
+                    config_path=cfg,
+                )
+                win.show()
+                win._apply_catalog_sync_result(res1, manual=False)
+                app.processEvents()
+                self.assertTrue(win.update_available_btn.isVisible())
+                audit = audit_palace_window_geometry(win)
+                self.assertEqual(audit["clipped_widget_count"], 0, msg=f"Clipped with update pill: {audit.get('clipped_widgets')}")
+                win._force_quit = True
+                win.close()
+                app.processEvents()
+        finally:
+            cost_service.MODEL_TOKEN_RATES_PER_1M.clear()
+            cost_service.MODEL_TOKEN_RATES_PER_1M.update(orig_rates)
+            PROVIDER_CATALOG["openai"].clear()
+            PROVIDER_CATALOG["openai"].update(orig_openai_meta)
+
+    def test_restore_default_settings_preserves_memory_keys_and_write_exclusions_by_default(self):
+        import tomllib
+        from access_policy import load_access_permissions, save_access_permissions
+        from fairybread_mcp import install_codex_bridge, load_bridge_settings, save_bridge_settings
+        from palace_config import (
+            load_ui_settings,
+            restore_default_settings,
+            save_agent_defaults,
+            save_provider_config,
+            save_ui_settings,
+        )
+        from palace_gui import RestoreDefaultSettingsDialog
+        from voice_service import load_voice_settings, save_voice_settings
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "palace_config.json"
+            bak_dir = root / "bak"
+            data_dir = root / "palace_data"
+            data_dir.mkdir(parents=True)
+            mem_db = data_dir / "memory.db"
+            mem_db.write_text("KEEP-MEMORY-DB", encoding="utf-8")
+
+            temp_home = root / "home"
+            temp_appdata = root / "appdata"
+            install_codex_bridge(home_dir=temp_home)
+
+            save_provider_config("gemini", enabled=True, model="gemini-4-neon", config_path=cfg)
+            save_ui_settings({"theme": "light", "enter_to_send": False, "custom_data_dir": str(data_dir)}, config_path=cfg)
+            save_agent_defaults({"web_search_default": "deep"}, config_path=cfg)
+            save_voice_settings({"gemini_voice_name": "Puck", "speech_speed": 1.25}, config_path=cfg)
+            save_access_permissions(
+                {"permission_mode": "turbo", "write_exclusions": [{"path": str(root / "KeepProt"), "include_subdirs": True}]},
+                config_path=cfg,
+            )
+            save_bridge_settings({"enabled": True, "platforms": {"codex": "foreman"}}, config_path=cfg)
+
+            # Default restore: resets UI/mode/voice, keeps Memory, providers, custom_data_dir, exclusions & MCP link
+            res1 = restore_default_settings(
+                cfg,
+                clear_write_exclusions=False,
+                unlink_external_bridges=False,
+                backup_dir=bak_dir,
+            )
+            self.assertTrue(Path(res1["backup_path"]).is_file())
+            self.assertEqual(res1["preserved_exclusions"], 1)
+            self.assertEqual(mem_db.read_text(encoding="utf-8"), "KEEP-MEMORY-DB")
+            self.assertEqual(load_ui_settings(cfg)["theme"], "dark")
+            self.assertEqual(load_ui_settings(cfg)["custom_data_dir"], str(data_dir))
+            self.assertEqual(load_agent_defaults(cfg)["web_search_default"], "default")
+            self.assertEqual(load_voice_settings(cfg)["gemini_voice_name"], "Kore")
+            ap1 = load_access_permissions(cfg)
+            self.assertEqual(ap1["permission_mode"], "default")
+            self.assertEqual(len(ap1["write_exclusions"]), 1)
+            self.assertEqual(load_bridge_settings(cfg)["platforms"]["codex"], "foreman")
+            self.assertIn("fairybread", tomllib.loads((temp_home / ".codex" / "config.toml").read_text(encoding="utf-8"))["mcp_servers"])
+
+            # Dialog opt-in clear exclusions + unlink external MCP bridges
+            dlg = RestoreDefaultSettingsDialog(
+                config_path=cfg,
+                backup_dir=bak_dir,
+                bridge_home_dir=temp_home,
+                bridge_appdata_dir=temp_appdata,
+            )
+            self.assertFalse(dlg.clear_exclusions_check.isChecked())
+            self.assertFalse(dlg.unlink_bridges_check.isChecked())
+            dlg.clear_exclusions_check.setChecked(True)
+            dlg.unlink_bridges_check.setChecked(True)
+            dlg._execute_reset()
+            app.processEvents()
+
+            self.assertEqual(load_access_permissions(cfg)["write_exclusions"], [])
+            self.assertEqual(load_bridge_settings(cfg)["platforms"]["codex"], "off")
+            codex_txt = (temp_home / ".codex" / "config.toml").read_text(encoding="utf-8")
+            self.assertNotIn("fairybread", (tomllib.loads(codex_txt) if codex_txt.strip() else {}).get("mcp_servers", {}))
+            self.assertEqual(mem_db.read_text(encoding="utf-8"), "KEEP-MEMORY-DB")
+
+    def test_installer_vlc_upgrade_preserves_config_memory_and_creates_pre_upgrade_backup(self):
+        import zipfile
+        from install_fairybread_beta import perform_installation_detailed
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unrelated_dir = root / "unrelated"
+            unrelated_dir.mkdir()
+            (unrelated_dir / "notes.txt").write_text("user notes", encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                perform_installation_detailed(
+                    unrelated_dir,
+                    register_system_shortcuts=False,
+                    allow_upgrade_existing=True,
+                    data_dir=root / "data_unused",
+                )
+
+            custom_install_dir = root / "MyCustomFairybread"
+            custom_install_dir.mkdir()
+            (custom_install_dir / "palace_gui.py").write_text("# old", encoding="utf-8")
+            local_cfg = {"providers": {"gemini": {"enabled": True, "model": "gemini-4-neon"}}, "ui_settings": {"theme": "custom_user_theme"}}
+            (custom_install_dir / "palace_config.json").write_text(json.dumps(local_cfg), encoding="utf-8")
+
+            fake_data_dir = root / "palace_appdata"
+            (fake_data_dir / "sessions").mkdir(parents=True)
+            (fake_data_dir / "idle_notebooks").mkdir(parents=True)
+            (fake_data_dir / "memory.db").write_text("MEMORY-DATA", encoding="utf-8")
+            (fake_data_dir / "credentials.json").write_text('{"openai": "enc"}', encoding="utf-8")
+            (fake_data_dir / "sessions" / "s1.json").write_text("[]", encoding="utf-8")
+            (fake_data_dir / "idle_notebooks" / "n1.md").write_text("idle note", encoding="utf-8")
+            (fake_data_dir / "palace_config.json").write_text(json.dumps(local_cfg), encoding="utf-8")
+
+            # Must refuse if allow_upgrade_existing=False
+            with self.assertRaises(FileExistsError):
+                perform_installation_detailed(
+                    custom_install_dir,
+                    register_system_shortcuts=False,
+                    allow_upgrade_existing=False,
+                    data_dir=fake_data_dir,
+                )
+
+            # VLC default upgrade: creates backup ZIP, preserves non-Program-Files palace_config.json + Memory + keys
+            up_res = perform_installation_detailed(
+                custom_install_dir,
+                register_system_shortcuts=False,
+                allow_upgrade_existing=True,
+                keep_existing_settings=True,
+                wipe_memory_and_chats=False,
+                data_dir=fake_data_dir,
+            )
+            self.assertTrue(up_res["upgraded_existing"])
+            bak_zip = Path(up_res["backup_zip"])
+            self.assertTrue(bak_zip.is_file())
+            with zipfile.ZipFile(bak_zip, "r") as zf:
+                names = set(zf.namelist())
+                self.assertIn("data/memory.db", names)
+                self.assertIn("data/credentials.json", names)
+                self.assertIn("install_dir/palace_config.json", names)
+            self.assertEqual(json.loads((custom_install_dir / "palace_config.json").read_text(encoding="utf-8"))["ui_settings"]["theme"], "custom_user_theme")
+            self.assertEqual((fake_data_dir / "memory.db").read_text(encoding="utf-8"), "MEMORY-DATA")
+
+            # Opt-in Clean Install + Wipe Memory still keeps credentials.json & creates backup ZIP first
+            clean_res = perform_installation_detailed(
+                custom_install_dir,
+                register_system_shortcuts=False,
+                allow_upgrade_existing=True,
+                keep_existing_settings=False,
+                wipe_memory_and_chats=True,
+                data_dir=fake_data_dir,
+            )
+            self.assertTrue(clean_res["wiped_memory"])
+            self.assertEqual(json.loads((custom_install_dir / "palace_config.json").read_text(encoding="utf-8"))["ui_settings"]["theme"], "dark")
+            self.assertTrue((fake_data_dir / "credentials.json").is_file())
+            self.assertFalse((fake_data_dir / "memory.db").exists())
 
 
 if __name__ == "__main__":

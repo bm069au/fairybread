@@ -22,8 +22,8 @@ def _resolve_default_config_path() -> Path:
 
 CONFIG_PATH = _resolve_default_config_path()
 
-FAIRYBREAD_BASE_VERSION = "0.9.1"
-FAIRYBREAD_VERSION = "0.9.1g"
+FAIRYBREAD_BASE_VERSION = "0.92"
+FAIRYBREAD_VERSION = "0.92"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 
@@ -860,16 +860,12 @@ def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     out = dict(DEFAULT_AGENT_DEFAULTS)
 
     ap = str(raw.get("approval_policy") or out["approval_policy"]).strip().lower()
-    if ap in {"on_request", "auto_deploy", "read_only"}:
+    if ap in {"on_request", "auto_deploy", "read_only", "request_review", "default", "auto", "turbo"}:
         out["approval_policy"] = ap
-    if not IS_DEVELOPER_EDITION and out["approval_policy"] == "auto_deploy":
-        out["approval_policy"] = "read_only"
 
     sb = str(raw.get("sandbox_mode") or out["sandbox_mode"]).strip().lower()
     if sb in {"read_only", "sandbox_write"}:
         out["sandbox_mode"] = sb
-    if not IS_DEVELOPER_EDITION:
-        out["sandbox_mode"] = "read_only"
 
     ws = str(raw.get("web_search_default") or out["web_search_default"]).strip().lower()
     if ws in {"off", "default", "moderate", "deep"}:
@@ -952,6 +948,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "normal_max_storage_mb": 0,  # 0 = Unlimited, or >= 100 MB (warns at 85% and 100%)
     "custom_data_dir": "",  # Empty = %LOCALAPPDATA%\Palace; or custom directory path on any drive
     "close_to_tray": True,  # True: window X button minimizes Fairybread to system tray
+    "auto_refresh_catalog": True,  # Auto-fetch rates/model updates & release notifications from fairybread.me
+    "dismissed_update_version": "",  # Version tag dismissed by user until a newer release arrives
 }
 
 
@@ -967,6 +965,10 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["include_palace_code"] = bool(raw["include_palace_code"])
     if "close_to_tray" in raw:
         merged["close_to_tray"] = bool(raw["close_to_tray"])
+    if "auto_refresh_catalog" in raw:
+        merged["auto_refresh_catalog"] = bool(raw["auto_refresh_catalog"])
+    if isinstance(raw.get("dismissed_update_version"), str):
+        merged["dismissed_update_version"] = raw["dismissed_update_version"].strip()[:32]
     if raw.get("badge_display_mode") in {"icons_only", "icons_and_names", "names_only"}:
         merged["badge_display_mode"] = raw["badge_display_mode"]
     if isinstance(raw.get("theme"), str) and raw["theme"].strip():
@@ -994,6 +996,8 @@ def save_ui_settings(
     current["enter_to_send"] = bool(current.get("enter_to_send", True))
     current["include_palace_code"] = bool(current.get("include_palace_code", False))
     current["close_to_tray"] = bool(current.get("close_to_tray", True))
+    current["auto_refresh_catalog"] = bool(current.get("auto_refresh_catalog", True))
+    current["dismissed_update_version"] = str(current.get("dismissed_update_version") or "").strip()[:32]
     if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
         current["badge_display_mode"] = "icons_only"
     current["theme"] = str(current.get("theme") or "dark").strip().lower()
@@ -1451,3 +1455,110 @@ def build_project_folder_context(
         except OSError:
             pass
     return "\n".join(out)
+
+
+def restore_default_settings(
+    config_path: Path = CONFIG_PATH,
+    *,
+    clear_write_exclusions: bool = False,
+    unlink_external_bridges: bool = False,
+    backup_dir: Path | None = None,
+    bridge_home_dir: Path | None = None,
+    bridge_appdata_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Reset Fairybread app settings to factory defaults after saving an automatic backup snapshot.
+
+    Always preserves Memory Palaces, conversations/projects, and DPAPI API keys, and preserves
+    configured AI providers, custom data directory, Write Exclusions, and MCP bridge links unless
+    explicitly requested otherwise.
+    """
+    from datetime import datetime
+    import shutil
+
+    existing = _read_raw_config(config_path)
+    bak_root = Path(backup_dir) if backup_dir is not None else (get_palace_data_root(config_path) / "pre_upgrade_backups")
+    bak_root.mkdir(parents=True, exist_ok=True)
+    bak_path: Path | None = None
+    if config_path.is_file():
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak_path = bak_root / f"palace_config_before_reset_{stamp}.json"
+        shutil.copy2(config_path, bak_path)
+
+    old_ui = existing.get("ui_settings") if isinstance(existing.get("ui_settings"), dict) else {}
+    kept_custom_dir = str(old_ui.get("custom_data_dir") or "").strip()
+
+    new_ui = dict(DEFAULT_UI_SETTINGS)
+    if kept_custom_dir and not kept_custom_dir.upper().startswith("M:"):
+        new_ui["custom_data_dir"] = kept_custom_dir
+
+    old_ap = existing.get("access_permissions") if isinstance(existing.get("access_permissions"), dict) else {}
+    old_excl = old_ap.get("write_exclusions") if isinstance(old_ap.get("write_exclusions"), list) else []
+    kept_exclusions = [] if clear_write_exclusions else json.loads(json.dumps(old_excl))
+
+    from access_policy import DEFAULT_ACCESS_PERMISSIONS
+    new_ap = {
+        "permission_mode": str(DEFAULT_ACCESS_PERMISSIONS["permission_mode"]),
+        "write_exclusions": kept_exclusions,
+        "allow_workspace_writes": bool(DEFAULT_ACCESS_PERMISSIONS["allow_workspace_writes"]),
+        "allow_shell_commands": bool(DEFAULT_ACCESS_PERMISSIONS["allow_shell_commands"]),
+        "allow_self_patch": bool(DEFAULT_ACCESS_PERMISSIONS["allow_self_patch"]),
+    }
+
+    from voice_service import DEFAULT_VOICE_SETTINGS
+    from email_service import DEFAULT_EMAIL_NOTIFICATION_SETTINGS
+    from fairybread_mcp import (
+        DEFAULT_BRIDGE_SETTINGS,
+        EXTERNAL_PLATFORMS,
+        unlink_platform_foreman,
+    )
+
+    new_email = dict(DEFAULT_EMAIL_NOTIFICATION_SETTINGS)
+    old_email = existing.get("email_and_notifications") if isinstance(existing.get("email_and_notifications"), dict) else {}
+    if isinstance(old_email.get("password_dpapi"), str) and old_email["password_dpapi"]:
+        new_email["password_dpapi"] = old_email["password_dpapi"]
+
+    unlinked_platforms: list[str] = []
+    if unlink_external_bridges:
+        for pk in EXTERNAL_PLATFORMS:
+            ok, _msg = unlink_platform_foreman(
+                pk,
+                home_dir=bridge_home_dir,
+                appdata_dir=bridge_appdata_dir,
+            )
+            if ok:
+                unlinked_platforms.append(pk)
+        new_bridge = json.loads(json.dumps(DEFAULT_BRIDGE_SETTINGS))
+    else:
+        old_bridge = existing.get("external_agent_bridge")
+        new_bridge = (
+            json.loads(json.dumps(old_bridge))
+            if isinstance(old_bridge, dict)
+            else json.loads(json.dumps(DEFAULT_BRIDGE_SETTINGS))
+        )
+
+    old_providers = existing.get("providers")
+    kept_providers = json.loads(json.dumps(old_providers)) if isinstance(old_providers, dict) else {}
+
+    reset_data: dict[str, Any] = {
+        "providers": kept_providers,
+        "ui_settings": new_ui,
+        "agent_defaults": dict(DEFAULT_AGENT_DEFAULTS),
+        "voice_settings": dict(DEFAULT_VOICE_SETTINGS),
+        "graphics_settings": json.loads(json.dumps(DEFAULT_GRAPHICS_SETTINGS)),
+        "ai_squads": json.loads(json.dumps(DEFAULT_AI_SQUADS)),
+        "idle_settings": dict(DEFAULT_IDLE_SETTINGS),
+        "tool_settings": dict(DEFAULT_TOOL_SETTINGS),
+        "personalization_settings": dict(DEFAULT_PERSONALIZATION_SETTINGS),
+        "mission_ethics": DEFAULT_MISSION_ETHICS,
+        "email_and_notifications": new_email,
+        "access_permissions": new_ap,
+        "external_agent_bridge": new_bridge,
+    }
+    _write_raw_config(reset_data, config_path)
+    return {
+        "backup_path": str(bak_path) if bak_path else "",
+        "preserved_exclusions": len(kept_exclusions),
+        "cleared_exclusions": bool(clear_write_exclusions),
+        "unlinked_bridges": unlinked_platforms,
+    }
+

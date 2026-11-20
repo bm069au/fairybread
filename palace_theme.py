@@ -39,10 +39,53 @@ NEUTRAL_GREY_TEXT = "#8b949e"
 NEUTRAL_GREY_BG = "#161920"
 NEUTRAL_BORDER = "#21262d"
 
-AI_ICONS = {k: v["icon"] for k, v in PROVIDER_CATALOG.items()}
-AI_COLORS = {k: v["color"] for k, v in PROVIDER_CATALOG.items()}
-AI_BG_COLORS = {k: v["bg_color"] for k, v in PROVIDER_CATALOG.items()}
-AI_DISPLAY_NAMES = {k: v["display_name"] for k, v in PROVIDER_CATALOG.items()}
+_CLI_PROVIDER_THEME_META: dict[str, dict[str, str]] = {
+    "codex_cli": {
+        "icon": "⌘",
+        "color": "#10a37f",
+        "bg_color": "#0d261f",
+        "display_name": "Codex CLI (ChatGPT)",
+        "short_name": "Codex CLI",
+    },
+    "antigravity_cli": {
+        "icon": "✦",
+        "color": "#4285f4",
+        "bg_color": "#10203a",
+        "display_name": "Antigravity CLI",
+        "short_name": "Antigravity",
+    },
+    "grok_cli": {
+        "icon": "✕",
+        "color": "#e2e8f0",
+        "bg_color": "#1f242d",
+        "display_name": "Grok CLI (xAI)",
+        "short_name": "Grok CLI",
+    },
+    "claude_cli": {
+        "icon": "✳",
+        "color": "#d97757",
+        "bg_color": "#2b1b15",
+        "display_name": "Claude CLI",
+        "short_name": "Claude CLI",
+    },
+}
+
+AI_ICONS = {
+    **{k: v["icon"] for k, v in PROVIDER_CATALOG.items()},
+    **{k: v["icon"] for k, v in _CLI_PROVIDER_THEME_META.items()},
+}
+AI_COLORS = {
+    **{k: v["color"] for k, v in PROVIDER_CATALOG.items()},
+    **{k: v["color"] for k, v in _CLI_PROVIDER_THEME_META.items()},
+}
+AI_BG_COLORS = {
+    **{k: v["bg_color"] for k, v in PROVIDER_CATALOG.items()},
+    **{k: v["bg_color"] for k, v in _CLI_PROVIDER_THEME_META.items()},
+}
+AI_DISPLAY_NAMES = {
+    **{k: v["display_name"] for k, v in PROVIDER_CATALOG.items()},
+    **{k: v["display_name"] for k, v in _CLI_PROVIDER_THEME_META.items()},
+}
 
 
 def get_generated_images_dir() -> Path:
@@ -83,6 +126,7 @@ AI_SHORT_NAMES = {
     "together": "Together",
     "perplexity": "Perplexity",
     "ollama": "Ollama",
+    **{k: v["short_name"] for k, v in _CLI_PROVIDER_THEME_META.items()},
 }
 
 

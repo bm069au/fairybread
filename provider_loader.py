@@ -1,8 +1,15 @@
+from pathlib import Path
 from typing import Any, Callable
 
 from credential_store import CredentialStore
 from gemini_provider import GeminiProvider
 from groq_provider import GroqProvider
+from local_cli_provider import (
+    PLATFORM_TO_CLI_PROVIDER,
+    LocalCLIProvider,
+    find_cli_binary,
+    get_mcp_depth,
+)
 from openai_provider import OpenAIProvider
 from providers import AIProvider
 from cerebras_provider import CerebrasProvider
@@ -12,7 +19,10 @@ from mistral_provider import MistralProvider
 
 def load_configured_providers(
     credentials: CredentialStore,
-    provider_configs: dict[str, dict[str, Any]] | None = None
+    provider_configs: dict[str, dict[str, Any]] | None = None,
+    *,
+    config_path: Path | None = None,
+    include_local_cli: bool = True,
 ) -> dict[str, AIProvider]:
     configs = provider_configs or {}
 
@@ -104,5 +114,24 @@ def load_configured_providers(
             providers[provider_name] = factory(
                 api_key
             )
+
+    if include_local_cli and get_mcp_depth() < 1:
+        try:
+            from fairybread_mcp import get_council_cli_platforms
+
+            council_cli = (
+                get_council_cli_platforms(config_path=config_path)
+                if config_path is not None
+                else get_council_cli_platforms()
+            )
+            for platform_key in council_cli:
+                prov_key = PLATFORM_TO_CLI_PROVIDER.get(platform_key)
+                if not prov_key or prov_key in providers:
+                    continue
+                cli_path = find_cli_binary(platform_key)
+                if cli_path:
+                    providers[prov_key] = LocalCLIProvider(platform_key, cli_path=cli_path)
+        except Exception:
+            pass
 
     return providers
