@@ -8,7 +8,12 @@ from dispatcher import ProviderDispatcher
 from memory_service import MemoryService
 from palace_config import build_palace_source_context, build_project_folder_context, format_democratic_roster
 from provider_result import ProviderResult
-from synthesizer import PalaceSynthesizer, SynthesisResult
+from synthesizer import (
+    PalaceSynthesizer,
+    SynthesisResult,
+    has_executable_image_tag,
+    is_pass_or_defer_text,
+)
 
 
 _DIRECT_DRAW_VERB_RE = re.compile(
@@ -65,10 +70,23 @@ _EXPLICIT_CREATE_VISUAL_RE = re.compile(
 _CONTEXTUAL_VISUAL_FOLLOWUP_RE = re.compile(
     r"\b(?:"
     r"darker|brighter|warmer|cooler|zoom(?:\s+in|\s+out)?|closer|wider|crop|recolor|color\s+palette|"
-    r"wings|lighting|background|same\s+(?:fairy|image|picture|character|style)|try\s+again|"
-    r"change\s+the\s+(?:color|background|hair|lighting|pose)|"
-    r"high[- ]?res(?:olution)?|full[- ]?res(?:olution)?|re-?render|regenerate|make\s+it\s+(?:look|more|less)"
+    r"wings|lighting|background|same\s+(?:fairy|image|picture|character|style|flower|scene|subject)|try\s+again|"
+    r"change\s+the\s+(?:color|background|hair|lighting|pose|style|framing|angle|focus)|"
+    r"high[- ]?res(?:olution)?|full[- ]?res(?:olution)?|re-?render|re-?run|regenerate|"
+    r"make\s+it\s+(?:look|more|less)|making\s+it\s+(?:look|more|less|photo|real|natural|candid|dark|bright|soft|sharp|cinematic)|"
+    r"photo[- ]?realistic|photoreal(?:ism)?|hyper[- ]?realistic|hyperreal(?:ism)?|"
+    r"(?:more|less|too|still)\s+(?:photo[- ]?realistic|photoreal|hyper[- ]?realistic|realistic|natural|candid|organic|soft|softer|sharp|sharper|clean|polished|glossy|saturated|vivid|muted|dark|bright|grainy|noisy|cgi|synthetic|cartoon(?:ish|y)?|stylized|cinematic|dramatic|imperfect)|"
+    r"(?:looks?|feels?|reads?)\s+(?:too\s+|still\s+)?(?:cgi|synthetic|fake|plastic|polished|glossy|hyper[- ]?real|rendered|artificial|clean)|"
+    r"(?:phone|handheld|dslr|film|candid|field)\s+(?:photo|shot|snapshot|camera)|"
+    r"aspect\s+ratio|3:2|4:5|16:9|9:16|1:1|(?:landscape|portrait)(?:\s+(?:crop|mode|orientation|version|format))?|"
+    r"(?:shallow|deeper)\s+(?:depth\s+of\s+field|focus)|(?:more|less)\s+(?:grain|noise|blur|bokeh|saturation|contrast|haze|mist|glow|bioluminescence|shadows)|"
+    r"(?:creating|generating|rendering|finishing)\s+the\s+(?:image|picture|photo|master|render)"
     r")\b",
+    re.IGNORECASE,
+)
+
+_MULTI_DRAFT_REQUEST_RE = re.compile(
+    r"\b(?:\d+|two|three|four|five)\s+(?:drafts?|options?|concepts?|variants?|variations?)\b",
     re.IGNORECASE,
 )
 
@@ -141,6 +159,33 @@ def _extract_requested_image_size(question: str) -> str:
     if "4k" in q or "wallpaper" in q:
         return "wallpaper_4k"
     return ""
+
+
+def _has_prior_single_or_master_render(session_context: str) -> bool:
+    """Return True when the most recent assistant response already rendered a single/master image."""
+    if not session_context:
+        return False
+    last_assistant = session_context.rsplit("\n\nASSISTANT", 1)[-1]
+    up = last_assistant.upper()
+    if (
+        'QUALITY="HIGH"' in up
+        or "QUALITY='HIGH'" in up
+        or "MASTER RENDER" in up
+        or "ACTUAL FIELD PHOTOGRAPH" in up
+        or "REFINED MASTER" in up
+    ):
+        return True
+    try:
+        from palace_theme import _GENERATE_IMAGE_TAG_PATTERN
+        tags = list(_GENERATE_IMAGE_TAG_PATTERN.finditer(last_assistant))
+        if len(tags) == 1:
+            return True
+    except Exception:
+        pass
+    if not ("DRAFT 1" in up and "DRAFT 2" in up and "DRAFT 3" in up):
+        if any(tok in up for tok in ("1024X1024", "HIGH-RES", "MASTER", "RERENDER", "RE-RENDER", "RENDERED")):
+            return True
+    return False
 
 
 def _extract_prior_draft_tag_from_context(
@@ -296,24 +341,40 @@ class PalaceOrchestrator:
         drawing_mode: str = "none",
         detail_directive: str = "",
         has_attached_images: bool = False,
+        is_visual_refinement: bool = False,
     ) -> str:
         roster = format_democratic_roster(active_providers)
         workspace_block = f"\nWORKSPACE / SOURCE CODE TOOL CONTEXT:\n{extra_workspace_context}\n" if extra_workspace_context else ""
         if drawing_mode == "direct_draw":
-            mode_rules = (
-                "- GRAPHIC PROMPT & RENDER MODE (3 SMALL VISUAL DRAFTS BY DEFAULT): Craft rich, concrete visual prompts and emit executable `[GENERATE_IMAGE ...]` tags. "
-                "Do NOT defer to another agent (`[DEFER EXECUTION TO: ...]`) and NEVER return text-only descriptions asking the user to pick an option before drawing. "
-                "When humans talk about pictures, they expect to SEE visual pictures! "
-                "DEFAULT BEHAVIOR: Unless the user explicitly passed `/fullrender`, chose a specific draft (`option 2`, `draft 1`), or asked for the final/finished full-resolution render, emit THREE (3) distinct smaller draft sample tags (`size=\"512x512\" quality=\"low\"` for square/general or `size=\"640x360\" quality=\"low\"` for banners/widescreen) representing 3 creative compositional/lighting variations (`title=\"Draft 1 - ...\"`, `title=\"Draft 2 - ...\"`, `title=\"Draft 3 - ...\"`). "
-                "Then briefly ask the user which draft they like best (or what modifications they want) and what final size they need so you can hand over the finished high-resolution master! "
-                "If the user IS choosing a draft or requested `/fullrender`, emit the finished full-size `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly. "
-                "Do NOT wrap `[GENERATE_IMAGE ...]` inside markdown code fences (` ``` `)."
-            )
+            if is_visual_refinement:
+                mode_rules = (
+                    "- GRAPHIC PROMPT OPTIMIZATION MODE (REFINEMENT -> 1 UPDATED HIGH-RES MASTER): YOUR ROLE IS PROMPT OPTIMIZATION — "
+                    "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag straight to the configured image renderer "
+                    "(primary `gemini-3-pro-image`, draft `gemini-3.1-flash-image`, fallbacks `gpt-image-2` / `FLUX-1-dev`). "
+                    "You are NOT rendering pixels yourself — NEVER reply `[PASS]` and NEVER defer or hand off execution to Gemini, OpenAI, or another agent in chat. "
+                    "The user is refining an existing rendered image: optimize the visual prompt to apply their requested look/aspect/lighting adjustments cleanly, and emit ONE (1) bare executable "
+                    "`[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` tag directly (or honor any requested size/ratio). "
+                    "NEVER wrap `[GENERATE_IMAGE ...]` inside markdown code fences (` ``` `) or inline backticks."
+                )
+            else:
+                mode_rules = (
+                    "- GRAPHIC PROMPT OPTIMIZATION MODE (3 SMALL VISUAL DRAFTS BY DEFAULT): YOUR ROLE IS PROMPT OPTIMIZATION — "
+                    "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag(s) straight to the configured image renderer "
+                    "(primary `gemini-3-pro-image`, draft `gemini-3.1-flash-image`, fallbacks `gpt-image-2` / `FLUX-1-dev`). "
+                    "You are NOT rendering pixels yourself — NEVER reply `[PASS]`, NEVER defer to another agent (`[DEFER EXECUTION TO: ...]`), and NEVER return text-only descriptions asking the user to pick an option before drawing. "
+                    "When humans talk about pictures, they expect to SEE visual pictures! "
+                    "DEFAULT BEHAVIOR: Unless the user explicitly passed `/fullrender`, chose a specific draft (`option 2`, `draft 1`), or asked for the final/finished full-resolution render, emit THREE (3) distinct smaller draft sample tags (`size=\"512x512\" quality=\"low\"` for square/general or `size=\"640x360\" quality=\"low\"` for banners/widescreen) representing 3 creative compositional/lighting variations (`title=\"Draft 1 - ...\"`, `title=\"Draft 2 - ...\"`, `title=\"Draft 3 - ...\"`). "
+                    "Then briefly ask the user which draft they like best (or what modifications they want) and what final size they need so you can hand over the finished high-resolution master! "
+                    "If the user IS choosing a draft or requested `/fullrender`, emit the finished full-size `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly. "
+                    "NEVER wrap `[GENERATE_IMAGE ...]` inside markdown code fences (` ``` `) or inline backticks."
+                )
         elif drawing_mode == "council_draw":
             mode_rules = (
-                "- GRAPHIC PROMPT DUO BRAINSTORM MODE (2 SPECIALISTS -> 3 VISUAL DRAFTS): You are one of two selected visual prompt specialists crafting the image prompt before Fairybread's primary renderer draws it. "
+                "- GRAPHIC PROMPT DUO BRAINSTORM MODE (SPECIALISTS -> EXECUTABLE VISUAL TAGS): YOUR ROLE IS PROMPT OPTIMIZATION — "
+                "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag(s) straight to the configured image renderer. "
+                "NEVER reply `[PASS]` or hand off execution to Gemini in chat. "
                 "Contribute specific visual, lighting, anatomical, or compositional improvements and emit THREE (3) executable smaller draft `[GENERATE_IMAGE prompt=\"...\" title=\"Draft 1/2/3...\" size=\"512x512\" quality=\"low\"]` (or `size=\"640x360\" quality=\"low\"` for banners) tags so every option is visually rendered on screen for the user to compare before choosing a final full-resolution master! "
-                "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) and NEVER ask the user to copy-paste a prompt into another tool."
+                "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) or inline backticks and NEVER ask the user to copy-paste a prompt into another tool."
             )
         else:
             mode_rules = (
@@ -768,7 +829,11 @@ Instructions:
         ):
             drawing_mode = "direct_draw"
 
-        if drawing_mode != "none" and (selected_draft_num is not None or is_draft_mix):
+        is_visual_refinement = False
+        if (
+            drawing_mode != "none"
+            and (selected_draft_num is not None or is_draft_mix)
+        ):
             pick_label = (
                 f"Draft #{selected_draft_num}"
                 if selected_draft_num is not None
@@ -780,6 +845,23 @@ Instructions:
                 f"Do NOT reply `[PASS]` or defer to another agent, and do NOT pause for more input. "
                 f"Emit the executable full-resolution `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` "
                 f"tag immediately (honoring any custom size or tweaks in the user's message)."
+            )
+        elif (
+            drawing_mode == "direct_draw"
+            and has_prior_image_context
+            and selected_draft_num is None
+            and not is_draft_mix
+            and not _MULTI_DRAFT_REQUEST_RE.search(q_no_att)
+            and (_has_prior_single_or_master_render(session_context) or bool(_CONTEXTUAL_VISUAL_FOLLOWUP_RE.search(q_no_att)))
+        ):
+            is_visual_refinement = True
+            extra_blocks.append(
+                "[VISUAL REFINEMENT FOLLOW-UP — OPTIMIZE PROMPT & RENDER UPDATED HIGH-RES MASTER NOW]: "
+                "The user is refining a previously rendered image from this conversation. "
+                "Your role is PROMPT OPTIMIZATION: rewrite and optimize the visual prompt to incorporate the user's feedback, "
+                "and emit ONE (1) bare executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` tag directly "
+                "(honoring any requested size or aspect ratio, do NOT revert to 3 small drafts, do NOT wrap the tag in backticks or code fences, and NEVER reply `[PASS]` or hand off to Gemini — "
+                "Fairybread's Python Image Engine automatically sends your `[GENERATE_IMAGE ...]` tag straight to the configured image renderer)."
             )
 
         effective_providers = list(provider_names) if provider_names is not None else None
@@ -884,6 +966,7 @@ Instructions:
                             drawing_mode=drawing_mode,
                             detail_directive=detail_directive,
                             has_attached_images=bool(attached_images),
+                            is_visual_refinement=is_visual_refinement,
                         )
                 elif s_bundle.shared_summary:
                     extra_blocks.append(s_bundle.shared_summary)
@@ -899,6 +982,7 @@ Instructions:
             drawing_mode=drawing_mode,
             detail_directive=detail_directive,
             has_attached_images=bool(attached_images),
+            is_visual_refinement=is_visual_refinement,
         )
         round1_prompt_arg: Any = sharded_dispatch_prompts if sharded_dispatch_prompts else prompt
 
@@ -919,22 +1003,14 @@ Instructions:
                 return raw_txt
 
         def _is_silent_pass_or_defer(raw_txt: str) -> bool:
-            stripped = (raw_txt or "").strip()
-            upper = stripped.upper()
-            if "[GENERATE_IMAGE" in upper or "[IDLE_PATCH" in upper:
-                return False
-            if upper in {"[PASS]", "PASS"} or re.match(r"^\[PASS\]\b", stripped, re.IGNORECASE):
-                return True
-            if upper.startswith("[DEFER EXECUTION TO:") and len(stripped) < 280:
-                return True
-            return False
+            return is_pass_or_defer_text(raw_txt)
 
         def _has_image_tag_result(res: ProviderResult | None) -> bool:
             return bool(
                 res is not None
                 and res.succeeded
                 and res.response is not None
-                and "[GENERATE_IMAGE" in (res.response.text or "").upper()
+                and has_executable_image_tag(res.response.text or "", allow_empty_prompt=True)
             )
 
         def _is_permanent_llm_error(err: str) -> bool:
@@ -953,6 +1029,25 @@ Instructions:
                     "quota",
                     "billing",
                     "insufficient_quota",
+                )
+            )
+
+        def _should_skip_graphics_primary_retry(err: str) -> bool:
+            low = (err or "").lower()
+            if not low.strip():
+                return False
+            if _is_permanent_llm_error(low):
+                return True
+            return any(
+                tok in low
+                for tok in (
+                    "429",
+                    "rate",
+                    "resource_exhausted",
+                    "too many requests",
+                    "timeout",
+                    "timed out",
+                    "straggler cutoff",
                 )
             )
 
@@ -1080,18 +1175,20 @@ Instructions:
                 prim_arch = architect_order[0]
                 prim_res = provider_results.get(prim_arch)
                 prim_err = getattr(prim_res, "error", "") or ""
-                if not _is_permanent_llm_error(prim_err) and not (
+                if not _should_skip_graphics_primary_retry(prim_err) and not (
                     cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()
                 ):
                     if on_phase_status is not None:
                         try:
-                            on_phase_status({"event": "phase", "text": f"Retrying {prim_arch.upper()} graphics render once before fallback…"})
+                            on_phase_status({"event": "phase", "text": f"Retrying {prim_arch.upper()} graphics prompt optimization once before fallback…"})
                         except Exception:
                             pass
                     retry_prompt = (
                         f"{prompt}\n\n"
                         "[GRAPHICS RETRY]: Your previous attempt did not produce an executable `[GENERATE_IMAGE ...]` tag. "
-                        "Do NOT `[PASS]` or defer — emit the executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly now."
+                        "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag straight to the image renderer. "
+                        "Do NOT `[PASS]`, do NOT defer to Gemini/OpenAI, and do NOT wrap the tag in backticks or code fences — "
+                        "emit the bare executable `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"...\" quality=\"high\"]` tag directly now."
                     )
                     retry_map = _dispatch_with_compat(retry_prompt, [prim_arch], allow_grace=False)
                     r_prim = retry_map.get(prim_arch)
@@ -1101,16 +1198,27 @@ Instructions:
                         and r_prim is not None
                         and r_prim.succeeded
                         and (r_prim.response.text if r_prim.response else "").strip()
+                        and not _is_silent_pass_or_defer(r_prim.response.text or "")
                     ):
                         provider_results.update(retry_map)
                     tried_draw.add(prim_arch)
 
             # Fail over sequentially through remaining graphic specialists if still no executable [GENERATE_IMAGE] tag
             if not any(_has_image_tag_result(r) for r in provider_results.values()):
+                failover_prompt = (
+                    f"{prompt}\n\n"
+                    "[GRAPHICS FAILOVER — YOU ARE THE ACTIVE PROMPT OPTIMIZER]: "
+                    "The primary prompt specialists were unavailable, rate-limited, or did not emit an executable `[GENERATE_IMAGE ...]` tag. "
+                    "YOU are now responsible for optimizing the visual prompt and emitting the bare executable "
+                    "`[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` tag directly right now "
+                    "(or honoring any requested size/aspect ratio). "
+                    "Fairybread's Python Image Engine automatically sends your tag straight to the configured image renderer (e.g. Gemini Imagen / fallback engines) — "
+                    "do NOT reply `[PASS]`, do NOT wrap the tag in backticks or code fences, and do NOT defer to Gemini or any other peer."
+                )
                 for fallback_arch in [p for p in architect_order if p not in tried_draw]:
                     if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
                         break
-                    fb_results = _dispatch_with_compat(prompt, [fallback_arch], allow_grace=False)
+                    fb_results = _dispatch_with_compat(failover_prompt, [fallback_arch], allow_grace=False)
                     fb_r = fb_results.get(fallback_arch)
                     had_any_substantive = any(
                         r.succeeded

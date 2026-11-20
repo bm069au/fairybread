@@ -4178,7 +4178,7 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.attach_button)
 
         self.slash_cmd_btn = QPushButton('/ Commands ▾')
-        self.slash_cmd_btn.setMinimumWidth(88)
+        self.slash_cmd_btn.setMinimumWidth(98)
         self.slash_cmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.slash_cmd_btn.setToolTip('Insert slash command switch (/autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, /fullrender)')
         self.slash_cmd_btn.setStyleSheet(
@@ -5350,7 +5350,8 @@ class PalaceWindow(QMainWindow):
             f'<h3>Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
             '<p>Created by <b>Brett Martin Moore</b>.</p>'
             f'{pub_note}'
-            '<p><b>License:</b> Open-Source / Source-Available Donationware for personal use &amp; small teams (up to 2 seats). '
+            '<p><b>License:</b> Proprietary Source-Available Donationware (NOT Open Source) — Copyright &copy; 2026 Brett Martin Moore. All Rights Reserved. '
+            'Free for personal use &amp; small teams (up to 2 seats); no redistribution, competing forks, or rebranding without written permission. '
             'For businesses/companies using more than 2 seats, a negotiable corporate license applies.</p>'
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
             '<p>Contact &amp; Corporate Licensing: <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></p>'

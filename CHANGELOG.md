@@ -1,3 +1,18 @@
+# Fairybread — Beta v0.92a (Win_x64) Changelog
+**Release Date:** 2026-11-20
+**Version:** `v0.92a_beta_Win_x64`
+
+## Summary of Changes in `v0.92a`
+1. **⚖ Corrected `About Fairybread` License Text (`palace_gui.py`, `test_palace_gui.py`):**
+   - Replaced the inaccurate `Open-Source / Source-Available Donationware` wording in **Help → About Fairybread** with the exact **Proprietary Source-Available Donationware (NOT Open Source)** copyright and licensing terms from `LICENSE.md`, guarded by regression assertions.
+2. **🎨 Fixed Graphics Prompt-Optimization → Image Engine Handoff (`orchestrator.py`, `synthesizer.py`, `palace_config.py`, `palace_gui.py`, `test_pipeline_and_autopatch.py`):**
+   - Expanded contextual visual follow-up detection so photographic/style/framing refinements (`"more photo realistic please"`, `"still hyper realistic"`, `"3:2"`, `"too cgi"`, etc.) stay inside the 2-AI **Prompt Duo** and emit 1 updated high-resolution `[GENERATE_IMAGE ... quality="high"]` master rather than dropping into generic multi-round text deliberation.
+   - Clarified in prompt rules and `DEFAULT_PROVIDER_PROFILES` that active specialists act as **Prompt Optimizers** whose `[GENERATE_IMAGE prompt="..."]` tags are executed automatically by Fairybread's Python Image Engine (`gemini-3-pro-image` / `gemini-3.1-flash-image` / `gpt-image-2` / `FLUX-1-dev`) — preventing `[PASS]` handoffs to Gemini.
+   - Fixed the broken `^\[PASS\]\b` regex bug in `is_pass_or_defer_text` / `PalaceSynthesizer` (`]` followed by space/dash never matched `\b`), required a populated `prompt="..."` attribute to treat a `[GENERATE_IMAGE]` mention as executable, skipped redundant primary retries on `429`/rate-limit/timeout errors, and passed an explicit active Prompt Optimizer failover directive to fallback specialists.
+   - Widened the composer `/ Commands ▾` button (`88px` → `98px`) so its leading `/` never clips on Windows Segoe UI.
+
+---
+
 # Fairybread — Beta v0.92 (Win_x64) Changelog
 **Release Date:** 2026-11-20
 **Version:** `v0.92_beta_Win_x64`

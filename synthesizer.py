@@ -1,9 +1,47 @@
 from dataclasses import dataclass
+import re
 from typing import Optional
 
 from cost_service import extract_sdk_usage_tokens
 from provider_result import ProviderResult
 from providers import AIProvider
+
+
+_PASS_PREFIX_RE = re.compile(r"^\[PASS\](?:$|\s|[:\-—–.,;])", re.IGNORECASE)
+_EXEC_IMAGE_TAG_NONEMPTY_RE = re.compile(
+    r'\[GENERATE_IMAGE\s+[^\]]*prompt\s*=\s*"[^"]{8,}"',
+    re.IGNORECASE | re.DOTALL,
+)
+_EXEC_IMAGE_TAG_ANY_ATTR_RE = re.compile(
+    r'\[GENERATE_IMAGE\s+[^\]]*prompt\s*=',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def has_executable_image_tag(text: str, *, allow_empty_prompt: bool = False) -> bool:
+    """Return True when text contains a [GENERATE_IMAGE prompt=...] tag rather than bare [GENERATE_IMAGE] prose."""
+    raw = text or ""
+    if "[GENERATE_IMAGE" not in raw.upper():
+        return False
+    pattern = _EXEC_IMAGE_TAG_ANY_ATTR_RE if allow_empty_prompt else _EXEC_IMAGE_TAG_NONEMPTY_RE
+    return bool(pattern.search(raw))
+
+
+def is_pass_or_defer_text(raw_txt: str) -> bool:
+    """Return True when an AI reply is a silent [PASS] token or an explicit peer handoff/deferral."""
+    stripped = (raw_txt or "").strip()
+    if not stripped:
+        return False
+    upper = stripped.upper()
+    if "[IDLE_PATCH" in upper:
+        return False
+    if has_executable_image_tag(stripped, allow_empty_prompt=False):
+        return False
+    if upper in {"[PASS]", "PASS"} or _PASS_PREFIX_RE.match(stripped):
+        return True
+    if upper.startswith("[DEFER EXECUTION TO:") and len(stripped) < 280:
+        return True
+    return False
 
 
 @dataclass
@@ -78,11 +116,11 @@ class PalaceSynthesizer:
                 contributors=contributors
             )
 
-        # Filter out pure [PASS] tokens from synthesis input while keeping full contributor credit
+        # Filter out [PASS] tokens and bare deferral replies from synthesis input while keeping full contributor credit
         substantive = [
             (name, text)
             for name, text in successful
-            if text.strip().upper() not in {"[PASS]", "PASS"}
+            if not is_pass_or_defer_text(text)
         ] or successful
 
         # Speed optimization: if all peers except one replied [PASS], return the single substantive answer immediately

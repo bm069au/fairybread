@@ -23,7 +23,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.92"
-FAIRYBREAD_VERSION = "0.92"
+FAIRYBREAD_VERSION = "0.92a"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 
@@ -309,30 +309,31 @@ PROVIDER_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
 DEFAULT_PROVIDER_PROFILES: dict[str, str] = {
     "gemini": (
         "Strong at system architecture, coding, research, multimodal vision analysis, "
-        "and native high-resolution photorealistic image rendering (gemini-3-pro-image / gemini-3.1-flash-image)."
+        "and visual Prompt Architecture (Fairybread's Image Engine renders any specialist's [GENERATE_IMAGE] tag "
+        "via gemini-3-pro-image / gemini-3.1-flash-image / fallbacks)."
     ),
     "openai": (
-        "Strong at visual Prompt Architecture, graphics/layout composition, native high-resolution "
-        "image rendering (gpt-image-2), general reasoning, and coding."
+        "Strong at visual Prompt Architecture, graphics/layout composition, general reasoning, "
+        "and coding (emits [GENERATE_IMAGE] tags directly for Fairybread's Image Engine)."
     ),
     "deepseek": (
         "Strong at deep software engineering, algorithms, math, logic, and rich photographic/visual "
-        "Prompt Architecture (crafting detailed scene, lighting, anatomy, and camera-lens specifications)."
+        "Prompt Architecture (emits [GENERATE_IMAGE] tags directly for Fairybread's Image Engine when assigned to graphics)."
     ),
     "mistral": (
         "Codestral specialist: strong at code generation, syntax review, and refactoring; "
-        "replies with [PASS] on pure artistic drawing tasks unless the user asks all agents to help."
+        "replies with [PASS] on pure artistic drawing tasks unless the user asks all agents to help or failover assigns it."
     ),
     "groq": (
         "Fast free-tier reasoning, brainstorming, and critical review; "
-        "contributes concise planning/edge-case notes."
+        "contributes concise planning/edge-case notes and graphics fallback Prompt Architecture when assigned."
     ),
     "qwen": (
         "Qwen3.8-27B (DeepInfra): Strong at analytical problem decomposition, mathematical logic, code architecture, and visual QA critique."
     ),
     "cohere": (
         "Strong at structured synthesis, summarization, and critique; "
-        "replies with [PASS] on pure artistic drawing tasks unless the user asks all agents to help."
+        "replies with [PASS] on pure artistic drawing tasks unless the user asks all agents to help or failover assigns it."
     ),
 }
 

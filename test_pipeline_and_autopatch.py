@@ -1980,5 +1980,177 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             self.assertFalse((fake_data_dir / "memory.db").exists())
 
 
+class GraphicsPromptOptimizationTests(unittest.TestCase):
+    def test_visual_refinement_followups_route_to_prompt_duo_as_highres_master(self):
+        prior_ctx = (
+            "USER: Draw me a sunflower if it was grown on an alien world.\n\n"
+            "ASSISTANT: # Alien Sunflower — Master Render (Draft 1)\n"
+            '[GENERATE_IMAGE prompt="Ultra-detailed photorealistic environmental macro photograph of an alien sunflower at twilight" '
+            'title="Alien Sunflower — Master" size="1024x1024" quality="high"]\n'
+            "✓ [ALL TASKS COMPLETED SUCCESSFULLY]"
+        )
+
+        class _StaticCtx:
+            session_id = "sunflower_refine_test"
+
+            def load_recent(self, max_chars: int = 12000):
+                return prior_ctx
+
+            def append_exchange(self, *args, **kwargs):
+                return ("q", "a")
+
+        for q in (
+            "its still hyper realistic. More photo realistic please",
+            "The flower is nice but it's hyper realistic. How about making it photorealistic as if someone took a picture in this alien landscape",
+            "Please finish the task. Tasks are supposed to be deligated to AIs for the prompt and then sent to the AI's in charge of creating the image.",
+        ):
+            reg = ProviderRegistry()
+            calls: dict[str, list[str]] = {}
+            for pname in ("gemini", "openai", "deepseek", "groq", "qwen", "cohere", "mistral", "cerebras"):
+                def _make_fn(n=pname):
+                    def _fn(prompt: str) -> str:
+                        calls.setdefault(n, []).append(prompt)
+                        if n in ("gemini", "openai"):
+                            return (
+                                '[GENERATE_IMAGE prompt="Unedited handheld 50mm photograph of an alien sunflower at overcast dusk" '
+                                'title="Alien Sunflower Field Photo" size="1024x1024" quality="high"]'
+                            )
+                        return "Should not run on primary prompt duo turn"
+                    return _fn
+                reg.register(pname, _StubProvider(pname, _make_fn()))
+
+            synth = PalaceSynthesizer(
+                "palace_synth",
+                _StubProvider(
+                    "palace_synth",
+                    lambda _p: '[GENERATE_IMAGE prompt="Unedited handheld 50mm photograph of an alien sunflower at overcast dusk" title="Alien Sunflower Field Photo" size="1024x1024" quality="high"]',
+                ),
+                fallback_providers={},
+            )
+            orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=synth, context_service=_StaticCtx())
+            with patch("palace_theme.prewarm_generated_images") as mock_prewarm:
+                res = orch.run(
+                    q,
+                    provider_names=["gemini", "openai", "deepseek", "groq", "qwen", "cohere", "mistral", "cerebras"],
+                    include_context=True,
+                    save_to_context=False,
+                    max_rounds=2,
+                )
+            self.assertEqual(set(res.provider_results.keys()), {"gemini", "openai"}, msg=f"Wrong duo routing for: {q}")
+            self.assertEqual(len(calls["gemini"]), 1)
+            self.assertEqual(len(calls["openai"]), 1)
+            self.assertNotIn("deepseek", calls)
+            self.assertEqual(res.peer_rounds, [])
+            self.assertIn("YOUR ROLE IS PROMPT OPTIMIZATION", calls["gemini"][0])
+            self.assertIn("[VISUAL REFINEMENT FOLLOW-UP", calls["gemini"][0])
+            self.assertNotIn("NOT a drawing request", calls["gemini"][0])
+            self.assertIn("[GENERATE_IMAGE", res.final_answer or "")
+            mock_prewarm.assert_called_once()
+
+    def test_verbose_pass_failover_and_rate_limit_skip_for_graphics_and_code_exclusion(self):
+        from synthesizer import is_pass_or_defer_text
+
+        self.assertTrue(is_pass_or_defer_text("[PASS]"))
+        self.assertTrue(is_pass_or_defer_text("[PASS] — My strengths are software/architecture, not photoreal rendering."))
+        self.assertTrue(is_pass_or_defer_text("[PASS] — Use the appropriate [GENERATE_IMAGE] command."))
+        self.assertFalse(
+            is_pass_or_defer_text(
+                '[PASS] — Here is the tag anyway: [GENERATE_IMAGE prompt="A real dusk photograph of a sunflower" title="Sun"]'
+            )
+        )
+
+        class _RateLimitThenFailProvider(AIProvider):
+            def __init__(self, name: str, err_msg: str):
+                self.name = name
+                self.err_msg = err_msg
+                self.calls: list[str] = []
+
+            def generate(self, prompt: str) -> ProviderResponse:
+                self.calls.append(prompt)
+                raise RuntimeError(self.err_msg)
+
+        prior_ctx = (
+            "USER: Draw a sunflower.\n\n"
+            "ASSISTANT: "
+            '[GENERATE_IMAGE prompt="A sunlit sunflower on an exoplanet" title="Alien Sunflower Master" size="1024x1024" quality="high"]'
+        )
+
+        class _StaticCtx:
+            session_id = "failover_429_test"
+
+            def load_recent(self, max_chars: int = 12000):
+                return prior_ctx
+
+            def append_exchange(self, *args, **kwargs):
+                return ("q", "a")
+
+        reg = ProviderRegistry()
+        gem = _RateLimitThenFailProvider("gemini", "429 RESOURCE_EXHAUSTED: Quota exceeded")
+        oai_calls: list[str] = []
+        ds_calls: list[str] = []
+
+        def _oai_fn(p: str) -> str:
+            oai_calls.append(p)
+            return "[PASS] — Handing over to GEMINI for execution."
+
+        def _ds_fn(p: str) -> str:
+            ds_calls.append(p)
+            return (
+                '[GENERATE_IMAGE prompt="Raw unedited 10-year-old camera JPEG of an alien sunflower at dusk" '
+                'title="Alien Sunflower — Actual Field Photograph" size="1024x1024" quality="high"]'
+            )
+
+        reg.register("gemini", gem)
+        reg.register("openai", _StubProvider("openai", _oai_fn))
+        reg.register("deepseek", _StubProvider("deepseek", _ds_fn))
+        synth = PalaceSynthesizer("palace_synth", _StubProvider("palace_synth", lambda p: "UNEXPECTED"), fallback_providers={})
+        orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=synth, context_service=_StaticCtx())
+
+        with patch("palace_theme.prewarm_generated_images") as mock_prewarm:
+            res = orch.run(
+                "its still hyper realistic. More photo realistic please",
+                provider_names=["gemini", "openai", "deepseek"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=2,
+            )
+        self.assertEqual(len(gem.calls), 1)  # 429 skips redundant retry and fails over immediately
+        self.assertEqual(len(oai_calls), 1)
+        self.assertEqual(len(ds_calls), 1)
+        self.assertIn("[GRAPHICS FAILOVER — YOU ARE THE ACTIVE PROMPT OPTIMIZER]", ds_calls[0])
+        self.assertIn("Actual Field Photograph", res.final_answer or "")
+        self.assertNotIn("[PASS]", res.final_answer or "")
+        mock_prewarm.assert_called_once()
+
+        # Coding prompt mentioning renderer/pipeline must remain drawing_mode='none'
+        code_calls: list[str] = []
+        reg_code = ProviderRegistry()
+        reg_code.register("deepseek", _StubProvider("deepseek", lambda p: (code_calls.append(p) or "Fixed the renderer pipeline bug.")))
+        reg_code.register("openai", _StubProvider("openai", lambda _p: "[PASS] — My strengths are visual design, deferring."))
+        synth_code = PalaceSynthesizer("palace_synth", _StubProvider("palace_synth", lambda _p: "UNEXPECTED"), fallback_providers={})
+        orch_code = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg_code), synthesizer=synth_code, context_service=_StaticCtx())
+        with patch("palace_theme.prewarm_generated_images") as mock_code_prewarm:
+            res_code = orch_code.run(
+                "Fix the photorealistic renderer pipeline bug in palace_theme.py",
+                provider_names=["deepseek", "openai"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=1,
+            )
+        self.assertIn("NOT a drawing request", code_calls[0])
+        self.assertIn("Fixed the renderer pipeline bug.", res_code.final_answer or "")
+        mock_code_prewarm.assert_not_called()
+
+        # Synthesizer itself filters [PASS] — deferrals out when another peer returned real text
+        s_res = synth.synthesize(
+            "Explain X",
+            {
+                "gemini": ProviderResult(provider_name="gemini", response=ProviderResponse(text="[PASS] — Deferring to DeepSeek", model="m", provider="gemini")),
+                "deepseek": ProviderResult(provider_name="deepseek", response=ProviderResponse(text="Direct explanation of X.", model="m", provider="deepseek")),
+            },
+        )
+        self.assertEqual(s_res.text, "Direct explanation of X.")
+
+
 if __name__ == "__main__":
     unittest.main()
