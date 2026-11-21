@@ -3523,5 +3523,326 @@ class Round2AndSidebarUpgradeTests(unittest.TestCase):
             win.close()
 
 
+class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
+    def test_memory_two_stage_budget_hybrid_search_and_supersession(self):
+        from memory_service import (
+            MemoryService,
+            SQLiteMemoryIndex,
+            _normalize_profile_category,
+            save_memory_summary,
+        )
+        import palace_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "memory.db"
+            # Large 6.5KB user summary + 20 standing facts must NOT starve query hits or recent usage
+            big_summary = (
+                "### Overview\n" + ("- Durable identity bullet for Brett. " * 90) + "\n\n"
+                "### Speech & Communication Style\n- Direct, warm, zero flattery.\n\n"
+                "### Software & Creative Projects\n- Fairybread local AI desktop app.\n"
+            )
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(root)}):
+                cfg_path = root / "Palace" / "palace_config.json"
+                with patch.object(palace_config, "CONFIG_PATH", cfg_path):
+                    save_memory_summary(big_summary, db_path=db_path)
+                    svc = MemoryService(wing="gpt_palace", db_path=db_path)
+                    self.assertGreaterEqual(svc.memory_limit, 7500)
+
+                    for i in range(20):
+                        svc.index.upsert(
+                            summary=f"Standing rule {i}",
+                            body=f"Durable standing preference number {i} for workflow layout.",
+                            wing="gpt_palace",
+                            memory_type="standing",
+                            importance=5,
+                        )
+
+                    # Trivial exchange must be ignored
+                    self.assertEqual(svc.remember_exchange("testing microphone", "Hearing you clearly."), "")
+                    self.assertEqual(svc.remember_exchange("ok", "Done."), "")
+
+                    # Substantive exchanges in two different projects + semantic synonym match
+                    svc.remember_exchange(
+                        "Check Fairybread voice pipeline and audio latency",
+                        "Measured Deepgram Flux 24kHz PCM streaming latency in voice_service.py.",
+                        session_id="sess-voice",
+                        project="Fairybread",
+                    )
+                    svc.remember_exchange(
+                        "Inspect EvidenceBench timeline parser",
+                        "Verified OCR extractor chunk boundaries in EvidenceBench.",
+                        session_id="sess-eb",
+                        project="EvidenceBench",
+                    )
+
+                    # Synonym query: "maths"/"arithmetics" -> "math" / "deepgram" -> exact + vector hit
+                    res_voice = svc.search("deepgram speech playback", project="Fairybread")
+                    self.assertTrue(res_voice.succeeded)
+                    self.assertIn("[USER & PROJECT MEMORY SUMMARY", res_voice.context)
+                    self.assertIn("[MEMORY HIT", res_voice.context)
+                    self.assertIn("Deepgram Flux 24kHz PCM", res_voice.context)
+                    self.assertIn("[USER PERSONALIZATION, TONE VECTOR & SPEECH STYLE]", res_voice.context)
+
+                    # Contradiction supersession marks older durable fact inactive
+                    idx = SQLiteMemoryIndex(db_path=db_path)
+                    old_id = idx.upsert(
+                        "User speech preference",
+                        "User wants verbose formal corporate style in replies",
+                        wing="gpt_palace",
+                        memory_type="preference",
+                    )
+                    new_id = idx.upsert(
+                        "User speech preference update",
+                        "User never wants formal corporate style in replies",
+                        wing="gpt_palace",
+                        memory_type="preference",
+                    )
+                    self.assertNotEqual(old_id, new_id)
+                    active_ids = {m["id"] for m in idx.list_memories(wing="gpt_palace", limit=100, include_inactive=False)}
+                    all_rows = {m["id"]: m for m in idx.list_memories(wing="gpt_palace", limit=100, include_inactive=True)}
+                    self.assertIn(new_id, active_ids)
+                    self.assertNotIn(old_id, active_ids)
+                    self.assertEqual(all_rows[old_id].get("superseded_by"), new_id)
+
+                    # Duplicate durable fact updates confirmation timestamp without creating duplicate row
+                    dup_id = idx.upsert(
+                        "User speech preference update",
+                        "User never wants formal corporate style in replies",
+                        wing="gpt_palace",
+                        memory_type="preference",
+                    )
+                    self.assertEqual(dup_id, new_id)
+
+                    # Category normalization strips pipe-concatenated headings into 4 canonical sections
+                    self.assertEqual(
+                        _normalize_profile_category("Overview|How You Like to Work|Speech & Communication Style", "Talk in warm tone"),
+                        "Speech & Communication Style",
+                    )
+                    self.assertEqual(
+                        _normalize_profile_category("Software & Creative Projects|Overview", "Building Fairybread app"),
+                        "Software & Creative Projects",
+                    )
+
+    def test_r9_bubble_spacing_and_r10_sidebar_row_heights_and_geometry(self):
+        from PySide6.QtCore import Qt
+        from palace_gui import PalaceWindow, SidebarSessionList
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "palace_config.json"
+            store = SessionStore(root / "sessions")
+            p1 = store.create_project("AlphaProj")
+            s1 = store.selected
+            s2 = store.create(project_id=p1)
+            store.rename_from_question(s2, "Sidebar Spacing Check")
+
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True},
+                config_path=cfg,
+            )
+            try:
+                win.show()
+                app.processEvents()
+
+                # R9: user bubble and assistant wrapper must use matched natural line spacing (no 1.48 / 1.6 divergence)
+                user_html = win._render_single_chat_item(
+                    {"idx": 0, "role": "user", "content": "Line one\nLine two\nLine three", "timestamp": "2026-11-21T19:00:00"},
+                )
+                ai_html = win._render_single_chat_item(
+                    {"idx": 1, "role": "assistant", "content": "Line one\nLine two", "contributors": ["gemini"], "timestamp": "2026-11-21T19:00:05"},
+                )
+                self.assertNotIn("line-height:1.48", user_html)
+                self.assertNotIn("line-height:1.6", ai_html)
+
+                # R10: compact sidebar topic row heights (22px session, 23px project) and 18x18 hover hitboxes
+                win.refresh_sessions()
+                app.processEvents()
+                sess_heights = []
+                proj_heights = []
+                for i in range(win.session_list.count()):
+                    it = win.session_list.item(i)
+                    key = str(it.data(Qt.ItemDataRole.UserRole) or "")
+                    if key == s1 or key == s2:
+                        sess_heights.append(it.sizeHint().height())
+                    elif key == f"proj:{p1}" and "proj" in key and it.text().startswith("AlphaProj"):
+                        proj_heights.append(it.sizeHint().height())
+                self.assertEqual(sess_heights, [22, 22])
+                self.assertEqual(proj_heights, [23])
+
+                rects = SidebarSessionList.action_rects_for_item(
+                    win.session_list.visualItemRect(win.session_list.item(0)),
+                    {"kind": "session", "id": s2},
+                )
+                if rects:
+                    self.assertEqual(rects["menu_rect"].width(), 18)
+                    self.assertEqual(rects["menu_rect"].height(), 18)
+
+                for w_sz, h_sz in ((1024, 700), (1120, 740)):
+                    win.resize(w_sz, h_sz)
+                    app.processEvents()
+                    aud = audit_palace_window_geometry(win)
+                    self.assertEqual(
+                        aud["clipped_widget_count"],
+                        0,
+                        msg=f"Window clipped at {w_sz}x{h_sz}: {aud.get('clipped_widgets')}",
+                    )
+            finally:
+                win._force_quit = True
+                win.close()
+                app.processEvents()
+
+    def test_deepgram_flux_voices_routing_cost_and_contextual_dropdown(self):
+        from cost_service import estimate_tts_cost_usd
+        from palace_gui import ManageAIsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+        import voice_service
+
+        # 1. All 89 verified English Deepgram voices present (36 Flux + 41 Aura-2 + 12 Aura-1)
+        dg_ids = [vid for vid, _lbl in voice_service.DEEPGRAM_TTS_VOICES]
+        self.assertEqual(len(dg_ids), len(set(dg_ids)))
+        self.assertEqual(len(dg_ids), 89)
+        for req_id in (
+            "flux-sienna-en",
+            "flux-hannah-en",
+            "flux-kit-en",
+            "flux-alexis-en",
+            "flux-cliff-en",
+            "flux-cole-en",
+            "flux-colin-en",
+            "flux-gemma-en",
+            "flux-haley-en",
+            "flux-sharon-en",
+            "aura-2-thalia-en",
+            "aura-2-hyperion-en",
+            "aura-2-theia-en",
+            "aura-angus-en",
+        ):
+            self.assertIn(req_id, dg_ids)
+        self.assertEqual(voice_service.DEFAULT_VOICE_SETTINGS["deepgram_voice_name"], "flux-sienna-en")
+        self.assertEqual(voice_service.DEFAULT_VOICE_SETTINGS["deepgram_expressivity"], 0)
+
+        # 2. _stream_deepgram_pcm routes flux-* to /v2/speak with clamped speed & expressivity, aura-* to /v1/speak
+        captured_urls: list[str] = []
+
+        def _fake_iter(req, cancel_event=None):
+            captured_urls.append(req.full_url)
+            yield b"\x01\x00" * 16
+
+        with patch.object(voice_service, "_iter_http_pcm_stream", side_effect=_fake_iter):
+            list(
+                voice_service._stream_deepgram_pcm(
+                    "Hello Sienna",
+                    api_key="dg_test_key",
+                    voice_model="flux-sienna-en",
+                    speed=1.15,
+                    expressivity=5,
+                )
+            )
+            list(
+                voice_service._stream_deepgram_pcm(
+                    "Custom Flux",
+                    api_key="dg_test_key",
+                    voice_model="flux-customvoice-en",
+                    speed=0.2,
+                    expressivity=-9,
+                )
+            )
+            list(
+                voice_service._stream_deepgram_pcm(
+                    "Legacy Aura",
+                    api_key="dg_test_key",
+                    voice_model="aura-2-thalia-en",
+                    speed=1.2,
+                    expressivity=2,
+                )
+            )
+
+        self.assertIn("https://api.deepgram.com/v2/speak?model=flux-sienna-en&speed=1.15&expressivity=2&encoding=linear16&sample_rate=24000&container=none", captured_urls[0])
+        self.assertIn("https://api.deepgram.com/v2/speak?model=flux-customvoice-en&speed=0.5&expressivity=-2&encoding=linear16&sample_rate=24000&container=none", captured_urls[1])
+        self.assertEqual(
+            captured_urls[2],
+            "https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=linear16&sample_rate=24000&container=none",
+        )
+
+        # 3. Flux vs Aura-2 cost metering
+        self.assertAlmostEqual(estimate_tts_cost_usd("deepgram:flux-sienna-en", 5.0, char_count=1000), 0.030, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("deepgram:aura-2-thalia-en", 5.0, char_count=1000), 0.025, places=6)
+
+        # 4. Contextual dropdown & persistence in ManageAIsDialog
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="Voice & Audio")
+            try:
+                dlg.show()
+                app.processEvents()
+
+                # Switching from OpenAI -> Deepgram swaps voice dropdown to all 89 Deepgram voices + enables Expressivity for Flux
+                dg_idx = dlg.tts_engine_combo.findData("deepgram")
+                self.assertGreaterEqual(dg_idx, 0)
+                dlg.tts_engine_combo.setCurrentIndex(dg_idx)
+                app.processEvents()
+
+                self.assertEqual(dlg.voice_name_combo.count(), 89)
+                self.assertEqual(dlg.voice_name_combo.currentData(), "flux-sienna-en")
+                self.assertTrue(dlg.deepgram_expressivity_combo.isVisible())
+                self.assertTrue(dlg.deepgram_expressivity_combo.isEnabled())
+
+                aud_dg = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud_dg["clipped_widget_count"], 0, msg=str(aud_dg.get("clipped_widgets")))
+
+                # Selecting Aura-2 voice disables Flux Expressivity dropdown
+                aura_idx = dlg.voice_name_combo.findData("aura-2-thalia-en")
+                self.assertGreaterEqual(aura_idx, 0)
+                dlg.voice_name_combo.setCurrentIndex(aura_idx)
+                app.processEvents()
+                self.assertFalse(dlg.deepgram_expressivity_combo.isEnabled())
+
+                # Select Colin [Flux] and expressivity +1, save, and verify roundtrip
+                colin_idx = dlg.voice_name_combo.findData("flux-colin-en")
+                self.assertGreaterEqual(colin_idx, 0)
+                dlg.voice_name_combo.setCurrentIndex(colin_idx)
+                expr_idx = dlg.deepgram_expressivity_combo.findData(1)
+                dlg.deepgram_expressivity_combo.setCurrentIndex(expr_idx)
+                app.processEvents()
+                self.assertTrue(dlg.deepgram_expressivity_combo.isEnabled())
+                dlg.save_settings()
+                dlg.close()
+
+                saved = voice_service.load_voice_settings(cfg)
+                self.assertEqual(saved["tts_engine"], "deepgram")
+                self.assertEqual(saved["deepgram_voice_name"], "flux-colin-en")
+                self.assertEqual(saved["deepgram_expressivity"], 1)
+
+                # Switching back to OpenAI swaps dropdown to OpenAI voices & hides Flux Expressivity
+                dlg2 = ManageAIsDialog(config_path=cfg, initial_page="Voice & Audio")
+                try:
+                    dlg2.show()
+                    app.processEvents()
+                    self.assertEqual(dlg2.tts_engine_combo.currentData(), "deepgram")
+                    self.assertEqual(dlg2.voice_name_combo.currentData(), "flux-colin-en")
+                    self.assertEqual(dlg2.deepgram_expressivity_combo.currentData(), 1)
+                    oai_idx = dlg2.tts_engine_combo.findData("openai")
+                    dlg2.tts_engine_combo.setCurrentIndex(oai_idx)
+                    app.processEvents()
+                    self.assertEqual(dlg2.voice_name_combo.count(), len(voice_service.OPENAI_TTS_VOICES))
+                    self.assertTrue(dlg2.deepgram_expressivity_combo.isHidden())
+                finally:
+                    dlg2.reject()
+                    dlg2.close()
+            finally:
+                try:
+                    dlg.reject()
+                    dlg.close()
+                except Exception:
+                    pass
+
+
 if __name__ == "__main__":
     unittest.main()

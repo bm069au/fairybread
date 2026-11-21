@@ -54,6 +54,7 @@ TTS_COST_PER_1K_CHARS_USD: dict[str, float] = {
     "cartesia:sonic-2": 0.045,
     "cartesia:sonic": 0.045,
     "elevenlabs:": 0.18,
+    "deepgram:flux": 0.030,
     "deepgram:aura-2": 0.025,
     "deepgram:aura": 0.020,
 }

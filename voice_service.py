@@ -32,7 +32,7 @@ TTS_ENGINES: list[tuple[str, str]] = [
     ("groq", "Groq Orpheus (orpheus-v1-english · ~$0.02/min)"),
     ("cartesia", "Cartesia Sonic (~$0.045/1k chars · ~50ms streaming)"),
     ("elevenlabs", "ElevenLabs (~$0.18/1k chars · Studio / Cloning)"),
-    ("deepgram", "Deepgram Aura (~$0.025/1k chars · Low-Latency)"),
+    ("deepgram", "Deepgram Flux / Aura-2 (~$0.025–$0.03/1k chars · Low-Latency)"),
     ("system", "Windows System Offline (SAPI 5 · Free)"),
 ]
 
@@ -43,7 +43,7 @@ TTS_ENGINE_SHORT_LABELS: dict[str, str] = {
     "groq": "Groq Orpheus",
     "cartesia": "Cartesia Sonic",
     "elevenlabs": "ElevenLabs",
-    "deepgram": "Deepgram Aura",
+    "deepgram": "Deepgram Flux / Aura-2",
     "system": "Windows Offline",
 }
 
@@ -82,13 +82,13 @@ TTS_EXTERNAL_KEY_META: dict[str, dict[str, Any]] = {
     },
     "deepgram": {
         "cred_key": "deepgram",
-        "display_name": "Deepgram Aura",
+        "display_name": "Deepgram Flux / Aura-2",
         "key_url": "https://console.deepgram.com/",
         "billing_url": "https://console.deepgram.com/",
         "key_prefix_hint": "Deepgram Token",
-        "rate_hint": "~$0.025 / 1k chars · Low-latency Aura-2 voices",
-        "pricing_summary": "Free Starter: $200 welcome credit (no expiry catch on signup promo) · Pay-as-you-go: ~$0.025 / 1k chars via card",
-        "blurb": "Deepgram Aura requires a Deepgram API key (~$0.025/1k chars). Paste it below to unlock Aura-2 voices.",
+        "rate_hint": "~$0.025–$0.03 / 1k chars · Flux + Aura-2 voices",
+        "pricing_summary": "Free Starter: $200 welcome credit (no expiry catch on signup promo) · Pay-as-you-go: ~$0.025–$0.03 / 1k chars via card",
+        "blurb": "Deepgram requires a Deepgram API key (~$0.025–$0.03/1k chars). Paste it below to unlock all 89 English Flux & Aura voices.",
         "setup_steps": [
             "Open console.deepgram.com and select your project.",
             "Go to Settings → API Keys → Create a New API Key (choose Member or Owner role if you want Fairybread to display live USD balance).",
@@ -160,12 +160,98 @@ ELEVENLABS_TTS_VOICES: list[tuple[str, str]] = [
 ]
 
 DEEPGRAM_TTS_VOICES: list[tuple[str, str]] = [
-    ("aura-2-thalia-en", "Thalia — Warm, Clear American Female (Default)"),
-    ("aura-2-apollo-en", "Apollo — Conversational American Male"),
-    ("aura-2-andromeda-en", "Andromeda — Expressive Natural Female"),
-    ("aura-2-orion-en", "Orion — Calm Deep Male"),
-    ("aura-2-arcas-en", "Arcas — Friendly Crisp Male"),
-    ("aura-2-luna-en", "Luna — Soft Relaxed Female"),
+    # Deepgram Flux (v2/speak — 36 English voices with speed + expressivity)
+    ("flux-sienna-en", "Sienna [Flux] — American Female (Clear, Warm, Calm) (Default)"),
+    ("flux-alexis-en", "Alexis [Flux] — American Female (Clear, Calm, Caring)"),
+    ("flux-bree-en", "Bree [Flux] — American Female (Friendly, Sweet, Kind)"),
+    ("flux-brittany-en", "Brittany [Flux] — American Female (Confident, Kind, Soft)"),
+    ("flux-brooke-en", "Brooke [Flux] — American Female (Friendly, Confident, Energetic)"),
+    ("flux-bruce-en", "Bruce [Flux] — American Male (Friendly, Natural, Engaged)"),
+    ("flux-cliff-en", "Cliff [Flux] — American Male (Deep, Confident, Calm)"),
+    ("flux-cole-en", "Cole [Flux] — American Male (Friendly, Clear, Engaging)"),
+    ("flux-colin-en", "Colin [Flux] — British Male (Warm, Friendly, Trustworthy)"),
+    ("flux-conor-en", "Conor [Flux] — Irish Male (Confident, Deep, Relaxed)"),
+    ("flux-donovan-en", "Donovan [Flux] — American Male (Professional, Calm, Thoughtful)"),
+    ("flux-drew-en", "Drew [Flux] — American Male (Confident, Relaxed, Soft)"),
+    ("flux-elise-en", "Elise [Flux] — American Female (Clear, Calm, Empathetic)"),
+    ("flux-gemma-en", "Gemma [Flux] — British Female (Friendly, Approachable, Warm)"),
+    ("flux-haley-en", "Haley [Flux] — American Female (Clear, Caring, Calm)"),
+    ("flux-hannah-en", "Hannah [Flux] — American Female (Clear, Confident, Pleasant)"),
+    ("flux-heather-en", "Heather [Flux] — American Female (Clear, Engaging, Friendly)"),
+    ("flux-jack-en", "Jack [Flux] — British Male (Confident, Thoughtful, Friendly)"),
+    ("flux-kai-en", "Kai [Flux] — Singaporean Male (Clear, Calm, Professional)"),
+    ("flux-kelsey-en", "Kelsey [Flux] — American Female (Clear, Caring, Calm)"),
+    ("flux-kit-en", "Kit [Flux] — British Male (Friendly, Energetic, Thoughtful)"),
+    ("flux-maeve-en", "Maeve [Flux] — Irish Female (Friendly, Confident, Gentle)"),
+    ("flux-marcelo-en", "Marcelo [Flux] — Filipino Male (Clear, Calm, Professional)"),
+    ("flux-marcus-en", "Marcus [Flux] — American Male (Friendly, Smooth, Helpful)"),
+    ("flux-meena-en", "Meena [Flux] — Indian Female (Empathetic, Calm, Reassuring)"),
+    ("flux-meghan-en", "Meghan [Flux] — American Female (Friendly, Energetic, Kind)"),
+    ("flux-miles-en", "Miles [Flux] — American Male (Clear, Calm, Sincere)"),
+    ("flux-naveen-en", "Naveen [Flux] — Indian Male (Clear, Calm, Professional)"),
+    ("flux-paige-en", "Paige [Flux] — American Female (Clear, Calm, Comfortable)"),
+    ("flux-priya-en", "Priya [Flux] — Indian Female (Confident, Empathetic, Calm)"),
+    ("flux-rufus-en", "Rufus [Flux] — British Male (Friendly, Confident, Gentle)"),
+    ("flux-sean-en", "Sean [Flux] — British Male (Friendly, Kind, Calming)"),
+    ("flux-sharon-en", "Sharon [Flux] — Australian Female (Calm, Relaxed, Confident)"),
+    ("flux-tanner-en", "Tanner [Flux] — British Male (Professional, Calm, Confident)"),
+    ("flux-wade-en", "Wade [Flux] — American Male (Warm, Confident, Friendly)"),
+    ("flux-wes-en", "Wes [Flux] — American Male (Thoughtful, Friendly, Warm)"),
+    # Deepgram Aura-2 (v1/speak — 41 English voices)
+    ("aura-2-thalia-en", "Thalia [Aura-2] — American Female (Clear, Confident, Energetic)"),
+    ("aura-2-hyperion-en", "Hyperion [Aura-2] — Australian Male (Warm, Caring, Empathetic)"),
+    ("aura-2-theia-en", "Theia [Aura-2] — Australian Female (Expressive, Polite, Sincere)"),
+    ("aura-2-amalthea-en", "Amalthea [Aura-2] — Filipino Female (Engaging, Natural, Cheerful)"),
+    ("aura-2-andromeda-en", "Andromeda [Aura-2] — American Female (Casual, Expressive, Comfortable)"),
+    ("aura-2-apollo-en", "Apollo [Aura-2] — American Male (Confident, Comfortable, Casual)"),
+    ("aura-2-arcas-en", "Arcas [Aura-2] — American Male (Natural, Smooth, Clear)"),
+    ("aura-2-aries-en", "Aries [Aura-2] — American Male (Warm, Energetic, Caring)"),
+    ("aura-2-asteria-en", "Asteria [Aura-2] — American Female (Clear, Confident, Knowledgeable)"),
+    ("aura-2-athena-en", "Athena [Aura-2] — American Female (Calm, Smooth, Professional)"),
+    ("aura-2-atlas-en", "Atlas [Aura-2] — American Male (Enthusiastic, Confident, Friendly)"),
+    ("aura-2-aurora-en", "Aurora [Aura-2] — American Female (Cheerful, Expressive, Energetic)"),
+    ("aura-2-callista-en", "Callista [Aura-2] — American Female (Clear, Energetic, Smooth)"),
+    ("aura-2-cora-en", "Cora [Aura-2] — American Female (Smooth, Melodic, Caring)"),
+    ("aura-2-cordelia-en", "Cordelia [Aura-2] — American Female (Approachable, Warm, Polite)"),
+    ("aura-2-delia-en", "Delia [Aura-2] — American Female (Casual, Friendly, Cheerful)"),
+    ("aura-2-draco-en", "Draco [Aura-2] — British Male (Warm, Trustworthy, Baritone)"),
+    ("aura-2-electra-en", "Electra [Aura-2] — American Female (Professional, Engaging, Knowledgeable)"),
+    ("aura-2-harmonia-en", "Harmonia [Aura-2] — American Female (Empathetic, Clear, Calm)"),
+    ("aura-2-helena-en", "Helena [Aura-2] — American Female (Caring, Natural, Friendly)"),
+    ("aura-2-hera-en", "Hera [Aura-2] — American Female (Smooth, Warm, Professional)"),
+    ("aura-2-hermes-en", "Hermes [Aura-2] — American Male (Expressive, Engaging, Professional)"),
+    ("aura-2-iris-en", "Iris [Aura-2] — American Female (Cheerful, Positive, Approachable)"),
+    ("aura-2-janus-en", "Janus [Aura-2] — American Female (Southern, Smooth, Trustworthy)"),
+    ("aura-2-juno-en", "Juno [Aura-2] — American Female (Natural, Engaging, Melodic)"),
+    ("aura-2-jupiter-en", "Jupiter [Aura-2] — American Male (Expressive, Knowledgeable, Baritone)"),
+    ("aura-2-luna-en", "Luna [Aura-2] — American Female (Friendly, Natural, Engaging)"),
+    ("aura-2-mars-en", "Mars [Aura-2] — American Male (Smooth, Patient, Baritone)"),
+    ("aura-2-minerva-en", "Minerva [Aura-2] — American Female (Positive, Friendly, Natural)"),
+    ("aura-2-neptune-en", "Neptune [Aura-2] — American Male (Professional, Patient, Polite)"),
+    ("aura-2-odysseus-en", "Odysseus [Aura-2] — American Male (Calm, Smooth, Professional)"),
+    ("aura-2-ophelia-en", "Ophelia [Aura-2] — American Female (Expressive, Enthusiastic, Cheerful)"),
+    ("aura-2-orion-en", "Orion [Aura-2] — American Male (Approachable, Comfortable, Calm)"),
+    ("aura-2-orpheus-en", "Orpheus [Aura-2] — American Male (Professional, Clear, Confident)"),
+    ("aura-2-pandora-en", "Pandora [Aura-2] — British Female (Smooth, Calm, Melodic)"),
+    ("aura-2-phoebe-en", "Phoebe [Aura-2] — American Female (Energetic, Warm, Casual)"),
+    ("aura-2-pluto-en", "Pluto [Aura-2] — American Male (Smooth, Calm, Baritone)"),
+    ("aura-2-saturn-en", "Saturn [Aura-2] — American Male (Knowledgeable, Confident, Baritone)"),
+    ("aura-2-selene-en", "Selene [Aura-2] — American Female (Expressive, Engaging, Energetic)"),
+    ("aura-2-vesta-en", "Vesta [Aura-2] — American Female (Natural, Expressive, Empathetic)"),
+    ("aura-2-zeus-en", "Zeus [Aura-2] — American Male (Deep, Trustworthy, Smooth)"),
+    # Deepgram Aura-1 (v1/speak — 12 English voices)
+    ("aura-angus-en", "Angus [Aura-1] — Irish Male (Casual, Friendly, Patient)"),
+    ("aura-arcas-en", "Arcas [Aura-1] — American Male (Natural, Smooth, Clear)"),
+    ("aura-asteria-en", "Asteria [Aura-1] — American Female (Clear, Confident, Knowledgeable)"),
+    ("aura-athena-en", "Athena [Aura-1] — British Female (Smooth, Calm, Professional)"),
+    ("aura-helios-en", "Helios [Aura-1] — British Male (Comfortable, Polite, Positive)"),
+    ("aura-hera-en", "Hera [Aura-1] — American Female (Deep, Smooth, Warm)"),
+    ("aura-luna-en", "Luna [Aura-1] — American Female (Friendly, Natural, Engaging)"),
+    ("aura-orion-en", "Orion [Aura-1] — American Male (Approachable, Comfortable, Calm)"),
+    ("aura-orpheus-en", "Orpheus [Aura-1] — American Male (Clear, Trustworthy, Professional)"),
+    ("aura-perseus-en", "Perseus [Aura-1] — American Male (Expressive, Melodic, Charismatic)"),
+    ("aura-stella-en", "Stella [Aura-1] — American Female (Engaging, Cheerful, Raspy)"),
+    ("aura-zeus-en", "Zeus [Aura-1] — American Male (Deep, Trustworthy, Smooth)"),
 ]
 
 VOICE_STYLE_PRESETS: dict[str, tuple[str, str]] = {
@@ -205,7 +291,8 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "groq_voice_name": "autumn",
     "cartesia_voice_id": "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4",
     "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
-    "deepgram_voice_name": "aura-2-thalia-en",
+    "deepgram_voice_name": "flux-sienna-en",
+    "deepgram_expressivity": 0,
     "system_voice_name": "System Default",
     "voice_style": "warm_american",
     "custom_style_prompt": "",
@@ -338,6 +425,23 @@ def _clamp_speed(raw_speed: Any) -> float:
     return round(max(0.80, min(1.30, val)), 2)
 
 
+def _clamp_deepgram_expressivity(raw_expr: Any) -> int:
+    try:
+        val = int(round(float(raw_expr)))
+    except (TypeError, ValueError):
+        val = 0
+    return max(-2, min(2, val))
+
+
+def _normalize_deepgram_voice_model(voice_model: str) -> str:
+    raw = (voice_model or "").strip().lower()
+    if raw in _DEEPGRAM_VOICE_IDS:
+        return _DEEPGRAM_VOICE_IDS[raw]
+    if re.fullmatch(r"(?:flux|aura|aura-2)-[a-z0-9-]+", raw):
+        return raw
+    return DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]
+
+
 def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     data = _read_raw_config(config_path)
     raw = data.get("voice_settings", {})
@@ -383,8 +487,9 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["elevenlabs_voice_id"] = raw["elevenlabs_voice_id"].strip()
 
     if isinstance(raw.get("deepgram_voice_name"), str) and raw["deepgram_voice_name"].strip():
-        dg_raw = raw["deepgram_voice_name"].strip()
-        merged["deepgram_voice_name"] = _DEEPGRAM_VOICE_IDS.get(dg_raw.lower(), dg_raw)
+        merged["deepgram_voice_name"] = _normalize_deepgram_voice_model(raw["deepgram_voice_name"])
+    if "deepgram_expressivity" in raw:
+        merged["deepgram_expressivity"] = _clamp_deepgram_expressivity(raw["deepgram_expressivity"])
 
     if isinstance(raw.get("system_voice_name"), str) and raw["system_voice_name"].strip():
         merged["system_voice_name"] = raw["system_voice_name"].strip()
@@ -462,7 +567,8 @@ def save_voice_settings(
     current["cartesia_voice_id"] = cid
     current["elevenlabs_voice_id"] = str(current.get("elevenlabs_voice_id") or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]).strip()
     dgvoice = str(current.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]).strip()
-    current["deepgram_voice_name"] = _DEEPGRAM_VOICE_IDS.get(dgvoice.lower(), dgvoice)
+    current["deepgram_voice_name"] = _normalize_deepgram_voice_model(dgvoice)
+    current["deepgram_expressivity"] = _clamp_deepgram_expressivity(current.get("deepgram_expressivity", 0))
     current["system_voice_name"] = str(current.get("system_voice_name") or "System Default").strip() or "System Default"
 
     style = str(current.get("voice_style") or "warm_american").strip().lower()
@@ -1031,7 +1137,7 @@ def list_voices_for_engine(engine: str = "auto") -> list[tuple[str, str]]:
 
 
 def fetch_remote_tts_voices(engine: str, api_key: str, *, timeout: float = 10.0) -> list[tuple[str, str]]:
-    """Fetch live account voices for Cartesia or ElevenLabs (falls back to curated defaults on error)."""
+    """Fetch live account voices for Cartesia, ElevenLabs, or Deepgram (falls back to curated defaults on error)."""
     eng = (engine or "").strip().lower()
     key = (api_key or "").strip()
     if not key:
@@ -1075,6 +1181,63 @@ def fetch_remote_tts_voices(engine: str, api_key: str, *, timeout: float = 10.0)
             if vid:
                 lbl = f"{name} ({cat})" if cat else name
                 out.append((vid, lbl))
+    elif eng == "deepgram":
+        headers = {"Authorization": f"Token {key}"}
+        seen: dict[str, tuple[tuple[int, int, str], str]] = {}
+        last_exc: Exception | None = None
+        for endpoint_url in ("https://api.deepgram.com/v2/models", "https://api.deepgram.com/v1/models"):
+            try:
+                req = urllib.request.Request(endpoint_url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+                for row in payload.get("tts") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    cid = str(row.get("canonical_name") or "").strip().lower()
+                    if not cid or cid in seen:
+                        continue
+                    vname = str(row.get("name") or cid).strip().title()
+                    meta = row.get("metadata") or {}
+                    accent = str(meta.get("accent") or "").strip()
+                    tags = [str(t).strip() for t in (meta.get("tags") or []) if str(t).strip()]
+                    lang = str((row.get("languages") or [""])[0] or "").strip()
+                    if not lang and "-" in cid:
+                        lang = cid.rsplit("-", 1)[-1]
+                    is_en = lang.lower().startswith("en") or cid.endswith("-en")
+                    if cid.startswith("flux-"):
+                        fam = "Flux"
+                        fam_rank = 0
+                    elif cid.startswith("aura-2-"):
+                        fam = "Aura-2"
+                        fam_rank = 1
+                    else:
+                        fam = "Aura-1"
+                        fam_rank = 2
+                    gender = ""
+                    desc_tags: list[str] = []
+                    for t in tags:
+                        tl = t.lower()
+                        if tl == "feminine" and not gender:
+                            gender = "Female"
+                        elif tl == "masculine" and not gender:
+                            gender = "Male"
+                        elif len(desc_tags) < 3:
+                            desc_tags.append(t.title())
+                    lang_suffix = f" · {lang.upper()}" if (lang and not is_en) else ""
+                    fam_badge = f"[{fam}{lang_suffix}]"
+                    who = " ".join(p for p in (accent, gender) if p)
+                    detail = f" ({', '.join(desc_tags)})" if desc_tags else ""
+                    right = f"{who}{detail}".strip()
+                    lbl = f"{vname} {fam_badge} — {right}" if right else f"{vname} {fam_badge}"
+                    if cid == "flux-sienna-en":
+                        lbl += " (Default)"
+                    sort_key = (0 if is_en else 1, fam_rank, "" if cid == "flux-sienna-en" else vname.lower())
+                    seen[cid] = (sort_key, lbl)
+            except Exception as exc:
+                last_exc = exc
+        if not seen and last_exc is not None:
+            raise last_exc
+        out = [(cid, item[1]) for cid, item in sorted(seen.items(), key=lambda kv: kv[1][0])]
     return out or list_voices_for_engine(eng)
 
 
@@ -1854,16 +2017,34 @@ def _stream_deepgram_pcm(
     *,
     api_key: str,
     voice_model: str,
+    speed: float = 1.0,
+    expressivity: int = 0,
     cancel_event: threading.Event | None = None,
 ):
-    """Stream raw 24kHz 16-bit mono PCM chunks from Deepgram Aura TTS over HTTPS."""
-    vm = _DEEPGRAM_VOICE_IDS.get((voice_model or "").strip().lower(), DEFAULT_VOICE_SETTINGS["deepgram_voice_name"])
+    """Stream raw 24kHz 16-bit mono PCM chunks from Deepgram Flux (/v2/speak) or Aura (/v1/speak)."""
+    key = (api_key or "").strip()
+    if not key:
+        raise ValueError("Deepgram API key is missing.")
+    vm = _normalize_deepgram_voice_model(voice_model)
+    if vm.startswith("flux-"):
+        try:
+            spd_val = float(speed or 1.0)
+        except (TypeError, ValueError):
+            spd_val = 1.0
+        spd = max(0.5, min(1.5, round(spd_val, 2)))
+        expr = _clamp_deepgram_expressivity(expressivity)
+        url = (
+            f"https://api.deepgram.com/v2/speak?model={vm}&speed={spd:g}&expressivity={expr}"
+            "&encoding=linear16&sample_rate=24000&container=none"
+        )
+    else:
+        url = f"https://api.deepgram.com/v1/speak?model={vm}&encoding=linear16&sample_rate=24000&container=none"
     body = json.dumps({"text": chunk_text}).encode("utf-8")
     req = urllib.request.Request(
-        f"https://api.deepgram.com/v1/speak?model={vm}&encoding=linear16&sample_rate=24000&container=none",
+        url,
         data=body,
         headers={
-            "Authorization": f"Token {api_key.strip()}",
+            "Authorization": f"Token {key}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -2042,15 +2223,19 @@ def synthesize_speech_pcm(
                 errors.append("deepgram: missing API key")
                 continue
             try:
+                dg_vm = _normalize_deepgram_voice_model(str(cfg.get("deepgram_voice_name") or ""))
+                dg_expr = _clamp_deepgram_expressivity(cfg.get("deepgram_expressivity", 0))
                 buf = bytearray()
                 for c_bytes in _stream_deepgram_pcm(
                     spoken,
                     api_key=dkey,
-                    voice_model=str(cfg.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]),
+                    voice_model=dg_vm,
+                    speed=speed,
+                    expressivity=dg_expr,
                 ):
                     buf.extend(c_bytes)
                 if buf:
-                    return bytes(buf), 24000, "deepgram:aura-2"
+                    return bytes(buf), 24000, f"deepgram:{dg_vm}"
             except Exception as exc:
                 errors.append(f"deepgram: {exc}")
 
@@ -2163,7 +2348,8 @@ def speak_agent_response(
     groq_voice = str(cfg.get("groq_voice_name") or "autumn").strip()
     cartesia_vid = str(cfg.get("cartesia_voice_id") or DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]).strip()
     eleven_vid = str(cfg.get("elevenlabs_voice_id") or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]).strip()
-    deepgram_voice = str(cfg.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]).strip()
+    deepgram_voice = _normalize_deepgram_voice_model(str(cfg.get("deepgram_voice_name") or ""))
+    deepgram_expressivity = _clamp_deepgram_expressivity(cfg.get("deepgram_expressivity", 0))
     system_voice = str(cfg.get("system_voice_name") or "System Default").strip()
 
     cancel_ev = threading.Event()
@@ -2452,7 +2638,14 @@ def speak_agent_response(
                             elif candidate == "elevenlabs":
                                 gen_pcm = _stream_elevenlabs_pcm(ch_txt, api_key=ext_key, voice_id=eleven_vid, cancel_event=cancel_ev)
                             else:
-                                gen_pcm = _stream_deepgram_pcm(ch_txt, api_key=ext_key, voice_model=deepgram_voice, cancel_event=cancel_ev)
+                                gen_pcm = _stream_deepgram_pcm(
+                                    ch_txt,
+                                    api_key=ext_key,
+                                    voice_model=deepgram_voice,
+                                    speed=speed,
+                                    expressivity=deepgram_expressivity,
+                                    cancel_event=cancel_ev,
+                                )
                             ch_pcm_bytes = 0
                             for pcm_piece in gen_pcm:
                                 if cancel_ev.is_set():

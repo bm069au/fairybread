@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-21T08:09:30Z",
-  "latest_app_version": "0.92b",
-  "release_summary": "Beta v0.92b: Antigravity-style sidebar discussion & project controls (hover pin/three-dots menu, 2x2 animated working indicator, blue unread dot, Rename/Duplicate/Archive/Delete drawer), Agent Mail READ/UNREAD controls, batched SQLite memory hydration, <=0.15s task cancel, ZipSlip restore protection, and provider timeout/retry hardening.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92b-beta/Fairybread_v0.92b_beta_Win_x64_Setup.zip",
+  "updated_at": "2026-11-21T22:48:30Z",
+  "latest_app_version": "0.92c",
+  "release_summary": "Beta v0.92c: Deepgram Flux (/v2/speak) + all 89 English Deepgram voices (36 Flux, 41 Aura-2, 12 Aura-1) in a contextual Voice Character dropdown with Flux Expressivity (-2..+2) and live Refresh Voices, two-stage 7500-char hybrid FTS5 + 128-d vector memory search with contradiction supersession & Tone Vector personalisation, and uniform user-bubble / compact sidebar line spacing.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92c-beta/Fairybread_v0.92c_beta_Win_x64_Setup.zip",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "cbde249dd57efbed9f170a282fd491fdd021997e8a99af829088de23b45e78fa",
+  "installer_sha256": "187972fee9219112e1fd696e8344903b81fd298893e6d612a1ddc1e8ec39a76c",
   "model_token_rates_per_1m": {
     "gemini-4-neon": [
       0.5,

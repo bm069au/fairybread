@@ -527,6 +527,7 @@ Instructions:
         steering_state: dict[str, Any] | None = None,
         on_phase_status: Callable[[dict[str, Any]], None] | None = None,
         smart_routing_override: bool | None = None,
+        project_name: str = "",
     ) -> PalaceRunResult:
 
         try:
@@ -711,8 +712,16 @@ Instructions:
             )
 
         if include_memory:
+            search_kwargs: dict[str, Any] = {}
+            try:
+                s_params = inspect.signature(self.memory_service.search).parameters
+                if "project" in s_params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in s_params.values()):
+                    search_kwargs["project"] = project_name
+            except (TypeError, ValueError):
+                pass
             memory_result = self.memory_service.search(
-                effective_question
+                effective_question,
+                **search_kwargs,
             )
 
             if memory_result.succeeded:

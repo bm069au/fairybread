@@ -1,7 +1,8 @@
 """High-speed in-process SQLite FTS5 (BM25 + temporal decay) durable memory engine with mempalace bridge."""
 from __future__ import annotations
 
-from collections import Counter
+from array import array
+from collections import Counter, OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -17,6 +18,11 @@ import time
 from typing import Any, Iterator, Optional
 from uuid import uuid4
 import zlib
+
+try:
+    import numpy as _np
+except Exception:
+    _np = None
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,44 @@ _STOPWORDS = frozenset(
 _WORD_RE = re.compile(r"[A-Za-z0-9_]{2,}", re.UNICODE)
 COLD_THRESHOLD_BYTES = 4096
 HOT_INDEX_PREFIX_CHARS = 2048
+_VEC_DIM = 128
+
+_SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("warm", "friendly", "friend", "personal", "personable", "mate", "banter", "casual"),
+    ("optimise", "optimize", "optimisation", "optimization", "speed", "faster", "perf", "performance"),
+    ("colour", "color", "theme", "skin", "palette"),
+    ("summarise", "summarize", "summary", "recap"),
+    ("arvo", "afternoon"),
+    ("bug", "fix", "crash", "error", "issue", "broken"),
+    ("voice", "speech", "tts", "speak", "audio", "talk"),
+    ("draw", "image", "graphic", "banner", "picture", "photo", "render"),
+    ("memory", "recall", "remember", "profile", "context", "history"),
+)
+_SYNONYM_MAP: dict[str, tuple[str, ...]] = {}
+for _grp in _SYNONYM_GROUPS:
+    for _tok in _grp:
+        _SYNONYM_MAP[_tok] = _grp
+
+_NEGATION_CUE_RE = re.compile(
+    r"\b(?:not|never|avoid|dislike|don'?t|do\s+not|stop|hate|no|less)\b",
+    re.IGNORECASE,
+)
+_AFFIRM_CUE_RE = re.compile(
+    r"\b(?:prefer|like|always|want|use|enable|keep|love|more)\b",
+    re.IGNORECASE,
+)
+_TRIVIAL_EXCHANGE_RE = re.compile(
+    r"^(?:test(?:ing)?|testing\s+microphone|mm+|uh+|um+|ah+|ok(?:ay)?|k|yes|no|yep|nope|"
+    r"hi|hello|hey|thank(?:s|\s+you)|not\s+bad\s+okay|that'?s\s+okay(?:,\s*i'?m\s+good)?|"
+    r"cheers|cool|nice|good|done|stop|bye|[.\s?!,_-]+)$",
+    re.IGNORECASE,
+)
+_CANONICAL_PROFILE_CATEGORIES = (
+    "Overview",
+    "How You Like to Work",
+    "Speech & Communication Style",
+    "Software & Creative Projects",
+)
 
 
 def extract_keywords(text: str, max_terms: int = 12) -> list[str]:
@@ -57,11 +101,154 @@ def extract_keywords(text: str, max_terms: int = 12) -> list[str]:
     ]
 
 
+def _expand_query_terms(terms: list[str], max_terms: int = 18) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for t in terms:
+        tl = t.lower()
+        if tl not in seen:
+            seen.add(tl)
+            expanded.append(tl)
+    for t in list(expanded):
+        for sib in _SYNONYM_MAP.get(t, ()):
+            if sib not in seen:
+                seen.add(sib)
+                expanded.append(sib)
+                if len(expanded) >= max_terms:
+                    return expanded[:max_terms]
+    return expanded[:max_terms]
+
+
 def build_fts_match_query(user_prompt: str, max_terms: int = 12) -> str:
     terms = extract_keywords(user_prompt, max_terms=max_terms)
     if not terms:
         return ""
-    return " OR ".join(f'"{t}"*' for t in terms)
+    expanded = _expand_query_terms(terms, max_terms=max(max_terms, 18))
+    return " OR ".join(f'"{t}"*' for t in expanded)
+
+
+def _embed_text_vec(text: str) -> bytes:
+    """Compute a fast L2-normalized local 128-d float32 feature vector over words, synonyms, and char n-grams."""
+    raw = (text or "").lower().strip()
+    if not raw:
+        return array("f", [0.0] * _VEC_DIM).tobytes()
+    buckets = [0.0] * _VEC_DIM
+
+    def _add_feat(token: str, weight: float) -> None:
+        digest = hashlib.blake2b(token.encode("utf-8", errors="replace"), digest_size=4).digest()
+        val = int.from_bytes(digest, "little")
+        idx = val % _VEC_DIM
+        sign = 1.0 if ((val >> 31) & 1) == 0 else -1.0
+        buckets[idx] += sign * weight
+
+    words = [w for w in _WORD_RE.findall(raw) if w not in _STOPWORDS]
+    if not words:
+        words = _WORD_RE.findall(raw)
+    for w in words[:96]:
+        _add_feat(f"w:{w}", 1.0)
+        grp = _SYNONYM_MAP.get(w)
+        if grp:
+            _add_feat(f"s:{grp[0]}", 0.65)
+        if len(w) >= 4:
+            for i in range(len(w) - 2):
+                _add_feat(f"g:{w[i:i+3]}", 0.30)
+
+    norm_sq = sum(v * v for v in buckets)
+    if norm_sq > 0.0:
+        inv = 1.0 / math.sqrt(norm_sq)
+        buckets = [v * inv for v in buckets]
+    return array("f", buckets).tobytes()
+
+
+def _cosine_sim_bytes(blob_a: bytes, blob_b: bytes) -> float:
+    if not blob_a or not blob_b or len(blob_a) != len(blob_b):
+        return 0.0
+    if _np is not None:
+        va = _np.frombuffer(blob_a, dtype=_np.float32)
+        vb = _np.frombuffer(blob_b, dtype=_np.float32)
+        return max(0.0, float(_np.dot(va, vb)))
+    aa = array("f")
+    ab = array("f")
+    aa.frombytes(blob_a)
+    ab.frombytes(blob_b)
+    return max(0.0, float(sum(x * y for x, y in zip(aa, ab))))
+
+
+def _has_opposite_polarity(text_a: str, text_b: str) -> bool:
+    neg_a = bool(_NEGATION_CUE_RE.search(text_a or ""))
+    neg_b = bool(_NEGATION_CUE_RE.search(text_b or ""))
+    if neg_a != neg_b:
+        return True
+    la, lb = (text_a or "").lower(), (text_b or "").lower()
+    if ("more " in la and "less " in lb) or ("less " in la and "more " in lb):
+        return True
+    return False
+
+
+def _is_trivial_exchange(question: str) -> bool:
+    clean = re.sub(r"\s+", " ", (question or "").strip()).rstrip(".!? ")
+    if len(clean) < 4:
+        return True
+    return bool(_TRIVIAL_EXCHANGE_RE.match(clean))
+
+
+def _normalize_profile_category(raw_cat: str, fact_text: str = "") -> str:
+    txt = f"{raw_cat or ''} {fact_text or ''}".lower()
+    if raw_cat and raw_cat.strip() in _CANONICAL_PROFILE_CATEGORIES and "|" not in raw_cat:
+        return raw_cat.strip()
+    if any(k in txt for k in ("speech", "grammar", "tone", "warm", "friendly", "banter", "flatter", "slang", "idiolect", "talk", "policing", "concise")):
+        return "Speech & Communication Style"
+    if any(k in txt for k in ("project", "fairybread", "evidencebench", "duk", "shadow", "palace", "software", "creative", "comedy", "music", "health", "ginger")):
+        return "Software & Creative Projects"
+    if any(k in txt for k in ("work", "workflow", "autopatch", "review", "plan", "git", "drive", "edit", "notepad", "visual studio", "test")):
+        return "How You Like to Work"
+    return "Overview"
+
+
+def _compact_summary_for_prompt(summary_md: str, max_chars: int = 2100) -> str:
+    text = (summary_md or "").strip()
+    if not text or len(text) <= max_chars:
+        return text
+    sections: list[tuple[str, list[str]]] = []
+    cur_hdr = "Overview"
+    cur_lines: list[str] = []
+    for raw_ln in text.splitlines():
+        if raw_ln.startswith("### "):
+            if cur_lines:
+                sections.append((cur_hdr, cur_lines))
+            cur_hdr = raw_ln[4:].strip()
+            cur_lines = []
+        else:
+            cur_lines.append(raw_ln)
+    if cur_lines:
+        sections.append((cur_hdr, cur_lines))
+
+    def _prio(hdr: str) -> int:
+        if "|" in hdr:
+            return 2
+        if hdr in _CANONICAL_PROFILE_CATEGORIES:
+            return 0
+        return 1
+
+    ordered = sorted(enumerate(sections), key=lambda pair: (_prio(pair[1][0]), pair[0]))
+    out_parts: list[str] = []
+    used_len = 0
+    for _idx, (hdr, lns) in ordered:
+        block = f"### {hdr}\n" + "\n".join(lns).strip()
+        block = block.strip()
+        if not block:
+            continue
+        sep = 2 if out_parts else 0
+        if used_len + sep + len(block) <= max_chars:
+            out_parts.append(block)
+            used_len += sep + len(block)
+        elif max_chars - used_len > 140:
+            rem = max_chars - used_len - sep - 4
+            out_parts.append(block[:rem].rsplit("\n", 1)[0].strip() + "\n...")
+            break
+    if not out_parts:
+        return text[:max_chars]
+    return "\n\n".join(out_parts)
 
 
 def _content_hash(summary: str, body: str) -> str:
@@ -80,11 +267,12 @@ def get_default_memory_db_path() -> Path:
 
 
 class SQLiteMemoryIndex:
-    """In-process SQLite WAL + FTS5 (porter unicode61) durable memory store with BM25 + recency scoring."""
+    """In-process SQLite WAL + FTS5 (porter unicode61) durable memory store with hybrid BM25+vector scoring."""
 
     def __init__(self, db_path: Path | None = None):
         self.db_path = Path(db_path) if db_path is not None else get_default_memory_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._search_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDict()
         self._init_schema()
 
     @contextmanager
@@ -94,6 +282,10 @@ class SQLiteMemoryIndex:
         try:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
+            try:
+                conn.execute("PRAGMA mmap_size=67108864;")
+            except sqlite3.OperationalError:
+                pass
             yield conn
             conn.commit()
         finally:
@@ -113,12 +305,33 @@ class SQLiteMemoryIndex:
                     visibility TEXT NOT NULL DEFAULT 'private',
                     summary TEXT NOT NULL,
                     body TEXT NOT NULL,
-                    source_json TEXT NOT NULL DEFAULT '{}'
+                    source_json TEXT NOT NULL DEFAULT '{}',
+                    importance INTEGER NOT NULL DEFAULT 3,
+                    scope TEXT NOT NULL DEFAULT 'global',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    superseded_by TEXT NOT NULL DEFAULT '',
+                    hits_shown INTEGER NOT NULL DEFAULT 0,
+                    last_confirmed_ts REAL NOT NULL DEFAULT 0
                 );
                 """
             )
+            existing_cols = {str(r["name"]) for r in conn.execute("PRAGMA table_info(memories);").fetchall()}
+            migrations = (
+                ("importance", "INTEGER NOT NULL DEFAULT 3"),
+                ("scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("active", "INTEGER NOT NULL DEFAULT 1"),
+                ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
+                ("hits_shown", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_confirmed_ts", "REAL NOT NULL DEFAULT 0"),
+            )
+            for col_name, col_def in migrations:
+                if col_name not in existing_cols:
+                    conn.execute(f"ALTER TABLE memories ADD COLUMN {col_name} {col_def};")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(wing, project, ts DESC);"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(wing, active, ts DESC);"
             )
             conn.execute(
                 """
@@ -128,6 +341,15 @@ class SQLiteMemoryIndex:
                     payload BLOB NOT NULL,
                     raw_bytes INTEGER NOT NULL,
                     stored_bytes INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memories_vec (
+                    memory_id TEXT PRIMARY KEY,
+                    dim INTEGER NOT NULL,
+                    vec BLOB NOT NULL
                 );
                 """
             )
@@ -143,6 +365,45 @@ class SQLiteMemoryIndex:
                 );
                 """
             )
+
+    def _ensure_vec_rows(self, conn: sqlite3.Connection, wing: str | None = None, batch_limit: int = 200) -> None:
+        if wing:
+            missing = conn.execute(
+                """
+                SELECT m.id, m.summary, m.body
+                FROM memories m
+                LEFT JOIN memories_vec v ON v.memory_id = m.id
+                WHERE v.memory_id IS NULL AND m.active = 1 AND m.wing = ?
+                LIMIT ?;
+                """,
+                (wing, batch_limit),
+            ).fetchall()
+        else:
+            missing = conn.execute(
+                """
+                SELECT m.id, m.summary, m.body
+                FROM memories m
+                LEFT JOIN memories_vec v ON v.memory_id = m.id
+                WHERE v.memory_id IS NULL AND m.active = 1
+                LIMIT ?;
+                """,
+                (batch_limit,),
+            ).fetchall()
+        if not missing:
+            return
+        hydrated = self._hydrate_rows_batch(conn, [dict(r) for r in missing])
+        rows_to_insert = [
+            (
+                d["id"],
+                _VEC_DIM,
+                _embed_text_vec(f"{d.get('summary') or ''} {d.get('body') or ''}"),
+            )
+            for d in hydrated
+        ]
+        conn.executemany(
+            "INSERT OR REPLACE INTO memories_vec (memory_id, dim, vec) VALUES (?, ?, ?);",
+            rows_to_insert,
+        )
 
     def _hydrate_rows_batch(
         self,
@@ -192,20 +453,36 @@ class SQLiteMemoryIndex:
         visibility: str = "private",
         source: dict[str, Any] | None = None,
         ts: float | None = None,
+        importance: int | None = None,
+        scope: str | None = None,
     ) -> str:
         now_ts = float(ts if ts is not None else time.time())
         clean_summary = (summary or "").strip()
         clean_body = (body or clean_summary).strip()
+        mtype_l = (memory_type or "semantic").strip().lower()
+        if importance is not None:
+            eff_imp = max(1, min(5, int(importance)))
+        elif mtype_l in {"standing", "boundary", "idiolect"}:
+            eff_imp = 5
+        elif mtype_l == "preference":
+            eff_imp = 4
+        else:
+            eff_imp = 3
+        clean_proj = (project or "").strip()
+        eff_scope = (scope or "").strip() or (f"project:{clean_proj.lower()}" if clean_proj else "global")
         ch = _content_hash(clean_summary, clean_body)
         src_dict = dict(source or {})
         src_dict["content_hash"] = ch
         src_str = json.dumps(src_dict)
+        vec_blob = _embed_text_vec(f"{clean_summary} {clean_body}")
+        superseded_ids: list[str] = []
 
+        self._search_cache.clear()
         with self._connect() as conn:
             if memory_id is None:
                 # Check for exact content_hash deduplication within the same wing
                 candidates = conn.execute(
-                    "SELECT id, source_json FROM memories WHERE wing = ? AND summary = ?;",
+                    "SELECT id, source_json FROM memories WHERE wing = ? AND summary = ? AND active = 1;",
                     (wing, clean_summary),
                 ).fetchall()
                 mid = ""
@@ -216,9 +493,44 @@ class SQLiteMemoryIndex:
                         stored_src = {}
                     if isinstance(stored_src, dict) and stored_src.get("content_hash") == ch:
                         mid = str(row["id"])
-                        break
-                if not mid:
-                    mid = str(uuid4())
+                        conn.execute(
+                            "UPDATE memories SET ts = ?, last_confirmed_ts = ?, importance = MAX(importance, ?) WHERE id = ?;",
+                            (now_ts, now_ts, eff_imp, mid),
+                        )
+                        return mid
+
+                if mtype_l in {"standing", "preference", "boundary", "idiolect"}:
+                    self._ensure_vec_rows(conn, wing=wing)
+                    durable_rows = conn.execute(
+                        """
+                        SELECT m.id, m.summary, m.body, m.importance, v.vec
+                        FROM memories m
+                        JOIN memories_vec v ON v.memory_id = m.id
+                        WHERE m.wing = ? AND m.active = 1
+                          AND LOWER(m.memory_type) IN ('standing', 'preference', 'boundary', 'idiolect')
+                          AND m.id != 'palace_master_memory_summary'
+                        ORDER BY m.ts DESC
+                        LIMIT 100;
+                        """,
+                        (wing,),
+                    ).fetchall()
+                    new_text = f"{clean_summary} {clean_body}"
+                    for dr in durable_rows:
+                        sim = _cosine_sim_bytes(vec_blob, bytes(dr["vec"] or b""))
+                        if sim < 0.62:
+                            continue
+                        old_text = f"{dr['summary'] or ''} {dr['body'] or ''}"
+                        if _has_opposite_polarity(new_text, old_text):
+                            superseded_ids.append(str(dr["id"]))
+                        elif sim >= 0.80:
+                            existing_id = str(dr["id"])
+                            conn.execute(
+                                "UPDATE memories SET ts = ?, last_confirmed_ts = ?, importance = MAX(importance, ?) WHERE id = ?;",
+                                (now_ts, now_ts, eff_imp, existing_id),
+                            )
+                            return existing_id
+
+                mid = str(uuid4())
             else:
                 mid = memory_id.strip()
 
@@ -245,10 +557,14 @@ class SQLiteMemoryIndex:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO memories
-                (id, wing, room, project, ts, memory_type, visibility, summary, body, source_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (id, wing, room, project, ts, memory_type, visibility, summary, body, source_json,
+                 importance, scope, active, superseded_by, hits_shown, last_confirmed_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '', 0, ?);
                 """,
-                (mid, wing, room, project, now_ts, memory_type, visibility, clean_summary, indexed_body, src_str),
+                (
+                    mid, wing, room, project, now_ts, memory_type, visibility,
+                    clean_summary, indexed_body, src_str, eff_imp, eff_scope, now_ts,
+                ),
             )
             conn.execute(
                 """
@@ -257,36 +573,71 @@ class SQLiteMemoryIndex:
                 """,
                 (mid, clean_summary, clean_body, project, room),
             )
+            conn.execute(
+                "INSERT OR REPLACE INTO memories_vec (memory_id, dim, vec) VALUES (?, ?, ?);",
+                (mid, _VEC_DIM, vec_blob),
+            )
+            for old_id in superseded_ids:
+                conn.execute(
+                    "UPDATE memories SET active = 0, superseded_by = ? WHERE id = ?;",
+                    (mid, old_id),
+                )
         return mid
 
-    def count(self, wing: str | None = None) -> int:
+    def count(self, wing: str | None = None, include_inactive: bool = False) -> int:
         with self._connect() as conn:
+            active_clause = "" if include_inactive else "active = 1"
             if wing:
-                row = conn.execute("SELECT COUNT(*) AS c FROM memories WHERE wing = ?;", (wing,)).fetchone()
+                where = f"WHERE wing = ?{' AND ' + active_clause if active_clause else ''}"
+                row = conn.execute(f"SELECT COUNT(*) AS c FROM memories {where};", (wing,)).fetchone()
             else:
-                row = conn.execute("SELECT COUNT(*) AS c FROM memories;").fetchone()
+                where = f"WHERE {active_clause}" if active_clause else ""
+                row = conn.execute(f"SELECT COUNT(*) AS c FROM memories {where};").fetchone()
             return int(row["c"]) if row else 0
 
-    def list_memories(self, wing: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_memories(
+        self,
+        wing: str | None = None,
+        limit: int = 100,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
         with self._connect() as conn:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if not include_inactive:
+                clauses.append("active = 1")
             if wing:
-                rows = conn.execute(
-                    "SELECT * FROM memories WHERE wing = ? ORDER BY ts DESC LIMIT ?;",
-                    (wing, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM memories ORDER BY ts DESC LIMIT ?;",
-                    (limit,),
-                ).fetchall()
+                clauses.append("wing = ?")
+                params.append(wing)
+            where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT * FROM memories {where} ORDER BY ts DESC LIMIT ?;",
+                params,
+            ).fetchall()
             return self._hydrate_rows_batch(conn, [dict(r) for r in rows])
 
     def delete_memory(self, memory_id: str) -> bool:
+        self._search_cache.clear()
         with self._connect() as conn:
             conn.execute("DELETE FROM memories_blob WHERE memory_id = ?;", (memory_id,))
+            conn.execute("DELETE FROM memories_vec WHERE memory_id = ?;", (memory_id,))
             conn.execute("DELETE FROM memory_fts WHERE id = ?;", (memory_id,))
             cur = conn.execute("DELETE FROM memories WHERE id = ?;", (memory_id,))
             return cur.rowcount > 0
+
+    def record_hits_shown(self, memory_ids: list[str]) -> None:
+        uniq = [mid for mid in dict.fromkeys(str(x or "").strip() for x in memory_ids) if mid]
+        if not uniq:
+            return
+        try:
+            with self._connect() as conn:
+                conn.executemany(
+                    "UPDATE memories SET hits_shown = COALESCE(hits_shown, 0) + 1 WHERE id = ?;",
+                    [(mid,) for mid in uniq],
+                )
+        except Exception:
+            pass
 
     def search(
         self,
@@ -294,17 +645,30 @@ class SQLiteMemoryIndex:
         *,
         wing: str | None = None,
         project: str | None = None,
+        boost_project: str | None = None,
         limit: int = 12,
     ) -> list[dict[str, Any]]:
-        fts_query = build_fts_match_query(query or "", max_terms=12)
+        norm_q = (query or "").strip()
+        cache_key = (wing or "", project or "", boost_project or "", int(limit), norm_q.lower())
         now_ts = time.time()
+        cached_entry = self._search_cache.get(cache_key)
+        if cached_entry is not None and (now_ts - cached_entry[0]) <= 300.0:
+            self._search_cache.move_to_end(cache_key)
+            return [dict(item) for item in cached_entry[1]]
+
+        fts_query = build_fts_match_query(norm_q, max_terms=12)
+        q_vec = _embed_text_vec(norm_q) if norm_q else b""
+        bp_low = (boost_project or project or "").strip().lower()
+
         with self._connect() as conn:
+            self._ensure_vec_rows(conn, wing=wing)
+            fts_map: dict[str, tuple[dict[str, Any], float]] = {}
             if fts_query:
                 sql = """
                     SELECT m.*, bm25(memory_fts, 0.0, 8.0, 4.0, 2.0, 1.0) AS raw_bm25
                     FROM memory_fts
                     JOIN memories m ON m.id = memory_fts.id
-                    WHERE memory_fts MATCH ?
+                    WHERE memory_fts MATCH ? AND m.active = 1
                 """
                 params: list[Any] = [fts_query]
                 if wing:
@@ -315,40 +679,77 @@ class SQLiteMemoryIndex:
                     params.append(project)
                 sql += " LIMIT 60;"
                 try:
-                    rows = conn.execute(sql, params).fetchall()
+                    for r in conn.execute(sql, params).fetchall():
+                        d = dict(r)
+                        raw_b = abs(float(d.pop("raw_bm25", 0.0) or 0.0))
+                        fts_map[str(d["id"])] = (d, raw_b)
                 except sqlite3.OperationalError:
-                    rows = []
-            else:
-                rows = []
+                    pass
 
-            if not rows:
-                # Fallback to recent memories in wing if query has no keyword tokens
-                if not fts_query:
-                    sql_recent = "SELECT *, -1.0 AS raw_bm25 FROM memories WHERE 1=1"
-                    p_rec: list[Any] = []
-                    if wing:
-                        sql_recent += " AND wing = ?"
-                        p_rec.append(wing)
-                    if project:
-                        sql_recent += " AND project = ?"
-                        p_rec.append(project)
-                    sql_recent += " ORDER BY ts DESC LIMIT ?;"
-                    p_rec.append(limit)
-                    rows = conn.execute(sql_recent, p_rec).fetchall()
+            vec_sql = """
+                SELECT m.*, v.vec AS vec_blob
+                FROM memories m
+                JOIN memories_vec v ON v.memory_id = m.id
+                WHERE m.active = 1
+            """
+            v_params: list[Any] = []
+            if wing:
+                vec_sql += " AND m.wing = ?"
+                v_params.append(wing)
+            if project:
+                vec_sql += " AND m.project = ?"
+                v_params.append(project)
+            vec_sql += " ORDER BY m.ts DESC LIMIT 250;"
+            vec_rows = conn.execute(vec_sql, v_params).fetchall()
 
-            hydrated = self._hydrate_rows_batch(conn, [dict(r) for r in rows])
+            candidates_by_id: dict[str, tuple[dict[str, Any], float, float]] = {}
+            for vr in vec_rows:
+                d = dict(vr)
+                v_blob = bytes(d.pop("vec_blob", b"") or b"")
+                mid = str(d["id"])
+                cos_sim = _cosine_sim_bytes(q_vec, v_blob) if q_vec else 0.0
+                fts_hit = fts_map.get(mid)
+                bm25_raw = fts_hit[1] if fts_hit is not None else 0.0
+                if fts_hit is not None or cos_sim >= 0.14 or not norm_q:
+                    candidates_by_id[mid] = (d, bm25_raw, cos_sim)
+
+            for mid, (d, bm25_raw) in fts_map.items():
+                if mid not in candidates_by_id:
+                    candidates_by_id[mid] = (d, bm25_raw, 0.0)
+
+            candidate_dicts = [entry[0] for entry in candidates_by_id.values()]
+            hydrated = self._hydrate_rows_batch(conn, candidate_dicts)
             scored: list[tuple[float, dict[str, Any]]] = []
             for d in hydrated:
-                # In SQLite FTS5, bm25() returns negative numbers where more negative = better match
-                relevance = abs(float(d.pop("raw_bm25", -1.0) or -1.0))
+                mid = str(d["id"])
+                _, bm25_raw, cos_sim = candidates_by_id[mid]
+                bm25_norm = (bm25_raw / (bm25_raw + 2.0)) if bm25_raw > 0 else 0.0
+                if norm_q:
+                    hybrid_rel = (0.60 * bm25_norm + 0.40 * cos_sim) if bm25_norm > 0 else (0.75 * cos_sim)
+                else:
+                    hybrid_rel = 0.25
                 age_days = max(0.0, (now_ts - float(d.get("ts", now_ts))) / 86400.0)
-                recency_boost = math.exp(-age_days / 45.0)
-                final_score = relevance * (0.7 + 0.3 * recency_boost)
+                recency_boost = math.exp(-age_days / 60.0)
+                imp_norm = max(1, min(5, int(d.get("importance") or 3))) / 5.0
+                row_proj = str(d.get("project") or "").strip().lower()
+                row_scope = str(d.get("scope") or "global").strip().lower()
+                if bp_low and (row_proj == bp_low or row_scope == f"project:{bp_low}"):
+                    scope_match = 1.0
+                elif row_scope == "global" or not row_proj:
+                    scope_match = 0.25
+                else:
+                    scope_match = 0.0
+                final_score = (0.55 * hybrid_rel) + (0.20 * recency_boost) + (0.15 * imp_norm) + (0.10 * scope_match)
                 d["score"] = round(final_score, 4)
                 scored.append((final_score, d))
 
             scored.sort(key=lambda item: item[0], reverse=True)
-            return [item[1] for item in scored[:limit]]
+            top_out = [item[1] for item in scored[:limit]]
+
+        self._search_cache[cache_key] = (now_ts, [dict(item) for item in top_out])
+        if len(self._search_cache) > 128:
+            self._search_cache.popitem(last=False)
+        return top_out
 
     def backup_to_file(self, dest_path: Path) -> None:
         """Online WAL-safe SQLite backup API."""
@@ -603,6 +1004,7 @@ def auto_evolve_user_profile_from_turn(
     personal_signals = (
         "i ", "i'm", "im ", "my ", "we ", "prefer", "working on", "building",
         "always ", "never ", "like to", "live in", "years old", "project", "hobby",
+        "talk ", "tone", "grammar", "line spacing", "friendly", "warm", "banter", "address", "call me",
     )
     if not any(sig in lower_msg for sig in personal_signals):
         return []
@@ -616,12 +1018,13 @@ def auto_evolve_user_profile_from_turn(
 
     sys_prompt = (
         "You are Fairybread's Rich User Profile Extractor. Analyze the user's message and extract ONLY "
-        "explicit, durable personal facts, preferences, skills, workflow rules, or project details stated by the user.\n"
+        "explicit, durable personal facts, speech/tone/grammar preferences, workflow rules, or project details stated by the user.\n"
         "STRICT ANTI-HALLUCINATION RULES:\n"
         "1. NEVER guess, infer, or extrapolate traits from general questions.\n"
         "2. Every extracted item MUST include 'evidence': an exact verbatim substring copied directly from the user's message.\n"
-        "3. Output ONLY a valid JSON array (or [] if no durable personal fact was stated):\n"
-        '[{"category": "Overview|How You Like to Work|Software & Creative Projects", "fact": "Concise second-person fact (You...)", "evidence": "exact verbatim quote"}]'
+        "3. Choose EXACTLY ONE canonical 'category' from: Overview | How You Like to Work | Speech & Communication Style | Software & Creative Projects (never join with '|').\n"
+        "4. Output ONLY a valid JSON array (or [] if no durable personal fact was stated):\n"
+        '[{"category": "Overview", "fact": "Concise second-person fact (You...)", "evidence": "exact verbatim quote"}]'
     )
 
     try:
@@ -691,7 +1094,7 @@ def auto_evolve_user_profile_from_turn(
             continue
         fact = str(it.get("fact") or "").strip()
         ev = str(it.get("evidence") or "").strip()
-        cat = str(it.get("category") or "Overview").strip()
+        cat = _normalize_profile_category(str(it.get("category") or "Overview"), fact)
         # Verbatim Evidence Gate: quote must actually appear in the user's message
         if not fact or not ev or len(ev) < 5 or ev.lower() not in lower_msg:
             continue
@@ -704,10 +1107,13 @@ def auto_evolve_user_profile_from_turn(
             updated_summary = updated_summary.replace(heading, f"{heading}\n{bullet}", 1)
         else:
             updated_summary = updated_summary.rstrip() + f"\n\n### {cat}\n{bullet}"
+        m_type = "idiolect" if cat == "Speech & Communication Style" else "standing"
         idx.upsert(
             summary=fact[:120],
             body=f"{fact}\nVerbatim evidence: \"{ev}\"",
-            memory_type="standing",
+            memory_type=m_type,
+            importance=5,
+            scope="global",
             source={"kind": "auto_profile_fact", "category": cat, "evidence": ev},
         )
 
@@ -720,7 +1126,7 @@ class MemoryService:
     def __init__(
         self,
         wing: str = "gpt_palace",
-        memory_limit: int = 4000,
+        memory_limit: int = 7500,
         db_path: Path | None = None,
     ):
         self.wing = wing
@@ -739,7 +1145,7 @@ class MemoryService:
     ) -> str:
         """Automatically store a completed user/Council exchange into the shared SQLite FTS5 Memory Palace (like ChatGPT/Antigravity)."""
         clean_q = re.sub(r"\s+", " ", (question or "").strip())
-        if len(clean_q) < 4 or clean_q.lower() in {".", "..", "...", "test", "hi", "hello"}:
+        if _is_trivial_exchange(clean_q):
             return ""
         clean_a = re.sub(r'\[GENERATE_IMAGE\s+(?:[^\]"]|"[^"]*")*\]', "[Generated Image]", answer or "", flags=re.IGNORECASE)
         clean_a = re.sub(r"\[PALACE_UI_SNAPSHOT[^\]]*\]", "[UI Snapshot]", clean_a, flags=re.IGNORECASE).strip()
@@ -756,6 +1162,7 @@ class MemoryService:
             room=session_id or "general",
             project=project or "",
             memory_type="contextual",
+            importance=3,
             visibility="private",
             source={
                 "kind": "auto_exchange",
@@ -799,7 +1206,7 @@ class MemoryService:
                 continue
         return added
 
-    def search(self, query: str) -> MemorySearchResult:
+    def search(self, query: str, *, project: str | None = None) -> MemorySearchResult:
         # Preserve direct subprocess path ONLY when unit tests explicitly mock subprocess.run
         is_mocked = hasattr(subprocess.run, "assert_called") or "mock" in type(subprocess.run).__name__.lower()
         if not is_mocked:
@@ -807,43 +1214,100 @@ class MemoryService:
                 summary_data = load_memory_summary(self.index.db_path)
                 summary_md = (summary_data.get("text") or "").strip()
 
-                all_recent = self.index.list_memories(wing=self.wing, limit=40)
-                standing = [
+                all_recent = self.index.list_memories(wing=self.wing, limit=60)
+                durable_types = {"standing", "preference", "boundary", "idiolect"}
+                standing = sorted(
+                    [
+                        m for m in all_recent
+                        if str(m.get("memory_type") or "").lower() in durable_types
+                        and str(m.get("id")) != "palace_master_memory_summary"
+                    ],
+                    key=lambda m: (int(m.get("importance") or 3), float(m.get("ts") or 0.0)),
+                    reverse=True,
+                )[:4]
+
+                query_hits = [
+                    m for m in self.index.search(query, wing=self.wing, boost_project=project, limit=10)
+                    if str(m.get("id")) != "palace_master_memory_summary"
+                    and not _is_trivial_exchange(str(m.get("summary") or ""))
+                ][:6]
+
+                recent_substantive = [
                     m for m in all_recent
-                    if str(m.get("memory_type") or "").lower() in {"standing", "preference"}
+                    if str(m.get("memory_type") or "").lower() not in durable_types
                     and str(m.get("id")) != "palace_master_memory_summary"
-                ]
-                bm25_hits = [
-                    m for m in self.index.search(query, wing=self.wing, limit=10)
-                    if str(m.get("id")) != "palace_master_memory_summary"
-                ]
-                recent_top = [
-                    m for m in all_recent[:4]
-                    if str(m.get("id")) != "palace_master_memory_summary"
-                ]
+                    and not _is_trivial_exchange(str(m.get("summary") or ""))
+                ][:3]
 
-                merged: list[dict[str, Any]] = []
+                # Stage A: Personalization + Compact Profile Summary + Top Durable Identity/Speech Facts
+                stage_a_budget = min(3400, max(600, int(self.memory_limit * 0.48)))
+                stage_a_blocks: list[str] = []
+                used_a = 0
                 seen_ids: set[str] = set()
-                for group in (standing, bm25_hits, recent_top):
-                    for item in group:
-                        mid = str(item.get("id") or "")
-                        if mid and mid not in seen_ids:
-                            seen_ids.add(mid)
-                            merged.append(item)
+                shown_ids: list[str] = []
 
-                blocks: list[str] = []
+                def _append_bounded(target: list[str], chunk: str, cur_len: int, max_len: int) -> tuple[int, bool]:
+                    if not chunk:
+                        return cur_len, False
+                    sep = 2 if target else 0
+                    if cur_len + sep + len(chunk) <= max_len:
+                        target.append(chunk)
+                        return cur_len + sep + len(chunk), True
+                    return cur_len, False
+
                 try:
                     from palace_config import format_personalization_prompt_block
                     pers_block = format_personalization_prompt_block()
-                    if pers_block:
-                        blocks.append(pers_block)
+                    used_a, _ = _append_bounded(stage_a_blocks, pers_block, used_a, stage_a_budget)
                 except Exception:
                     pass
-                if summary_md:
-                    blocks.append(f"[USER & PROJECT MEMORY SUMMARY — SHARED ACROSS ALL COUNCIL AIs]:\n{summary_md}")
-                for h in merged[:10]:
-                    blocks.append(f"[{h.get('memory_type', 'contextual').upper()}] {h['summary']}\n{h['body'][:700]}")
-                combined = "\n\n".join(blocks)[: self.memory_limit].strip()
+
+                if summary_md and used_a < stage_a_budget - 200:
+                    comp_summary = _compact_summary_for_prompt(
+                        summary_md,
+                        max_chars=min(2100, stage_a_budget - used_a - 80),
+                    )
+                    sum_block = f"[USER & PROJECT MEMORY SUMMARY — SHARED ACROSS ALL COUNCIL AIs]:\n{comp_summary}"
+                    used_a, _ = _append_bounded(stage_a_blocks, sum_block, used_a, stage_a_budget)
+
+                for st_item in standing:
+                    mid = str(st_item.get("id") or "")
+                    entry = f"[{str(st_item.get('memory_type') or 'standing').upper()}] {st_item['summary']}\n{st_item['body'][:400]}"
+                    used_a, added_ok = _append_bounded(stage_a_blocks, entry, used_a, stage_a_budget)
+                    if added_ok and mid:
+                        seen_ids.add(mid)
+                        shown_ids.append(mid)
+
+                # Stage B: Hybrid Query Hits + Substantive Recent Usage (never starved by Stage A)
+                stage_b_blocks: list[str] = []
+                stage_b_budget = max(400, self.memory_limit - used_a - 4)
+                used_b = 0
+
+                for hit in query_hits:
+                    mid = str(hit.get("id") or "")
+                    if mid in seen_ids:
+                        continue
+                    proj_tag = f" ({hit.get('project')})" if hit.get("project") else ""
+                    entry = f"[MEMORY HIT{proj_tag}] {hit['summary']}\n{hit['body'][:550]}"
+                    used_b, added_ok = _append_bounded(stage_b_blocks, entry, used_b, stage_b_budget)
+                    if added_ok and mid:
+                        seen_ids.add(mid)
+                        shown_ids.append(mid)
+
+                for rec in recent_substantive:
+                    mid = str(rec.get("id") or "")
+                    if mid in seen_ids:
+                        continue
+                    proj_tag = f" ({rec.get('project')})" if rec.get("project") else ""
+                    entry = f"[RECENT USAGE{proj_tag}] {rec['summary']}\n{rec['body'][:420]}"
+                    used_b, added_ok = _append_bounded(stage_b_blocks, entry, used_b, stage_b_budget)
+                    if added_ok and mid:
+                        seen_ids.add(mid)
+                        shown_ids.append(mid)
+
+                self.index.record_hits_shown(shown_ids)
+                combined_blocks = stage_a_blocks + stage_b_blocks
+                combined = "\n\n".join(combined_blocks)[: self.memory_limit].strip()
                 if combined:
                     return MemorySearchResult(context=combined)
                 return MemorySearchResult(context="No relevant memory found.")

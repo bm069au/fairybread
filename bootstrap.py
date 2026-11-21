@@ -10,7 +10,7 @@ from synthesizer import PalaceSynthesizer
 def build_palace(
     providers: dict[str, AIProvider],
     wing: str = "gpt_palace",
-    memory_limit: int = 4000,
+    memory_limit: int = 7500,
     max_workers: int = 16,
     synthesis_provider_name: str | None = None,
     context_service: ContextService | None = None

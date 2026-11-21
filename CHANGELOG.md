@@ -1,3 +1,21 @@
+# Fairybread — Beta v0.92c (Win_x64) Changelog
+**Release Date:** 2026-11-22
+**Version:** `v0.92c_beta_Win_x64`
+
+## Summary of Changes in `v0.92c`
+1. **🎙️ Deepgram Flux (`/v2/speak`) + All 89 English Voices in Contextual Dropdown (`voice_service.py`, `cost_service.py`, `palace_gui.py`):**
+   - Added all **89** English Deepgram voices to `DEEPGRAM_TTS_VOICES`: **36 Flux** voices (defaulting to Sienna `flux-sienna-en`, plus Hannah, Kit, Alexis, Cliff, Cole, Colin, Gemma, Haley, Sharon [AU], etc.), **41 Aura-2** voices (including Hyperion [AU] & Theia [AU]), and **12 Aura-1** voices.
+   - Upgraded `_stream_deepgram_pcm()` to route `flux-*` voices to `https://api.deepgram.com/v2/speak` with clamped `speed` (`0.5`–`1.5`) and `expressivity` (`-2` Calm to `+2` Animated), while keeping `aura-*` / `aura-2-*` on `/v1/speak`.
+   - Made **Settings → Voice & Audio** contextually swap the **Voice Character** dropdown (`voice_name_combo`) per speaking engine, enabled **↻ Refresh Voices** (`fetch_remote_tts_voices`) live fetching from Deepgram `/v2/models` + `/v1/models`, added the contextual **Flux Expressivity** control (visible only for Deepgram, enabled for `flux-*`), and added `deepgram:flux` (`$0.030` / 1k chars) cost metering.
+2. **🧠 Memory Retrieval & Personalisation Overhaul (`memory_service.py`, `bootstrap.py`, `palace_config.py`, `orchestrator.py`, `palace_gui.py`):**
+   - Upgraded memory context injection to a two-stage `7500`-char budget (`Stage A` personalization + compact summary + top 4 durable facts `<= 3400` chars; `Stage B` up to 6 hybrid hits + 3 substantive recent exchanges), fixing the `4000`-char and standing-fact starvation that previously crowded out `memory.db` query results.
+   - Added hybrid FTS5 + 128-d local vector cosine search, AU-English/casual synonym expansion, composite scoring (`relevance + recency + importance + project scope`), contradiction supersession (`active=0` + `superseded_by`), duplicate confirmation deduplication, canonical 4-section profile category normalization, trivial voice filler filtering, and computed Tone Vector + Speech Grammar prompt alignment (`flattery: 0.00`).
+3. **💬 Chat Bubble & Sidebar Line Spacing Refinements (`palace_gui.py`):**
+   - Removed mismatched `line-height:1.48` on user chat bubbles and `line-height:1.6` on the assistant wrapper so user input bubbles and AI replies render at identical natural Qt line spacing.
+   - Tightened left sidebar topic row heights (`22px` sessions, `23px` projects, `20px` empty placeholders) with proportional `18×18` hover pin/menu hitboxes.
+
+---
+
 # Fairybread — Beta v0.92b (Win_x64) Changelog
 **Release Date:** 2026-11-21
 **Version:** `v0.92b_beta_Win_x64`

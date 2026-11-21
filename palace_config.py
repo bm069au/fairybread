@@ -23,7 +23,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.92"
-FAIRYBREAD_VERSION = "0.92b"
+FAIRYBREAD_VERSION = "0.92c"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 
@@ -1093,12 +1093,26 @@ def save_personalization_settings(
 
 
 def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
-    """Compile the user's Tone, Formatting, Custom Instructions, and Reference Photo status into a compact prompt block."""
+    """Compile the user's Tone, Speech Grammar, Formatting, Custom Instructions, and Reference Photos."""
     p = load_personalization_settings(config_path)
+    base_style = str(p.get("base_style", "Friendly") or "Friendly")
+    warmth = str(p.get("warmth", "Default") or "Default")
+    enthusiasm = str(p.get("enthusiasm", "Less") or "Less")
+
+    bs_l = base_style.lower()
+    w_l = warmth.lower()
+    e_l = enthusiasm.lower()
+    warm_w = 0.85 if ("more" in w_l or "warm" in w_l or "friend" in bs_l) else (0.35 if "less" in w_l else 0.70)
+    friendly_w = 0.90 if "friend" in bs_l else (0.45 if "cynic" in bs_l or "formal" in bs_l else 0.70)
+    formal_w = 0.75 if ("formal" in bs_l or "profess" in bs_l) else 0.15
+    concise_w = 0.75 if ("concise" in bs_l or "efficien" in bs_l or "less" in e_l) else 0.45
+
     lines = [
-        "[USER PERSONALIZATION & TONE PREFERENCES]:",
-        f"- Base Style & Tone: {p.get('base_style', 'Friendly')} | Warmth: {p.get('warmth', 'Default')} | Enthusiasm: {p.get('enthusiasm', 'Less')}",
+        "[USER PERSONALIZATION, TONE VECTOR & SPEECH STYLE]:",
+        f"- Base Style & Tone: {base_style} | Warmth: {warmth} | Enthusiasm: {enthusiasm}",
+        f"- Tone Weights: {{warm: {warm_w:.2f}, friendly: {friendly_w:.2f}, direct: 0.85, concise: {concise_w:.2f}, formal: {formal_w:.2f}, flattery: 0.00}}",
         f"- Formatting: Emoji={p.get('emoji', 'Less')} | Visual Answers={p.get('visual_answers', 'Default')} | Headers & Lists={p.get('headers_and_lists', 'More')}",
+        "- Friend & Speech Grammar Alignment: Talk naturally like a trusted friend and collaborator who remembers what we've worked on in Fairybread. Match the user's everyday phrasing, directness, and regional/casual speech grammar cleanly — warm and personal without flattery, canned reassurance, or preachy caveats.",
     ]
     gen_inst = (p.get("custom_instructions_general") or "").strip()
     if gen_inst:

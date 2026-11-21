@@ -239,13 +239,13 @@ class SidebarSessionList(QListWidget):
         kind = meta.get('kind')
         if kind == 'session':
             return {
-                'menu_rect': QRect(item_rect.right() - 24, cy - 10, 20, 20),
-                'pin_rect': QRect(item_rect.right() - 46, cy - 10, 20, 20),
+                'menu_rect': QRect(item_rect.right() - 22, cy - 9, 18, 18),
+                'pin_rect': QRect(item_rect.right() - 42, cy - 9, 18, 18),
             }
         if kind == 'project' and meta.get('id'):
             return {
-                'add_rect': QRect(item_rect.right() - 24, cy - 10, 20, 20),
-                'menu_rect': QRect(item_rect.right() - 46, cy - 10, 20, 20),
+                'add_rect': QRect(item_rect.right() - 22, cy - 9, 18, 18),
+                'menu_rect': QRect(item_rect.right() - 42, cy - 9, 18, 18),
             }
         return {}
 
@@ -2033,6 +2033,7 @@ class ManageAIsDialog(QDialog):
 
         voice_row = QHBoxLayout()
         self.voice_name_combo = QComboBox()
+        self.voice_name_combo.setMaxVisibleItems(18)
         self.voice_name_combo.setToolTip('Choose the primary voice character for the selected speaking engine')
 
         self.gemini_voice_combo = QComboBox()
@@ -2100,12 +2101,33 @@ class ManageAIsDialog(QDialog):
                 self.tts_inline_key_link_btn.setVisible(bool(meta.get('key_url')))
                 self.tts_inline_key_frame.show()
             if hasattr(self, 'fetch_voices_btn'):
-                self.fetch_voices_btn.setVisible(eng_id in {'cartesia', 'elevenlabs'} and ready)
+                self.fetch_voices_btn.setVisible(eng_id in {'cartesia', 'elevenlabs', 'deepgram'} and ready)
+
+        def _sync_deepgram_controls():
+            if not hasattr(self, 'deepgram_expressivity_combo'):
+                return
+            eng_id = str(self.tts_engine_combo.currentData() or 'auto')
+            is_dg = (eng_id == 'deepgram')
+            if hasattr(s_form, 'setRowVisible'):
+                s_form.setRowVisible(self.deepgram_expressivity_combo, is_dg)
+            else:
+                self.deepgram_expressivity_combo.setVisible(is_dg)
+            cur_dg_v = str(self.voice_name_combo.currentData() or self._saved_deepgram_voice or '').strip().lower()
+            is_flux = is_dg and cur_dg_v.startswith('flux-')
+            self.deepgram_expressivity_combo.setEnabled(is_flux)
+            if is_flux:
+                self.deepgram_expressivity_combo.setToolTip(
+                    'Expressivity level (-2 Calm to +2 Animated) sent to Deepgram Flux /v2/speak'
+                )
+            else:
+                self.deepgram_expressivity_combo.setToolTip(
+                    'Expressivity applies to Deepgram Flux voices (Aura-2 / Aura-1 use default delivery)'
+                )
 
         def _populate_voice_combo(selected_override: str | None = None):
             eng_id = str(self.tts_engine_combo.currentData() or 'auto')
             target_id = selected_override or _target_voice_for_engine(eng_id)
-            choices = self._remote_voice_cache.get(eng_id) or list_voices_for_engine(eng_id)
+            choices = list(self._remote_voice_cache.get(eng_id) or list_voices_for_engine(eng_id))
             self.voice_name_combo.blockSignals(True)
             self.voice_name_combo.clear()
             for vid, vlabel in choices:
@@ -2113,19 +2135,23 @@ class ManageAIsDialog(QDialog):
             idx_v = self.voice_name_combo.findData(target_id)
             if idx_v < 0:
                 idx_v = self.voice_name_combo.findText(target_id)
+            if idx_v < 0 and target_id and eng_id in {'deepgram', 'cartesia', 'elevenlabs'}:
+                self.voice_name_combo.addItem(f'{target_id} (Saved)', target_id)
+                idx_v = self.voice_name_combo.count() - 1
             if idx_v >= 0:
                 self.voice_name_combo.setCurrentIndex(idx_v)
             _refresh_combo_popup(self.voice_name_combo)
             self.voice_name_combo.blockSignals(False)
             _sync_inline_key_prompt()
+            _sync_deepgram_controls()
 
-        self.fetch_voices_btn = QPushButton('↻ My Voices')
+        self.fetch_voices_btn = QPushButton('↻ Refresh Voices')
         self.fetch_voices_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.fetch_voices_btn.setToolTip('Load custom/cloned voices from your Cartesia or ElevenLabs account')
+        self.fetch_voices_btn.setToolTip('Load all live voices from your Deepgram, Cartesia, or ElevenLabs account')
 
         def _fetch_account_voices():
             eng_id = str(self.tts_engine_combo.currentData() or 'auto')
-            k = (self.credential_store.get_api_key(eng_id) or '').strip() if eng_id in {'cartesia', 'elevenlabs'} else ''
+            k = (self.credential_store.get_api_key(eng_id) or '').strip() if eng_id in {'cartesia', 'elevenlabs', 'deepgram'} else ''
             if not k:
                 return
             self.tts_test_status_label.setText(f'Loading {eng_id.title()} account voices…')
@@ -2164,6 +2190,7 @@ class ManageAIsDialog(QDialog):
                 self._saved_eleven_voice = chosen
             elif eng_id == 'deepgram':
                 self._saved_deepgram_voice = chosen
+                _sync_deepgram_controls()
             elif eng_id == 'system':
                 self._saved_system_voice = chosen
             else:
@@ -2247,6 +2274,22 @@ class ManageAIsDialog(QDialog):
         speed_row.addWidget(self.voice_speed_slider, 1)
         speed_row.addWidget(self.voice_speed_label)
         s_form.addRow('Speaking Speed:', speed_row)
+
+        self.deepgram_expressivity_combo = QComboBox()
+        for expr_val, expr_lbl in (
+            (-2, '-2 — Calm / Flat'),
+            (-1, '-1 — Subdued'),
+            (0, '0 — Natural (Default)'),
+            (1, '+1 — Expressive'),
+            (2, '+2 — Animated'),
+        ):
+            self.deepgram_expressivity_combo.addItem(expr_lbl, expr_val)
+        cur_expr = int(v_cfg.get('deepgram_expressivity', 0) or 0)
+        expr_idx = self.deepgram_expressivity_combo.findData(max(-2, min(2, cur_expr)))
+        if expr_idx >= 0:
+            self.deepgram_expressivity_combo.setCurrentIndex(expr_idx)
+        s_form.addRow('Flux Expressivity:', self.deepgram_expressivity_combo)
+        _sync_deepgram_controls()
 
         vol_row = QHBoxLayout()
         self.voice_vol_slider = QSlider(Qt.Orientation.Horizontal)
@@ -2460,6 +2503,11 @@ class ManageAIsDialog(QDialog):
                 'cartesia_voice_id': cart_voice,
                 'elevenlabs_voice_id': elev_voice,
                 'deepgram_voice_name': dg_voice,
+                'deepgram_expressivity': int(
+                    self.deepgram_expressivity_combo.currentData()
+                    if hasattr(self, 'deepgram_expressivity_combo') and self.deepgram_expressivity_combo.currentData() is not None
+                    else 0
+                ),
                 'system_voice_name': sys_voice,
                 'voice_style': str(self.voice_style_combo.currentData() or 'warm_american'),
                 'custom_style_prompt': self.voice_custom_style_edit.text().strip(),
@@ -9167,7 +9215,7 @@ class PalaceWindow(QMainWindow):
                 },
             )
             row.setToolTip(f'{raw_title}\n(Hover for Pin / ⋮ options, or drag onto a Project)')
-            row.setSizeHint(QSize(0, 26))
+            row.setSizeHint(QSize(0, 22))
             row.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -9202,7 +9250,7 @@ class PalaceWindow(QMainWindow):
                     },
                 )
                 hdr.setFont(bold_font)
-                hdr.setSizeHint(QSize(0, 26))
+                hdr.setSizeHint(QSize(0, 23))
                 hdr.setForeground(QColor('#c9d1d9' if pid == selected_proj else '#8b949e'))
                 hdr.setFlags(
                     Qt.ItemFlag.ItemIsEnabled
@@ -9220,7 +9268,7 @@ class PalaceWindow(QMainWindow):
                     empty_row = QListWidgetItem('  No conversations yet')
                     empty_row.setData(Qt.ItemDataRole.UserRole, f'proj:{pid}')
                     empty_row.setFont(italic_font)
-                    empty_row.setSizeHint(QSize(0, 21))
+                    empty_row.setSizeHint(QSize(0, 20))
                     empty_row.setForeground(QColor('#484f58'))
                     empty_row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     self.session_list.addItem(empty_row)
@@ -9234,7 +9282,7 @@ class PalaceWindow(QMainWindow):
                 gen_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
                 gen_hdr.setData(SIDEBAR_META_ROLE, {'kind': 'project', 'id': '', 'title': 'Conversations', 'selected': False})
                 gen_hdr.setFont(bold_font)
-                gen_hdr.setSizeHint(QSize(0, 24))
+                gen_hdr.setSizeHint(QSize(0, 21))
                 gen_hdr.setForeground(QColor('#6e7681'))
                 gen_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 self.session_list.addItem(gen_hdr)
@@ -9249,7 +9297,7 @@ class PalaceWindow(QMainWindow):
             empty_proj.setIcon(folder_grey_qicon(False))
             empty_proj.setData(Qt.ItemDataRole.UserRole, 'proj:')
             empty_proj.setFont(italic_font)
-            empty_proj.setSizeHint(QSize(0, 22))
+            empty_proj.setSizeHint(QSize(0, 20))
             empty_proj.setForeground(QColor('#484f58'))
             self.session_list.addItem(empty_proj)
 
@@ -9257,7 +9305,7 @@ class PalaceWindow(QMainWindow):
             rec_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
             rec_hdr.setData(SIDEBAR_META_ROLE, {'kind': 'project', 'id': '', 'title': 'Conversations', 'selected': False})
             rec_hdr.setFont(bold_font)
-            rec_hdr.setSizeHint(QSize(0, 24))
+            rec_hdr.setSizeHint(QSize(0, 21))
             rec_hdr.setForeground(QColor('#6e7681'))
             rec_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.session_list.addItem(rec_hdr)
@@ -9276,7 +9324,7 @@ class PalaceWindow(QMainWindow):
                     'expanded': archived_expanded,
                 },
             )
-            arch_hdr.setSizeHint(QSize(0, 24))
+            arch_hdr.setSizeHint(QSize(0, 21))
             arch_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled)
             arch_hdr.setToolTip('Click to expand or collapse archived discussions')
             self.session_list.addItem(arch_hdr)
@@ -10414,7 +10462,7 @@ class PalaceWindow(QMainWindow):
                         f'</td></tr>'
                     )
             text_row_html = (
-                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px; line-height:1.48;">'
+                f'<tr><td style="text-align:left; color:{user_txt_col}; font-size:13.5px;">'
                 f'{safe_user}'
                 f'</td></tr>'
             ) if safe_user.strip() else ''
@@ -10588,7 +10636,7 @@ class PalaceWindow(QMainWindow):
             f'{handoff_banner_html}'
             f'{delib_html}'
             f'{expanded_steps_html}'
-            f'<div style="color:#e6edf3; font-size:13.5px; line-height:1.6;">{rendered_body}</div>'
+            f'<div style="color:#e6edf3; font-size:13.5px;">{rendered_body}</div>'
             f'{actions_row_html}'
             f'{test_meta_html}'
             f'</div>'
@@ -11580,6 +11628,7 @@ class PalaceWindow(QMainWindow):
                 'cancel_event': self.active_cancel_event,
                 'steering_state': self.active_steering_state,
                 'on_phase_status': lambda ev: worker_box['w'].progress.emit(ev) if worker_box.get('w') is not None else None,
+                'project_name': self._current_project_name(),
             }
             sr_override = getattr(self, 'smart_routing_override', None)
             if sr_override is not None:
