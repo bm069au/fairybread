@@ -771,15 +771,40 @@ class IdleMailboxStore:
         self._save_messages(messages)
         return True, entry
 
-    def mark_read(self, message_id: str) -> None:
+    def set_read(self, message_id: str, is_read: bool = True) -> bool:
+        target_id = str(message_id or "")
+        if not target_id:
+            return False
         messages = self._load_messages()
+        found = False
         changed = False
+        desired = bool(is_read)
         for m in messages:
-            if m.get("id") == message_id and not m.get("read"):
-                m["read"] = True
-                changed = True
+            if str(m.get("id", "")) == target_id:
+                found = True
+                if bool(m.get("read", False)) != desired:
+                    m["read"] = desired
+                    changed = True
         if changed:
             self._save_messages(messages)
+        return found
+
+    def mark_read(self, message_id: str) -> None:
+        self.set_read(message_id, True)
+
+    def mark_unread(self, message_id: str) -> bool:
+        return self.set_read(message_id, False)
+
+    def mark_all_read(self) -> int:
+        messages = self._load_messages()
+        count = 0
+        for m in messages:
+            if not m.get("read", False):
+                m["read"] = True
+                count += 1
+        if count:
+            self._save_messages(messages)
+        return count
 
     def delete_message(self, message_id: str) -> bool:
         messages = self._load_messages()
@@ -890,6 +915,7 @@ class IdleSessionManager:
         self.remaining_seconds: int = self.duration_minutes * 60
 
     def reload_settings(self) -> dict[str, Any]:
+        old_duration = int(self.duration_minutes)
         settings = load_idle_settings(self.config_path)
         self.duration_minutes = int(settings.get("duration_minutes", 30))
         self.max_tokens_limit = int(settings.get("max_tokens_limit", 0))
@@ -897,6 +923,8 @@ class IdleSessionManager:
         self.idle_submode = str(settings.get("idle_submode", "free_talk"))
         if self.status in {"Ready", "Ended"}:
             self.remaining_seconds = self.duration_minutes * 60
+        elif self.status == "Active" and self.duration_minutes != old_duration:
+            self.remaining_seconds = max(0, int(self.remaining_seconds) + (self.duration_minutes - old_duration) * 60)
         return settings
 
     def enter_idle_mode(self) -> None:
@@ -924,6 +952,25 @@ class IdleSessionManager:
         self.sent_emails_this_session = 0
         self.tokens_used_this_session = 0
         self.spend_usd_this_session = 0.0
+        self.consecutive_agreement_rounds = 0
+        self.stop_reason = ""
+
+    def resume_session(self) -> None:
+        """Resume an active Experimental Mode session after hot-reboot without wiping restored RAM state."""
+        saved_remaining = self.remaining_seconds
+        self.is_idle_mode = True
+        self.status = "Active"
+        settings = self.reload_settings()
+        self.mirrored_source_files = sync_source_to_sandbox()
+        self.duration_minutes = int(settings.get("duration_minutes", 30))
+        self.max_tokens_limit = int(settings.get("max_tokens_limit", 0))
+        self.max_credit_usd = float(settings.get("max_credit_usd", 0.0))
+        if self.duration_minutes == 0:
+            self.remaining_seconds = 0
+        elif saved_remaining > 0:
+            self.remaining_seconds = saved_remaining
+        else:
+            self.remaining_seconds = self.duration_minutes * 60
         self.consecutive_agreement_rounds = 0
         self.stop_reason = ""
 
@@ -1208,10 +1255,24 @@ class IdleSessionManager:
                     if not p_target.strip() or p_target.strip() == "exact existing lines":
                         return ""
                     try:
-                        from palace_ouroboros import stage_palace_replace, sync_live_to_staging
+                        from palace_ouroboros import stage_palace_replace, sync_live_to_staging, validate_staged_palace
                         sync_live_to_staging()
                         ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=provider_id)
                         if ok:
+                            val = validate_staged_palace(run_unit_tests=True)
+                            if not val.get("passed"):
+                                sync_live_to_staging()
+                                patch_rejected_in_turn = True
+                                raw_err = (
+                                    val.get("unittest_output")
+                                    or "\n".join(val.get("compile_errors") or [])
+                                    or "Preflight unit tests failed."
+                                )
+                                err_tail = str(raw_err).strip()[-900:]
+                                tool_outputs.append(
+                                    f"[⚠ Live Patch Rejected by Preflight Unit Tests (`{p_file}`) — Reverted]:\n{err_tail}"
+                                )
+                                return f"[⚠ Patch Rejected by Tests: {p_file}]"
                             patch_succeeded_count += 1
                             patch_reboot_requested = f"{provider_id.upper()}: {p_sum}"
                             tool_outputs.append(f"[⚡ LIVE PATCH STAGED & VERIFIED (`{p_file}`)]: {msg} — Initiating Hot-Reboot & Auto-Continue…")
@@ -1288,24 +1349,48 @@ class IdleSessionManager:
                 try:
                     import subprocess, sys
                     from palace_ouroboros import HANDOFF_PATH, write_reboot_handoff
-                    ok_h, _h_msg, payload = write_reboot_handoff(
+                    ok_h, h_msg, _payload = write_reboot_handoff(
                         reason="experimental_agent_live_patch",
                         applied_diff_summary=patch_reboot_requested,
-                        test_results={"py_compile": "pass"},
+                        test_results={"py_compile": "pass", "unittest_passed": True},
+                        extra_continuity={
+                            "auto_resume_idle": True,
+                            "idle_transcript": self.transcript[-25:],
+                            "idle_remaining_seconds": self.remaining_seconds,
+                            "idle_tokens_used": self.tokens_used_this_session,
+                            "idle_spend_usd": self.spend_usd_this_session,
+                            "idle_saved_notes": self.saved_notes_this_session,
+                            "idle_sent_emails": self.sent_emails_this_session,
+                        },
                     )
                     if ok_h and HANDOFF_PATH.exists():
-                        payload["continuity"]["auto_resume_idle"] = True
-                        payload["continuity"]["idle_transcript"] = self.transcript[-25:]
-                        payload["continuity"]["idle_remaining_seconds"] = self.remaining_seconds
-                        payload["continuity"]["idle_tokens_used"] = self.tokens_used_this_session
-                        payload["continuity"]["idle_spend_usd"] = self.spend_usd_this_session
-                        HANDOFF_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                         wd_script = Path(__file__).with_name("palace_watchdog.py")
                         subprocess.Popen(
-                            [sys.executable, str(wd_script), "--skip-tests", "--summary", patch_reboot_requested],
+                            [
+                                sys.executable,
+                                str(wd_script),
+                                "--skip-tests",
+                                "--preserve-handoff",
+                                "--reason",
+                                "experimental_agent_live_patch",
+                                "--summary",
+                                patch_reboot_requested,
+                            ],
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                         )
                         break
+                    else:
+                        notice_entry = {
+                            "speaker": "operator",
+                            "content": f"⚠ **Hot-Reboot Halted:** {h_msg}",
+                            "saved_count": 0,
+                            "sent_mail_count": 0,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                        self.transcript.append(notice_entry)
+                        new_messages.append(notice_entry)
+                        if on_turn is not None:
+                            on_turn(notice_entry)
                 except Exception:
                     pass
 

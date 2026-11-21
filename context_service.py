@@ -1,9 +1,12 @@
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
+_CONTEXT_WRITE_LOCK = threading.RLock()
 
 
 VALID_ROLES = {"user", "assistant"}
@@ -73,7 +76,7 @@ def normalize_message_entry(
 class ContextService:
     def __init__(self, path: Path | None = None, session_id: str | None = None):
         if path is None:
-            local_app_data = os.environ["LOCALAPPDATA"]
+            local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home())
 
             path = (
                 Path(local_app_data)
@@ -83,6 +86,10 @@ class ContextService:
 
         self.path = Path(path)
         self.session_id = session_id or self.path.stem
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
 
     def append(
         self,
@@ -122,15 +129,16 @@ class ContextService:
         if reply_to_message_id:
             entry["reply_to"] = reply_to_message_id
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open(
-            "a",
-            encoding="utf-8"
-        ) as file:
-            file.write(
-                json.dumps(entry)
-                + "\n"
-            )
+        with _CONTEXT_WRITE_LOCK:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open(
+                "a",
+                encoding="utf-8"
+            ) as file:
+                file.write(
+                    json.dumps(entry)
+                    + "\n"
+                )
 
         return message_id
 
@@ -225,9 +233,10 @@ class ContextService:
             }
         )
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write("".join(json.dumps(entry) + "\n" for entry in entries))
+        with _CONTEXT_WRITE_LOCK:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write("".join(json.dumps(entry) + "\n" for entry in entries))
 
         return question_id, answer_id
 

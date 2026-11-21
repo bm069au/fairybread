@@ -266,8 +266,24 @@ class LocalCLIProvider(AIProvider):
         }
         if os.name == "nt":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if sum(len(str(a)) + 1 for a in cmd) > 28000:
+                if self.platform_key == "codex":
+                    cmd = [exe, "exec", "--skip-git-repo-check", "-"]
+                    kwargs["input"] = prompt
+                elif self.platform_key == "claude":
+                    cmd = [exe, "-p"]
+                    kwargs["input"] = prompt
+                else:
+                    raise RuntimeError(
+                        f"{self.spec['display']} prompt ({len(prompt)} chars) exceeds Windows CreateProcess command-line limit."
+                    )
 
-        proc = subprocess.run(cmd, **kwargs)
+        try:
+            proc = subprocess.run(cmd, **kwargs)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{self.spec['display']} timed out after {self.timeout_sec}s.") from exc
+        except OSError as exc:
+            raise RuntimeError(f"{self.spec['display']} process failed: {exc}") from exc
         parsed = self.parse_output(proc.stdout or "")
         if proc.returncode != 0:
             err_detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()[:320]

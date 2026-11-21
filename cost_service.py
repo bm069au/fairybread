@@ -45,6 +45,19 @@ TTS_COST_PER_MINUTE_USD: dict[str, float] = {
     "system:sapi5": 0.0,
 }
 
+# Approximate per-1,000-character neural TTS rates (USD) for char-billed providers
+TTS_COST_PER_1K_CHARS_USD: dict[str, float] = {
+    "groq:canopylabs/orpheus-v1-english": 0.022,
+    "groq:orpheus": 0.022,
+    "cartesia:sonic-latest": 0.045,
+    "cartesia:sonic-3": 0.045,
+    "cartesia:sonic-2": 0.045,
+    "cartesia:sonic": 0.045,
+    "elevenlabs:": 0.18,
+    "deepgram:aura-2": 0.025,
+    "deepgram:aura": 0.020,
+}
+
 STT_COST_PER_MINUTE_USD: dict[str, float] = {
     "groq:whisper-large-v3-turbo": 0.00067,
     "openai:whisper-1": 0.006,
@@ -71,9 +84,10 @@ def estimate_tokens_from_text(text: str) -> int:
     return max(1, (len(clean) + 3) // 4)
 
 
-def _usage_attr_int(obj: Any, *names: str) -> int:
+def _usage_attr_optional_int(obj: Any, *names: str) -> int | None:
     if obj is None:
-        return 0
+        return None
+    saw_zero = False
     for nm in names:
         val = obj.get(nm) if isinstance(obj, dict) else getattr(obj, nm, None)
         if val is not None:
@@ -81,9 +95,16 @@ def _usage_attr_int(obj: Any, *names: str) -> int:
                 iv = int(val)
                 if iv > 0:
                     return iv
+                if iv == 0:
+                    saw_zero = True
             except (TypeError, ValueError):
                 continue
-    return 0
+    return 0 if saw_zero else None
+
+
+def _usage_attr_int(obj: Any, *names: str) -> int:
+    val = _usage_attr_optional_int(obj, *names)
+    return val if val is not None else 0
 
 
 def extract_sdk_usage_tokens(
@@ -157,14 +178,21 @@ def estimate_llm_cost_usd(
     return (max(0, int(input_tokens)) * in_rate + max(0, int(output_tokens)) * out_rate) / 1_000_000.0
 
 
-def estimate_tts_cost_usd(engine: str, duration_sec: float) -> float:
+def estimate_tts_cost_usd(engine: str, duration_sec: float = 0.0, *, char_count: int = 0) -> float:
     dur = max(0.0, float(duration_sec or 0.0))
-    if dur <= 0.0:
+    chars = max(0, int(char_count or 0))
+    if dur <= 0.0 and chars <= 0:
         return 0.0
     eng_low = (engine or "").strip().lower()
-    if "system" in eng_low or "sapi" in eng_low:
+    if "system" in eng_low or "sapi" in eng_low or "kokoro" in eng_low:
         return 0.0
-    rate_per_min = 0.015
+
+    for k in sorted(TTS_COST_PER_1K_CHARS_USD.keys(), key=len, reverse=True):
+        if eng_low == k or eng_low.startswith(k):
+            effective_chars = float(chars) if chars > 0 else (dur * 15.0)
+            return (effective_chars / 1000.0) * TTS_COST_PER_1K_CHARS_USD[k]
+
+    rate_per_min = 0.0
     for k, r in TTS_COST_PER_MINUTE_USD.items():
         if eng_low == k or eng_low.startswith(k):
             rate_per_min = r
@@ -174,7 +202,8 @@ def estimate_tts_cost_usd(engine: str, duration_sec: float) -> float:
             rate_per_min = 0.012
         elif eng_low.startswith("openai:"):
             rate_per_min = 0.015
-    return (dur / 60.0) * rate_per_min
+    eff_dur = dur if dur > 0.0 else (chars / 15.0)
+    return (eff_dur / 60.0) * rate_per_min
 
 
 def estimate_stt_cost_usd(engine: str, duration_sec: float) -> float:
@@ -268,15 +297,17 @@ def emit_llm_cost(
     return cost
 
 
-def emit_tts_cost(engine: str, duration_sec: float) -> float:
+def emit_tts_cost(engine: str, duration_sec: float = 0.0, *, char_count: int = 0) -> float:
     dur = max(0.0, float(duration_sec or 0.0))
-    cost = estimate_tts_cost_usd(engine, dur)
-    if dur > 0.0:
+    chars = max(0, int(char_count or 0))
+    cost = estimate_tts_cost_usd(engine, dur, char_count=chars)
+    if dur > 0.0 or chars > 0:
         emit_cost_event({
             "kind": "tts",
             "provider": (engine or "tts").split(":", 1)[0].strip().lower(),
             "model": engine,
             "duration_sec": dur,
+            "char_count": chars,
             "cost_usd": cost,
         })
     return cost

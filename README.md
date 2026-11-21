@@ -2,7 +2,7 @@
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
-👉 **Download the Windows Beta Installer:** [**Fairybread_Beta_v0.9.1_Installer.zip**](https://github.com/bm069au/fairybread/releases/tag/v0.9.1-beta)  
+👉 **Download the Windows Beta Installer:** [**Fairybread_v0.92b_beta_Win_x64_Setup.zip**](https://github.com/bm069au/fairybread/releases/tag/v0.92b-beta)  
 👉 **Full Operating & Drawing Instructions:** See [USER_GUIDE.md](USER_GUIDE.md) (or press **`F1`** / **`Help → 📖 User Guide & Drawing Instructions…`** inside the app).
 
 ---

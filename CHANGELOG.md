@@ -1,3 +1,20 @@
+# Fairybread — Beta v0.92b (Win_x64) Changelog
+**Release Date:** 2026-11-21
+**Version:** `v0.92b_beta_Win_x64`
+
+## Summary of Changes in `v0.92b`
+1. **💬 Antigravity-Style Sidebar Discussion & Project Controls (`palace_gui.py`, `session_store.py`):**
+   - Added hover **`⋮`** action menus and vector **`📌` Pin / `+` New Discussion** buttons directly inside the sidebar (`SidebarSessionList` + `SidebarItemDelegate`), plus full context-menu controls: **Rename**, **Pin / Unpin**, **Mark Read / Unread**, **Copy** (Title or Full Transcript), **Duplicate Discussion**, **Move to Project**, **Archive / Unarchive** (with collapsible `Archived (N)` drawer), and **Delete** (backed by disk-merge deletion guards in `SessionStore`).
+   - Added the animated **2×2 4-dot active working spinner** on running discussions and the **blue unread indicator dot** (`#3b82f6`) for unread/completed background discussions (cleared automatically on selection).
+2. **📬 Agent Mail `READ` / `UNREAD` Controls & Orchestrator Fixes (`idle_service.py`, `palace_gui.py`, `orchestrator.py`, `search_service.py`, `context_service.py`, `memory_proposal_service.py`):**
+   - Added explicit `● [UNREAD]` / `✓ [READ]` row indicators, status pill badge, **`Mark Unread / Mark Read`** toggle (with auto-read suppression), and **`✓ Read All`** action bar in Agent Mail with zero UI clipping at `1024×700` and `1120×740`.
+   - Fixed `detect_organic_turn_intents()` so read-only/advisory audits cannot hijack auto-patch mode, switched `orchestrator.py` & `palace_gui.py` dispatch compatibility to `inspect.signature` filtering instead of broad `except TypeError:`, added thread-safe locking in `ContextService`, safe `LOCALAPPDATA` fallbacks, and `PalaceRunResult.peer_rounds` contributor/answer fallback.
+3. **⚡ Performance & Reliability Hardening (`dispatcher.py`, `memory_service.py`, `palace_theme.py`, `attachment_service.py`, `voice_service.py`, `backup_service.py`, `palace_ouroboros.py`, `palace_config.py`, `palace_watchdog.py`):**
+   - Added `<= 0.15s` cancel-event response in `ProviderDispatcher`, batched SQLite `memories_blob` hydration (`_hydrate_rows_batch`) eliminating N+1 per-turn queries, thread-safe `QImage` SVG prewarming, mtime-validated Markdown/theme caches, and single-read attachment & snapshot hashing.
+   - Enforced `max_retries=0` & explicit timeouts across Groq/Cerebras/OpenAI/Gemini/Cohere clients, ZipSlip symlink & path-traversal validation on backup restores, atomic locked handoff/crash writes, Cartesia/Groq Orpheus voice guards, and `Name LIKE 'python%'` + PID exclusions in watchdog termination.
+
+---
+
 # Fairybread — Beta v0.92a (Win_x64) Changelog
 **Release Date:** 2026-11-20
 **Version:** `v0.92a_beta_Win_x64`

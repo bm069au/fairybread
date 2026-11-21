@@ -6,8 +6,8 @@ from typing import Any
 
 def _resolve_default_config_path() -> Path:
     local_cfg = Path(__file__).with_name("palace_config.json")
-    s_path = str(local_cfg.resolve()).lower()
-    if "program files" in s_path:
+    resolved_parts = [part.lower() for part in local_cfg.resolve().parts]
+    if any(part in {"program files", "program files (x86)"} for part in resolved_parts):
         appdata_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
         appdata_dir.mkdir(parents=True, exist_ok=True)
         user_cfg = appdata_dir / "palace_config.json"
@@ -23,7 +23,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.92"
-FAIRYBREAD_VERSION = "0.92a"
+FAIRYBREAD_VERSION = "0.92b"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 
@@ -34,13 +34,16 @@ def bump_minor_letter_version(version_str: str = FAIRYBREAD_VERSION) -> str:
     if not v:
         return "0.9.1a"
     last_ch = v[-1]
-    if last_ch.isalpha() and last_ch.islower():
+    if last_ch.isalpha():
+        is_upper = last_ch.isupper()
+        low = last_ch.lower()
         base = v[:-1]
-        if last_ch == "z":
+        if low == "z":
+            next_ch = "A" if is_upper else "a"
             parts = base.split(".")
             if len(parts) == 3 and parts[2].isdigit():
-                return f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}a"
-            return f"{base}a"
+                return f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}{next_ch}"
+            return f"{base}{next_ch}"
         return f"{base}{chr(ord(last_ch) + 1)}"
     return f"{v}a"
 
@@ -244,8 +247,8 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#2b1c10",
         "key_url": "https://console.groq.com/keys",
         "default_base_url": "https://api.groq.com/openai/v1",
-        "default_model": "llama-3.3-70b-versatile",
-        "suggested_models": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3.8-27b"],
+        "default_model": "openai/gpt-oss-120b",
+        "suggested_models": ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"],
         "billing_note": "Free tier with strict per-minute TPM limits.",
     },
     "cerebras": {
@@ -300,7 +303,7 @@ PROVIDER_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
     "openai": (0.25, 2.00),
     "deepseek": (0.27, 1.10),
     "groq": (0.00, 0.00),
-    "qwen": (0.15, 1.88),
+    "qwen": (0.15, 0.60),
     "cohere": (0.00, 0.00),
     "mistral": (0.00, 0.00),
     "cerebras": (0.10, 0.10),
@@ -567,18 +570,19 @@ def fetch_live_provider_models(
     try:
         if clean == "cerebras":
             from cerebras.cloud.sdk import Cerebras
-            c = Cerebras(api_key=key)
+            c = Cerebras(api_key=key, timeout=6.0, max_retries=0)
             discovered = [str(m.id) for m in c.models.list().data if getattr(m, "id", None)]
         elif clean == "gemini":
             from google import genai
-            client = genai.Client(api_key=key)
+            from google.genai import types
+            client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=6000))
             for m in client.models.list():
                 mname = str(getattr(m, "name", "") or "").replace("models/", "")
                 if mname and ("gemini" in mname or "imagen" in mname):
                     discovered.append(mname)
         elif clean == "cohere":
             import cohere
-            client = cohere.ClientV2(api_key=key)
+            client = cohere.ClientV2(api_key=key, timeout=6.0, max_retries=0)
             resp = client.models.list()
             for m in getattr(resp, "models", []) or []:
                 mname = str(getattr(m, "name", "") or "")
@@ -848,6 +852,7 @@ DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
     "reasoning_summary": "auto",         # "off" | "auto" | "detailed"
     "synthesizer_mode": "auto_fast",     # "auto_fast" | "deepseek" | "gemini" | "openai" | "cerebras" | "match_primary"
     "smart_routing": True,
+    "show_inline_status_messages": True,
     "provider_timeout_sec": 45,
     "straggler_grace_sec": 15,
 }
@@ -886,6 +891,8 @@ def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
 
     if "smart_routing" in raw:
         out["smart_routing"] = bool(raw["smart_routing"])
+    if "show_inline_status_messages" in raw:
+        out["show_inline_status_messages"] = bool(raw["show_inline_status_messages"])
 
     try:
         t_sec = int(raw.get("provider_timeout_sec", out["provider_timeout_sec"]))

@@ -56,14 +56,16 @@ def dpapi_encrypt(plaintext: str) -> str:
             ctypes.byref(out_blob),
         )
         if not ok or not out_blob.pbData:
-            return clean
+            raise RuntimeError("Windows DPAPI CryptProtectData failed; refusing to store plaintext API key.")
         try:
             encrypted_bytes = ctypes.string_at(out_blob.pbData, out_blob.cbData)
         finally:
             kernel32.LocalFree(out_blob.pbData)
         return _DPAPI_PREFIX + base64.b64encode(encrypted_bytes).decode("ascii")
-    except Exception:
-        return clean
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"Windows DPAPI encryption failed; refusing to store plaintext API key: {exc}") from exc
 
 
 def dpapi_decrypt(stored: str) -> str:
@@ -187,7 +189,10 @@ class CredentialStore:
         raw_str = str(raw_val).strip()
         # Transparently migrate legacy plaintext keys on disk into DPAPI ciphertext
         if raw_str and not raw_str.startswith(_DPAPI_PREFIX) and os.name == "nt":
-            encrypted = dpapi_encrypt(raw_str)
+            try:
+                encrypted = dpapi_encrypt(raw_str)
+            except RuntimeError:
+                encrypted = ""
             if encrypted.startswith(_DPAPI_PREFIX):
                 provider["api_key"] = encrypted
                 try:

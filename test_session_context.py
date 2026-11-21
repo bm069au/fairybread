@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from bootstrap import build_palace
 from context_service import ContextService
+from memory_service import MemoryService
 from providers import ProviderResponse
 import palace_cli
 
@@ -36,6 +37,7 @@ class SessionContextTests(unittest.TestCase):
 
     def palace(self, provider, **kwargs):
         palace = build_palace({"fake": provider}, context_service=self.context, **kwargs)
+        palace.memory_service = MemoryService(db_path=Path(self.directory.name) / "memory.db")
         palace.memory_service.search = unittest.mock.Mock(
             side_effect=AssertionError("Long-term memory must remain opt-in"))
         return palace
@@ -85,6 +87,7 @@ class SessionContextTests(unittest.TestCase):
         self.context.append_exchange("Our colour is blue", "Understood")
         one, two = RecordingProvider("Final synthesis"), RecordingProvider("Independent answer")
         palace = build_palace({'one': one, 'two': two}, context_service=self.context)
+        palace.memory_service = MemoryService(db_path=Path(self.directory.name) / "memory.db")
         result = palace.run("What is our colour?")
         self.assertEqual(len(one.prompts), 2)
         self.assertIn("Our colour is blue", one.prompts[-1])

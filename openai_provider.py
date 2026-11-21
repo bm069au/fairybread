@@ -26,17 +26,19 @@ class OpenAIProvider(AIProvider):
         base_url: str | None = None,
         provider_name: str = "openai",
         max_tokens: int | None = None,
-        timeout: float = 45.0,
+        timeout: float = 60.0,
+        max_retries: int = 0,
     ):
         if base_url:
-            self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+            self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=max_retries)
         else:
-            self.client = OpenAI(api_key=api_key, timeout=timeout)
+            self.client = OpenAI(api_key=api_key, timeout=timeout, max_retries=max_retries)
         self.model = model
         self.base_url = base_url
         self.provider_name = provider_name
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.max_retries = max_retries
 
     def generate(
         self,

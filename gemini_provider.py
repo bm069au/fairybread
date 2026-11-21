@@ -24,7 +24,7 @@ class GeminiProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
-        timeout: float = 45.0,
+        timeout: float = 60.0,
     ):
         try:
             self.client = genai.Client(
@@ -73,15 +73,26 @@ class GeminiProvider(AIProvider):
                 output_tokens=out_tok,
             )
 
-        interaction = self.client.interactions.create(
-            model=self.model,
-            input=prompt
-        )
-        out_txt = getattr(interaction, "output_text", None) or ""
+        try:
+            interaction = self.client.interactions.create(
+                model=self.model,
+                input=prompt
+            )
+            out_txt = getattr(interaction, "output_text", None) or ""
+            usage_src = interaction
+        except AttributeError:
+            if not hasattr(self.client, "models"):
+                raise
+            resp = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+            )
+            out_txt = getattr(resp, "text", None) or ""
+            usage_src = resp
         if not out_txt.strip():
             raise RuntimeError(f"gemini ({self.model}) returned empty output")
 
-        in_tok, out_tok = extract_sdk_usage_tokens(interaction, prompt_text=prompt, output_text=out_txt)
+        in_tok, out_tok = extract_sdk_usage_tokens(usage_src, prompt_text=prompt, output_text=out_txt)
         return ProviderResponse(
             text=out_txt,
             model=self.model,

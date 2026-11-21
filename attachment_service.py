@@ -167,7 +167,7 @@ def extract_attachment(path: str | Path) -> Attachment:
             stored_path=stored_copy,
         )
     if suffix in TEXT_EXTENSIONS:
-        raw = path.read_bytes()
+        raw = raw_all
         if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
             text = raw.decode('utf-16')
         else:

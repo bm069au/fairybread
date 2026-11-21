@@ -77,6 +77,7 @@ class PalaceSynthesizer:
         provider_results: dict[str, ProviderResult],
         session_context: str = "",
         detail_directive: str = "",
+        allow_autopatch_banner: bool = False,
     ) -> SynthesisResult:
 
         successful = [
@@ -147,6 +148,11 @@ class PalaceSynthesizer:
         )
 
         detail_block = f"\n\n{detail_directive}" if detail_directive else ""
+        autopatch_banner_rule = (
+            "  * If staging an autopatch or continuing an autonomous chain: `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]`\n"
+            if allow_autopatch_banner
+            else "  * Normal advisory replies must NOT emit any staged-patch or reboot status tag.\n"
+        )
         prompt = f"""
 You are the democratic synthesis coordinator inside Palace.{detail_block}
 
@@ -173,8 +179,7 @@ Rules:
 - Be direct and useful.
 - MANDATORY END-OF-TURN STATUS BANNER: Every final answer MUST conclude on its own line at the very end with one of these unambiguous status tags:
   * If all requested/planned work is complete: `✓ [ALL TASKS COMPLETED SUCCESSFULLY]`
-  * If staging an autopatch or continuing an autonomous chain: `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]`
-  * If pausing because you explicitly need the user's decision or input: `⏸ [PAUSED — WAITING FOR USER INPUT: <specific reason>]`
+{autopatch_banner_rule}  * If pausing because you explicitly need the user's decision or input: `⏸ [PAUSED — WAITING FOR USER INPUT: <specific reason>]`
   * Never claim you are "continuing in the background" without an active autonomous task or staged patch.
 """.strip()
 

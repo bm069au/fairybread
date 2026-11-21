@@ -2152,5 +2152,1376 @@ class GraphicsPromptOptimizationTests(unittest.TestCase):
         self.assertEqual(s_res.text, "Direct explanation of X.")
 
 
+class ExperimentalModeAutoResumeTests(unittest.TestCase):
+    def test_watchdog_preserves_experimental_handoff_and_single_circuit_breaker_count(self):
+        import palace_ouroboros
+        import palace_watchdog
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sandbox = root / "sandbox"
+            staging = sandbox / "staging"
+            live = root / "live"
+            repo = root / "repo"
+            editions = sandbox / "editions"
+            for d in (sandbox, staging, live, repo, editions):
+                d.mkdir(parents=True, exist_ok=True)
+            (staging / "memory_service.py").write_text("# test\n", encoding="utf-8")
+            (live / "memory_service.py").write_text("# test\n", encoding="utf-8")
+            (repo / "memory_service.py").write_text("# test\n", encoding="utf-8")
+
+            handoff_path = sandbox / "reboot_handoff.json"
+            hb_path = sandbox / "palace_ready_heartbeat.json"
+
+            with patch.object(palace_ouroboros, "SANDBOX_ROOT", sandbox), \
+                 patch.object(palace_ouroboros, "STAGING_DIR", staging), \
+                 patch.object(palace_ouroboros, "LIVE_DIR", live), \
+                 patch.object(palace_ouroboros, "SOURCE_REPO_DIR", repo), \
+                 patch.object(palace_ouroboros, "EDITIONS_DIR", editions), \
+                 patch.object(palace_ouroboros, "HANDOFF_PATH", handoff_path), \
+                 patch.object(palace_ouroboros, "READY_HEARTBEAT_PATH", hb_path), \
+                 patch.object(palace_watchdog, "SANDBOX_ROOT", sandbox), \
+                 patch.object(palace_watchdog, "STAGING_DIR", staging), \
+                 patch.object(palace_watchdog, "LIVE_DIR", live), \
+                 patch.object(palace_watchdog, "SOURCE_REPO_DIR", repo), \
+                 patch.object(palace_watchdog, "HANDOFF_PATH", handoff_path), \
+                 patch.object(palace_watchdog, "READY_HEARTBEAT_PATH", hb_path), \
+                 patch.object(palace_watchdog, "WATCHDOG_LOG_PATH", sandbox / "wd.log"), \
+                 patch.object(palace_watchdog, "validate_staged_palace", return_value={"passed": True, "py_compile": "pass", "unittest_passed": True}), \
+                 patch.object(palace_watchdog, "backup_live_to_last_known_good"), \
+                 patch.object(palace_watchdog, "ensure_golden_baseline_edition"), \
+                 patch.object(palace_watchdog, "create_code_edition_snapshot"), \
+                 patch.object(palace_watchdog, "_stop_existing_palace_gui"):
+
+                ok_w, msg_w, _payload = palace_ouroboros.write_reboot_handoff(
+                    reason="experimental_agent_live_patch",
+                    applied_diff_summary="GEMINI: Improve search",
+                    test_results={"py_compile": "pass", "unittest_passed": True},
+                    extra_continuity={
+                        "auto_resume_idle": True,
+                        "idle_transcript": [{"speaker": "gemini", "content": "Patched FTS query."}],
+                        "idle_remaining_seconds": 4321,
+                        "idle_tokens_used": 12345,
+                        "idle_spend_usd": 0.42,
+                        "idle_saved_notes": 2,
+                        "idle_sent_emails": 1,
+                    },
+                )
+                self.assertTrue(ok_w, msg_w)
+
+                def _fake_launch():
+                    hb_path.write_text(
+                        json.dumps({"pid": 99999, "status": "READY", "timestamp": time.time() + 1.0}),
+                        encoding="utf-8",
+                    )
+
+                with patch.object(palace_watchdog, "_launch_palace_on_interactive_desktop", side_effect=_fake_launch):
+                    ok_r, msg_r = palace_watchdog.perform_hot_reboot(
+                        reason="ouroboros_self_upgrade",
+                        diff_summary="GEMINI: Improve search",
+                        skip_tests=True,
+                        preserve_existing_handoff=True,
+                    )
+                self.assertTrue(ok_r, msg_r)
+
+                saved = json.loads(handoff_path.read_text(encoding="utf-8"))
+                self.assertFalse(saved["consumed"])
+                self.assertEqual(saved["reboot"]["reason"], "experimental_agent_live_patch")
+                self.assertEqual(saved["reboot"]["reboot_count_in_window"], 1)
+                self.assertTrue(saved["reboot"]["test_results"]["unittest_passed"])
+                cont = saved["continuity"]
+                self.assertTrue(cont["auto_resume_idle"])
+                self.assertEqual(cont["idle_remaining_seconds"], 4321)
+                self.assertEqual(cont["idle_tokens_used"], 12345)
+                self.assertAlmostEqual(cont["idle_spend_usd"], 0.42, places=4)
+                self.assertEqual(len(cont["idle_transcript"]), 1)
+
+    def test_idle_session_manager_and_window_resume_without_wiping_state(self):
+        from idle_service import IdleMailboxStore, IdleMemoryStore, IdleSessionManager
+        from palace_gui import PalaceWindow
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg_p = root / "palace_config.json"
+            mem = IdleMemoryStore(root / "idle_mem.md")
+            mb = IdleMailboxStore(root / "mailbox.json")
+            mgr = IdleSessionManager(idle_memory=mem, mailbox=mb, config_path=cfg_p)
+            mgr.transcript = [{"speaker": "cohere", "content": "Previous turn before reboot."}]
+            mgr.remaining_seconds = 1440
+            mgr.tokens_used_this_session = 8800
+            mgr.spend_usd_this_session = 0.19
+            mgr.saved_notes_this_session = 3
+            mgr.sent_emails_this_session = 1
+            mgr.status = "Ready"
+            mgr.resume_session()
+            self.assertTrue(mgr.is_idle_mode)
+            self.assertEqual(mgr.status, "Active")
+            self.assertEqual(mgr.remaining_seconds, 1440)
+            self.assertEqual(mgr.tokens_used_this_session, 8800)
+            self.assertAlmostEqual(mgr.spend_usd_this_session, 0.19, places=4)
+            self.assertEqual(mgr.saved_notes_this_session, 3)
+            self.assertEqual(mgr.sent_emails_this_session, 1)
+            self.assertEqual(len(mgr.transcript), 1)
+
+            store = SessionStore(root / "sess_root")
+            win = PalaceWindow(store=store, palace_factory=lambda ctx: build_palace({}, context_service=ctx))
+            try:
+                continuity = {
+                    "auto_resume_idle": True,
+                    "idle_transcript": [
+                        {"speaker": "cohere", "content": "Applied live FTS patch."},
+                    ],
+                    "idle_remaining_seconds": 1440,
+                    "idle_tokens_used": 8800,
+                    "idle_spend_usd": 0.19,
+                    "idle_saved_notes": 3,
+                    "idle_sent_emails": 1,
+                }
+                win.resume_idle_session(continuity, "COHERE: FTS synonym patch", auto_step=False)
+                self.assertEqual(win.workspace_tabs.currentIndex(), 1)
+                self.assertTrue(win.idle_switch_btn.isChecked())
+                self.assertEqual(win.current_profile, "Idle")
+                self.assertEqual(win.idle_manager.status, "Active")
+                self.assertEqual(win.idle_manager.remaining_seconds, 1440)
+                self.assertEqual(win.idle_manager.tokens_used_this_session, 8800)
+                self.assertAlmostEqual(win.idle_manager.spend_usd_this_session, 0.19, places=4)
+                self.assertEqual(len(win.idle_manager.transcript), 2)
+                self.assertIn("Ouroboros Hot-Reboot Complete", win.idle_manager.transcript[-1]["content"])
+                self.assertFalse(win.composer.isEnabled())
+
+                # Rollback banner check
+                win.resume_idle_session(
+                    continuity,
+                    "BAD: Broken patch",
+                    rolled_back=True,
+                    rollback_reason="Timed out waiting for READY",
+                    auto_step=False,
+                )
+                self.assertIn("Ouroboros Rollback", win.idle_manager.transcript[-1]["content"])
+                self.assertIn("Timed out waiting for READY", win.idle_manager.transcript[-1]["content"])
+            finally:
+                win.idle_timer.stop()
+                win.idle_auto_timer.stop()
+                win.close()
+                app.processEvents()
+
+    def test_experimental_preflight_unittest_gate_rejects_broken_patch_and_reverts(self):
+        from idle_service import IdleMailboxStore, IdleMemoryStore, IdleSessionManager
+        import palace_config
+        import palace_ouroboros
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg_p = root / "palace_config.json"
+            palace_config.save_idle_settings(
+                {"allow_live_self_modify": True, "share_source_code": True, "idle_submode": "self_improve"},
+                config_path=cfg_p,
+            )
+            mem = IdleMemoryStore(root / "idle_mem.md")
+            mb = IdleMailboxStore(root / "mailbox.json")
+            mgr = IdleSessionManager(idle_memory=mem, mailbox=mb, config_path=cfg_p)
+            mgr.is_idle_mode = True
+            mgr.status = "Active"
+
+            bad_reply = (
+                '[IDLE_PATCH file="memory_service.py" summary="Expand synonyms"]\n'
+                '<<<TARGET\n'
+                'return " OR ".join(f\'"{t}"*\' for t in terms)\n'
+                '===REPLACE\n'
+                'return _SYNONYMS\n'
+                '>>>\n'
+                '[/IDLE_PATCH]'
+            )
+            with patch("palace_config.IS_DEVELOPER_EDITION", True), \
+                 patch.object(palace_ouroboros, "sync_live_to_staging") as mock_sync, \
+                 patch.object(palace_ouroboros, "stage_palace_replace", return_value=(True, "compiled cleanly")), \
+                 patch.object(
+                     palace_ouroboros,
+                     "validate_staged_palace",
+                     return_value={"passed": False, "unittest_output": "NameError: name '_SYNONYMS' is not defined"},
+                 ) as mock_val, \
+                 patch.object(subprocess, "Popen") as mock_popen:
+                msgs = mgr.run_exchange_round({"cohere": lambda _p: bad_reply})
+
+            self.assertEqual(mock_sync.call_count, 2)
+            mock_val.assert_called_once_with(run_unit_tests=True)
+            mock_popen.assert_not_called()
+            self.assertEqual(mb.list_messages(), [])
+            self.assertTrue(msgs)
+            combined = "\n".join(m.get("content", "") for m in msgs)
+            self.assertIn("Live Patch Rejected by Preflight Unit Tests", combined)
+            self.assertIn("NameError: name '_SYNONYMS' is not defined", combined)
+
+
+class VoiceStopLayoutAndMemoryTests(unittest.TestCase):
+    def test_composer_two_row_and_live_bar_zero_clipping(self):
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            store = SessionStore(tmp_p)
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "deepseek": True},
+                config_path=cfg,
+            )
+            win._memory_db_path = lambda: tmp_p / "mem.db"
+            try:
+                win.show()
+                for w, h in ((1024, 700), (1120, 740)):
+                    win.resize(w, h)
+                    app.processEvents()
+
+                    # Idle state: auto-hiding live bar stays hidden and zero clipping
+                    self.assertTrue(win.composer_live_bar.isHidden())
+                    audit_idle = audit_palace_window_geometry(win)
+                    self.assertEqual(
+                        audit_idle["clipped_widget_count"],
+                        0,
+                        msg=f"Idle {w}x{h} clipped: {audit_idle.get('clipped_widgets')}",
+                    )
+
+                    # Live Voice active state: meter, mute, and end-talk controls visible
+                    win.voice_level_badge.setText("🎙 ▁▂▃▄▅▆  42% · Live Voice")
+                    win.voice_level_badge.show()
+                    win.voice_mute_btn.show()
+                    win.end_talk_btn.show()
+                    win._sync_composer_live_bar_visibility()
+                    app.processEvents()
+                    self.assertFalse(win.composer_live_bar.isHidden())
+                    audit_voice = audit_palace_window_geometry(win)
+                    self.assertEqual(
+                        audit_voice["clipped_widget_count"],
+                        0,
+                        msg=f"LiveVoice {w}x{h} clipped: {audit_voice.get('clipped_widgets')}",
+                    )
+
+                    # Live Voice + Busy state: steer & stop buttons visible alongside live controls
+                    win.set_busy(True)
+                    app.processEvents()
+                    self.assertFalse(win.steer_button.isHidden())
+                    self.assertFalse(win.stop_button.isHidden())
+                    audit_busy = audit_palace_window_geometry(win)
+                    self.assertEqual(
+                        audit_busy["clipped_widget_count"],
+                        0,
+                        msg=f"LiveVoice+Busy {w}x{h} clipped: {audit_busy.get('clipped_widgets')}",
+                    )
+
+                    # Restore idle state cleanly
+                    win.set_busy(False)
+                    win.stop_all_voice_modes()
+                    app.processEvents()
+                    self.assertTrue(win.composer_live_bar.isHidden())
+            finally:
+                win._force_quit = True
+                win.close()
+                app.processEvents()
+
+    def test_voice_stop_mute_generation_and_close_cleanup(self):
+        import threading
+        from palace_gui import PalaceWindow
+        from session_store import SessionStore
+        from voice_companion import VoiceCompanion
+
+        class _FakeSess:
+            def __init__(self):
+                self.muted = False
+                self.stop_calls: list[tuple[str, bool]] = []
+
+            def stop(self, filename: str = "x.wav", *, discard: bool = False):
+                self.stop_calls.append((filename, discard))
+                return None
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            store = SessionStore(tmp_p)
+            sid = store.selected
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "deepseek": True},
+                config_path=cfg,
+            )
+            win._memory_db_path = lambda: tmp_p / "mem.db"
+            win.show()
+            app.processEvents()
+
+            win._activate_talk_only_mode(auto_start_live_voice=False)
+            app.processEvents()
+            self.assertTrue(win._talk_only_mode)
+            self.assertFalse(win.end_talk_btn.isHidden())
+            self.assertFalse(win.composer_live_bar.isHidden())
+
+            fake_sess = _FakeSess()
+            win._active_voice_session = fake_sess
+            win._toggle_voice_mute(True)
+            self.assertTrue(fake_sess.muted)
+            self.assertIn("Unmute", win.voice_mute_btn.text())
+
+            gen_before = win._voice_session_gen
+            with patch("voice_service.stop_speaking") as mock_stop_speaking, \
+                 patch.object(win, "_on_live_voice_utterance") as mock_utt:
+                win.stop_all_voice_modes()
+                app.processEvents()
+
+            self.assertEqual(win._voice_session_gen, gen_before + 1)
+            self.assertEqual(len(fake_sess.stop_calls), 1)
+            self.assertIs(fake_sess.stop_calls[0][1], True)
+            mock_utt.assert_not_called()
+            mock_stop_speaking.assert_called_once()
+            self.assertFalse(win._talk_only_mode)
+            self.assertTrue(win.end_talk_btn.isHidden())
+            self.assertTrue(win.composer_live_bar.isHidden())
+            self.assertFalse(win.live_voice_button.isChecked())
+
+            # Normal mode switch exits Talk Mode Only as well
+            win._activate_talk_only_mode(auto_start_live_voice=False)
+            app.processEvents()
+            self.assertTrue(win._talk_only_mode)
+            win._activate_normal_mode_from_menu()
+            app.processEvents()
+            self.assertFalse(win._talk_only_mode)
+            self.assertTrue(win.end_talk_btn.isHidden())
+
+            # Stale generation cancellation drops delayed VoiceCompanionWorker output
+            win._activate_talk_only_mode(auto_start_live_voice=False)
+            app.processEvents()
+            entered = threading.Event()
+            release = threading.Event()
+
+            def _slow_reply(_prompt: str) -> str:
+                entered.set()
+                release.wait(3.0)
+                return "SHOULD_BE_DISCARDED"
+
+            win._voice_companion = VoiceCompanion(llm_callable=_slow_reply)
+            win.composer.setPlainText("Remember blue")
+            win.send_message()
+            self.assertTrue(entered.wait(3.0))
+            win.stop_all_voice_modes()
+            release.set()
+
+            deadline = time.monotonic() + 5.0
+            while win._voice_threads and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.02)
+            app.processEvents()
+
+            self.assertFalse(
+                any("SHOULD_BE_DISCARDED" in (m.get("content") or "") for m in store.messages(sid)),
+                msg="Stale voice response must not be stored after stop_all_voice_modes()",
+            )
+
+            # Force close cleanly stops active voice session
+            fake_sess2 = _FakeSess()
+            win._active_voice_session = fake_sess2
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+            self.assertEqual(len(fake_sess2.stop_calls), 1)
+            self.assertIs(fake_sess2.stop_calls[0][1], True)
+
+    def test_shared_memory_read_write_voice_and_orchestrator(self):
+        from memory_service import MemoryService, extract_and_save_memory_tags
+        from session_store import SessionStore
+        from voice_companion import VoiceCompanion
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            db_p = tmp_p / "mem.db"
+            mem_svc = MemoryService(db_path=db_p)
+
+            # 1. Explicit [SAVE_MEMORY ...] extraction & retrieval
+            cleaned, saved = extract_and_save_memory_tags(
+                'Sure! [SAVE_MEMORY summary="Fav color" fact="Brett prefers cobalt blue"]',
+                mem_svc,
+                session_id="s1",
+                replace_with_badge=True,
+            )
+            self.assertEqual(len(saved), 1)
+            self.assertIn("Saved to Memory Palace", cleaned)
+            search_res = mem_svc.search("cobalt blue")
+            self.assertTrue(search_res.succeeded)
+            self.assertIn("cobalt blue", search_res.context)
+
+            # 2. backfill_from_sessions indexes phase='voice_chat'
+            store_root = tmp_p / "store"
+            st = SessionStore(store_root)
+            sid = st.selected
+            st.context(sid).append_exchange(
+                "Where is the staging sandbox located?",
+                "The staging sandbox lives at C:\\Palace_Idle_Sandbox\\staging.",
+                contributors=["gemini"],
+                answer_speaker_id="voice_companion",
+                answer_phase="voice_chat",
+            )
+            added = mem_svc.backfill_from_sessions(store_root)
+            self.assertGreaterEqual(added, 1)
+            bf_res = mem_svc.search("Palace_Idle_Sandbox")
+            self.assertTrue(bf_res.succeeded)
+            self.assertIn("Palace_Idle_Sandbox", bf_res.context)
+
+            # 3. VoiceCompanion Talk Mode read + write + No-History block
+            prompts_seen: list[str] = []
+            vc_talk = VoiceCompanion(
+                llm_callable=lambda p: (
+                    prompts_seen.append(p),
+                    'I remember cobalt blue! [SAVE_MEMORY summary="Coffee" fact="Flat white with oat milk"]',
+                )[1]
+            )
+            dec_talk = vc_talk.respond(
+                "Save my coffee order",
+                talk_only=True,
+                memory_context="Fav color: cobalt blue",
+                allow_memory_write=True,
+            )
+            self.assertIn("Fav color: cobalt blue", prompts_seen[-1])
+            self.assertEqual(len(dec_talk.memory_saves), 1)
+            self.assertEqual(dec_talk.memory_saves[0]["fact"], "Flat white with oat milk")
+            self.assertNotIn("[SAVE_MEMORY", dec_talk.spoken_reply)
+
+            dec_no_hist = vc_talk.respond(
+                "Save tea order",
+                talk_only=True,
+                memory_context="",
+                allow_memory_write=False,
+            )
+            self.assertEqual(dec_no_hist.memory_saves, [])
+
+            # 4. VoiceCompanion Live JSON save_memory parsing
+            vc_live = VoiceCompanion(
+                llm_callable=lambda _p: json.dumps({
+                    "action": "chat",
+                    "spoken_reply": "Saved your audio interface setup.",
+                    "delegated_task": "",
+                    "steer_note": "",
+                    "save_memory": {"summary": "Audio interface", "fact": "Focusrite Scarlett 2i2"},
+                })
+            )
+            dec_live = vc_live.respond(
+                "Remember my interface",
+                talk_only=False,
+                memory_context="Fav color: cobalt blue",
+                allow_memory_write=True,
+            )
+            self.assertEqual(len(dec_live.memory_saves), 1)
+            self.assertIn("Focusrite Scarlett 2i2", dec_live.memory_saves[0]["fact"])
+
+            # 5. PalaceOrchestrator executes [SAVE_MEMORY ...] when include_memory=True and skips when False
+            reg = ProviderRegistry()
+            reg.register(
+                "gemini",
+                _StubProvider(
+                    "gemini",
+                    lambda _p: 'Noted! [SAVE_MEMORY summary="Orch Coffee" fact="Long black no sugar"]',
+                ),
+            )
+            orch = PalaceOrchestrator(mem_svc, ProviderDispatcher(reg), synthesizer=None)
+            res_on = orch.run("Please remember my coffee order", provider_names=["gemini"], include_memory=True)
+            synth_txt = res_on.synthesis.text if res_on.synthesis else ""
+            self.assertIn("Saved to Memory Palace", synth_txt)
+            self.assertIn("Long black no sugar", mem_svc.search("Long black no sugar").context)
+
+            reg2 = ProviderRegistry()
+            reg2.register(
+                "gemini",
+                _StubProvider(
+                    "gemini",
+                    lambda _p: 'Ephemeral! [SAVE_MEMORY summary="NoHist Secret" fact="Must not persist offline"]',
+                ),
+            )
+            orch2 = PalaceOrchestrator(mem_svc, ProviderDispatcher(reg2), synthesizer=None)
+            orch2.run("Remember temporarily", provider_names=["gemini"], include_memory=False)
+            self.assertNotIn("Must not persist offline", mem_svc.search("Must not persist offline").context or "")
+
+    def test_tts_cost_per_char_and_per_minute(self):
+        from cost_service import emit_tts_cost, estimate_tts_cost_usd, register_cost_listener, unregister_cost_listener
+
+        self.assertEqual(estimate_tts_cost_usd("system:sapi5", 30.0, char_count=500), 0.0)
+        self.assertAlmostEqual(estimate_tts_cost_usd("cartesia:sonic-2", 5.0, char_count=1000), 0.045, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("elevenlabs:eleven_flash_v2_5", 5.0, char_count=1000), 0.18, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("groq:canopylabs/orpheus-v1-english", 5.0, char_count=1000), 0.022, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("deepgram:aura-2-thalia-en", 5.0, char_count=1000), 0.025, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("openai:gpt-4o-mini-tts", 60.0), 0.015, places=6)
+        self.assertAlmostEqual(estimate_tts_cost_usd("gemini:gemini-3.8-flash-lite-tts", 60.0), 0.012, places=6)
+
+        events: list[dict] = []
+        register_cost_listener(events.append)
+        try:
+            cost = emit_tts_cost("cartesia:sonic-2", 2.0, char_count=200)
+        finally:
+            unregister_cost_listener(events.append)
+        self.assertAlmostEqual(cost, 0.009, places=6)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["provider"], "cartesia")
+        self.assertEqual(events[0]["char_count"], 200)
+
+    def test_live_volume_slider_and_waveout_error_fallback(self):
+        import threading
+        import voice_service
+        from palace_gui import ManageAIsDialog
+        from voice_service import get_live_volume, load_voice_settings, save_voice_settings, set_live_volume
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            save_voice_settings(
+                {"tts_engine": "openai", "tts_fallback_engine": "auto", "voice_name": "ash", "volume_percent": 90},
+                config_path=cfg,
+            )
+            self.assertEqual(get_live_volume(cfg), 90)
+            set_live_volume(35, config_path=cfg)
+            self.assertEqual(get_live_volume(cfg), 35)
+
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="Voice & Audio")
+            dlg.show()
+            app.processEvents()
+            dlg.voice_vol_slider.setValue(42)
+            dlg._flush_live_volume_save()
+            app.processEvents()
+            self.assertEqual(get_live_volume(cfg), 42)
+            # Persists volume immediately without clicking Save or clobbering other fields
+            reloaded = load_voice_settings(cfg)
+            self.assertEqual(reloaded["volume_percent"], 42)
+            self.assertEqual(reloaded["voice_name"], "ash")
+            dlg.reject()
+            dlg.close()
+
+            # Simulate waveOutWrite failure on primary (OpenAI) -> fallback to Gemini + meta event
+            class _FakeCredStore:
+                def get_api_key(self, name: str) -> str:
+                    return {"openai": "sk_fake", "gemini": "gk_fake"}.get(name, "")
+
+            attempt_counter = {"n": 0}
+
+            class _FakeWaveOut:
+                def __init__(self, **_kw):
+                    attempt_counter["n"] += 1
+                    self._idx = attempt_counter["n"]
+
+                def write(self, _pcm: bytes, _cancel, **_kw) -> bool:
+                    return self._idx >= 2  # Fail first (OpenAI), succeed second (Gemini)
+
+                def drain(self, _cancel) -> None:
+                    return None
+
+                def stop(self) -> None:
+                    return None
+
+            metas: list[dict] = []
+            done = threading.Event()
+            with patch.dict(os.environ, {"QT_QPA_PLATFORM": "windows"}), \
+                 patch.object(voice_service, "_WaveOutStream", _FakeWaveOut), \
+                 patch.object(voice_service, "_stream_openai_pcm", return_value=iter([b"\x01\x00" * 120])), \
+                 patch.object(voice_service, "_synthesize_gemini_pcm", return_value=(b"\x02\x00" * 120, 24000, "gemini-3.8-flash-lite-tts")):
+                ok = voice_service.speak_agent_response(
+                    "Testing audio fallback.",
+                    config_path=cfg,
+                    credential_store=_FakeCredStore(),
+                    on_speech_meta=metas.append,
+                    on_finished=done.set,
+                )
+                self.assertTrue(ok)
+                self.assertTrue(done.wait(3.0))
+            self.assertEqual(len(metas), 1)
+            self.assertTrue(metas[0]["fell_back"])
+            self.assertEqual(metas[0]["engine_id"], "gemini")
+            self.assertIn("openai", metas[0]["fallback_reason"])
+
+            # With fallback='none' and failing primary write -> on_error fires loudly
+            save_voice_settings({"tts_engine": "openai", "tts_fallback_engine": "none", "volume_percent": 80}, config_path=cfg)
+            errs: list[str] = []
+            done2 = threading.Event()
+
+            class _AlwaysFailWaveOut:
+                def __init__(self, **_kw):
+                    pass
+
+                def write(self, _pcm: bytes, _cancel, **_kw) -> bool:
+                    return False
+
+                def drain(self, _cancel) -> None:
+                    return None
+
+                def stop(self) -> None:
+                    return None
+
+            with patch.dict(os.environ, {"QT_QPA_PLATFORM": "windows"}), \
+                 patch.object(voice_service, "_WaveOutStream", _AlwaysFailWaveOut), \
+                 patch.object(voice_service, "_stream_openai_pcm", return_value=iter([b"\x01\x00" * 120])):
+                voice_service.speak_agent_response(
+                    "Testing strict no-fallback error.",
+                    config_path=cfg,
+                    credential_store=_FakeCredStore(),
+                    on_error=errs.append,
+                    on_finished=done2.set,
+                )
+                self.assertTrue(done2.wait(3.0))
+            self.assertEqual(len(errs), 1)
+            self.assertIn("openai", errs[0].lower())
+
+    def test_voice_companion_all_8_providers_primary_and_fallback(self):
+        from voice_companion import VoiceCompanion
+
+        all_8 = ("gemini", "openai", "deepseek", "groq", "cerebras", "qwen", "cohere", "mistral")
+
+        class _AllCreds:
+            def get_api_key(self, name: str) -> str:
+                return f"key_{name}" if name in all_8 else ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            vc = VoiceCompanion(config_path=cfg, credential_store=_AllCreds())
+            cands = vc._build_provider_candidates(talk_only=True, preferred_provider="qwen", fallback_provider="mistral")
+            names = [n for n, _fn in cands]
+            for req_p in all_8:
+                self.assertIn(req_p, names)
+            self.assertEqual(names[0], "qwen")
+            self.assertEqual(names[1], "mistral")
+
+            no_fb = vc._build_provider_candidates(talk_only=True, preferred_provider="qwen", fallback_provider="none")
+            self.assertEqual([n for n, _fn in no_fb], ["qwen"])
+
+            # Simulate primary ('qwen') failing -> fallback ('mistral') answers with explicit fallback metadata
+            def _fail_qwen(_p: str) -> str:
+                raise RuntimeError("qwen 503 timeout")
+
+            def _ok_mistral(_p: str) -> str:
+                return "Mistral answering after Qwen timed out."
+
+            with patch.object(
+                vc,
+                "_build_provider_candidates",
+                side_effect=lambda **_kw: (
+                    setattr(vc, "_last_models", {"qwen": "Qwen/Qwen3.8-27B", "mistral": "mistral-small-latest"}),
+                    setattr(vc, "_last_requested_provider", "qwen"),
+                    setattr(vc, "_candidate_skip_reasons", []),
+                    [("qwen", _fail_qwen), ("mistral", _ok_mistral)],
+                )[-1],
+            ):
+                dec = vc.respond("Say hello", talk_only=True)
+            self.assertEqual(dec.provider_used, "mistral")
+            self.assertEqual(dec.model_used, "mistral-small-latest")
+            self.assertEqual(dec.requested_provider, "qwen")
+            self.assertTrue(dec.fell_back)
+            self.assertIn("qwen", dec.fallback_reason.lower())
+
+    def test_voice_ui_brain_speaker_badges_handoff_memory_and_zero_clipping(self):
+        from memory_service import MemoryService
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+        from voice_companion import VoiceCompanionDecision
+        from voice_service import is_loopback_audio_device
+
+        self.assertTrue(is_loopback_audio_device("Stereo Mix (Realtek(R) Audio)"))
+        self.assertFalse(is_loopback_audio_device("Microphone (Realtek(R) Audio)"))
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            mem_db = tmp_p / "mem.db"
+            store = SessionStore(tmp_p)
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "deepseek": True, "groq": True},
+                config_path=cfg,
+            )
+            win._memory_db_path = lambda: mem_db
+            try:
+                win.show()
+                # 1. Verify MemoryService import works end-to-end in Voice Memory helpers
+                saved = win._save_voice_memories(
+                    [{"summary": "Fav editor", "fact": "Brett prefers Neovim with Lua"}],
+                    author="deepseek",
+                )
+                self.assertEqual(len(saved), 1)
+                win._persist_voice_exchange("🎙 Remember my tea order", "Noted, peppermint tea!", provider_used="deepseek")
+                ms = MemoryService(db_path=mem_db)
+                self.assertIn("Neovim", ms.search("Neovim").context)
+                self.assertIn("peppermint tea", ms.search("peppermint tea").context)
+
+                # 2. Verify 🧠 Thinking AI + 🔊 Speaking Voice attribution & switch/fallback dividers in chat HTML
+                dec1 = VoiceCompanionDecision(
+                    action="chat",
+                    spoken_reply="Hi from DeepSeek.",
+                    provider_used="deepseek",
+                    model_used="deepseek-chat",
+                    requested_provider="deepseek",
+                )
+                idx1 = win._deliver_voice_companion_reply(
+                    user_disp="🎙 Hello",
+                    raw_user_for_store="🎙 Hello",
+                    disp_reply="Hi from DeepSeek.",
+                    spoken_reply="Hi from DeepSeek.",
+                    decision=dec1,
+                    req_gen=win._voice_session_gen,
+                    append_user_msg=True,
+                    persist_exchange=False,
+                    speak_aloud=False,
+                )
+                win.chat_items[idx1]["tts_label"] = "OpenAI (Sage)"
+
+                dec2 = VoiceCompanionDecision(
+                    action="chat",
+                    spoken_reply="Now Gemini took over.",
+                    provider_used="gemini",
+                    model_used="gemini-2.5-flash",
+                    requested_provider="openai",
+                    fell_back=True,
+                    fallback_reason="429 quota",
+                )
+                idx2 = win._deliver_voice_companion_reply(
+                    user_disp="🎙 Switch",
+                    raw_user_for_store="🎙 Switch",
+                    disp_reply="Now Gemini took over.",
+                    spoken_reply="Now Gemini took over.",
+                    decision=dec2,
+                    req_gen=win._voice_session_gen,
+                    append_user_msg=True,
+                    persist_exchange=False,
+                    speak_aloud=False,
+                )
+                win.chat_items[idx2]["tts_label"] = "Windows Offline (David)"
+                win.chat_items[idx2]["tts_fallback_note"] = "fallback from openai"
+                win._render_chat_items()
+                app.processEvents()
+
+                html_out = win.chat.toHtml()
+                self.assertIn("DeepSeek", html_out)
+                self.assertIn("deepseek-chat", html_out)
+                self.assertIn("OpenAI (Sage)", html_out)
+                self.assertIn("Gemini", html_out)
+                self.assertIn("took over", html_out)
+                self.assertIn("Windows Offline (David)", html_out)
+
+                # 3. Verify ManageAIsDialog inline external key prompt & loopback mic warning
+                dlg = ManageAIsDialog(config_path=cfg, initial_page="Voice & Audio")
+                dlg.show()
+                app.processEvents()
+                cart_idx = dlg.tts_engine_combo.findData("cartesia")
+                self.assertGreaterEqual(cart_idx, 0)
+                with patch.object(dlg.credential_store, "get_api_key", return_value=""):
+                    dlg.tts_engine_combo.setCurrentIndex(cart_idx)
+                    app.processEvents()
+                    self.assertFalse(dlg.tts_inline_key_frame.isHidden())
+                    sys_idx = dlg.tts_engine_combo.findData("system")
+                    dlg.tts_engine_combo.setCurrentIndex(sys_idx)
+                    app.processEvents()
+                    self.assertTrue(dlg.tts_inline_key_frame.isHidden())
+                dlg.mic_device_combo.addItem("Stereo Mix (Realtek(R) Audio)", "Stereo Mix (Realtek(R) Audio)")
+                dlg.mic_device_combo.setCurrentText("Stereo Mix (Realtek(R) Audio)")
+                app.processEvents()
+                self.assertFalse(dlg.mic_loopback_warn_lbl.isHidden())
+                dlg.reject()
+                dlg.close()
+
+                # 4. Verify zero clipping at 1024x700 and 1120x740 with 🧠 + 🔊 pills + Live Voice + Busy controls
+                win._activate_talk_only_mode(auto_start_live_voice=False)
+                win.voice_level_badge.setText("🎙 ▁▂▃▄▅▆ 42% · Listening")
+                win.voice_level_badge.show()
+                win.voice_mute_btn.show()
+                win._sync_composer_live_bar_visibility()
+                for w, h in ((1024, 700), (1120, 740)):
+                    win.resize(w, h)
+                    win.set_busy(False)
+                    app.processEvents()
+                    a1 = audit_palace_window_geometry(win)
+                    self.assertEqual(a1["clipped_widget_count"], 0, msg=f"Voice {w}x{h} clipped: {a1.get('clipped_widgets')}")
+
+                    win.set_busy(True)
+                    win._on_voice_level_update(42, "▁▂▃▄▅▆", True)
+                    app.processEvents()
+                    a2 = audit_palace_window_geometry(win)
+                    self.assertEqual(a2["clipped_widget_count"], 0, msg=f"Voice+Busy {w}x{h} clipped: {a2.get('clipped_widgets')}")
+                win.set_busy(False)
+                win.stop_all_voice_modes()
+            finally:
+                win._force_quit = True
+                win.close()
+                app.processEvents()
+
+
+class AuditFixRegressionTests(unittest.TestCase):
+    def test_dpapi_encrypt_fails_closed_when_cryptprotect_fails(self):
+        import ctypes
+        import credential_store
+
+        if os.name != "nt":
+            return
+        with patch.object(ctypes.windll.crypt32, "CryptProtectData", return_value=0):
+            with self.assertRaises(RuntimeError):
+                credential_store.dpapi_encrypt("secret-api-key-123")
+
+    def test_memory_upsert_distinct_bodies_with_same_summary_and_project_fallback(self):
+        from memory_service import SQLiteMemoryIndex
+
+        with tempfile.TemporaryDirectory() as tmp:
+            idx = SQLiteMemoryIndex(Path(tmp) / "mem.db")
+            id1 = idx.upsert("Repeated title", "First distinct body", wing="w", project="p1")
+            id2 = idx.upsert("Repeated title", "Second distinct body", wing="w", project="p1")
+            id1_dup = idx.upsert("Repeated title", "First distinct body", wing="w", project="p1")
+            self.assertNotEqual(id1, id2)
+            self.assertEqual(id1, id1_dup)
+            self.assertEqual(idx.count(wing="w"), 2)
+
+            idx.upsert("Other project note", "Other secret", wing="w", project="p2")
+            no_kw_p1 = idx.search("!!!", wing="w", project="p1", limit=10)
+            self.assertTrue(all(item.get("project") == "p1" for item in no_kw_p1))
+
+    def test_access_policy_command_bypass_defenses_and_optional_read_block(self):
+        from access_policy import evaluate_command_access, evaluate_path_access
+        from workspace_tools import execute_readonly_workspace_tools_in_text
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent = root / "workspace"
+            secret = parent / "Secret"
+            secret.mkdir(parents=True)
+            secret_file = secret / "notes.txt"
+            secret_file.write_text("top secret line\n", encoding="utf-8")
+
+            perms = {
+                "permission_mode": "turbo",
+                "write_exclusions": [{"path": str(secret), "include_subdirs": True}],
+            }
+            rel_dec = evaluate_command_access(r"del Secret\notes.txt", cwd=parent, permissions=perms)
+            self.assertEqual((rel_dec.decision, rel_dec.excluded), ("ask", True))
+
+            enc_dec = evaluate_command_access("powershell -EncodedCommand ZABlAGwA", cwd=parent, permissions=perms)
+            self.assertEqual((enc_dec.decision, enc_dec.excluded), ("ask", True))
+
+            with patch.dict(os.environ, {"PALACE_TEST_SECRET": str(secret)}):
+                env_dec = evaluate_command_access(r"del %PALACE_TEST_SECRET%\notes.txt", cwd=root, permissions=perms)
+                self.assertEqual((env_dec.decision, env_dec.excluded), ("ask", True))
+
+            ok_dec = evaluate_command_access(
+                "python -m unittest",
+                cwd=r"E:\Visual_studio\Palace",
+                permissions={
+                    "permission_mode": "turbo",
+                    "write_exclusions": [
+                        {"path": "C:\\", "include_subdirs": False},
+                        {"path": "E:\\", "include_subdirs": False},
+                    ],
+                },
+            )
+            self.assertEqual((ok_dec.decision, ok_dec.excluded), ("allow", False))
+
+            # Optional block_reads blocks [FILE_LIST] and [FILE_READ] cleanly
+            read_perms = {
+                "permission_mode": "turbo",
+                "write_exclusions": [{"path": str(secret), "include_subdirs": True, "block_reads": True}],
+            }
+            r_dec = evaluate_path_access(secret_file, "read", permissions=read_perms)
+            self.assertEqual((r_dec.decision, r_dec.excluded), ("ask", True))
+            tool_out = execute_readonly_workspace_tools_in_text(
+                f'[FILE_LIST path="{secret}"]\n[FILE_READ path="{secret_file}"]',
+                project_folder=str(parent),
+                permissions=read_perms,
+            )
+            self.assertIn("FILE_LIST Blocked", tool_out)
+            self.assertIn("FILE_READ Blocked", tool_out)
+            self.assertNotIn("top secret line", tool_out)
+
+    def test_gui_theme_persistence_stop_with_status_and_voice_reload_guard(self):
+        from palace_config import load_ui_settings
+        from palace_gui import PalaceWindow
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            cfg = tmp_p / "palace_config.json"
+            store = SessionStore(tmp_p)
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda _ctx: PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True},
+                config_path=cfg,
+            )
+            try:
+                win._switch_theme_and_persist("light")
+                self.assertEqual(load_ui_settings(cfg).get("theme"), "light")
+
+                # stop_active_turn removes aborted user bubble even when trailing system_status exists
+                win.chat_items = [
+                    {"role": "user", "content": "First question", "speaker": None, "phase": None, "contributors": [], "speaker_messages": [], "idx": 0},
+                    {"role": "system_status", "content": "Status: Fallback engaged.", "severity": "info", "speaker": None, "phase": None, "contributors": [], "speaker_messages": [], "idx": 1},
+                ]
+                win.last_question = "First question"
+                win.worker = SimpleNamespace(
+                    succeeded=SimpleNamespace(disconnect=lambda: None),
+                    failed=SimpleNamespace(disconnect=lambda: None),
+                    finished=SimpleNamespace(disconnect=lambda: None),
+                    requestInterruption=lambda: None,
+                    quit=lambda: None,
+                    wait=lambda _ms=0: True,
+                )
+                win.stop_active_turn()
+                self.assertFalse(any(it.get("role") == "user" for it in win.chat_items))
+
+                # _check_external_session_updates must skip when _voice_threads has active workers
+                win.worker = None
+                win._voice_threads = [object()]
+                with patch.object(win, "load_history", side_effect=AssertionError("Must not reload during voice turn")):
+                    win._check_external_session_updates()
+            finally:
+                win._voice_threads = []
+                win._force_quit = True
+                win.close()
+                app.processEvents()
+
+    def test_synthesizer_and_orchestrator_strip_autopatch_banner_in_non_autopatch_turn(self):
+        fake_two = {
+            "gemini": ProviderResult(provider_name="gemini", response=ProviderResponse(text="Analysis A", provider="gemini")),
+            "groq": ProviderResult(provider_name="groq", response=ProviderResponse(text="Analysis B", provider="groq")),
+        }
+        spy = _StubProvider(
+            "gemini",
+            lambda _p: "Summary text.\n⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]",
+        )
+        syn = PalaceSynthesizer("gemini", spy)
+        syn.synthesize("Audit this code", fake_two, allow_autopatch_banner=False)
+        self.assertNotIn("AUTOPATCH STAGED", spy.calls[-1])
+
+        reg = ProviderRegistry()
+        reg.register("gemini", _StubProvider("gemini", lambda _p: "Note.\n⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]"))
+        orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=PalaceSynthesizer("gemini", reg.get("gemini")))
+        res = orch.run("Please summarize module behavior", include_context=False)
+        self.assertNotIn("AUTOPATCH STAGED", (res.final_answer or "").upper())
+
+    def test_cost_idle_session_voice_and_local_cli_fixes(self):
+        from cost_service import _usage_attr_optional_int, estimate_tts_cost_usd
+        from idle_service import IdleSessionManager
+        from local_cli_provider import LocalCLIProvider
+        from session_store import SessionStore
+        import voice_service
+
+        self.assertEqual(_usage_attr_optional_int({"input_tokens": 0}, "input_tokens"), 0)
+        self.assertIsNone(_usage_attr_optional_int({}, "input_tokens"))
+        self.assertEqual(estimate_tts_cost_usd("unknown:bogus-engine", 60.0), 0.0)
+        self.assertAlmostEqual(estimate_tts_cost_usd("openai:gpt-4o-mini-tts", 60.0), 0.015, places=6)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            from palace_config import save_idle_settings
+            save_idle_settings({"duration_minutes": 30}, cfg)
+            mgr = IdleSessionManager(config_path=cfg)
+            mgr.status = "Active"
+            mgr.remaining_seconds = 1000
+            save_idle_settings({"duration_minutes": 45}, cfg)
+            mgr.reload_settings()
+            self.assertEqual(mgr.remaining_seconds, 1900)
+
+            s1 = SessionStore(Path(tmp) / "sess")
+            s2 = SessionStore(Path(tmp) / "sess")
+            ext_id = s2.create()
+            s1.rename_from_question(s1.selected, "Local GUI session")
+            s1.save()
+            s3 = SessionStore(Path(tmp) / "sess")
+            self.assertIn(ext_id, {it["id"] for it in s3.sessions})
+
+        # LiveAudioSession._poll_audio resets _restart_attempts after 36 healthy ticks
+        sess = voice_service.LiveAudioSession(live_mode=False)
+        sess.active = True
+        sess._restart_attempts = 2
+        sess._io_device = SimpleNamespace(readAll=lambda: b"\x01\x00" * 160)
+        for _ in range(36):
+            sess._poll_audio()
+        self.assertEqual(sess._restart_attempts, 0)
+
+        # _WaveOutStream.__init__ clamps channels/bits_per_sample before building WAVEFORMATEX
+        if os.name == "nt":
+            import ctypes
+            captured_wfx = []
+
+            class _FakeWinmm:
+                def waveOutOpen(self, _hwo, _dev, wfx_ptr, *_rest):
+                    captured_wfx.append(wfx_ptr._obj)
+                    return 0
+
+            with patch.dict(os.environ, {"QT_QPA_PLATFORM": ""}), \
+                 patch.object(voice_service, "_configure_winmm_prototypes"), \
+                 patch.object(ctypes.windll, "winmm", _FakeWinmm()):
+                voice_service._WaveOutStream(sample_rate=0, channels=0, bits_per_sample=0)
+                voice_service._WaveOutStream(sample_rate=0, channels=0, bits_per_sample=4)
+            self.assertEqual(len(captured_wfx), 2)
+            self.assertEqual((captured_wfx[0].nChannels, captured_wfx[0].wBitsPerSample, captured_wfx[0].nBlockAlign), (1, 16, 2))
+            self.assertEqual((captured_wfx[1].nChannels, captured_wfx[1].wBitsPerSample, captured_wfx[1].nBlockAlign), (1, 8, 1))
+
+        # LocalCLIProvider guards Windows >28KB argv prompts cleanly and wraps TimeoutExpired
+        cli_codex = LocalCLIProvider("codex", cli_path="codex.exe")
+        with patch("local_cli_provider.get_mcp_depth", return_value=0), \
+             patch("local_cli_provider.subprocess.run", return_value=SimpleNamespace(returncode=0, stdout="ok-stdin", stderr="")) as mrun:
+            big_prompt = "x" * 30000
+            out = cli_codex.generate(big_prompt)
+            self.assertEqual(out.text, "ok-stdin")
+            if os.name == "nt":
+                self.assertEqual(mrun.call_args.kwargs.get("input"), big_prompt)
+
+        import subprocess as _sp
+        with patch("local_cli_provider.get_mcp_depth", return_value=0), \
+             patch("local_cli_provider.subprocess.run", side_effect=_sp.TimeoutExpired(cmd=["codex.exe"], timeout=10)):
+            with self.assertRaises(RuntimeError) as ctx_err:
+                cli_codex.generate("short prompt")
+            self.assertIn("timed out", str(ctx_err.exception).lower())
+
+
+class Round2AndSidebarUpgradeTests(unittest.TestCase):
+    def test_batch_d_agent_mail_read_unread_and_backend_guards(self):
+        from idle_service import IdleMailboxStore
+        from orchestrator import PalaceRunResult, PalaceSynthesizer
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mb_path = root / "mailbox.json"
+            mb = IdleMailboxStore(path=mb_path)
+            ok1, m1 = mb.send_agent_email("gemini", "Audit Report", "Found two bugs.", link="audit.md")
+            ok2, m2 = mb.send_agent_email("deepseek", "Perf Plan", "Batch SQLite hydration.")
+            self.assertTrue(ok1 and ok2 and isinstance(m1, dict) and isinstance(m2, dict))
+            self.assertEqual(mb.unread_count(), 2)
+
+            self.assertTrue(mb.set_read(m1["id"], True))
+            self.assertEqual(mb.unread_count(), 1)
+            self.assertTrue(mb.mark_unread(m1["id"]))
+            self.assertEqual(mb.unread_count(), 2)
+            marked = mb.mark_all_read()
+            self.assertEqual(marked, 2)
+            self.assertEqual(mb.unread_count(), 0)
+            mb.mark_unread(m2["id"])
+
+            app = QApplication.instance() or QApplication([])
+            cfg = root / "palace_config.json"
+            store = SessionStore(root / "sessions")
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda ctx: PalaceOrchestrator(
+                    SimpleNamespace(search=lambda _q: SimpleNamespace(memories=[], formatted="")),
+                    ProviderDispatcher(ProviderRegistry()),
+                    context_service=ctx,
+                ),
+                provider_states={"gemini": True},
+                config_path=cfg,
+            )
+            win.idle_manager.mailbox = mb
+            win.resize(1024, 700)
+            win.show()
+            win._toggle_agent_mail_view(True)
+            win._refresh_agent_mail_tab(suppress_auto_read=True)
+            app.processEvents()
+
+            self.assertGreaterEqual(win.mail_list.count(), 2)
+            row0_txt = win.mail_list.item(0).text()
+            self.assertTrue("[UNREAD]" in row0_txt or "[READ]" in row0_txt, msg=row0_txt)
+
+            # Selecting row updates it to READ, then toggling marks it back to UNREAD without auto-reading
+            win.mail_list.setCurrentRow(0)
+            app.processEvents()
+            self.assertIn("READ", win.mail_header_label.text())
+            win._toggle_selected_mail_read_state()
+            app.processEvents()
+            self.assertIn("[UNREAD]", win.mail_list.currentItem().text())
+            self.assertIn("UNREAD", win.mail_header_label.text())
+
+            win._mark_all_mail_read()
+            app.processEvents()
+            self.assertEqual(mb.unread_count(), 0)
+
+            for w_sz, h_sz in ((1024, 700), (1120, 740)):
+                win.resize(w_sz, h_sz)
+                app.processEvents()
+                aud = audit_palace_window_geometry(win)
+                self.assertEqual(
+                    aud["clipped_widget_count"],
+                    0,
+                    msg=f"Tab2 Agent Mail clipped at {w_sz}x{h_sz}: {aud.get('clipped_widgets')}",
+                )
+            win.close()
+
+        # Read-only advisory prompt should NOT trigger autopatch even with fix words
+        adv = detect_organic_turn_intents(
+            "Run a read-only advisory audit on Fairybread and find bugs, do not edit any files."
+        )
+        self.assertFalse(adv["self_code_change_intent"])
+        self.assertFalse(adv["auto_approved"])
+        parsed_ro = parse_turn_commands("Run a read-only advisory audit on Fairybread and fix bugs, do not edit files.")
+        self.assertFalse(parsed_ro["autopatch"])
+        self.assertFalse(parsed_ro["self_code_change_intent"])
+        self.assertTrue(parse_turn_commands("/restore v0.92 /restore v0.92a")["multiple_restores"])
+        real_fix = detect_organic_turn_intents(
+            "Fix the Fairybread settings panel crash on startup"
+        )
+        self.assertTrue(real_fix["self_code_change_intent"])
+
+        # ContextService handles missing LOCALAPPDATA & concurrent appends safely
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("LOCALAPPDATA", None)
+                ctx_default = ContextService(Path(tmp) / "nested" / "ctx.jsonl")
+                self.assertTrue(ctx_default.path.parent.exists())
+
+            ctx_conc = ContextService(Path(tmp) / "conc" / "ctx.jsonl", session_id="s1")
+            errs: list[Exception] = []
+
+            def _writer(tid: int):
+                try:
+                    for k in range(5):
+                        ctx_conc.append("user", f"msg-{tid}-{k}")
+                except Exception as exc:
+                    errs.append(exc)
+
+            threads = [threading.Thread(target=_writer, args=(t,)) for t in range(4)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join(timeout=5.0)
+            self.assertEqual(errs, [])
+            lines = ctx_conc.path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 20)
+            for ln in lines:
+                json.loads(ln)
+
+        # PalaceRunResult uses peer_rounds fallback & internal TypeError propagates cleanly
+        res_peer = PalaceRunResult(
+            question="test",
+            prompt="test",
+            memory_context="",
+            memory_error=None,
+            provider_results={},
+            peer_rounds=[
+                {
+                    "deepseek": ProviderResult(
+                        provider_name="deepseek",
+                        response=ProviderResponse(text="Peer answer", model="stub"),
+                    ),
+                }
+            ],
+        )
+        self.assertEqual(res_peer.contributors, ["deepseek"])
+        self.assertEqual(res_peer.final_answer, "Peer answer")
+
+        class _BuggyTypeErrorDispatcher:
+            def __init__(self):
+                self.calls = 0
+
+            def dispatch(self, prompt, provider_names=None, **_kwargs):
+                self.calls += 1
+                raise TypeError("internal dispatch type bug")
+
+        bug_disp = _BuggyTypeErrorDispatcher()
+        reg = ProviderRegistry()
+        reg.register("gemini", _StubProvider("gemini", lambda _p: "ok"))
+        orch = PalaceOrchestrator(
+            SimpleNamespace(search=lambda _q: SimpleNamespace(memories=[], formatted="")),
+            bug_disp,
+            synthesizer=PalaceSynthesizer("gemini", reg.get("gemini")),
+        )
+        with self.assertRaises(TypeError):
+            orch.run("hello", provider_names=["gemini"], include_context=False, include_memory=False)
+        self.assertEqual(bug_disp.calls, 1)
+
+    def test_batch_e_cancel_hydration_and_theme_caches(self):
+        import threading
+        import palace_theme
+        from memory_service import SQLiteMemoryIndex
+
+        class _SlowProvider(AIProvider):
+            def generate(self, _prompt: str) -> ProviderResponse:
+                time.sleep(2.5)
+                return ProviderResponse(text="too late", model="slow")
+
+        reg = ProviderRegistry()
+        reg.register("gemini", _SlowProvider())
+        disp = ProviderDispatcher(reg)
+        cancel_ev = threading.Event()
+        threading.Timer(0.1, cancel_ev.set).start()
+        t0 = time.monotonic()
+        out = disp.dispatch("hello", ["gemini"], per_provider_timeout=5.0, cancel_event=cancel_ev)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, 0.7)
+        self.assertIn("Cancelled", out["gemini"].error or "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            idx = SQLiteMemoryIndex(Path(tmp) / "mem.db")
+            mid1 = idx.upsert("Alpha pref", "Body text one for batch hydration", wing="gpt_palace")
+            mid2 = idx.upsert("Beta fact", "Body text two for batch hydration", wing="gpt_palace")
+            recent = idx.list_memories(wing="gpt_palace", limit=10)
+            by_id = {m["id"]: m["body"] for m in recent}
+            self.assertEqual(by_id[mid1], "Body text one for batch hydration")
+            self.assertEqual(by_id[mid2], "Body text two for batch hydration")
+            hits = idx.search("hydration", wing="gpt_palace", limit=10)
+            self.assertEqual(len(hits), 2)
+            self.assertIn("batch hydration", hits[0]["body"])
+
+            # Theme dict cache + Markdown SVG cache invalidation when PNG deleted
+            with patch.dict(os.environ, {"LOCALAPPDATA": tmp}):
+                t1 = palace_theme.load_theme_dict("dark")
+                t1["bg_main"] = "#123456"
+                t2 = palace_theme.load_theme_dict("dark")
+                self.assertNotEqual(t2["bg_main"], "#123456")
+
+                md_svg = "```svg\n<svg viewBox='0 0 100 50'><rect width='100' height='50' fill='red'/></svg>\n```"
+                html1 = format_markdown_and_drawings(md_svg)
+                self.assertIn("<img src=", html1)
+                gen_imgs = list(palace_theme.get_generated_images_dir().glob("*.png"))
+                self.assertTrue(gen_imgs)
+                for p_img in gen_imgs:
+                    p_img.unlink()
+                html2 = format_markdown_and_drawings(md_svg)
+                self.assertIn("<img src=", html2)
+                self.assertTrue(list(palace_theme.get_generated_images_dir().glob("*.png")))
+
+    def test_batch_f_zipslip_version_voice_and_watchdog(self):
+        import threading
+        import zipfile
+        from backup_service import restore_full_backup_zip
+        from palace_config import bump_minor_letter_version
+        import palace_watchdog
+        import voice_service
+
+        with tempfile.TemporaryDirectory() as tmp:
+            evil_zip = Path(tmp) / "evil.zip"
+            with zipfile.ZipFile(evil_zip, "w") as zf:
+                zf.writestr("../evil.txt", "pwned")
+            with self.assertRaises(ValueError):
+                restore_full_backup_zip(evil_zip, config_path=Path(tmp) / "cfg.json", appdata_root=Path(tmp) / "app")
+
+        self.assertEqual(bump_minor_letter_version("0.9.1A"), "0.9.1B")
+        self.assertEqual(bump_minor_letter_version("0.9.1Z"), "0.9.2A")
+
+        with self.assertRaises(ValueError):
+            list(voice_service._stream_cartesia_pcm("hello", api_key="   ", voice_id="v1"))
+
+        ev = threading.Event()
+        ev.set()
+        pcm, _sr = voice_service._synthesize_groq_orpheus_pcm("hello world", api_key="gsk_fake", cancel_event=ev)
+        self.assertEqual(pcm, b"")
+
+        captured_ps: list[list[str]] = []
+        with patch.object(
+            palace_watchdog.subprocess,
+            "run",
+            side_effect=lambda cmd, **_kw: (captured_ps.append(cmd), SimpleNamespace(returncode=0))[1],
+        ):
+            palace_watchdog._stop_existing_palace_gui()
+        self.assertTrue(captured_ps)
+        ps_text = captured_ps[0][-1]
+        self.assertIn("Name LIKE 'python%'", ps_text)
+        self.assertIn(str(os.getpid()), ps_text)
+
+    def test_batch_g_sidebar_actions_spinner_unread_and_archive(self):
+        from PySide6.QtCore import QRect, Qt
+        from palace_gui import SIDEBAR_META_ROLE, PalaceWindow, SidebarSessionList
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = SessionStore(root / "sessions")
+            p1 = store.create_project("AlphaProj")
+            s1 = store.selected
+            s2 = store.create(project_id=p1)
+            store.rename_from_question(s2, "Second Discussion")
+
+            self.assertEqual(store.rename_session(s2, "Renamed Discussion"), "Renamed Discussion")
+            self.assertTrue(store.set_unread(s1, True))
+            self.assertTrue(store.set_archived(s1, True))
+            dup_id = store.duplicate_session(s2)
+            self.assertNotEqual(dup_id, s2)
+            store.delete_session(dup_id)
+            store.save()
+            self.assertNotIn(dup_id, {s["id"] for s in SessionStore(root / "sessions").sessions})
+
+            self.assertEqual(store.rename_project(p1, "BetaProj"), "BetaProj")
+            p2 = store.create_project("TempProj")
+            store.delete_project(p2)
+            store.save()
+            self.assertNotIn(p2, {p["id"] for p in SessionStore(root / "sessions").projects})
+
+            # GUI sidebar controls, working spinner, unread dot, and archived toggle
+            app = QApplication.instance() or QApplication([])
+            win = PalaceWindow(
+                store=store,
+                palace_factory=lambda ctx: PalaceOrchestrator(
+                    SimpleNamespace(search=lambda _q: SimpleNamespace(memories=[], formatted="")),
+                    ProviderDispatcher(ProviderRegistry()),
+                    context_service=ctx,
+                ),
+                provider_states={"gemini": True},
+                config_path=root / "palace_config.json",
+            )
+            win.show()
+            app.processEvents()
+
+            rects_sess = SidebarSessionList.action_rects_for_item(
+                QRect(0, 0, 220, 26),
+                {"kind": "session", "id": s2},
+            )
+            self.assertIn("pin_rect", rects_sess)
+            self.assertIn("menu_rect", rects_sess)
+            rects_proj = SidebarSessionList.action_rects_for_item(
+                QRect(0, 0, 220, 26),
+                {"kind": "project", "id": p1},
+            )
+            self.assertIn("menu_rect", rects_proj)
+            self.assertIn("add_rect", rects_proj)
+
+            # Collapsed archived section should exist with count 1
+            roles = [win.session_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(win.session_list.count())]
+            self.assertIn("archived_toggle", roles)
+            self.assertNotIn(s1, roles)
+
+            # Click archived_toggle expands archived section and reveals s1
+            arch_idx = roles.index("archived_toggle")
+            win._on_sidebar_item_clicked(win.session_list.item(arch_idx))
+            app.processEvents()
+            roles_after = [win.session_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(win.session_list.count())]
+            self.assertIn(s1, roles_after)
+            arch_meta = win.session_list.item(roles_after.index(s1)).data(SIDEBAR_META_ROLE)
+            self.assertTrue(arch_meta["unread"])
+
+            # Selecting unread session clears unread flag
+            win.session_list.setCurrentRow(roles_after.index(s1))
+            app.processEvents()
+            self.assertFalse(any(s["id"] == s1 and s.get("unread") for s in store.sessions))
+
+            # Working indicator updates sidebar list & clears cleanly on detach/finish
+            win._active_working_session_id = s2
+            win.pulse_step = 2
+            win._sync_sidebar_working_indicator()
+            self.assertEqual(win.session_list.working_session_id, s2)
+            win._detach_active_worker()
+            self.assertIsNone(win.session_list.working_session_id)
+
+            for w_sz, h_sz in ((1024, 700), (1120, 740)):
+                win.resize(w_sz, h_sz)
+                app.processEvents()
+                aud = audit_palace_window_geometry(win)
+                self.assertEqual(
+                    aud["clipped_widget_count"],
+                    0,
+                    msg=f"Main Chat clipped at {w_sz}x{h_sz}: {aud.get('clipped_widgets')}",
+                )
+            win.close()
+
+
 if __name__ == "__main__":
     unittest.main()

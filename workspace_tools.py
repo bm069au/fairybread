@@ -66,6 +66,8 @@ def execute_readonly_workspace_tools_in_text(
     response_text: str,
     *,
     project_folder: str = "",
+    config_path: Path = CONFIG_PATH,
+    permissions: dict[str, Any] | None = None,
 ) -> str:
     """Execute read-only [FILE_LIST] and [FILE_READ] requests and return formatted results."""
     if not response_text or ("[FILE_LIST" not in response_text.upper() and "[FILE_READ" not in response_text.upper()):
@@ -77,6 +79,10 @@ def execute_readonly_workspace_tools_in_text(
         attrs = _parse_attrs(m.group(1))
         raw_p = attrs.get("path") or project_folder or "."
         target = _resolve_target_path(raw_p, project_folder)
+        dec = evaluate_path_access(target, "read", config_path=config_path, permissions=permissions)
+        if dec.decision != "allow":
+            outputs.append(f"[🛡 FILE_LIST Blocked `{target}`]: {dec.reason}")
+            continue
         if not target.exists() or not target.is_dir():
             outputs.append(f"[📁 FILE_LIST `{target}`]: Directory not found.")
             continue
@@ -98,6 +104,10 @@ def execute_readonly_workspace_tools_in_text(
             outputs.append("[📄 FILE_READ]: Missing path=\"...\" attribute.")
             continue
         target = _resolve_target_path(raw_p, project_folder)
+        dec = evaluate_path_access(target, "read", config_path=config_path, permissions=permissions)
+        if dec.decision != "allow":
+            outputs.append(f"[🛡 FILE_READ Blocked `{target}`]: {dec.reason}")
+            continue
         if not target.exists() or not target.is_file():
             outputs.append(f"[📄 FILE_READ `{target}`]: File not found.")
             continue

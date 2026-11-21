@@ -1,4 +1,5 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import inspect
 import time
 from typing import Any, Callable
 
@@ -20,9 +21,18 @@ class ProviderDispatcher:
         try:
             provider = self.registry.get(name)
             if images:
+                accepts_images = True
                 try:
+                    sig = inspect.signature(provider.generate)
+                    accepts_images = (
+                        "images" in sig.parameters
+                        or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+                    )
+                except (TypeError, ValueError):
+                    accepts_images = False
+                if accepts_images:
                     response = provider.generate(prompt, images=images)
-                except TypeError:
+                else:
                     response = provider.generate(prompt)
             else:
                 response = provider.generate(prompt)
@@ -47,12 +57,15 @@ class ProviderDispatcher:
         images: list[Any] | None = None,
         per_provider_timeout: float | None = None,
         straggler_grace_seconds: float | None = None,
+        cancel_event: Any = None,
     ) -> dict[str, ProviderResult]:
 
         if provider_names is None:
             provider_names = self.registry.names()
 
         if not provider_names:
+            return {}
+        if cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set():
             return {}
 
         worker_count = min(self.max_workers, len(provider_names))
@@ -85,6 +98,26 @@ class ProviderDispatcher:
                         on_result(res)
 
                 now = time.monotonic()
+                cancelled_now = (
+                    cancel_event is not None
+                    and hasattr(cancel_event, "is_set")
+                    and cancel_event.is_set()
+                )
+                if cancelled_now and pending:
+                    timed_out_any = True
+                    for fut in list(pending):
+                        fut.cancel()
+                        name = future_to_name[fut]
+                        res = ProviderResult(
+                            provider_name=name,
+                            error="Cancelled by operator.",
+                        )
+                        completed_map[name] = res
+                        if on_result is not None:
+                            on_result(res)
+                    pending.clear()
+                    break
+
                 if (
                     straggler_grace_seconds is not None
                     and straggler_grace_seconds > 0

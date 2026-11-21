@@ -1,7 +1,7 @@
-"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.92a).
+"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.92b).
 
 Complies with all strict installer rules:
-(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.92a (editable + Browse button)
+(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.92b (editable + Browse button)
 (b) Protects non-Fairybread directories from accidental overwrites while supporting safe VLC-style upgrades on existing Fairybread folders
 (c) Always creates an automatic pre-upgrade ZIP backup BEFORE modifying any files or data
 (d) Preserves settings, API keys, chats, and Memory Palaces by default (even in custom non-Program Files folders) with explicit opt-in Clean Install
@@ -21,7 +21,7 @@ from typing import Any
 import webbrowser
 import zipfile
 
-APP_VERSION = "0.92a"
+APP_VERSION = "0.92b"
 VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION}"
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files") / VERSION_STAMPED_NAME
 UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERSION_STAMPED_NAME}"

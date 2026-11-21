@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 from attachment_service import Attachment, MAX_TEXT_CHARS, compose_question, extract_attachment
 from bootstrap import build_palace
 from memory_proposal_service import MemoryProposalService
+from memory_service import MemoryService
 from palace_gui import PalaceWindow
 from providers import ProviderResponse
 from session_store import SessionStore
@@ -192,6 +193,7 @@ class WindowTests(unittest.TestCase):
                 {"test": self.provider},
                 context_service=context,
             )
+            palace.memory_service = MemoryService(db_path=self.root / "memory.db")
             palace.memory_service.search = lambda _: self.fail(
                 "Unexpected permanent-memory read"
             )
@@ -200,13 +202,15 @@ class WindowTests(unittest.TestCase):
         proposal_service = MemoryProposalService(
             self.root / "memory-proposals.jsonl"
         )
-        return PalaceWindow(
+        win = PalaceWindow(
             SessionStore(self.root),
             factory,
             {"test": True, "off": False},
             proposal_service=proposal_service,
             config_path=self.root / "palace_config.json",
         )
+        win._memory_db_path = lambda: self.root / "memory.db"
+        return win
 
     def tearDown(self):
         self.wait_idle()
@@ -417,10 +421,15 @@ class WindowTests(unittest.TestCase):
         # 3. Multi-agent peer deliberation (Gemini + OpenAI)
         gemini_prov = Provider(answer='Gemini analysis')
         openai_prov = Provider(answer='OpenAI analysis')
-        self.window.palace_factory = lambda ctx: build_palace(
-            {'gemini': gemini_prov, 'openai': openai_prov},
-            context_service=ctx,
-        )
+        def _isolated_multi_palace(ctx):
+            palace = build_palace(
+                {'gemini': gemini_prov, 'openai': openai_prov},
+                context_service=ctx,
+            )
+            palace.memory_service = MemoryService(db_path=self.root / "memory.db")
+            return palace
+
+        self.window.palace_factory = _isolated_multi_palace
         self.window.provider_states = {'gemini': True, 'openai': True}
         self.send('Deliberate on this image and project')
 
@@ -715,6 +724,7 @@ class WindowTests(unittest.TestCase):
 
         # Real PalaceOrchestrator uses ProviderDispatcher(ProviderRegistry()), which stores providers in .registry.all()
         real_palace = build_palace({'gemini': DummyProvider(), 'deepseek': DummyProvider()})
+        real_palace.memory_service = MemoryService(db_path=self.root / "memory.db")
         self.window.palace_factory = lambda _ctx: real_palace
         self.window.provider_states = {'gemini': True, 'deepseek': True}
 
@@ -932,6 +942,7 @@ class WindowTests(unittest.TestCase):
         p_bad = RoundAwareProvider('cohere', 'Cohere R1', 'Cohere R2', fail_r1=True)
 
         palace = build_palace({'gemini': p_gem, 'openai': p_oai, 'cohere': p_bad})
+        palace.memory_service = MemoryService(db_path=self.root / "memory.db")
         res = palace.run('Design fault-tolerant council', max_rounds=2)
 
         # 1. Even though Cohere failed in Round 1, Gemini + OpenAI still deliberated in Round 2
@@ -998,6 +1009,7 @@ class WindowTests(unittest.TestCase):
         d_oai = RoundAwareProvider('openai', '[GENERATE_IMAGE prompt="" title="Dog2" size="1024x1024" quality="high"]', '[PASS]')
         d_coh = RoundAwareProvider('cohere', 'Cohere dog note', '[PASS]')
         draw_palace = build_palace({'deepseek': d_ds, 'openai': d_oai, 'cohere': d_coh})
+        draw_palace.memory_service = MemoryService(db_path=self.root / "memory.db")
 
         # Direct draw: 2-provider Graphic Prompt Duo (openai + deepseek when gemini is absent), 1 pass, skipping cohere
         direct_res = draw_palace.run('Draw me a brown dog on a black carpet in front of a fireplace', max_rounds=2)
@@ -1077,7 +1089,7 @@ class WindowTests(unittest.TestCase):
         from backup_service import create_full_backup_zip, restore_full_backup_zip
         from context_service import ContextService
         from memory_proposal_service import MemoryProposalService
-        from memory_service import MemoryService, SQLiteMemoryIndex
+        from memory_service import SQLiteMemoryIndex
         from search_service import build_query_angles, parse_search_command
 
         self.assertEqual(parse_search_command('/deepsearch Windows 11 IExplorerCommand'), ('deep', 'Windows 11 IExplorerCommand'))
@@ -1300,7 +1312,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.92a')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.92b')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -1346,6 +1358,244 @@ class WindowTests(unittest.TestCase):
         self.window.stop_active_turn()
         if busy_w is not None:
             busy_w.wait(1000)
+
+    def test_inline_system_status_messages_text_vs_icons_and_ui_only(self):
+        from palace_config import save_agent_defaults
+        from voice_service import save_voice_settings
+
+        cfg_path = self.root / 'palace_config.json'
+        idx = self.window.append_status_message(
+            'Status: Cartesia Sonic failed (HTTP 404) — switched voice to OpenAI (coral).',
+            severity='error',
+            icon_prefix='⚠ 🔊',
+            force=True,
+        )
+        from memory_service import SQLiteMemoryIndex
+        self.assertEqual(idx, 0)
+        self.assertEqual(self.window.reply_archive, [])
+        self.assertEqual(self.window.store.messages(self.window.session_id), [])
+        self.assertEqual(SQLiteMemoryIndex(self.root / 'memory.db').count(), 0)
+
+        item_html_text = self.window._render_single_chat_item(self.window.chat_items[0])
+        self.assertIn('font-style:italic', item_html_text)
+        self.assertIn('#e06c75', item_html_text)
+        self.assertNotIn('⚠', item_html_text)
+        self.assertIn('Cartesia Sonic failed', self.window.chat.toHtml())
+
+        save_voice_settings({'status_notification_style': 'icons'}, config_path=cfg_path)
+        self.window._render_chat_items()
+        item_html_icons = self.window._render_single_chat_item(self.window.chat_items[0])
+        self.assertIn('⚠ 🔊', item_html_icons)
+        self.assertIn('border-left:2px solid', item_html_icons)
+
+        save_agent_defaults({'show_inline_status_messages': False}, config_path=cfg_path)
+        self.assertIsNone(
+            self.window.append_status_message('Status: Rate limited', severity='error', force=False)
+        )
+        forced_idx = self.window.append_status_message('Status: Forced voice alert', severity='error', force=True)
+        self.assertIsNotNone(forced_idx)
+
+
+class VoiceUpgradeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_cartesia_sonic_latest_44100_and_retired_uuid_migration(self):
+        from voice_service import (
+            CARTESIA_SAMPLE_RATE,
+            CARTESIA_TTS_VOICES,
+            _stream_cartesia_pcm,
+            load_voice_settings,
+        )
+
+        self.assertEqual(CARTESIA_TTS_VOICES[0][0], 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4')
+        self.assertIn('American', CARTESIA_TTS_VOICES[0][1])
+
+        cfg_path = self.root / 'palace_config.json'
+        cfg_path.write_text(json.dumps({
+            'voice_settings': {'cartesia_voice_id': 'b7d50908-b17c-442d-ad8d-810c63997ed9'}
+        }), encoding='utf-8')
+        loaded = load_voice_settings(cfg_path)
+        self.assertEqual(loaded['cartesia_voice_id'], 'db6b0ed5-d5d3-463d-ae85-518a07d3c2b4')
+
+        custom_uuid = '11111111-2222-3333-4444-555555555555'
+        cfg_path.write_text(json.dumps({
+            'voice_settings': {'cartesia_voice_id': custom_uuid}
+        }), encoding='utf-8')
+        self.assertEqual(load_voice_settings(cfg_path)['cartesia_voice_id'], custom_uuid)
+
+        captured = {}
+
+        class _FakeResp:
+            def __init__(self):
+                self._chunks = [b'\x00\x01\x02\x03', b'']
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, _n=-1):
+                return self._chunks.pop(0) if self._chunks else b''
+
+        def _fake_urlopen(req, timeout=25.0):
+            captured['url'] = req.full_url
+            captured['headers'] = {k.lower(): v for k, v in req.header_items()}
+            captured['body'] = json.loads(req.data.decode('utf-8'))
+            return _FakeResp()
+
+        with patch('urllib.request.urlopen', side_effect=_fake_urlopen):
+            pcm = b''.join(_stream_cartesia_pcm(
+                'Testing Cartesia.',
+                api_key='sk_car_test_123',
+                voice_id='db6b0ed5-d5d3-463d-ae85-518a07d3c2b4',
+                speed=1.1,
+            ))
+
+        self.assertEqual(pcm, b'\x00\x01\x02\x03')
+        self.assertEqual(captured['url'], 'https://api.cartesia.ai/tts/bytes')
+        self.assertEqual(captured['headers'].get('cartesia-version'), '2025-04-16')
+        self.assertEqual(captured['body']['model_id'], 'sonic-latest')
+        self.assertEqual(captured['body']['output_format']['sample_rate'], CARTESIA_SAMPLE_RATE)
+        self.assertEqual(captured['body']['generation_config'], {'speed': 1.1})
+
+    def test_waveout_dynamic_slice_sizing(self):
+        from voice_service import _WaveOutStream
+
+        s24 = _WaveOutStream.compute_slice_bytes(24000)
+        s44 = _WaveOutStream.compute_slice_bytes(44100)
+        self.assertGreaterEqual(s24, 4000)
+        self.assertGreaterEqual(s44, 7000)
+        self.assertEqual(s24 % 2, 0)
+        self.assertEqual(s44 % 2, 0)
+
+    def test_groq_voice_companion_migrates_retired_llama_and_fails_over_within_groq(self):
+        from types import SimpleNamespace
+        from palace_config import save_provider_config
+        from voice_companion import VoiceCompanion
+
+        cfg_path = self.root / 'palace_config.json'
+        save_provider_config('groq', enabled=True, model='llama-3.3-70b-versatile', config_path=cfg_path)
+        save_provider_config('deepseek', enabled=True, model='deepseek-chat', config_path=cfg_path)
+
+        class _FakeCred:
+            def get_api_key(self, name: str) -> str:
+                return {'groq': 'gsk_test', 'deepseek': 'dsk_test'}.get(name, '')
+
+        called_models: list[str] = []
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                m = kwargs.get('model')
+                called_models.append(m)
+                if m == 'openai/gpt-oss-120b':
+                    raise RuntimeError('model busy')
+                msg = SimpleNamespace(content='Quick reply from Groq Qwen.')
+                return SimpleNamespace(choices=[SimpleNamespace(message=msg)], usage=None)
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+        with patch('openai.OpenAI', _FakeOpenAI):
+            vc = VoiceCompanion(config_path=cfg_path, credential_store=_FakeCred())
+            dec = vc.respond('Hello there', talk_only=True, preferred_provider='groq', fallback_provider='deepseek')
+
+        self.assertEqual(called_models, ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b'])
+        self.assertEqual(dec.provider_used, 'groq')
+        self.assertEqual(dec.model_used, 'qwen/qwen3.8-27b')
+        self.assertFalse(dec.fell_back)
+
+    def test_live_audio_session_barge_in_vs_anti_echo(self):
+        import struct
+        from voice_service import LiveAudioSession
+
+        loud_chunk = struct.pack('<' + 'h' * 880, *([12000] * 880))
+
+        class _FakeIo:
+            def readAll(self):
+                return loud_chunk
+
+        events: list[str] = []
+        sess = LiveAudioSession(
+            config_path=self.root / 'palace_config.json',
+            live_mode=True,
+            on_barge_in=lambda: events.append('barge'),
+        )
+        sess.active = True
+        sess._io_device = _FakeIo()
+        sess._sample_rate = 16000
+        sess._channels = 1
+        sess._sample_format_name = 'Int16'
+        sess._gain_percent = 100
+        sess._barge_in_enabled = True
+
+        with patch('voice_service.is_speaking', return_value=True), \
+             patch('voice_service.stop_speaking') as mock_stop:
+            for _ in range(3):
+                sess._poll_audio()
+            self.assertEqual(mock_stop.call_count, 0)
+            self.assertEqual(sess._barge_ticks, 3)
+
+            sess._poll_audio()
+            self.assertEqual(mock_stop.call_count, 1)
+            self.assertEqual(events, ['barge'])
+            self.assertTrue(sess._speech_detected)
+            self.assertGreater(len(sess._pcm_buffer), 0)
+
+        sess2 = LiveAudioSession(config_path=self.root / 'palace_config.json', live_mode=True)
+        sess2.active = True
+        sess2._io_device = _FakeIo()
+        sess2._barge_in_enabled = False
+        with patch('voice_service.is_speaking', return_value=True), \
+             patch('voice_service.stop_speaking') as mock_stop2:
+            for _ in range(5):
+                sess2._poll_audio()
+            self.assertEqual(mock_stop2.call_count, 0)
+            self.assertFalse(sess2._speech_detected)
+            self.assertEqual(len(sess2._pcm_buffer), 0)
+
+    def test_fetch_tts_account_balance_parsing(self):
+        from voice_service import fetch_tts_account_balance
+
+        class _MockResp:
+            def __init__(self, obj):
+                self._raw = json.dumps(obj).encode('utf-8')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return self._raw
+
+        def _fake_urlopen(req, timeout=6.0):
+            url = req.full_url
+            if 'elevenlabs.io/v1/user/subscription' in url:
+                return _MockResp({'character_count': 2500, 'character_limit': 10000, 'tier': 'free'})
+            if url.endswith('/v1/projects'):
+                return _MockResp({'projects': [{'project_id': 'p1', 'name': 'Default'}]})
+            if url.endswith('/v1/projects/p1/balances'):
+                return _MockResp({'balances': [{'amount': 185.5, 'units': 'usd'}]})
+            raise AssertionError(f'Unexpected URL: {url}')
+
+        with patch('urllib.request.urlopen', side_effect=_fake_urlopen):
+            el = fetch_tts_account_balance('elevenlabs', 'el_test')
+            dg = fetch_tts_account_balance('deepgram', 'dg_test')
+        ca = fetch_tts_account_balance('cartesia', 'sk_car_test')
+
+        self.assertTrue(el['ok'])
+        self.assertIn('7,500 / 10,000', el['summary'])
+        self.assertTrue(dg['ok'])
+        self.assertIn('$185.50 USD', dg['summary'])
+        self.assertFalse(ca['supported'])
+        self.assertIn('sk_car_', ca['summary'])
+        self.assertEqual(ca['billing_url'], 'https://play.cartesia.ai')
 
 
 if __name__ == '__main__':

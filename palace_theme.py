@@ -553,22 +553,52 @@ def _fit_and_save_target_png(raw_bytes: bytes, out_path: Path, target_w: int, ta
 
 
 _MARKDOWN_HTML_CACHE: OrderedDict[str, str] = OrderedDict()
+_MARKDOWN_HTML_DEPS: dict[str, tuple[tuple[str, int], ...]] = {}
 _MARKDOWN_HTML_CACHE_MAX = 256
 _RENDER_INDEX_LOCK = threading.Lock()
+_MD_CACHE_LOCK = threading.Lock()
 
 
 def _md_cache_get(key: str) -> str | None:
-    val = _MARKDOWN_HTML_CACHE.get(key)
-    if val is not None:
+    with _MD_CACHE_LOCK:
+        val = _MARKDOWN_HTML_CACHE.get(key)
+        if val is None:
+            return None
+        deps = _MARKDOWN_HTML_DEPS.get(key, ())
+    for dep_path, expected_mtime_ns in deps:
+        try:
+            if Path(dep_path).stat().st_mtime_ns != expected_mtime_ns:
+                with _MD_CACHE_LOCK:
+                    _MARKDOWN_HTML_CACHE.pop(key, None)
+                    _MARKDOWN_HTML_DEPS.pop(key, None)
+                return None
+        except OSError:
+            with _MD_CACHE_LOCK:
+                _MARKDOWN_HTML_CACHE.pop(key, None)
+                _MARKDOWN_HTML_DEPS.pop(key, None)
+            return None
+    with _MD_CACHE_LOCK:
+        val = _MARKDOWN_HTML_CACHE.get(key)
+        if val is not None:
+            _MARKDOWN_HTML_CACHE.move_to_end(key)
+        return val
+
+
+def _md_cache_put(
+    key: str,
+    val: str,
+    deps: tuple[tuple[str, int], ...] = (),
+) -> None:
+    with _MD_CACHE_LOCK:
+        _MARKDOWN_HTML_CACHE[key] = val
+        if deps:
+            _MARKDOWN_HTML_DEPS[key] = deps
+        else:
+            _MARKDOWN_HTML_DEPS.pop(key, None)
         _MARKDOWN_HTML_CACHE.move_to_end(key)
-    return val
-
-
-def _md_cache_put(key: str, val: str) -> None:
-    _MARKDOWN_HTML_CACHE[key] = val
-    _MARKDOWN_HTML_CACHE.move_to_end(key)
-    while len(_MARKDOWN_HTML_CACHE) > _MARKDOWN_HTML_CACHE_MAX:
-        _MARKDOWN_HTML_CACHE.popitem(last=False)
+        while len(_MARKDOWN_HTML_CACHE) > _MARKDOWN_HTML_CACHE_MAX:
+            evicted_key, _ = _MARKDOWN_HTML_CACHE.popitem(last=False)
+            _MARKDOWN_HTML_DEPS.pop(evicted_key, None)
 
 
 def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | None:
@@ -614,16 +644,27 @@ def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | Non
     target_w = min(920, max(640, base_w))
     target_h = max(200, int(round(base_h * (target_w / float(base_w)))))
 
-    pix = QPixmap(target_w, target_h)
-    pix.fill(QColor("#0d1117"))
-    painter = QPainter(pix)
+    # QImage + QPainter is thread-safe (unlike QPixmap) so background prewarming works cleanly
+    img = QImage(target_w, target_h, QImage.Format.Format_ARGB32)
+    img.fill(QColor("#0d1117"))
+    painter = QPainter(img)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     renderer.render(painter, QRectF(0, 0, target_w, target_h))
     painter.end()
 
-    pix.save(str(out_path), "PNG")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_name(f"{out_path.name}.{uuid4().hex[:6]}.tmp.png")
+    try:
+        if img.save(str(tmp_path), "PNG"):
+            os.replace(str(tmp_path), str(out_path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
     return out_path
 
 
@@ -823,8 +864,13 @@ def generate_ai_image_to_png(
         try:
             p_obj = Path(rp)
             if p_obj.is_file() and 0 < p_obj.stat().st_size <= 6 * 1024 * 1024:
+                with p_obj.open("rb") as fh:
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        ref_hasher.update(chunk)
                 valid_refs.append(p_obj)
-                ref_hasher.update(p_obj.read_bytes())
         except OSError:
             pass
     ref_hash = ref_hasher.hexdigest()[:12] if valid_refs else "noref"
@@ -1172,8 +1218,19 @@ def prewarm_generated_images(
     reference_image_paths: list[Path | str] | None = None,
 ) -> list[Path]:
     """Run on background worker thread before UI render: pre-generates real (non-backticked)
-    [GENERATE_IMAGE ...] tags concurrently with allow_network=True so UI rendering is instant.
+    [GENERATE_IMAGE ...] tags and ```svg / [DRAW_SVG] blocks concurrently so UI rendering is instant.
     """
+    unwrapped_text = _unwrap_real_image_tags(content or "")
+    svg_results: list[Path] = []
+    for svg_match in _SVG_FENCE_PATTERN.finditer(unwrapped_text):
+        fenced_svg = svg_match.group(1)
+        tag_title = svg_match.group(2) or "UI & Graphic Preview"
+        tag_svg = svg_match.group(3)
+        svg_code = fenced_svg if fenced_svg is not None else (tag_svg or "")
+        rendered_svg = render_svg_to_png(svg_code, title=tag_title)
+        if rendered_svg is not None and rendered_svg.exists():
+            svg_results.append(rendered_svg)
+
     scannable = _strip_code_spans_for_tag_scan(content or "")
     specs: list[tuple[str, str, str, str, str, str]] = []
     for match in _GENERATE_IMAGE_TAG_PATTERN.finditer(scannable):
@@ -1190,7 +1247,7 @@ def prewarm_generated_images(
             attrs.get("model") or "",
         ))
     if not specs:
-        return []
+        return svg_results
 
     def _run_one(sp: tuple[str, str, str, str, str, str]) -> Path | None:
         img_prompt, img_title, img_size, img_quality, img_style, img_model = sp
@@ -1207,32 +1264,52 @@ def prewarm_generated_images(
 
     if len(specs) == 1:
         res = _run_one(specs[0])
-        return [res] if res is not None else []
+        return svg_results + ([res] if res is not None else [])
 
     with ThreadPoolExecutor(max_workers=min(3, len(specs))) as pool:
         results = list(pool.map(_run_one, specs))
-    return [p for p in results if p is not None]
+    return svg_results + [p for p in results if p is not None]
 
 
 def format_markdown_and_drawings(content: str) -> str:
     """Convert AI response text into clean HTML with rendered SVG/Image pictures, headings, bold, and code blocks."""
     raw = content or ""
-    if "[PALACE_UI_SNAPSHOT" not in raw and "[GENERATE_IMAGE" not in raw:
-        cached = _md_cache_get(raw)
-        if cached is not None:
-            return cached
+    cache_key = raw
+    has_snapshot_tag = "[PALACE_UI_SNAPSHOT" in raw
+    if has_snapshot_tag:
+        snap_gen_mtime = -1
+        audit_mtime = -1
+        try:
+            snap_gen_mtime = get_generated_images_dir().stat().st_mtime_ns
+        except OSError:
+            pass
+        try:
+            audit_mtime = Path(r"C:\Palace_Idle_Sandbox\latest_ui_audit.json").stat().st_mtime_ns
+        except OSError:
+            pass
+        cache_key = f"{raw}\n@@SNAP:{snap_gen_mtime}:{audit_mtime}"
+    cached = _md_cache_get(cache_key)
+    if cached is not None:
+        return cached
     rendered_images_html: list[str] = []
+    rendered_deps: list[tuple[str, int]] = []
+    all_media_rendered = True
     code_blocks: list[str] = []
     inline_codes: list[str] = []
 
     # 1. Extract and render any ```svg ... ``` or [DRAW_SVG]...[/DRAW_SVG] blocks into real PNG images first
     def _replace_svg(match: re.Match) -> str:
+        nonlocal all_media_rendered
         fenced_svg = match.group(1)
         tag_title = match.group(2) or "UI & Graphic Preview"
         tag_svg = match.group(3)
         svg_code = fenced_svg if fenced_svg is not None else (tag_svg or "")
         png_path = render_svg_to_png(svg_code, title=tag_title)
         if png_path and png_path.exists():
+            try:
+                rendered_deps.append((str(png_path), png_path.stat().st_mtime_ns))
+            except OSError:
+                all_media_rendered = False
             file_url = png_path.as_uri()
             esc_title = html.escape(tag_title)
             esc_path = html.escape(str(png_path))
@@ -1252,6 +1329,7 @@ def format_markdown_and_drawings(content: str) -> str:
             idx = len(rendered_images_html)
             rendered_images_html.append(img_block)
             return f"@@PALACE_IMG_{idx}@@"
+        all_media_rendered = False
         return match.group(0)
 
     processed = _SVG_FENCE_PATTERN.sub(_replace_svg, _unwrap_real_image_tags(raw))
@@ -1289,6 +1367,7 @@ def format_markdown_and_drawings(content: str) -> str:
 
     # 3. Extract and render any real [GENERATE_IMAGE ...] tags
     def _replace_gen_img(match: re.Match) -> str:
+        nonlocal all_media_rendered
         attrs = _parse_generate_image_attrs(match.group(1))
         img_prompt = attrs.get("prompt", "")
         if not img_prompt:
@@ -1309,6 +1388,10 @@ def format_markdown_and_drawings(content: str) -> str:
             allow_network=False,
         )
         if png_path and png_path.exists():
+            try:
+                rendered_deps.append((str(png_path), png_path.stat().st_mtime_ns))
+            except OSError:
+                all_media_rendered = False
             file_url = png_path.as_uri()
             esc_title = html.escape(img_title)
             esc_path = html.escape(str(png_path))
@@ -1348,12 +1431,14 @@ def format_markdown_and_drawings(content: str) -> str:
             idx = len(rendered_images_html)
             rendered_images_html.append(img_block)
             return f"@@PALACE_IMG_{idx}@@"
+        all_media_rendered = False
         return f'[Image Request ({size_label}): "{img_prompt}"]'
 
     processed = _GENERATE_IMAGE_TAG_PATTERN.sub(_replace_gen_img, processed)
 
     # 2b. Extract and render any [PALACE_UI_SNAPSHOT] tags (strictly PalaceWindow widget buffer only)
     def _replace_ui_snap(match: re.Match) -> str:
+        nonlocal all_media_rendered
         explicit_path = (match.group(1) or "").strip()
         snap_title = (match.group(2) or "Live PalaceWindow Widget Self-Inspection Snapshot").strip()
         png_path: Path | None = None
@@ -1378,6 +1463,10 @@ def format_markdown_and_drawings(content: str) -> str:
             except Exception:
                 pass
         if png_path and png_path.exists():
+            try:
+                rendered_deps.append((str(png_path), png_path.stat().st_mtime_ns))
+            except OSError:
+                all_media_rendered = False
             file_url = png_path.as_uri()
             esc_title = html.escape(snap_title + audit_summary)
             esc_path = html.escape(str(png_path))
@@ -1396,6 +1485,7 @@ def format_markdown_and_drawings(content: str) -> str:
             idx = len(rendered_images_html)
             rendered_images_html.append(img_block)
             return f"@@PALACE_IMG_{idx}@@"
+        all_media_rendered = False
         return "[Palace UI Snapshot Ready]"
 
     processed = _PALACE_SNAPSHOT_PATTERN.sub(_replace_ui_snap, processed)
@@ -1437,7 +1527,8 @@ def format_markdown_and_drawings(content: str) -> str:
     for idx, iblock in enumerate(rendered_images_html):
         formatted = formatted.replace(f"@@PALACE_IMG_{idx}@@", iblock)
 
-    _md_cache_put(raw, formatted)
+    if all_media_rendered:
+        _md_cache_put(cache_key, formatted, tuple(rendered_deps))
     return formatted
 
 
@@ -1669,6 +1760,11 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
 }
 
 
+_THEME_CACHE_LOCK = threading.Lock()
+_ENSURED_THEME_DIRS: set[str] = set()
+_THEME_DICT_CACHE: dict[str, tuple[int | None, dict[str, Any]]] = {}
+
+
 def get_themes_dir() -> Path:
     d = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace" / "themes"
     d.mkdir(parents=True, exist_ok=True)
@@ -1677,6 +1773,10 @@ def get_themes_dir() -> Path:
 
 def ensure_builtin_theme_files() -> Path:
     tdir = get_themes_dir()
+    tdir_key = str(tdir)
+    with _THEME_CACHE_LOCK:
+        if tdir_key in _ENSURED_THEME_DIRS:
+            return tdir
     for tid, tdata in BUILTIN_THEMES.items():
         fp = tdir / f"{tid}.json"
         if not fp.exists():
@@ -1684,6 +1784,8 @@ def ensure_builtin_theme_files() -> Path:
                 fp.write_text(json.dumps(tdata, indent=2) + "\n", encoding="utf-8")
             except OSError:
                 pass
+    with _THEME_CACHE_LOCK:
+        _ENSURED_THEME_DIRS.add(tdir_key)
     return tdir
 
 
@@ -1729,19 +1831,30 @@ def list_available_themes() -> list[tuple[str, str]]:
 
 
 def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
-    ensure_builtin_theme_files()
+    tdir = ensure_builtin_theme_files()
     clean = (theme_id or "dark").strip().lower()
     if clean == "system":
         clean = "light" if _detect_windows_light_theme() else "dark"
+    custom_fp = tdir / f"{clean}.json"
+    try:
+        cur_mtime_ns: int | None = custom_fp.stat().st_mtime_ns
+    except OSError:
+        cur_mtime_ns = None
+    cache_key = str(custom_fp)
+    with _THEME_CACHE_LOCK:
+        cached = _THEME_DICT_CACHE.get(cache_key)
+        if cached is not None and cached[0] == cur_mtime_ns:
+            return dict(cached[1])
     base = dict(BUILTIN_THEMES.get(clean, BUILTIN_THEMES["dark"]))
-    custom_fp = get_themes_dir() / f"{clean}.json"
-    if custom_fp.exists():
+    if cur_mtime_ns is not None:
         try:
             loaded = json.loads(custom_fp.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
                 base.update(loaded)
         except Exception:
             pass
+    with _THEME_CACHE_LOCK:
+        _THEME_DICT_CACHE[cache_key] = (cur_mtime_ns, dict(base))
     return base
 
 

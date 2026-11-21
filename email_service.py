@@ -419,7 +419,12 @@ def exhaustive_search_emails(
                     typ, data = mail.uid("SEARCH", None, criteria)
                 else:
                     # Standard IMAP search across TEXT (searches headers + body across the entire folder)
-                    escaped_q = clean_q.replace('"', "")
+                    escaped_q = (
+                        clean_q.replace("\r", " ")
+                        .replace("\n", " ")
+                        .replace("\\", "\\\\")
+                        .replace('"', '\\"')
+                    )
                     typ, data = mail.uid("SEARCH", None, f'(TEXT "{escaped_q}")')
                 if typ == "OK" and data and data[0]:
                     all_uids = [u.decode("ascii", errors="ignore") for u in data[0].split() if u]

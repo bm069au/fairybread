@@ -17,7 +17,9 @@ class SessionStore:
                 from palace_config import get_palace_data_root
                 self.root = get_palace_data_root()
             except Exception:
-                self.root = Path(os.environ['LOCALAPPDATA']) / 'Palace'
+                self.root = Path(os.environ.get('LOCALAPPDATA') or str(Path.home())) / 'Palace'
+        self._deleted_session_ids: set[str] = set()
+        self._deleted_project_ids: set[str] = set()
         self.index_path = self.root / 'conversations.json'
         if self.index_path.exists():
             self.data = json.loads(self.index_path.read_text(encoding='utf-8'))
@@ -203,6 +205,44 @@ class SessionStore:
 
     def save(self):
         self.root.mkdir(parents=True, exist_ok=True)
+        if self.index_path.exists():
+            try:
+                disk_data = json.loads(self.index_path.read_text(encoding='utf-8'))
+                if isinstance(disk_data, dict):
+                    local_proj_ids = {
+                        p.get('id') for p in self.data.get('projects', []) if isinstance(p, dict)
+                    }
+                    for dp in disk_data.get('projects', []):
+                        if (
+                            isinstance(dp, dict)
+                            and self._is_hex32(dp.get('id', ''))
+                            and isinstance(dp.get('name'), str)
+                            and dp['name'].strip()
+                            and dp['id'] not in local_proj_ids
+                            and dp['id'] not in self._deleted_project_ids
+                        ):
+                            self.data.setdefault('projects', []).append(dp)
+                            local_proj_ids.add(dp['id'])
+
+                    local_sess_ids = {
+                        s.get('id') for s in self.data.get('sessions', []) if isinstance(s, dict)
+                    }
+                    for ds in disk_data.get('sessions', []):
+                        if not isinstance(ds, dict):
+                            continue
+                        sid = ds.get('id', '')
+                        if (
+                            (sid == 'legacy' or self._is_hex32(sid))
+                            and isinstance(ds.get('title'), str)
+                            and sid not in local_sess_ids
+                            and sid not in self._deleted_session_ids
+                        ):
+                            ds_pid = ds.get('project_id')
+                            if ds_pid is None or (ds_pid in local_proj_ids and ds_pid not in self._deleted_project_ids):
+                                self.data.setdefault('sessions', []).append(ds)
+                                local_sess_ids.add(sid)
+            except (OSError, ValueError):
+                pass
         temporary = self.index_path.with_name(f'.conversations-{uuid4().hex}.tmp')
         try:
             temporary.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -313,3 +353,164 @@ class SessionStore:
                 item['cost_ledger'] = dict(ledger)
                 self.save()
                 return
+
+    def rename_session(self, session_id: str, new_title: str) -> str:
+        clean = ' '.join((new_title or '').split())[:65]
+        if not clean:
+            raise ValueError('Enter a conversation title.')
+        for item in self.sessions:
+            if item.get('id') == session_id:
+                item['title'] = clean
+                self.save()
+                return clean
+        raise ValueError('Unknown conversation.')
+
+    def set_unread(self, session_id: str, unread: bool = True) -> bool:
+        for item in self.sessions:
+            if item.get('id') == session_id:
+                state = bool(unread)
+                item['unread'] = state
+                self.save()
+                return state
+        raise ValueError('Unknown conversation.')
+
+    def set_archived(self, session_id: str, archived: bool = True) -> bool:
+        for item in self.sessions:
+            if item.get('id') == session_id:
+                state = bool(archived)
+                item['archived'] = state
+                self.save()
+                return state
+        raise ValueError('Unknown conversation.')
+
+    def duplicate_session(self, session_id: str) -> str:
+        src = None
+        for item in self.sessions:
+            if item.get('id') == session_id:
+                src = item
+                break
+        if src is None:
+            raise ValueError('Unknown conversation.')
+        src_path = self.context(session_id).path
+        new_key = uuid4().hex
+        base_title = str(src.get('title') or 'Conversation').strip()
+        copy_title = f"{base_title[:58]} (Copy)"[:65]
+        new_entry = {
+            'id': new_key,
+            'title': copy_title,
+            'project_id': src.get('project_id'),
+            'pinned': False,
+            'archived': False,
+            'unread': False,
+        }
+        if isinstance(src.get('cost_ledger'), dict):
+            new_entry['cost_ledger'] = {}
+        self.sessions.insert(0, new_entry)
+        self.data['selected'] = new_key
+        if 'project_id' in new_entry:
+            self.data['selected_project'] = new_entry.get('project_id')
+        new_path = self.root / 'sessions' / f'{new_key}.jsonl'
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        if src_path.exists():
+            out_lines: list[str] = []
+            for raw_line in src_path.read_text(encoding='utf-8').splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    rec = json.loads(raw_line)
+                    if isinstance(rec, dict):
+                        rec['session_id'] = new_key
+                        out_lines.append(json.dumps(rec, ensure_ascii=False))
+                    else:
+                        out_lines.append(raw_line)
+                except ValueError:
+                    out_lines.append(raw_line)
+            if out_lines:
+                new_path.write_text('\n'.join(out_lines) + '\n', encoding='utf-8')
+        self.save()
+        return new_key
+
+    def delete_session(self, session_id: str, *, delete_history: bool = True) -> str:
+        target = None
+        for item in self.sessions:
+            if item.get('id') == session_id:
+                target = item
+                break
+        if target is None:
+            raise ValueError('Unknown conversation.')
+        hist_path = self.context(session_id).path
+        target_proj = target.get('project_id')
+        self._deleted_session_ids.add(session_id)
+        self.data['sessions'] = [s for s in self.sessions if s.get('id') != session_id]
+        if delete_history and hist_path.exists():
+            try:
+                hist_path.unlink()
+            except OSError:
+                pass
+        if not self.sessions:
+            self._add(project_id=target_proj)
+        elif self.data.get('selected') == session_id or self.data.get('selected') not in {s.get('id') for s in self.sessions}:
+            replacement = (
+                next((s for s in self.sessions if s.get('project_id') == target_proj and not s.get('archived')), None)
+                or next((s for s in self.sessions if not s.get('archived')), None)
+                or self.sessions[0]
+            )
+            self.data['selected'] = replacement['id']
+            self.data['selected_project'] = replacement.get('project_id')
+        self.save()
+        return str(self.data['selected'])
+
+    def rename_project(self, project_id: str, new_name: str) -> str:
+        clean = ' '.join((new_name or '').split())[:65]
+        if not clean:
+            raise ValueError('Enter a project name.')
+        for proj in self.projects:
+            if proj.get('id') == project_id:
+                proj['name'] = clean
+                self.save()
+                return clean
+        raise ValueError('Unknown project.')
+
+    def delete_project(self, project_id: str, *, move_sessions_to_unassigned: bool = True) -> str | None:
+        if not any(p.get('id') == project_id for p in self.projects):
+            raise ValueError('Unknown project.')
+        self._deleted_project_ids.add(project_id)
+        self.data['projects'] = [p for p in self.projects if p.get('id') != project_id]
+        if move_sessions_to_unassigned:
+            for item in self.sessions:
+                if item.get('project_id') == project_id:
+                    item['project_id'] = None
+        else:
+            removed_paths: list[Path] = []
+            kept_sessions: list[dict] = []
+            for item in self.sessions:
+                if item.get('project_id') == project_id:
+                    sid = item.get('id', '')
+                    if sid:
+                        self._deleted_session_ids.add(sid)
+                        removed_paths.append(
+                            self.root / 'session_context.jsonl'
+                            if sid == 'legacy'
+                            else self.root / 'sessions' / f'{sid}.jsonl'
+                        )
+                else:
+                    kept_sessions.append(item)
+            self.data['sessions'] = kept_sessions
+            for hp in removed_paths:
+                try:
+                    if hp.exists():
+                        hp.unlink()
+                except OSError:
+                    pass
+            if not self.sessions:
+                self._add(project_id=None)
+
+        if self.data.get('selected_project') == project_id:
+            self.data['selected_project'] = None
+        valid_ids = {s.get('id') for s in self.sessions}
+        if self.data.get('selected') not in valid_ids:
+            replacement = next((s for s in self.sessions if not s.get('archived')), None) or self.sessions[0]
+            self.data['selected'] = replacement['id']
+            self.data['selected_project'] = replacement.get('project_id')
+        self.save()
+        return self.data.get('selected')

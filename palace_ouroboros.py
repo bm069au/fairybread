@@ -24,6 +24,7 @@ import py_compile
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,25 @@ from typing import Any
 from uuid import uuid4
 
 from palace_theme import get_generated_images_dir
+
+_HANDOFF_LOCK = threading.Lock()
+
+
+def _atomic_write_text(dest: Path, text: str) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.with_name(f"{dest.name}.{uuid4().hex[:6]}.tmp")
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(text.encode("utf-8"))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(str(tmp_path), str(dest))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 _HERE_DIR = Path(__file__).resolve().parent
 _IS_OWNER_DEV_ENV = _HERE_DIR in {Path(r"C:\Palace_Live").resolve(), Path(r"E:\Visual_studio\Palace").resolve()} if Path(r"C:\Palace_Live").exists() else False
@@ -345,16 +365,30 @@ def validate_staged_palace(run_unit_tests: bool = True) -> dict[str, Any]:
 
     env = os.environ.copy()
     env["QT_QPA_PLATFORM"] = "offscreen"
-    proc = subprocess.run(
-        [sys.executable, "-B", "-m", "unittest", "test_palace_gui"],
-        cwd=str(STAGING_DIR),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=45,
-    )
-    output = (proc.stdout + "\n" + proc.stderr).strip()
-    passed = proc.returncode == 0
+    env["PYTHONPATH"] = str(STAGING_DIR)
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "unittest",
+                "test_palace_gui",
+                "test_memory_service",
+                "test_orchestrator",
+                "test_synthesizer",
+            ],
+            cwd=str(STAGING_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = (proc.stdout + "\n" + proc.stderr).strip()
+        passed = proc.returncode == 0
+    except subprocess.TimeoutExpired as exc:
+        output = f"Unit tests timed out after 60s: {exc}"
+        passed = False
     return {
         "passed": passed,
         "py_compile": "pass",
@@ -374,7 +408,7 @@ def backup_live_to_last_known_good() -> Path:
 
 
 def rollback_to_last_known_good() -> bool:
-    r"""Restore `last_known_good` back into `C:\Palace_Live` and `E:\Visual_studio\Palace`."""
+    r"""Restore `last_known_good` back into `C:\Palace_Live` (preserving owner repo on E:)."""
     if not LAST_KNOWN_GOOD_DIR.exists():
         return False
     restored = 0
@@ -382,7 +416,7 @@ def rollback_to_last_known_good() -> bool:
         if py_file.name in EDITABLE_PALACE_FILES:
             if LIVE_DIR.exists():
                 shutil.copy2(py_file, LIVE_DIR / py_file.name)
-            if SOURCE_REPO_DIR.exists():
+            if SOURCE_REPO_DIR.exists() and SOURCE_REPO_DIR.resolve() == LIVE_DIR.resolve():
                 shutil.copy2(py_file, SOURCE_REPO_DIR / py_file.name)
             restored += 1
     return restored > 0
@@ -423,11 +457,11 @@ def write_crash_report(
         },
         "traceback": (traceback_str or "")[-2500:],
     }
-    CRASH_REPORT_PATH.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    payload_text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    _atomic_write_text(CRASH_REPORT_PATH, payload_text)
     if failed_edition:
         q_dir = QUARANTINE_DIR / failed_edition
-        q_dir.mkdir(parents=True, exist_ok=True)
-        (q_dir / "crash_report.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        _atomic_write_text(q_dir / "crash_report.json", payload_text)
     return CRASH_REPORT_PATH
 
 
@@ -507,8 +541,19 @@ def create_code_edition_snapshot(
         fp = src / fname
         if fp.exists():
             dst = ver_dir / fname
-            shutil.copy2(fp, dst)
-            file_hashes[fname] = _compute_file_sha256(dst)
+            h = hashlib.sha256()
+            with fp.open("rb") as src_fh, dst.open("wb") as dst_fh:
+                while True:
+                    chunk = src_fh.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    dst_fh.write(chunk)
+            try:
+                shutil.copystat(fp, dst)
+            except OSError:
+                pass
+            file_hashes[fname] = h.hexdigest()
 
     manifest_core = {
         "version": ver_id,
@@ -641,61 +686,65 @@ def write_reboot_handoff(
     composer_draft: str = "",
     resumption_prompt: str = "",
     auto_resume_turn: bool = False,
+    extra_continuity: dict[str, Any] | None = None,
 ) -> tuple[bool, str, dict[str, Any]]:
     """Atomically write `reboot_handoff.json` with L6 Circuit Breaker protection."""
-    SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
-    now_ts = time.time()
-    recent_timestamps: list[float] = []
+    with _HANDOFF_LOCK:
+        SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
+        now_ts = time.time()
+        recent_timestamps: list[float] = []
 
-    if HANDOFF_PATH.exists():
-        try:
-            prev = json.loads(HANDOFF_PATH.read_text(encoding="utf-8"))
-            for ts in prev.get("reboot", {}).get("recent_reboot_timestamps", []):
-                if now_ts - float(ts) <= REBOOT_WINDOW_SECONDS:
-                    recent_timestamps.append(float(ts))
-        except Exception:
-            pass
+        if HANDOFF_PATH.exists():
+            try:
+                prev = json.loads(HANDOFF_PATH.read_text(encoding="utf-8"))
+                for ts in prev.get("reboot", {}).get("recent_reboot_timestamps", []):
+                    if now_ts - float(ts) <= REBOOT_WINDOW_SECONDS:
+                        recent_timestamps.append(float(ts))
+            except Exception:
+                pass
 
-    if len(recent_timestamps) >= MAX_REBOOTS_IN_WINDOW:
-        return (
-            False,
-            f"CIRCUIT BREAKER TRIPPED: {len(recent_timestamps)} reboots in last {int(REBOOT_WINDOW_SECONDS)}s. Auto-reboot halted.",
-            {},
-        )
+        if len(recent_timestamps) >= MAX_REBOOTS_IN_WINDOW:
+            return (
+                False,
+                f"CIRCUIT BREAKER TRIPPED: {len(recent_timestamps)} reboots in last {int(REBOOT_WINDOW_SECONDS)}s. Auto-reboot halted.",
+                {},
+            )
 
-    recent_timestamps.append(now_ts)
-    payload = {
-        "schema_version": 1,
-        "created_at": datetime.now().isoformat(),
-        "handoff_id": str(uuid4()),
-        "consumed": False,
-        "reboot": {
-            "reason": reason,
-            "reboot_count_in_window": len(recent_timestamps),
-            "recent_reboot_timestamps": recent_timestamps,
-            "applied_diff_summary": applied_diff_summary,
-            "test_results": test_results,
-        },
-        "session": {
-            "session_id": session_id,
-            "scroll_position": scroll_position,
-            "active_squad": active_squad or [],
-            "composer_draft": composer_draft,
-        },
-        "continuity": {
+        recent_timestamps.append(now_ts)
+        continuity_block: dict[str, Any] = {
             "resumption_prompt": resumption_prompt,
             "auto_resume_turn": auto_resume_turn,
-        },
-    }
+        }
+        if isinstance(extra_continuity, dict):
+            for k, v in extra_continuity.items():
+                continuity_block[str(k)] = v
 
-    tmp_path = HANDOFF_PATH.with_suffix(".json.tmp")
-    data_bytes = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    with open(tmp_path, "wb") as fh:
-        fh.write(data_bytes)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp_path, HANDOFF_PATH)
-    return True, "Handoff written atomically.", payload
+        payload = {
+            "schema_version": 1,
+            "created_at": datetime.now().isoformat(),
+            "handoff_id": str(uuid4()),
+            "consumed": False,
+            "reboot": {
+                "reason": reason,
+                "reboot_count_in_window": len(recent_timestamps),
+                "recent_reboot_timestamps": recent_timestamps,
+                "applied_diff_summary": applied_diff_summary,
+                "test_results": test_results,
+            },
+            "session": {
+                "session_id": session_id,
+                "scroll_position": scroll_position,
+                "active_squad": active_squad or [],
+                "composer_draft": composer_draft,
+            },
+            "continuity": continuity_block,
+        }
+
+        _atomic_write_text(
+            HANDOFF_PATH,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
+        return True, "Handoff written atomically.", payload
 
 
 def read_pending_handoff(consume: bool = True) -> dict[str, Any] | None:

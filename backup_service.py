@@ -267,6 +267,18 @@ def create_full_backup_zip(
     return manifest
 
 
+def _safe_resolve_under(base_dir: Path, rel_path: str, *, label: str) -> Path:
+    """Resolve `rel_path` strictly inside `base_dir` to block ZipSlip / path traversal."""
+    clean_rel = (rel_path or "").replace("\\", "/").lstrip("/")
+    if not clean_rel or rel_path.startswith(("/", "\\")) or ":" in rel_path.split("/")[0]:
+        raise ValueError(f"Unsafe path in {label}: {rel_path}")
+    base_resolved = base_dir.resolve()
+    candidate = (base_resolved / clean_rel).resolve()
+    if not candidate.is_relative_to(base_resolved):
+        raise ValueError(f"Unsafe path traversal in {label}: {rel_path}")
+    return candidate
+
+
 def restore_full_backup_zip(
     src_zip_path: Path,
     *,
@@ -289,6 +301,12 @@ def restore_full_backup_zip(
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         extract_dir = Path(tmp_dir_str)
         with zipfile.ZipFile(src_zip, "r") as zf:
+            for member in zf.infolist():
+                if ((member.external_attr >> 16) & 0o170000) == 0o120000:
+                    raise ValueError(f"Unsafe symlink in backup archive: {member.filename}")
+                if not member.filename:
+                    continue
+                _safe_resolve_under(extract_dir, member.filename, label="backup archive")
             zf.extractall(extract_dir)
 
         manifest_path = extract_dir / "manifest.json"
@@ -300,7 +318,7 @@ def restore_full_backup_zip(
 
         # 1. Verify SHA-256 integrity of every file BEFORE modifying live disk state
         for arc_rel, meta in files_meta.items():
-            fp = extract_dir / arc_rel
+            fp = _safe_resolve_under(extract_dir, str(arc_rel), label="backup manifest")
             if not fp.exists():
                 raise ValueError(f"Corrupt backup archive: missing file {arc_rel}")
             actual_sha = hashlib.sha256(fp.read_bytes()).hexdigest()
@@ -311,7 +329,7 @@ def restore_full_backup_zip(
         vault_rel = "vault/credentials.vault.enc"
         unlocked_vault: dict[str, Any] | None = None
         if restore_settings and vault_rel in files_meta:
-            vault_fp = extract_dir / vault_rel
+            vault_fp = _safe_resolve_under(extract_dir, vault_rel, label="backup vault")
             unlocked_vault = decrypt_vault_payload(vault_fp.read_bytes(), backup_password)
 
         same_machine = manifest.get("machine_fingerprint") == _get_machine_fingerprint()
@@ -323,7 +341,7 @@ def restore_full_backup_zip(
         for arc_rel in files_meta:
             if arc_rel == vault_rel:
                 continue
-            src_fp = extract_dir / arc_rel
+            src_fp = _safe_resolve_under(extract_dir, str(arc_rel), label="backup manifest")
             is_setting_item = (
                 arc_rel == "config/palace_config.json"
                 or arc_rel == "appdata/credentials.json"
@@ -341,10 +359,10 @@ def restore_full_backup_zip(
                 continue
             elif arc_rel.startswith("appdata/"):
                 sub_rel = arc_rel[len("appdata/") :]
-                target = root / sub_rel
+                target = _safe_resolve_under(root, sub_rel, label="appdata restore target")
             elif arc_rel.startswith("sandbox/"):
                 sub_rel = arc_rel[len("sandbox/") :]
-                target = Path(r"C:\Palace_Idle_Sandbox") / sub_rel
+                target = _safe_resolve_under(Path(r"C:\Palace_Idle_Sandbox"), sub_rel, label="sandbox restore target")
             else:
                 continue
 

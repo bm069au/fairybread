@@ -14,7 +14,7 @@ class CerebrasProvider(AIProvider):
         model: str = "gpt-oss-120b",
         timeout: float = 45.0,
     ):
-        self.client = Cerebras(api_key=api_key, timeout=timeout)
+        self.client = Cerebras(api_key=api_key, timeout=timeout, max_retries=0)
         clean_model = (model or "gpt-oss-120b").strip()
         if clean_model.lower() in _RETIRED_CEREBRAS_MODELS:
             clean_model = "gpt-oss-120b"

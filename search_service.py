@@ -101,6 +101,16 @@ _ORGANIC_DETAIL_HIGH_RE = re.compile(
 )
 
 
+_READ_ONLY_ADVISORY_RE = re.compile(
+    r"\b(?:"
+    r"read[- ]only|advisory(?:\s+review)?|review\s+only|audit\s+only|report\s+only|"
+    r"do\s+not\s+(?:edit|modify|patch|change|write)|don'?t\s+(?:edit|modify|patch|change|write)|"
+    r"plan\s+first|without\s+editing"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def detect_organic_turn_intents(text: str) -> dict[str, Any]:
     """Infer natural-language authorization, Fairybread self-modification intent, and detail preference."""
     raw = (text or "").strip()
@@ -108,9 +118,13 @@ def detect_organic_turn_intents(text: str) -> dict[str, Any]:
         return {"auto_approved": False, "self_code_change_intent": False, "output_detail_override": ""}
     att_marker = "\n\nATTACHED FILE EXCERPTS (user-provided reference material):"
     clean = raw.split(att_marker, 1)[0].strip()
-    auto_approved = bool(_ORGANIC_AUTO_APPROVE_RE.search(clean))
-    self_code_change_intent = bool(
-        _FAIRYBREAD_SELF_TARGET_RE.search(clean) and _CODE_MODIFY_VERB_RE.search(clean)
+    explicit_slash_autopatch = bool(re.search(r"(?:^|\s)/aut(?:o-?patch|hpatch)\b", clean, re.IGNORECASE))
+    is_read_only_request = bool(_READ_ONLY_ADVISORY_RE.search(clean)) and not explicit_slash_autopatch
+    auto_approved = False if is_read_only_request else bool(_ORGANIC_AUTO_APPROVE_RE.search(clean))
+    self_code_change_intent = (
+        False
+        if is_read_only_request
+        else bool(_FAIRYBREAD_SELF_TARGET_RE.search(clean) and _CODE_MODIFY_VERB_RE.search(clean))
     )
     if _ORGANIC_DETAIL_CONCISE_RE.search(clean):
         detail_ov = "concise"
@@ -151,12 +165,16 @@ def parse_turn_commands(
 
     found_cmds: set[str] = set()
     restore_target = ""
+    restore_targets: list[str] = []
 
     def _strip_restore(m: re.Match) -> str:
         nonlocal restore_target
         found_cmds.add("restore")
         arg = (m.group(1) or "").strip().lower()
-        restore_target = arg if arg else "previous"
+        target_val = arg if arg else "previous"
+        restore_targets.append(target_val)
+        if not restore_target:
+            restore_target = target_val
         return ""
 
     user_part = _RESTORE_COMMAND_RE.sub(_strip_restore, user_part)
@@ -206,6 +224,7 @@ def parse_turn_commands(
         "tangent": tangent,
         "full_render": full_render,
         "restore_target": restore_target,
+        "multiple_restores": len(restore_targets) > 1,
         "commands": sorted(found_cmds),
         "auto_approved": organic["auto_approved"],
         "self_code_change_intent": organic["self_code_change_intent"],

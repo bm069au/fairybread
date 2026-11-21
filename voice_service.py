@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
 import io
+import json
 import math
 import os
 from pathlib import Path
@@ -16,18 +17,85 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable
+import urllib.error
+import urllib.request
 import wave
 
 from credential_store import CredentialStore
-from palace_config import CONFIG_PATH, _read_raw_config, _write_raw_config
+from palace_config import CONFIG_PATH, _read_raw_config, _write_raw_config, get_palace_data_root
 
 
 TTS_ENGINES: list[tuple[str, str]] = [
-    ("auto", "Auto — Best Human Voice (OpenAI → Gemini → System)"),
-    ("openai", "OpenAI Neural (gpt-4o-mini-tts · Streaming)"),
-    ("gemini", "Gemini Neural (gemini-3.8-flash-lite-tts)"),
-    ("system", "Windows System Fallback (SAPI 5 · Offline)"),
+    ("auto", "Auto — Best Ready Voice (OpenAI → Gemini → Groq → System)"),
+    ("openai", "OpenAI Neural (gpt-4o-mini-tts · ~$0.015/min)"),
+    ("gemini", "Gemini Neural (gemini-3.8-flash-lite-tts · ~$0.012/min)"),
+    ("groq", "Groq Orpheus (orpheus-v1-english · ~$0.02/min)"),
+    ("cartesia", "Cartesia Sonic (~$0.045/1k chars · ~50ms streaming)"),
+    ("elevenlabs", "ElevenLabs (~$0.18/1k chars · Studio / Cloning)"),
+    ("deepgram", "Deepgram Aura (~$0.025/1k chars · Low-Latency)"),
+    ("system", "Windows System Offline (SAPI 5 · Free)"),
 ]
+
+TTS_ENGINE_SHORT_LABELS: dict[str, str] = {
+    "auto": "Auto",
+    "openai": "OpenAI",
+    "gemini": "Gemini",
+    "groq": "Groq Orpheus",
+    "cartesia": "Cartesia Sonic",
+    "elevenlabs": "ElevenLabs",
+    "deepgram": "Deepgram Aura",
+    "system": "Windows Offline",
+}
+
+TTS_EXTERNAL_KEY_META: dict[str, dict[str, Any]] = {
+    "cartesia": {
+        "cred_key": "cartesia",
+        "display_name": "Cartesia Sonic",
+        "key_url": "https://play.cartesia.ai/keys",
+        "billing_url": "https://play.cartesia.ai",
+        "key_prefix_hint": "sk_car_...",
+        "rate_hint": "~$0.045 / 1k chars · ~50ms Sonic streaming",
+        "pricing_summary": "Free: $0/mo (20,000 credits ≈ ~25 min, no card) · Pro: $5/mo (100,000 credits ≈ ~2 hrs, card) · Startup: $49/mo (~1.25M credits)",
+        "blurb": "Cartesia Sonic uses its own Sonic API key at play.cartesia.ai (do NOT sign up for Voice Agents / Line).",
+        "setup_steps": [
+            "Open play.cartesia.ai/keys directly (skip the cartesia.ai marketing homepage).",
+            "Sign in or create a Free account — includes 20,000 credits/month (~25 min of Sonic speech, no card needed to test).",
+            "IGNORE any prompt for 'Voice Agents' or 'Line' — that is a separate per-minute phone-agent service (Fairybread already provides the AI brain).",
+            "Go to API Keys → New API Key → create a Standard API Key (starts with sk_car_..., NOT an Admin key sk_car_admin_...), copy it once, and paste it below.",
+            "When you want more than Free: open Subscription / Billing at play.cartesia.ai → pick Pro ($5/mo by credit/debit card) → leave Overages OFF for a hard monthly cap (zero surprise bills).",
+        ],
+    },
+    "elevenlabs": {
+        "cred_key": "elevenlabs",
+        "display_name": "ElevenLabs",
+        "key_url": "https://elevenlabs.io/app/settings/api-keys",
+        "billing_url": "https://elevenlabs.io/app/subscription",
+        "key_prefix_hint": "sk_... (xi-api-key)",
+        "rate_hint": "~$0.18 / 1k chars · Studio quality & voice cloning",
+        "pricing_summary": "Free: 10,000 chars/mo · Starter: $5/mo (30,000 chars) · Creator: $22/mo (100,000 chars)",
+        "blurb": "ElevenLabs requires an ElevenLabs API key (~$0.18/1k chars; ~10k–30k free/starter chars). Paste it below or revert to a ready voice.",
+        "setup_steps": [
+            "Open elevenlabs.io/app/settings/api-keys and sign in.",
+            "Create a new API Key (for live remaining-character balance readout in Fairybread, keep Subscription/User read access enabled).",
+            "Free gives 10,000 chars/month; paid Starter ($5/mo) and Creator ($22/mo) use monthly subscription plans billed by card.",
+        ],
+    },
+    "deepgram": {
+        "cred_key": "deepgram",
+        "display_name": "Deepgram Aura",
+        "key_url": "https://console.deepgram.com/",
+        "billing_url": "https://console.deepgram.com/",
+        "key_prefix_hint": "Deepgram Token",
+        "rate_hint": "~$0.025 / 1k chars · Low-latency Aura-2 voices",
+        "pricing_summary": "Free Starter: $200 welcome credit (no expiry catch on signup promo) · Pay-as-you-go: ~$0.025 / 1k chars via card",
+        "blurb": "Deepgram Aura requires a Deepgram API key (~$0.025/1k chars). Paste it below to unlock Aura-2 voices.",
+        "setup_steps": [
+            "Open console.deepgram.com and select your project.",
+            "Go to Settings → API Keys → Create a New API Key (choose Member or Owner role if you want Fairybread to display live USD balance).",
+            "New accounts receive $200 free starter credit; Pay-as-you-go top-ups & cards are managed under Billing in the Deepgram Console.",
+        ],
+    },
+}
 
 OPENAI_TTS_VOICES: list[tuple[str, str]] = [
     ("coral", "Coral — Warm, Natural Female (Default)"),
@@ -52,6 +120,52 @@ GEMINI_TTS_VOICES: list[tuple[str, str]] = [
     ("Zephyr", "Zephyr — Bright, Natural Female"),
     ("Leda", "Leda — Soft, Relaxed Female"),
     ("Orus", "Orus — Steady, Clear Male"),
+]
+
+GROQ_ORPHEUS_VOICES: list[tuple[str, str]] = [
+    ("autumn", "Autumn — Warm Conversational Female"),
+    ("diana", "Diana — Clear Natural Female"),
+    ("hannah", "Hannah — Friendly Expressive Female"),
+    ("austin", "Austin — Natural Conversational Male"),
+    ("daniel", "Daniel — Deep Steady Male"),
+    ("troy", "Troy — Crisp Upbeat Male"),
+]
+
+CARTESIA_TTS_VOICES: list[tuple[str, str]] = [
+    ("db6b0ed5-d5d3-463d-ae85-518a07d3c2b4", "Skylar — Friendly American Female (Default)"),
+    ("47c38ca4-5f35-497b-b1a3-415245fb35e1", "Daniel — Crisp American Male"),
+    ("86faee7e-bf54-4293-bd90-076138544609", "Paige — Calm Articulate American Female"),
+    ("30894953-bcce-41fe-892c-15ce19c843ff", "Parker — Casual Conversational American"),
+    ("694f9389-aac1-45b6-b726-9d9369183238", "Sarah — Warm Steady Female"),
+    ("12e85709-099c-480a-ba3e-875c41a9611a", "Arlo — Friendly Australian Male"),
+    ("62ae83ad-4f6a-430b-af41-a9bede9286ca", "Gemma — Crisp British Female"),
+    ("ef191366-f52f-447a-a398-ed8c0f2943a1", "Archie — Warm British Male"),
+]
+_RETIRED_CARTESIA_VOICE_IDS: set[str] = {
+    "a0e99841-438c-4a64-b679-ae501e7d6091",
+    "79a125e8-cd45-4c13-8a67-188112f4dd22",
+    "b7d50908-b17c-442d-ad8d-810c63997ed9",
+    "41534e16-2966-4c6b-9670-111411def906",
+    "c2ac25f9-ecc4-4f56-9095-651354df60c0",
+}
+CARTESIA_SAMPLE_RATE = 44100
+
+ELEVENLABS_TTS_VOICES: list[tuple[str, str]] = [
+    ("21m00Tcm4TlvDq8ikWAM", "Rachel — Calm, Warm Female (Default)"),
+    ("EXAVITQu4vr4xnSDxMaL", "Bella — Soft, Natural Female"),
+    ("ErXwobaYiN019PkySvjV", "Antoni — Warm Conversational Male"),
+    ("TxGEqnHWrfWFTfGW9XjX", "Josh — Deep Everyday Male"),
+    ("pNInz6obpgDQGcFmaJgB", "Adam — Clear Studio Narrator"),
+    ("XB0fDUnXU5powFXDhCwa", "Charlotte — Smooth Poised Female"),
+]
+
+DEEPGRAM_TTS_VOICES: list[tuple[str, str]] = [
+    ("aura-2-thalia-en", "Thalia — Warm, Clear American Female (Default)"),
+    ("aura-2-apollo-en", "Apollo — Conversational American Male"),
+    ("aura-2-andromeda-en", "Andromeda — Expressive Natural Female"),
+    ("aura-2-orion-en", "Orion — Calm Deep Male"),
+    ("aura-2-arcas-en", "Arcas — Friendly Crisp Male"),
+    ("aura-2-luna-en", "Luna — Soft Relaxed Female"),
 ]
 
 VOICE_STYLE_PRESETS: dict[str, tuple[str, str]] = {
@@ -83,8 +197,16 @@ VOICE_STYLE_PRESETS: dict[str, tuple[str, str]] = {
 
 DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "tts_engine": "auto",
+    "tts_fallback_engine": "auto",
+    "voice_llm_provider": "auto",
+    "voice_llm_fallback": "auto",
     "voice_name": "coral",
     "gemini_voice_name": "Kore",
+    "groq_voice_name": "autumn",
+    "cartesia_voice_id": "db6b0ed5-d5d3-463d-ae85-518a07d3c2b4",
+    "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",
+    "deepgram_voice_name": "aura-2-thalia-en",
+    "system_voice_name": "System Default",
     "voice_style": "warm_american",
     "custom_style_prompt": "",
     "speech_speed": 1.0,
@@ -92,6 +214,8 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "mic_gain_percent": 150,
     "silence_timeout_ms": 1500,
     "volume_percent": 100,
+    "barge_in_enabled": True,
+    "status_notification_style": "text",
     "auto_speak_responses": False,
     "voice_companion_enabled": True,
     "spoken_summary_for_background": True,
@@ -100,6 +224,8 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
 _WAVE_BAR_CHARS = "▁▂▃▄▅▆▇█"
 _OPENAI_VOICE_IDS = {vid.lower(): vid for vid, _ in OPENAI_TTS_VOICES}
 _GEMINI_VOICE_IDS = {vid.lower(): vid for vid, _ in GEMINI_TTS_VOICES}
+_GROQ_VOICE_IDS = {vid.lower(): vid for vid, _ in GROQ_ORPHEUS_VOICES}
+_DEEPGRAM_VOICE_IDS = {vid.lower(): vid for vid, _ in DEEPGRAM_TTS_VOICES}
 _VALID_ENGINES = {eid for eid, _ in TTS_ENGINES}
 
 _TTS_LOCK = threading.RLock()
@@ -110,6 +236,96 @@ _ACTIVE_TTS_PROC: subprocess.Popen | None = None
 _TTS_SPEAKING = False
 _TTS_LAST_END_MONO = 0.0
 _LAST_TTS_ENGINE_USED = ""
+_LAST_TTS_STATE: dict[str, Any] = {
+    "engine_id": "",
+    "engine_label": "",
+    "voice_label": "",
+    "requested_engine": "",
+    "fell_back": False,
+    "fallback_reason": "",
+    "last_error": "",
+    "updated_ts": 0.0,
+}
+_LIVE_VOLUME_PERCENT: int | None = None
+_LIVE_VOLUME_BY_PATH: dict[str, int] = {}
+
+
+def get_last_tts_status() -> dict[str, Any]:
+    """Return a snapshot of the most recently active TTS engine/voice and any failure reason."""
+    with _TTS_LOCK:
+        return dict(_LAST_TTS_STATE)
+
+
+def _log_voice_diagnostic(message: str) -> None:
+    """Append a timestamped diagnostic note for audio/TTS debugging (size-capped at ~64 KB)."""
+    try:
+        log_path = get_palace_data_root() / "voice_diagnostics.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists() and log_path.stat().st_size > 65536:
+            tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-150:]
+            log_path.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {message}\n")
+    except Exception:
+        pass
+
+
+def set_live_volume(volume_percent: int, config_path: Path | None = None) -> int:
+    """Update active playback volume in memory immediately without restarting TTS or touching Windows Mixer."""
+    global _LIVE_VOLUME_PERCENT
+    val = max(0, min(100, int(volume_percent)))
+    with _TTS_LOCK:
+        if config_path is None or Path(config_path).resolve() == Path(CONFIG_PATH).resolve():
+            _LIVE_VOLUME_PERCENT = val
+        if config_path is not None:
+            _LIVE_VOLUME_BY_PATH[str(Path(config_path).resolve())] = val
+    return val
+
+
+def get_live_volume(config_path: Path = CONFIG_PATH) -> int:
+    """Read current live speaker volume in memory first, falling back to config."""
+    try:
+        res_key = str(Path(config_path).resolve())
+    except Exception:
+        res_key = ""
+    with _TTS_LOCK:
+        if res_key and res_key in _LIVE_VOLUME_BY_PATH:
+            return max(0, min(100, int(_LIVE_VOLUME_BY_PATH[res_key])))
+        try:
+            is_default = Path(config_path).resolve() == Path(CONFIG_PATH).resolve()
+        except Exception:
+            is_default = (config_path == CONFIG_PATH)
+        if is_default and _LIVE_VOLUME_PERCENT is not None:
+            return max(0, min(100, int(_LIVE_VOLUME_PERCENT)))
+    try:
+        cfg = load_voice_settings(config_path)
+        return max(0, min(100, int(cfg.get("volume_percent", 100))))
+    except Exception:
+        return 100
+
+
+def is_tts_engine_ready(engine_id: str, credential_store: CredentialStore | None = None) -> bool:
+    """Return True if the selected TTS engine can play immediately without adding a new API key."""
+    eid = (engine_id or "auto").strip().lower()
+    if eid in {"auto", "system"}:
+        return True
+    try:
+        store = credential_store or CredentialStore()
+        return bool((store.get_api_key(eid) or "").strip())
+    except Exception:
+        return False
+
+
+def get_tts_engine_display_label(engine_id: str, credential_store: CredentialStore | None = None) -> str:
+    """Return honest status-prefixed label (`✓ ...` vs `🔑 ... Needs key`) for Voice Engine dropdowns."""
+    eid = (engine_id or "auto").strip().lower()
+    base = dict(TTS_ENGINES).get(eid, eid)
+    if eid == "auto":
+        return f"✓ {base}"
+    if is_tts_engine_ready(eid, credential_store=credential_store):
+        return f"✓ {base} · Ready"
+    return f"🔑 {base} · Needs API key"
 
 
 def _clamp_speed(raw_speed: Any) -> float:
@@ -132,6 +348,14 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     engine = str(raw.get("tts_engine") or DEFAULT_VOICE_SETTINGS["tts_engine"]).strip().lower()
     merged["tts_engine"] = engine if engine in _VALID_ENGINES else "auto"
 
+    fb_engine = str(raw.get("tts_fallback_engine") or DEFAULT_VOICE_SETTINGS["tts_fallback_engine"]).strip().lower()
+    merged["tts_fallback_engine"] = fb_engine if fb_engine in (_VALID_ENGINES | {"none"}) else "auto"
+
+    llm_p = str(raw.get("voice_llm_provider") or "auto").strip().lower()
+    merged["voice_llm_provider"] = llm_p or "auto"
+    llm_fb = str(raw.get("voice_llm_fallback") or "auto").strip().lower()
+    merged["voice_llm_fallback"] = llm_fb or "auto"
+
     if isinstance(raw.get("voice_name"), str) and raw["voice_name"].strip():
         v_raw = raw["voice_name"].strip()
         if v_raw.lower() == "system default" and merged["tts_engine"] == "auto":
@@ -144,6 +368,26 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     if isinstance(raw.get("gemini_voice_name"), str) and raw["gemini_voice_name"].strip():
         gv_raw = raw["gemini_voice_name"].strip()
         merged["gemini_voice_name"] = _GEMINI_VOICE_IDS.get(gv_raw.lower(), gv_raw)
+
+    if isinstance(raw.get("groq_voice_name"), str) and raw["groq_voice_name"].strip():
+        grv_raw = raw["groq_voice_name"].strip()
+        merged["groq_voice_name"] = _GROQ_VOICE_IDS.get(grv_raw.lower(), grv_raw)
+
+    if isinstance(raw.get("cartesia_voice_id"), str) and raw["cartesia_voice_id"].strip():
+        cid = raw["cartesia_voice_id"].strip()
+        merged["cartesia_voice_id"] = (
+            DEFAULT_VOICE_SETTINGS["cartesia_voice_id"] if cid.lower() in _RETIRED_CARTESIA_VOICE_IDS else cid
+        )
+
+    if isinstance(raw.get("elevenlabs_voice_id"), str) and raw["elevenlabs_voice_id"].strip():
+        merged["elevenlabs_voice_id"] = raw["elevenlabs_voice_id"].strip()
+
+    if isinstance(raw.get("deepgram_voice_name"), str) and raw["deepgram_voice_name"].strip():
+        dg_raw = raw["deepgram_voice_name"].strip()
+        merged["deepgram_voice_name"] = _DEEPGRAM_VOICE_IDS.get(dg_raw.lower(), dg_raw)
+
+    if isinstance(raw.get("system_voice_name"), str) and raw["system_voice_name"].strip():
+        merged["system_voice_name"] = raw["system_voice_name"].strip()
 
     style = str(raw.get("voice_style") or DEFAULT_VOICE_SETTINGS["voice_style"]).strip().lower()
     merged["voice_style"] = style if style in VOICE_STYLE_PRESETS else "warm_american"
@@ -171,6 +415,10 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
             merged["volume_percent"] = max(0, min(100, int(raw["volume_percent"])))
         except (TypeError, ValueError):
             pass
+    if "barge_in_enabled" in raw:
+        merged["barge_in_enabled"] = bool(raw["barge_in_enabled"])
+    st_style = str(raw.get("status_notification_style") or DEFAULT_VOICE_SETTINGS["status_notification_style"]).strip().lower()
+    merged["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     if "auto_speak_responses" in raw:
         merged["auto_speak_responses"] = bool(raw["auto_speak_responses"])
     if "voice_companion_enabled" in raw:
@@ -191,6 +439,12 @@ def save_voice_settings(
     engine = str(current.get("tts_engine") or "auto").strip().lower()
     current["tts_engine"] = engine if engine in _VALID_ENGINES else "auto"
 
+    fb_engine = str(current.get("tts_fallback_engine") or "auto").strip().lower()
+    current["tts_fallback_engine"] = fb_engine if fb_engine in (_VALID_ENGINES | {"none"}) else "auto"
+
+    current["voice_llm_provider"] = str(current.get("voice_llm_provider") or "auto").strip().lower() or "auto"
+    current["voice_llm_fallback"] = str(current.get("voice_llm_fallback") or "auto").strip().lower() or "auto"
+
     voice = str(current.get("voice_name") or "coral").strip() or "coral"
     if voice.lower() == "system default" and current["tts_engine"] == "auto":
         voice = "coral"
@@ -198,6 +452,18 @@ def save_voice_settings(
 
     gvoice = str(current.get("gemini_voice_name") or "Kore").strip() or "Kore"
     current["gemini_voice_name"] = _GEMINI_VOICE_IDS.get(gvoice.lower(), gvoice)
+
+    grvoice = str(current.get("groq_voice_name") or "autumn").strip() or "autumn"
+    current["groq_voice_name"] = _GROQ_VOICE_IDS.get(grvoice.lower(), grvoice)
+
+    cid = str(current.get("cartesia_voice_id") or DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]).strip()
+    if not cid or cid.lower() in _RETIRED_CARTESIA_VOICE_IDS:
+        cid = DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]
+    current["cartesia_voice_id"] = cid
+    current["elevenlabs_voice_id"] = str(current.get("elevenlabs_voice_id") or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]).strip()
+    dgvoice = str(current.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]).strip()
+    current["deepgram_voice_name"] = _DEEPGRAM_VOICE_IDS.get(dgvoice.lower(), dgvoice)
+    current["system_voice_name"] = str(current.get("system_voice_name") or "System Default").strip() or "System Default"
 
     style = str(current.get("voice_style") or "warm_american").strip().lower()
     current["voice_style"] = style if style in VOICE_STYLE_PRESETS else "warm_american"
@@ -207,12 +473,16 @@ def save_voice_settings(
     current["mic_gain_percent"] = max(50, min(400, int(current.get("mic_gain_percent", 150))))
     current["silence_timeout_ms"] = max(700, min(4000, int(current.get("silence_timeout_ms", 1500))))
     current["volume_percent"] = max(0, min(100, int(current.get("volume_percent", 100))))
+    current["barge_in_enabled"] = bool(current.get("barge_in_enabled", True))
+    st_style = str(current.get("status_notification_style") or "text").strip().lower()
+    current["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     current["auto_speak_responses"] = bool(current.get("auto_speak_responses", False))
     current["voice_companion_enabled"] = bool(current.get("voice_companion_enabled", True))
     current["spoken_summary_for_background"] = bool(current.get("spoken_summary_for_background", True))
 
     data["voice_settings"] = current
     _write_raw_config(data, config_path)
+    set_live_volume(current["volume_percent"], config_path=config_path)
     return load_voice_settings(config_path)
 
 
@@ -235,6 +505,12 @@ def build_voice_style_instructions(
     elif sp >= 1.15:
         parts.append("Deliver at an energetic, brisk conversational tempo.")
     return " ".join(parts)
+
+
+def is_loopback_audio_device(device_name: str) -> bool:
+    """Return True if an audio input device is speaker loopback (e.g., Stereo Mix) rather than a microphone."""
+    low = (device_name or "").strip().lower()
+    return any(tok in low for tok in ("stereo mix", "what u hear", "loopback", "wave out mix"))
 
 
 def list_audio_input_devices() -> list[str]:
@@ -380,36 +656,50 @@ class LiveAudioSession:
         live_mode: bool = False,
         on_level: Callable[[int, str, bool], None] | None = None,
         on_utterance_ready: Callable[[Path], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_barge_in: Callable[[], None] | None = None,
     ):
         self.config_path = config_path
         self.live_mode = bool(live_mode)
         self.on_level = on_level
         self.on_utterance_ready = on_utterance_ready
+        self.on_error = on_error
+        self.on_barge_in = on_barge_in
 
         self._audio_source = None
         self._io_device = None
         self._timer = None
+        self._parent_widget = None
         self._sample_rate = 16000
         self._channels = 1
         self._sample_format_name = "Int16"
         self._gain_percent = 150
         self._silence_timeout_ms = 1500
+        self._barge_in_enabled = True
 
         self._pcm_buffer = bytearray()
+        self._barge_prebuf = bytearray()
+        self._barge_ticks = 0
         self._level_history: list[int] = [10, 20, 15, 25, 15, 10]
         self._speech_detected = False
         self._speech_ticks = 0
         self._last_voice_ts = 0.0
         self._started_ts = 0.0
+        self._restart_attempts = 0
+        self._healthy_ticks_since_restart = 0
+        self._poll_err_count = 0
         self.active = False
+        self.muted = False
 
     def start(self, parent_widget=None) -> tuple[bool, str]:
         from PySide6.QtCore import QTimer
         from PySide6.QtMultimedia import QAudioFormat, QAudioSource
 
+        self._parent_widget = parent_widget
         v_cfg = load_voice_settings(self.config_path)
         self._gain_percent = int(v_cfg.get("mic_gain_percent", 150))
         self._silence_timeout_ms = int(v_cfg.get("silence_timeout_ms", 1500))
+        self._barge_in_enabled = bool(v_cfg.get("barge_in_enabled", True))
         dev = resolve_qaudio_input_device(str(v_cfg.get("microphone_device", "System default")))
         if dev.isNull():
             return False, "No microphone input device detected on this system."
@@ -426,6 +716,8 @@ class LiveAudioSession:
         self._sample_format_name = str(fmt.sampleFormat())
 
         self._pcm_buffer.clear()
+        self._barge_prebuf.clear()
+        self._barge_ticks = 0
         self._speech_detected = False
         self._speech_ticks = 0
         self._started_ts = time.monotonic()
@@ -437,6 +729,9 @@ class LiveAudioSession:
             return False, f"Could not open microphone: {dev.description()}"
 
         self.active = True
+        self._restart_attempts = 0
+        self._healthy_ticks_since_restart = 0
+        self._poll_err_count = 0
         self._timer = QTimer(parent_widget)
         self._timer.setInterval(55)
         self._timer.timeout.connect(self._poll_audio)
@@ -446,14 +741,59 @@ class LiveAudioSession:
     def _poll_audio(self) -> None:
         if not self.active or self._io_device is None:
             return
+        if self._audio_source is not None:
+            try:
+                from PySide6.QtMultimedia import QAudio
+
+                state = self._audio_source.state()
+                err = self._audio_source.error()
+                if state == QAudio.State.StoppedState and self.active:
+                    if self._restart_attempts < 2:
+                        self._restart_attempts += 1
+                        self._healthy_ticks_since_restart = 0
+                        _log_voice_diagnostic(
+                            f"LiveAudioSession audio source stopped unexpectedly (error={err}); recovering attempt {self._restart_attempts}"
+                        )
+                        try:
+                            self._audio_source.stop()
+                        except Exception:
+                            pass
+                        try:
+                            self._io_device = self._audio_source.start()
+                            if self._io_device is not None:
+                                self._healthy_ticks_since_restart = 0
+                                return
+                        except Exception:
+                            pass
+                    _log_voice_diagnostic(f"LiveAudioSession lost microphone device (error={err})")
+                    if self.on_error is not None:
+                        try:
+                            self.on_error("Microphone stream disconnected — click End Talk and restart, or check Settings → Voice & Audio.")
+                        except Exception:
+                            pass
+                    self.stop(discard=True)
+                    return
+            except Exception as exc:
+                self._poll_err_count = getattr(self, "_poll_err_count", 0) + 1
+                if self._poll_err_count == 1 or self._poll_err_count % 20 == 0:
+                    _log_voice_diagnostic(f"LiveAudioSession state check error (#{self._poll_err_count}): {exc}")
         try:
             raw = bytes(self._io_device.readAll())
-        except Exception:
+        except Exception as exc:
+            self._poll_err_count = getattr(self, "_poll_err_count", 0) + 1
+            if self._poll_err_count == 1 or self._poll_err_count % 20 == 0:
+                _log_voice_diagnostic(f"LiveAudioSession readAll error (#{self._poll_err_count}): {exc}")
             raw = b""
+        if raw and getattr(self, "_restart_attempts", 0) > 0:
+            self._healthy_ticks_since_restart = getattr(self, "_healthy_ticks_since_restart", 0) + 1
+            if self._healthy_ticks_since_restart >= 36:
+                self._restart_attempts = 0
+                self._healthy_ticks_since_restart = 0
 
-        # Anti-echo gate in Live Voice Mode: discard speaker spill while Fairybread is talking
-        if self.live_mode and is_speaking(cooldown_sec=0.35):
+        if getattr(self, "muted", False):
             self._pcm_buffer.clear()
+            self._barge_prebuf.clear()
+            self._barge_ticks = 0
             self._speech_detected = False
             self._speech_ticks = 0
             self._last_voice_ts = time.monotonic()
@@ -464,6 +804,90 @@ class LiveAudioSession:
                 except Exception:
                     pass
             return
+
+        if self.live_mode:
+            if is_speaking(cooldown_sec=0.0):
+                if not self._barge_in_enabled:
+                    self._pcm_buffer.clear()
+                    self._barge_prebuf.clear()
+                    self._barge_ticks = 0
+                    self._speech_detected = False
+                    self._speech_ticks = 0
+                    self._last_voice_ts = time.monotonic()
+                    self._level_history = [0] * 6
+                    if self.on_level is not None:
+                        try:
+                            self.on_level(0, format_wave_bars(self._level_history, width=6), False)
+                        except Exception:
+                            pass
+                    return
+                if not raw:
+                    return
+                pcm16, lvl = pcm_chunk_to_int16_mono_and_level(
+                    raw,
+                    sample_format_name=self._sample_format_name,
+                    channels=self._channels,
+                    gain_percent=self._gain_percent,
+                )
+                if pcm16:
+                    self._barge_prebuf.extend(pcm16)
+                    max_pre = max(3200, int(self._sample_rate * 2 * 0.35))
+                    if len(self._barge_prebuf) > max_pre:
+                        del self._barge_prebuf[:-max_pre]
+                self._level_history.append(lvl)
+                if len(self._level_history) > 12:
+                    self._level_history = self._level_history[-12:]
+                bars = format_wave_bars(self._level_history, width=6)
+                if lvl >= 18:
+                    self._barge_ticks += 1
+                else:
+                    self._barge_ticks = 0
+                if self._barge_ticks >= 4:
+                    stop_speaking()
+                    self._pcm_buffer = bytearray(self._barge_prebuf)
+                    self._barge_prebuf.clear()
+                    self._barge_ticks = 0
+                    self._speech_detected = True
+                    self._speech_ticks = 4
+                    self._last_voice_ts = time.monotonic()
+                    if self.on_barge_in is not None:
+                        try:
+                            self.on_barge_in()
+                        except Exception:
+                            pass
+                    if self.on_level is not None:
+                        try:
+                            self.on_level(lvl, bars, True)
+                        except Exception:
+                            pass
+                    return
+                if self.on_level is not None:
+                    try:
+                        self.on_level(0, format_wave_bars([0] * 6, width=6), False)
+                    except Exception:
+                        pass
+                return
+            elif (not self._barge_in_enabled) and is_speaking(cooldown_sec=0.35):
+                self._pcm_buffer.clear()
+                self._barge_prebuf.clear()
+                self._barge_ticks = 0
+                self._speech_detected = False
+                self._speech_ticks = 0
+                self._last_voice_ts = time.monotonic()
+                self._level_history = [0] * 6
+                if self.on_level is not None:
+                    try:
+                        self.on_level(0, format_wave_bars(self._level_history, width=6), False)
+                    except Exception:
+                        pass
+                return
+            elif self._barge_prebuf:
+                if self._barge_ticks > 0:
+                    self._pcm_buffer.extend(self._barge_prebuf)
+                    self._speech_ticks = max(self._speech_ticks, self._barge_ticks)
+                    self._last_voice_ts = time.monotonic()
+                self._barge_prebuf.clear()
+                self._barge_ticks = 0
 
         if not raw:
             return
@@ -523,8 +947,8 @@ class LiveAudioSession:
         out_path = Path(tempfile.gettempdir()) / filename
         return write_pcm16_wav(out_path, raw_pcm, sample_rate=self._sample_rate)
 
-    def stop(self, filename: str = "fairybread_voice_input.wav") -> Path | None:
-        """Stop capturing and return the recorded WAV file path (if any audio was captured)."""
+    def stop(self, filename: str = "fairybread_voice_input.wav", *, discard: bool = False) -> Path | None:
+        """Stop capturing and return the recorded WAV file path (or discard buffered audio when discard=True)."""
         self.active = False
         if self._timer is not None:
             try:
@@ -532,7 +956,7 @@ class LiveAudioSession:
             except Exception:
                 pass
             self._timer = None
-        if self._io_device is not None and not (self.live_mode and is_speaking(cooldown_sec=0.35)):
+        if not discard and self._io_device is not None and not (self.live_mode and is_speaking(cooldown_sec=0.35)):
             try:
                 raw = bytes(self._io_device.readAll())
                 if raw:
@@ -552,6 +976,11 @@ class LiveAudioSession:
                 pass
             self._audio_source = None
         self._io_device = None
+        if discard:
+            self._pcm_buffer.clear()
+            self._speech_detected = False
+            self._speech_ticks = 0
+            return None
         return self.flush_utterance_to_wav(filename)
 
 
@@ -585,12 +1014,245 @@ def list_voices_for_engine(engine: str = "auto") -> list[tuple[str, str]]:
     eng = (engine or "auto").strip().lower()
     if eng == "gemini":
         return list(GEMINI_TTS_VOICES)
+    if eng == "groq":
+        return list(GROQ_ORPHEUS_VOICES)
+    if eng == "cartesia":
+        return list(CARTESIA_TTS_VOICES)
+    if eng == "elevenlabs":
+        return list(ELEVENLABS_TTS_VOICES)
+    if eng == "deepgram":
+        return list(DEEPGRAM_TTS_VOICES)
     if eng == "system":
         items = [("System Default", "System Default (Windows SAPI 5)")]
         for v in _list_sapi5_voices():
             items.append((v, v))
         return items
     return list(OPENAI_TTS_VOICES)
+
+
+def fetch_remote_tts_voices(engine: str, api_key: str, *, timeout: float = 10.0) -> list[tuple[str, str]]:
+    """Fetch live account voices for Cartesia or ElevenLabs (falls back to curated defaults on error)."""
+    eng = (engine or "").strip().lower()
+    key = (api_key or "").strip()
+    if not key:
+        return list_voices_for_engine(eng)
+    out: list[tuple[str, str]] = []
+    if eng == "cartesia":
+        req = urllib.request.Request(
+            "https://api.cartesia.ai/voices?limit=40",
+            headers={
+                "X-API-Key": key,
+                "Cartesia-Version": "2024-11-13",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        rows = payload if isinstance(payload, list) else (payload.get("data") or payload.get("voices") or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            vid = str(row.get("id") or "").strip()
+            name = str(row.get("name") or vid).strip()
+            lang = str(row.get("language") or "").strip()
+            if vid:
+                lbl = f"{name} ({lang})" if lang else name
+                out.append((vid, lbl))
+    elif eng == "elevenlabs":
+        req = urllib.request.Request(
+            "https://api.elevenlabs.io/v1/voices",
+            headers={"xi-api-key": key},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        for row in payload.get("voices") or []:
+            if not isinstance(row, dict):
+                continue
+            vid = str(row.get("voice_id") or "").strip()
+            name = str(row.get("name") or vid).strip()
+            cat = str(row.get("category") or "").strip()
+            if vid:
+                lbl = f"{name} ({cat})" if cat else name
+                out.append((vid, lbl))
+    return out or list_voices_for_engine(eng)
+
+
+def fetch_tts_account_balance(
+    engine: str,
+    api_key: str = "",
+    *,
+    timeout: float = 6.0,
+) -> dict[str, Any]:
+    """Query live subscription/credit balance when supported by the provider's standard API key."""
+    eng = (engine or "auto").strip().lower()
+    billing_urls = {
+        "cartesia": "https://play.cartesia.ai",
+        "elevenlabs": "https://elevenlabs.io/app/subscription",
+        "deepgram": "https://console.deepgram.com/",
+        "openai": "https://platform.openai.com/settings/organization/billing/overview",
+        "gemini": "https://aistudio.google.com/",
+        "groq": "https://console.groq.com/settings/billing",
+    }
+    b_url = billing_urls.get(eng, "")
+    key = (api_key or "").strip()
+
+    if eng == "system":
+        return {
+            "engine": eng,
+            "supported": False,
+            "ok": True,
+            "summary": "Offline Windows SAPI 5 — Free (no API key or balance needed)",
+            "detail": "",
+            "billing_url": "",
+        }
+    if eng == "auto":
+        return {
+            "engine": eng,
+            "supported": False,
+            "ok": True,
+            "summary": "Auto mode uses your ready voices in order (OpenAI → Gemini → Groq → Cartesia → ElevenLabs → Deepgram → System)",
+            "detail": "",
+            "billing_url": "",
+        }
+    if eng == "cartesia":
+        return {
+            "engine": eng,
+            "supported": False,
+            "ok": True,
+            "summary": "Live balance unavailable on standard sk_car_ keys (Cartesia restricts billing endpoints to Admin keys) — view credits in Billing",
+            "detail": "Leave Overages OFF in Subscription settings to keep a hard monthly cap.",
+            "billing_url": b_url,
+        }
+    if eng in {"openai", "gemini", "groq"}:
+        return {
+            "engine": eng,
+            "supported": False,
+            "ok": True,
+            "summary": f"{TTS_ENGINE_SHORT_LABELS.get(eng, eng.title())} standard API keys cannot read wallet balance — check your provider Billing portal",
+            "detail": "",
+            "billing_url": b_url,
+        }
+    if not key:
+        return {
+            "engine": eng,
+            "supported": False,
+            "ok": False,
+            "summary": f"No {TTS_ENGINE_SHORT_LABELS.get(eng, eng.title())} API key saved yet",
+            "detail": "",
+            "billing_url": b_url,
+        }
+
+    if eng == "elevenlabs":
+        try:
+            req = urllib.request.Request(
+                "https://api.elevenlabs.io/v1/user/subscription",
+                headers={"xi-api-key": key},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                sub = json.loads(resp.read().decode("utf-8", errors="replace"))
+            used = int(sub.get("character_count") or 0)
+            lim = int(sub.get("character_limit") or 0)
+            tier = str(sub.get("tier") or "free").strip()
+            rem = max(0, lim - used)
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": True,
+                "summary": f"ElevenLabs ({tier}): {rem:,} / {lim:,} chars remaining ({used:,} used)",
+                "detail": str(sub.get("status") or ""),
+                "billing_url": b_url,
+            }
+        except urllib.error.HTTPError as exc:
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": False,
+                "summary": f"ElevenLabs balance check failed (HTTP {exc.code}) — verify key permissions or Billing",
+                "detail": str(exc),
+                "billing_url": b_url,
+            }
+        except Exception as exc:
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": False,
+                "summary": f"ElevenLabs balance check failed: {exc}",
+                "detail": str(exc),
+                "billing_url": b_url,
+            }
+
+    if eng == "deepgram":
+        try:
+            headers = {"Authorization": f"Token {key}"}
+            p_req = urllib.request.Request("https://api.deepgram.com/v1/projects", headers=headers, method="GET")
+            with urllib.request.urlopen(p_req, timeout=timeout) as resp:
+                pdata = json.loads(resp.read().decode("utf-8", errors="replace"))
+            projects = pdata.get("projects") or []
+            if not projects:
+                return {
+                    "engine": eng,
+                    "supported": True,
+                    "ok": False,
+                    "summary": "Deepgram key returned no projects — check Deepgram Console",
+                    "detail": "",
+                    "billing_url": b_url,
+                }
+            pid = str(projects[0].get("project_id") or "").strip()
+            pname = str(projects[0].get("name") or pid).strip()
+            b_req = urllib.request.Request(
+                f"https://api.deepgram.com/v1/projects/{pid}/balances",
+                headers=headers,
+                method="GET",
+            )
+            with urllib.request.urlopen(b_req, timeout=timeout) as resp:
+                bdata = json.loads(resp.read().decode("utf-8", errors="replace"))
+            balances = bdata.get("balances") or []
+            total_usd = sum(float(b.get("amount") or 0.0) for b in balances if str(b.get("units") or "usd").lower() == "usd")
+            if not balances:
+                sum_txt = f"Deepgram ({pname}): no active credit balance rows"
+            else:
+                sum_txt = f"Deepgram ({pname}): ${total_usd:,.2f} USD remaining"
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": True,
+                "summary": sum_txt,
+                "detail": f"{len(balances)} balance item(s)",
+                "billing_url": b_url,
+            }
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                msg = "Deepgram key lacks billing:read permission (Audio works fine; check balance in Console)"
+            else:
+                msg = f"Deepgram balance check failed (HTTP {exc.code})"
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": False,
+                "summary": msg,
+                "detail": str(exc),
+                "billing_url": b_url,
+            }
+        except Exception as exc:
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": False,
+                "summary": f"Deepgram balance check failed: {exc}",
+                "detail": str(exc),
+                "billing_url": b_url,
+            }
+
+    return {
+        "engine": eng,
+        "supported": False,
+        "ok": True,
+        "summary": "Balance lookup not supported for this engine",
+        "detail": "",
+        "billing_url": b_url,
+    }
 
 
 def list_available_tts_voices() -> list[str]:
@@ -610,6 +1272,8 @@ def clean_text_for_speech(markdown_text: str) -> str:
     text = re.sub(r"[✓⚡⏸]\s*\[[^\]]+\]", " ", text)
     text = re.sub(r"\[GENERATE_IMAGE[^\]]*\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[PALACE_UI_SNAPSHOT[^\]]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[SAVE_MEMORY[^\]]*\].*?\[/SAVE_MEMORY\]", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'\[SAVE_MEMORY\s+(?:[^\]"]|"[^"]*")*\]', "", text, flags=re.IGNORECASE)
     text = re.sub(r"```.*?```", " [code block omitted] ", text, flags=re.DOTALL)
     text = re.sub(r"`([^`]+)`", r"\1", text)
     text = re.sub(r"(?m)^\s*\|?(?:\s*:?-{2,}:?\s*\|)+\s*$", " ", text)
@@ -732,22 +1396,67 @@ def _scale_pcm16_volume(pcm_bytes: bytes, volume_percent: int) -> bytes:
     return samples.tobytes()
 
 
+def _configure_winmm_prototypes(winmm: Any) -> None:
+    """Declare explicit 64-bit ctypes argtypes/restype for winmm.waveOut* calls."""
+    try:
+        if getattr(winmm, "_palace_prototypes_bound", False):
+            return
+        if hasattr(winmm, "waveOutOpen") and hasattr(winmm.waveOutOpen, "argtypes"):
+            winmm.waveOutOpen.argtypes = [
+                ctypes.POINTER(wintypes.HANDLE),
+                wintypes.UINT,
+                ctypes.POINTER(_WAVEFORMATEX),
+                ctypes.c_size_t,
+                ctypes.c_size_t,
+                wintypes.DWORD,
+            ]
+            winmm.waveOutOpen.restype = wintypes.UINT
+            winmm.waveOutPrepareHeader.argtypes = [wintypes.HANDLE, ctypes.POINTER(_WAVEHDR), wintypes.UINT]
+            winmm.waveOutPrepareHeader.restype = wintypes.UINT
+            winmm.waveOutWrite.argtypes = [wintypes.HANDLE, ctypes.POINTER(_WAVEHDR), wintypes.UINT]
+            winmm.waveOutWrite.restype = wintypes.UINT
+            winmm.waveOutUnprepareHeader.argtypes = [wintypes.HANDLE, ctypes.POINTER(_WAVEHDR), wintypes.UINT]
+            winmm.waveOutUnprepareHeader.restype = wintypes.UINT
+            winmm.waveOutReset.argtypes = [wintypes.HANDLE]
+            winmm.waveOutReset.restype = wintypes.UINT
+            winmm.waveOutClose.argtypes = [wintypes.HANDLE]
+            winmm.waveOutClose.restype = wintypes.UINT
+        winmm._palace_prototypes_bound = True
+    except Exception:
+        pass
+
+
 class _WaveOutStream:
-    """Low-latency 64-bit-safe Windows waveOut PCM streamer supporting instant stop()."""
+    """Low-latency 64-bit-safe Windows waveOut PCM streamer with live per-slice volume and stall recovery."""
+
+    SLICE_BYTES = 4096  # default ~85ms at 24 kHz 16-bit mono
+    MAX_INFLIGHT = 4    # ~340ms max hardware queue to eliminate underruns while keeping volume live
+
+    @staticmethod
+    def compute_slice_bytes(sample_rate: int = 24000, channels: int = 1, bits_per_sample: int = 16) -> int:
+        sr = max(8000, int(sample_rate or 24000))
+        block_align = max(2, int(channels or 1) * max(1, int(bits_per_sample or 16) // 8))
+        raw_slice = int(sr * block_align * 0.085)  # ~85 ms per buffer (~340 ms across 4 inflight buffers)
+        return max(2048, raw_slice - (raw_slice % block_align))
 
     def __init__(self, sample_rate: int = 24000, channels: int = 1, bits_per_sample: int = 16):
         if os.name != "nt" or os.environ.get("QT_QPA_PLATFORM") == "offscreen":
             raise RuntimeError("Audio hardware playback disabled in offscreen/non-Windows environment.")
         self.winmm = ctypes.windll.winmm
+        _configure_winmm_prototypes(self.winmm)
         self.hwo = wintypes.HANDLE()
-        block_align = channels * (bits_per_sample // 8)
+        self.sample_rate = max(8000, int(sample_rate or 24000))
+        ch = max(1, int(channels or 1))
+        bps = max(8, int(bits_per_sample or 16))
+        self.slice_bytes = self.compute_slice_bytes(self.sample_rate, ch, bps)
+        block_align = max(1, ch * (bps // 8))
         wfx = _WAVEFORMATEX(
             _WAVE_FORMAT_PCM,
-            channels,
-            int(sample_rate or 24000),
-            int(sample_rate or 24000) * block_align,
+            ch,
+            self.sample_rate,
+            self.sample_rate * block_align,
             block_align,
-            bits_per_sample,
+            bps,
             0,
         )
         rc = self.winmm.waveOutOpen(ctypes.byref(self.hwo), _WAVE_MAPPER, ctypes.byref(wfx), 0, 0, 0)
@@ -757,13 +1466,16 @@ class _WaveOutStream:
         self._lock = threading.Lock()
         self._closed = False
 
-    def _reap_done_locked(self) -> None:
+    def _reap_done_locked(self) -> int:
         if not self.hwo.value:
+            reaped = len(self._inflight)
             self._inflight.clear()
-            return
+            return reaped
         remaining: list[tuple[ctypes.Array[ctypes.c_char], _WAVEHDR]] = []
+        reaped = 0
         for buf, hdr in self._inflight:
             if hdr.dwFlags & _WHDR_DONE:
+                reaped += 1
                 try:
                     self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
                 except Exception:
@@ -771,42 +1483,84 @@ class _WaveOutStream:
             else:
                 remaining.append((buf, hdr))
         self._inflight = remaining
+        return reaped
 
-    def write(self, pcm_bytes: bytes, cancel_event: threading.Event) -> bool:
+    def write(
+        self,
+        pcm_bytes: bytes,
+        cancel_event: threading.Event,
+        *,
+        apply_live_volume: bool = True,
+        volume_getter: Callable[[], int] | None = None,
+    ) -> bool:
         if not pcm_bytes or len(pcm_bytes) < 2 or cancel_event.is_set() or self._closed:
             return False
         even_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
-        payload = pcm_bytes[:even_len]
+        total_written = 0
 
-        while not cancel_event.is_set():
-            with self._lock:
-                if self._closed:
+        for pos in range(0, even_len, self.slice_bytes):
+            raw_slice = pcm_bytes[pos : min(even_len, pos + self.slice_bytes)]
+            if len(raw_slice) < 2:
+                continue
+            last_progress = time.monotonic()
+            wrote_slice = False
+            while not cancel_event.is_set():
+                with self._lock:
+                    if self._closed:
+                        return total_written > 0
+                    if self._reap_done_locked() > 0:
+                        last_progress = time.monotonic()
+                    if len(self._inflight) < self.MAX_INFLIGHT:
+                        if apply_live_volume:
+                            vol = volume_getter() if volume_getter is not None else get_live_volume()
+                            payload = _scale_pcm16_volume(raw_slice, vol)
+                        else:
+                            payload = raw_slice
+                        if not payload:
+                            wrote_slice = True
+                            break
+                        buf = ctypes.create_string_buffer(payload, len(payload))
+                        hdr = _WAVEHDR(ctypes.cast(buf, ctypes.c_void_p), len(payload), 0, 0, 0, 0, None, 0)
+                        rc_prep = self.winmm.waveOutPrepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                        if rc_prep == 0:
+                            rc_wr = self.winmm.waveOutWrite(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                            if rc_wr == 0:
+                                self._inflight.append((buf, hdr))
+                                total_written += len(payload)
+                                wrote_slice = True
+                                break
+                            _log_voice_diagnostic(f"waveOutWrite failed rc={rc_wr}")
+                            try:
+                                self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                            except Exception:
+                                pass
+                        else:
+                            _log_voice_diagnostic(f"waveOutPrepareHeader failed rc={rc_prep}")
+                        return False
+                if (time.monotonic() - last_progress) > 3.0:
+                    _log_voice_diagnostic("waveOutStream.write stalled >3.0s; resetting device handle")
+                    self.stop()
                     return False
-                self._reap_done_locked()
-                if len(self._inflight) < 6:
-                    buf = ctypes.create_string_buffer(payload, len(payload))
-                    hdr = _WAVEHDR(ctypes.cast(buf, ctypes.c_void_p), len(payload), 0, 0, 0, 0, None, 0)
-                    if self.winmm.waveOutPrepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr)) == 0:
-                        if self.winmm.waveOutWrite(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr)) == 0:
-                            self._inflight.append((buf, hdr))
-                            return True
-                        try:
-                            self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
-                        except Exception:
-                            pass
-                    return False
-            time.sleep(0.015)
-        return False
+                time.sleep(0.012)
+            if cancel_event.is_set() or not wrote_slice:
+                return total_written > 0 and cancel_event.is_set()
+        return total_written > 0
 
     def drain(self, cancel_event: threading.Event) -> None:
+        last_progress = time.monotonic()
         while not cancel_event.is_set():
             with self._lock:
                 if self._closed:
                     return
-                self._reap_done_locked()
+                if self._reap_done_locked() > 0:
+                    last_progress = time.monotonic()
                 if not self._inflight:
                     return
-            time.sleep(0.015)
+            if (time.monotonic() - last_progress) > 3.0:
+                _log_voice_diagnostic("waveOutStream.drain stalled >3.0s; resetting handle")
+                self.stop()
+                return
+            time.sleep(0.012)
 
     def stop(self) -> None:
         with self._lock:
@@ -872,7 +1626,7 @@ def _stream_openai_pcm(
     """Yield even-aligned 24 kHz 16-bit mono PCM chunks from OpenAI gpt-4o-mini-tts (fallback tts-1)."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, timeout=25.0)
+    client = OpenAI(api_key=api_key, timeout=25.0, max_retries=0)
     v_name = _OPENAI_VOICE_IDS.get((voice or "coral").strip().lower(), "coral")
     sp = _clamp_speed(speed)
     attempts = [
@@ -947,6 +1701,176 @@ def _synthesize_gemini_pcm(
     raise RuntimeError(f"Gemini Neural TTS unavailable: {last_exc}")
 
 
+def _split_short_tts_chunks(text: str, max_len: int = 190) -> list[str]:
+    """Split text into <=max_len chunks at natural punctuation/whitespace for providers like Groq Orpheus."""
+    clean = " ".join((text or "").split())
+    if not clean:
+        return []
+    out: list[str] = []
+    cur = clean
+    while len(cur) > max_len:
+        cut = -1
+        for sep in (". ", "! ", "? ", "; ", ", ", " "):
+            pos = cur.rfind(sep, 0, max_len + 1)
+            if pos > 20:
+                cut = pos + (1 if sep != " " else 0)
+                break
+        if cut <= 0:
+            cut = max_len
+        piece = cur[:cut].strip()
+        if piece:
+            out.append(piece)
+        cur = cur[cut:].strip()
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _synthesize_groq_orpheus_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice: str = "autumn",
+    cancel_event: threading.Event | None = None,
+) -> tuple[bytes, int]:
+    """Synthesize a chunk via Groq canopylabs/orpheus-v1-english and return (pcm16_mono_bytes, sample_rate)."""
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1",
+        timeout=25.0,
+        max_retries=0,
+    )
+    gv = _GROQ_VOICE_IDS.get((voice or "autumn").strip().lower(), "autumn")
+    combined_pcm = bytearray()
+    out_sr = 24000
+    for sub in _split_short_tts_chunks(chunk_text, max_len=190):
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        raw_buf = bytearray()
+        with client.audio.speech.with_streaming_response.create(
+            model="canopylabs/orpheus-v1-english",
+            voice=gv,
+            input=sub,
+            response_format="wav",
+        ) as resp:
+            for piece in resp.iter_bytes(chunk_size=8192):
+                if cancel_event is not None and cancel_event.is_set():
+                    return b"", out_sr
+                if piece:
+                    raw_buf.extend(piece)
+        if cancel_event is not None and cancel_event.is_set():
+            break
+        pcm, sr = _decode_audio_payload(bytes(raw_buf), "audio/wav")
+        if pcm:
+            combined_pcm.extend(pcm)
+            out_sr = sr
+    return bytes(combined_pcm), out_sr
+
+
+def _iter_http_pcm_stream(req: urllib.request.Request, *, cancel_event: threading.Event | None = None, timeout: float = 25.0):
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        carry = b""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            raw_chunk = resp.read(4096)
+            if not raw_chunk:
+                break
+            buf = carry + raw_chunk
+            usable = len(buf) - (len(buf) % 2)
+            if usable:
+                yield buf[:usable]
+            carry = buf[usable:]
+
+
+def _stream_cartesia_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice_id: str,
+    speed: float = 1.0,
+    cancel_event: threading.Event | None = None,
+):
+    """Stream raw 44.1 kHz 16-bit mono PCM chunks from Cartesia Sonic TTS over HTTPS."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        raise ValueError("cartesia: missing API key")
+    vid = (voice_id or DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]).strip()
+    body = json.dumps({
+        "model_id": "sonic-latest",
+        "transcript": chunk_text,
+        "voice": {"mode": "id", "id": vid},
+        "output_format": {
+            "container": "raw",
+            "encoding": "pcm_s16le",
+            "sample_rate": CARTESIA_SAMPLE_RATE,
+        },
+        "generation_config": {
+            "speed": _clamp_speed(speed),
+        },
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.cartesia.ai/tts/bytes",
+        data=body,
+        headers={
+            "X-API-Key": clean_key,
+            "Cartesia-Version": "2025-04-16",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    yield from _iter_http_pcm_stream(req, cancel_event=cancel_event)
+
+
+def _stream_elevenlabs_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice_id: str,
+    cancel_event: threading.Event | None = None,
+):
+    """Stream raw 24kHz 16-bit mono PCM chunks from ElevenLabs Flash/Multilingual TTS over HTTPS."""
+    vid = (voice_id or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]).strip()
+    body = json.dumps({
+        "text": chunk_text,
+        "model_id": "eleven_flash_v2_5",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{vid}/stream?output_format=pcm_24000",
+        data=body,
+        headers={
+            "xi-api-key": api_key.strip(),
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    yield from _iter_http_pcm_stream(req, cancel_event=cancel_event)
+
+
+def _stream_deepgram_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice_model: str,
+    cancel_event: threading.Event | None = None,
+):
+    """Stream raw 24kHz 16-bit mono PCM chunks from Deepgram Aura TTS over HTTPS."""
+    vm = _DEEPGRAM_VOICE_IDS.get((voice_model or "").strip().lower(), DEFAULT_VOICE_SETTINGS["deepgram_voice_name"])
+    body = json.dumps({"text": chunk_text}).encode("utf-8")
+    req = urllib.request.Request(
+        f"https://api.deepgram.com/v1/speak?model={vm}&encoding=linear16&sample_rate=24000&container=none",
+        data=body,
+        headers={
+            "Authorization": f"Token {api_key.strip()}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    yield from _iter_http_pcm_stream(req, cancel_event=cancel_event)
+
+
 def _speak_windows_sapi5(
     spoken: str,
     *,
@@ -1007,19 +1931,23 @@ def synthesize_speech_pcm(
     cfg = load_voice_settings(config_path)
     store = credential_store or CredentialStore()
     engine = (engine_override or cfg.get("tts_engine") or "auto").strip().lower()
+    speed = _clamp_speed(cfg.get("speech_speed", 1.0))
     style_instr = build_voice_style_instructions(
         str(cfg.get("voice_style") or "warm_american"),
         str(cfg.get("custom_style_prompt") or ""),
-        float(cfg.get("speech_speed", 1.0)),
+        speed,
     )
-    speed = _clamp_speed(cfg.get("speech_speed", 1.0))
 
     order = {
-        "auto": ["openai", "gemini"],
-        "openai": ["openai", "gemini"],
-        "gemini": ["gemini", "openai"],
+        "auto": ["openai", "gemini", "groq"],
+        "openai": ["openai", "gemini", "groq"],
+        "gemini": ["gemini", "openai", "groq"],
+        "groq": ["groq", "openai", "gemini"],
+        "cartesia": ["cartesia", "openai", "gemini"],
+        "elevenlabs": ["elevenlabs", "openai", "gemini"],
+        "deepgram": ["deepgram", "openai", "gemini"],
         "system": [],
-    }.get(engine, ["openai", "gemini"])
+    }.get(engine, ["openai", "gemini", "groq"])
 
     errors: list[str] = []
     for candidate in order:
@@ -1058,6 +1986,73 @@ def synthesize_speech_pcm(
                     return pcm, sr, f"gemini:{gm}"
             except Exception as exc:
                 errors.append(f"gemini: {exc}")
+        elif candidate == "groq":
+            gr_key = store.get_api_key("groq")
+            if not gr_key:
+                errors.append("groq: missing API key")
+                continue
+            try:
+                pcm, sr = _synthesize_groq_orpheus_pcm(
+                    spoken,
+                    api_key=gr_key,
+                    voice=str(cfg.get("groq_voice_name") or "autumn"),
+                )
+                if pcm:
+                    return pcm, sr, "groq:canopylabs/orpheus-v1-english"
+            except Exception as exc:
+                errors.append(f"groq: {exc}")
+        elif candidate == "cartesia":
+            ckey = store.get_api_key("cartesia")
+            if not ckey:
+                errors.append("cartesia: missing API key")
+                continue
+            try:
+                buf = bytearray()
+                for c_bytes in _stream_cartesia_pcm(
+                    spoken,
+                    api_key=ckey,
+                    voice_id=str(cfg.get("cartesia_voice_id") or DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]),
+                    speed=speed,
+                ):
+                    buf.extend(c_bytes)
+                if buf:
+                    return bytes(buf), CARTESIA_SAMPLE_RATE, "cartesia:sonic-latest"
+            except Exception as exc:
+                errors.append(f"cartesia: {exc}")
+        elif candidate == "elevenlabs":
+            ekey = store.get_api_key("elevenlabs")
+            if not ekey:
+                errors.append("elevenlabs: missing API key")
+                continue
+            try:
+                buf = bytearray()
+                for c_bytes in _stream_elevenlabs_pcm(
+                    spoken,
+                    api_key=ekey,
+                    voice_id=str(cfg.get("elevenlabs_voice_id") or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]),
+                ):
+                    buf.extend(c_bytes)
+                if buf:
+                    return bytes(buf), 24000, "elevenlabs:eleven_flash_v2_5"
+            except Exception as exc:
+                errors.append(f"elevenlabs: {exc}")
+        elif candidate == "deepgram":
+            dkey = store.get_api_key("deepgram")
+            if not dkey:
+                errors.append("deepgram: missing API key")
+                continue
+            try:
+                buf = bytearray()
+                for c_bytes in _stream_deepgram_pcm(
+                    spoken,
+                    api_key=dkey,
+                    voice_model=str(cfg.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]),
+                ):
+                    buf.extend(c_bytes)
+                if buf:
+                    return bytes(buf), 24000, "deepgram:aura-2"
+            except Exception as exc:
+                errors.append(f"deepgram: {exc}")
 
     raise RuntimeError("No neural TTS engine succeeded (" + "; ".join(errors or ["system mode selected"]) + ")")
 
@@ -1088,6 +2083,47 @@ def stop_speaking() -> None:
             _TTS_LAST_END_MONO = time.monotonic()
 
 
+def _build_tts_candidate_order(
+    primary_engine: str,
+    fallback_engine: str,
+    store: CredentialStore,
+) -> list[str]:
+    pri = (primary_engine or "auto").strip().lower()
+    fb = (fallback_engine or "auto").strip().lower()
+    all_ready = [
+        eid
+        for eid in ("openai", "gemini", "groq", "cartesia", "elevenlabs", "deepgram")
+        if is_tts_engine_ready(eid, credential_store=store)
+    ]
+    order: list[str] = []
+    if pri == "auto":
+        for eid in ("openai", "gemini", "groq"):
+            if eid not in order:
+                order.append(eid)
+        for eid in all_ready:
+            if eid not in order:
+                order.append(eid)
+        if fb not in {"auto", "none"} and fb not in order:
+            order.append(fb)
+        if fb != "none" and "system" not in order:
+            order.append("system")
+        return order
+
+    order.append(pri)
+    if fb == "none":
+        return order
+    if fb != "auto":
+        if fb not in order:
+            order.append(fb)
+        return order
+    for eid in all_ready:
+        if eid not in order:
+            order.append(eid)
+    if "system" not in order:
+        order.append("system")
+    return order
+
+
 def speak_agent_response(
     text: str,
     *,
@@ -1095,6 +2131,8 @@ def speak_agent_response(
     credential_store: CredentialStore | None = None,
     on_engine_status: Callable[[str], None] | None = None,
     on_finished: Callable[[], None] | None = None,
+    on_speech_meta: Callable[[dict[str, Any]], None] | None = None,
+    on_error: Callable[[str], None] | None = None,
 ) -> bool:
     """Speak an agent or Voice Companion response aloud with streaming human neural TTS and automatic fallbacks."""
     global _SPEECH_GEN, _ACTIVE_CANCEL_EVENT, _ACTIVE_WAVEOUT, _TTS_SPEAKING, _TTS_LAST_END_MONO, _LAST_TTS_ENGINE_USED
@@ -1104,7 +2142,7 @@ def speak_agent_response(
     if not spoken:
         return False
     cfg = load_voice_settings(config_path)
-    vol = max(0, min(100, int(cfg.get("volume_percent", 100))))
+    vol = get_live_volume(config_path)
     if vol == 0:
         return False
 
@@ -1113,14 +2151,20 @@ def speak_agent_response(
 
     store = credential_store or CredentialStore()
     engine = str(cfg.get("tts_engine") or "auto").strip().lower()
+    fb_engine = str(cfg.get("tts_fallback_engine") or "auto").strip().lower()
+    speed = _clamp_speed(cfg.get("speech_speed", 1.0))
     style_instr = build_voice_style_instructions(
         str(cfg.get("voice_style") or "warm_american"),
         str(cfg.get("custom_style_prompt") or ""),
-        float(cfg.get("speech_speed", 1.0)),
+        speed,
     )
-    speed = _clamp_speed(cfg.get("speech_speed", 1.0))
     voice_name = str(cfg.get("voice_name") or "coral").strip()
     gemini_voice = str(cfg.get("gemini_voice_name") or "Kore").strip()
+    groq_voice = str(cfg.get("groq_voice_name") or "autumn").strip()
+    cartesia_vid = str(cfg.get("cartesia_voice_id") or DEFAULT_VOICE_SETTINGS["cartesia_voice_id"]).strip()
+    eleven_vid = str(cfg.get("elevenlabs_voice_id") or DEFAULT_VOICE_SETTINGS["elevenlabs_voice_id"]).strip()
+    deepgram_voice = str(cfg.get("deepgram_voice_name") or DEFAULT_VOICE_SETTINGS["deepgram_voice_name"]).strip()
+    system_voice = str(cfg.get("system_voice_name") or "System Default").strip()
 
     cancel_ev = threading.Event()
     with _TTS_LOCK:
@@ -1133,39 +2177,79 @@ def speak_agent_response(
         global _TTS_SPEAKING, _TTS_LAST_END_MONO, _ACTIVE_WAVEOUT, _LAST_TTS_ENGINE_USED
         stream: _WaveOutStream | None = None
         played_any = False
+        meta_emitted = False
+        errors: list[str] = []
+        vol_getter = lambda _cfg_p=config_path: get_live_volume(_cfg_p)
         try:
             chunks = split_text_for_streaming_tts(spoken)
             if not chunks:
                 return
 
-            order = {
-                "auto": ["openai", "gemini", "system"],
-                "openai": ["openai", "gemini", "system"],
-                "gemini": ["gemini", "openai", "system"],
-                "system": ["system"],
-            }.get(engine, ["openai", "gemini", "system"])
+            order = _build_tts_candidate_order(engine, fb_engine, store)
+            primary_expected = engine if engine != "auto" else next(
+                (c for c in order if is_tts_engine_ready(c, credential_store=store)),
+                order[0] if order else "openai",
+            )
+
+            def _emit_meta(cand_id: str, v_label: str) -> None:
+                nonlocal meta_emitted
+                if meta_emitted:
+                    return
+                meta_emitted = True
+                fell_back_flag = bool(errors) and (cand_id != primary_expected or engine != "auto")
+                fb_reason_txt = errors[0] if (fell_back_flag and errors) else ""
+                meta = {
+                    "engine_id": cand_id,
+                    "engine_label": TTS_ENGINE_SHORT_LABELS.get(cand_id, cand_id),
+                    "voice_label": v_label,
+                    "requested_engine": primary_expected,
+                    "fell_back": fell_back_flag,
+                    "fallback_reason": fb_reason_txt,
+                }
+                with _TTS_LOCK:
+                    _LAST_TTS_STATE.update({
+                        "engine_id": meta["engine_id"],
+                        "engine_label": meta["engine_label"],
+                        "voice_label": meta["voice_label"],
+                        "requested_engine": meta["requested_engine"],
+                        "fell_back": fell_back_flag,
+                        "fallback_reason": fb_reason_txt,
+                        "last_error": fb_reason_txt,
+                        "updated_ts": time.time(),
+                    })
+                if on_speech_meta is not None:
+                    try:
+                        on_speech_meta(meta)
+                    except Exception:
+                        pass
+
+            def _write_or_raise(pcm_bytes: bytes, cand_name: str) -> None:
+                nonlocal played_any
+                if not pcm_bytes or len(pcm_bytes) < 2:
+                    return
+                ok_w = stream.write(
+                    pcm_bytes,
+                    cancel_ev,
+                    apply_live_volume=True,
+                    volume_getter=vol_getter,
+                )
+                if not ok_w:
+                    if cancel_ev.is_set():
+                        return
+                    raise OSError(f"{cand_name}: audio device write failed")
+                played_any = True
 
             for candidate in order:
                 if cancel_ev.is_set():
                     break
+
                 if candidate == "openai":
                     oai_key = store.get_api_key("openai")
                     if not oai_key:
+                        if engine == "openai":
+                            errors.append("openai: missing API key")
                         continue
                     try:
-                        stream = _WaveOutStream(sample_rate=24000, channels=1, bits_per_sample=16)
-                        with _TTS_LOCK:
-                            if _SPEECH_GEN != gen_token or cancel_ev.is_set():
-                                stream.stop()
-                                stream = None
-                                break
-                            _ACTIVE_WAVEOUT = stream
-                            _LAST_TTS_ENGINE_USED = f"openai:gpt-4o-mini-tts ({voice_name})"
-                        if on_engine_status is not None:
-                            try:
-                                on_engine_status(_LAST_TTS_ENGINE_USED)
-                            except Exception:
-                                pass
                         for ch_txt in chunks:
                             if cancel_ev.is_set():
                                 break
@@ -1180,9 +2264,25 @@ def speak_agent_response(
                             ):
                                 if cancel_ev.is_set():
                                     break
-                                stream.write(_scale_pcm16_volume(pcm_piece, vol), cancel_ev)
+                                if not pcm_piece or len(pcm_piece) < 2:
+                                    continue
+                                if stream is None:
+                                    stream = _WaveOutStream(sample_rate=24000, channels=1, bits_per_sample=16)
+                                    with _TTS_LOCK:
+                                        if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                            stream.stop()
+                                            stream = None
+                                            break
+                                        _ACTIVE_WAVEOUT = stream
+                                        _LAST_TTS_ENGINE_USED = f"openai:gpt-4o-mini-tts ({voice_name})"
+                                    if on_engine_status is not None:
+                                        try:
+                                            on_engine_status(_LAST_TTS_ENGINE_USED)
+                                        except Exception:
+                                            pass
+                                _write_or_raise(pcm_piece, "openai")
+                                _emit_meta("openai", voice_name)
                                 ch_pcm_bytes += len(pcm_piece)
-                                played_any = True
                             if ch_pcm_bytes > 0:
                                 try:
                                     from cost_service import emit_tts_cost
@@ -1193,7 +2293,10 @@ def speak_agent_response(
                             stream.drain(cancel_ev)
                         if played_any:
                             break
-                    except Exception:
+                    except Exception as exc:
+                        err_s = f"openai: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
                         if stream is not None:
                             stream.stop()
                             stream = None
@@ -1204,9 +2307,10 @@ def speak_agent_response(
                 elif candidate == "gemini":
                     gem_key = store.get_api_key("gemini")
                     if not gem_key:
+                        if engine == "gemini":
+                            errors.append("gemini: missing API key")
                         continue
                     try:
-                        # Pipeline chunk i+1 while playing chunk i
                         with ThreadPoolExecutor(max_workers=1) as pool:
                             fut = pool.submit(
                                 _synthesize_gemini_pcm,
@@ -1242,15 +2346,9 @@ def speak_agent_response(
                                             on_engine_status(_LAST_TTS_ENGINE_USED)
                                         except Exception:
                                             pass
-                                scaled = _scale_pcm16_volume(pcm, vol)
-                                ch_played = False
-                                for pos in range(0, len(scaled), 16384):
-                                    if cancel_ev.is_set():
-                                        break
-                                    stream.write(scaled[pos : pos + 16384], cancel_ev)
-                                    played_any = True
-                                    ch_played = True
-                                if ch_played and pcm:
+                                _write_or_raise(pcm, "gemini")
+                                _emit_meta("gemini", gemini_voice)
+                                if pcm and played_any:
                                     try:
                                         from cost_service import emit_tts_cost
                                         emit_tts_cost(f"gemini:{gm}", len(pcm) / (float(sr or 24000) * 2.0))
@@ -1261,7 +2359,137 @@ def speak_agent_response(
                             stream.drain(cancel_ev)
                         if played_any:
                             break
-                    except Exception:
+                    except Exception as exc:
+                        err_s = f"gemini: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
+                        if stream is not None:
+                            stream.stop()
+                            stream = None
+                        if played_any:
+                            break
+                        continue
+
+                elif candidate == "groq":
+                    gr_key = store.get_api_key("groq")
+                    if not gr_key:
+                        if engine == "groq":
+                            errors.append("groq: missing API key")
+                        continue
+                    try:
+                        for ch_txt in chunks:
+                            if cancel_ev.is_set():
+                                break
+                            pcm, sr = _synthesize_groq_orpheus_pcm(
+                                ch_txt,
+                                api_key=gr_key,
+                                voice=groq_voice,
+                                cancel_event=cancel_ev,
+                            )
+                            if not pcm:
+                                continue
+                            if stream is None:
+                                stream = _WaveOutStream(sample_rate=sr, channels=1, bits_per_sample=16)
+                                with _TTS_LOCK:
+                                    if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                        stream.stop()
+                                        stream = None
+                                        break
+                                    _ACTIVE_WAVEOUT = stream
+                                    _LAST_TTS_ENGINE_USED = f"groq:orpheus ({groq_voice})"
+                                if on_engine_status is not None:
+                                    try:
+                                        on_engine_status(_LAST_TTS_ENGINE_USED)
+                                    except Exception:
+                                        pass
+                            _write_or_raise(pcm, "groq")
+                            _emit_meta("groq", groq_voice)
+                            try:
+                                from cost_service import emit_tts_cost
+                                emit_tts_cost("groq:canopylabs/orpheus-v1-english", len(pcm) / (float(sr or 24000) * 2.0), char_count=len(ch_txt))
+                            except Exception:
+                                pass
+                        if stream is not None and not cancel_ev.is_set() and played_any:
+                            stream.drain(cancel_ev)
+                        if played_any:
+                            break
+                    except Exception as exc:
+                        err_s = f"groq: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
+                        if stream is not None:
+                            stream.stop()
+                            stream = None
+                        if played_any:
+                            break
+                        continue
+
+                elif candidate in {"cartesia", "elevenlabs", "deepgram"}:
+                    ext_key = store.get_api_key(candidate)
+                    if not ext_key:
+                        if engine == candidate:
+                            errors.append(f"{candidate}: missing API key")
+                        continue
+                    try:
+                        if candidate == "cartesia":
+                            v_disp = dict(CARTESIA_TTS_VOICES).get(cartesia_vid, "Sonic")
+                            model_tag = "cartesia:sonic-latest"
+                            cand_sr = CARTESIA_SAMPLE_RATE
+                        elif candidate == "elevenlabs":
+                            v_disp = dict(ELEVENLABS_TTS_VOICES).get(eleven_vid, "ElevenLabs")
+                            model_tag = "elevenlabs:eleven_flash_v2_5"
+                            cand_sr = 24000
+                        else:
+                            v_disp = dict(DEEPGRAM_TTS_VOICES).get(deepgram_voice, deepgram_voice)
+                            model_tag = f"deepgram:{deepgram_voice}"
+                            cand_sr = 24000
+                        v_short = v_disp.split("—", 1)[0].strip() if "—" in v_disp else v_disp
+                        for ch_txt in chunks:
+                            if cancel_ev.is_set():
+                                break
+                            if candidate == "cartesia":
+                                gen_pcm = _stream_cartesia_pcm(ch_txt, api_key=ext_key, voice_id=cartesia_vid, speed=speed, cancel_event=cancel_ev)
+                            elif candidate == "elevenlabs":
+                                gen_pcm = _stream_elevenlabs_pcm(ch_txt, api_key=ext_key, voice_id=eleven_vid, cancel_event=cancel_ev)
+                            else:
+                                gen_pcm = _stream_deepgram_pcm(ch_txt, api_key=ext_key, voice_model=deepgram_voice, cancel_event=cancel_ev)
+                            ch_pcm_bytes = 0
+                            for pcm_piece in gen_pcm:
+                                if cancel_ev.is_set():
+                                    break
+                                if not pcm_piece or len(pcm_piece) < 2:
+                                    continue
+                                if stream is None:
+                                    stream = _WaveOutStream(sample_rate=cand_sr, channels=1, bits_per_sample=16)
+                                    with _TTS_LOCK:
+                                        if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                            stream.stop()
+                                            stream = None
+                                            break
+                                        _ACTIVE_WAVEOUT = stream
+                                        _LAST_TTS_ENGINE_USED = f"{model_tag} ({v_short})"
+                                    if on_engine_status is not None:
+                                        try:
+                                            on_engine_status(_LAST_TTS_ENGINE_USED)
+                                        except Exception:
+                                            pass
+                                _write_or_raise(pcm_piece, candidate)
+                                _emit_meta(candidate, v_short)
+                                ch_pcm_bytes += len(pcm_piece)
+                            if ch_pcm_bytes > 0:
+                                try:
+                                    from cost_service import emit_tts_cost
+                                    emit_tts_cost(model_tag, ch_pcm_bytes / (float(cand_sr) * 2.0), char_count=len(ch_txt))
+                                except Exception:
+                                    pass
+                        if not cancel_ev.is_set() and played_any:
+                            stream.drain(cancel_ev)
+                        if played_any:
+                            break
+                    except Exception as exc:
+                        err_s = f"{candidate}: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
                         if stream is not None:
                             stream.stop()
                             stream = None
@@ -1277,13 +2505,36 @@ def speak_agent_response(
                             pass
                     if _speak_windows_sapi5(
                         spoken,
-                        voice_name=voice_name,
-                        volume_percent=vol,
+                        voice_name=system_voice,
+                        volume_percent=get_live_volume(config_path),
                         speed=speed,
                         gen_token=gen_token,
                     ):
                         played_any = True
+                        _emit_meta("system", system_voice)
+                    else:
+                        errors.append("system: SAPI5 playback failed")
                     break
+
+            if not played_any and not cancel_ev.is_set():
+                err_msg = "; ".join(errors) or "No working voice output engine succeeded."
+                _log_voice_diagnostic(f"All TTS engines failed: {err_msg}")
+                with _TTS_LOCK:
+                    _LAST_TTS_STATE.update({
+                        "engine_id": primary_expected,
+                        "engine_label": TTS_ENGINE_SHORT_LABELS.get(primary_expected, primary_expected),
+                        "voice_label": "",
+                        "requested_engine": primary_expected,
+                        "fell_back": False,
+                        "fallback_reason": "",
+                        "last_error": err_msg,
+                        "updated_ts": time.time(),
+                    })
+                if on_error is not None:
+                    try:
+                        on_error(err_msg)
+                    except Exception:
+                        pass
         finally:
             if stream is not None:
                 try:
@@ -1345,7 +2596,12 @@ def transcribe_audio_file(
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=groq_key, base_url="https://api.groq.com/openai/v1")
+            client = OpenAI(
+                api_key=groq_key,
+                base_url="https://api.groq.com/openai/v1",
+                timeout=25.0,
+                max_retries=0,
+            )
             with audio_path.open("rb") as fh:
                 tr = client.audio.transcriptions.create(model="whisper-large-v3-turbo", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()
@@ -1360,7 +2616,7 @@ def transcribe_audio_file(
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=oai_key)
+            client = OpenAI(api_key=oai_key, timeout=25.0, max_retries=0)
             with audio_path.open("rb") as fh:
                 tr = client.audio.transcriptions.create(model="whisper-1", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()
@@ -1375,7 +2631,7 @@ def transcribe_audio_file(
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=gem_key)
+        client = genai.Client(api_key=gem_key, http_options=types.HttpOptions(timeout=25000))
         raw_bytes = audio_path.read_bytes()
         for gm in ("gemini-4-hydrogen", "gemini-2.5-flash"):
             try:

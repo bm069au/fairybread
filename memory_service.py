@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -16,6 +17,8 @@ import time
 from typing import Any, Iterator, Optional
 from uuid import uuid4
 import zlib
+
+logger = logging.getLogger(__name__)
 
 
 _STOPWORDS = frozenset(
@@ -141,19 +144,40 @@ class SQLiteMemoryIndex:
                 """
             )
 
+    def _hydrate_rows_batch(
+        self,
+        conn: sqlite3.Connection,
+        row_dicts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not row_dicts:
+            return row_dicts
+        uniq_ids = list(dict.fromkeys(str(d["id"]) for d in row_dicts if d.get("id")))
+        if not uniq_ids:
+            return row_dicts
+        blob_map: dict[str, str] = {}
+        chunk_size = 500
+        for idx in range(0, len(uniq_ids), chunk_size):
+            batch = uniq_ids[idx : idx + chunk_size]
+            placeholders = ",".join("?" for _ in batch)
+            blob_rows = conn.execute(
+                f"SELECT memory_id, codec, payload FROM memories_blob WHERE memory_id IN ({placeholders});",
+                batch,
+            ).fetchall()
+            for blob_row in blob_rows:
+                mid = str(blob_row["memory_id"])
+                if blob_row["codec"] == "zlib":
+                    try:
+                        blob_map[mid] = zlib.decompress(blob_row["payload"]).decode("utf-8", errors="replace")
+                    except Exception as exc:
+                        logger.warning("Failed to decompress memory blob %s: %s", mid, exc)
+        for d in row_dicts:
+            mid = d.get("id")
+            if mid and str(mid) in blob_map:
+                d["body"] = blob_map[str(mid)]
+        return row_dicts
+
     def _hydrate_body(self, conn: sqlite3.Connection, row_dict: dict[str, Any]) -> dict[str, Any]:
-        mid = row_dict.get("id")
-        if mid:
-            blob_row = conn.execute(
-                "SELECT codec, payload FROM memories_blob WHERE memory_id = ?;",
-                (mid,),
-            ).fetchone()
-            if blob_row and blob_row["codec"] == "zlib":
-                try:
-                    row_dict["body"] = zlib.decompress(blob_row["payload"]).decode("utf-8", errors="replace")
-                except Exception:
-                    pass
-        return row_dict
+        return self._hydrate_rows_batch(conn, [row_dict])[0]
 
     def upsert(
         self,
@@ -180,13 +204,20 @@ class SQLiteMemoryIndex:
         with self._connect() as conn:
             if memory_id is None:
                 # Check for exact content_hash deduplication within the same wing
-                existing = conn.execute(
-                    "SELECT id FROM memories WHERE wing = ? AND summary = ? LIMIT 1;",
+                candidates = conn.execute(
+                    "SELECT id, source_json FROM memories WHERE wing = ? AND summary = ?;",
                     (wing, clean_summary),
-                ).fetchone()
-                if existing and _content_hash(clean_summary, clean_body) == ch:
-                    mid = str(existing["id"])
-                else:
+                ).fetchall()
+                mid = ""
+                for row in candidates:
+                    try:
+                        stored_src = json.loads(row["source_json"] or "{}")
+                    except (TypeError, ValueError):
+                        stored_src = {}
+                    if isinstance(stored_src, dict) and stored_src.get("content_hash") == ch:
+                        mid = str(row["id"])
+                        break
+                if not mid:
                     mid = str(uuid4())
             else:
                 mid = memory_id.strip()
@@ -248,7 +279,7 @@ class SQLiteMemoryIndex:
                     "SELECT * FROM memories ORDER BY ts DESC LIMIT ?;",
                     (limit,),
                 ).fetchall()
-            return [self._hydrate_body(conn, dict(r)) for r in rows]
+            return self._hydrate_rows_batch(conn, [dict(r) for r in rows])
 
     def delete_memory(self, memory_id: str) -> bool:
         with self._connect() as conn:
@@ -291,20 +322,23 @@ class SQLiteMemoryIndex:
                 rows = []
 
             if not rows:
-                # Fallback to recent memories in wing if query has no token hits
+                # Fallback to recent memories in wing if query has no keyword tokens
                 if not fts_query:
-                    sql_recent = "SELECT *, -1.0 AS raw_bm25 FROM memories"
+                    sql_recent = "SELECT *, -1.0 AS raw_bm25 FROM memories WHERE 1=1"
                     p_rec: list[Any] = []
                     if wing:
-                        sql_recent += " WHERE wing = ?"
+                        sql_recent += " AND wing = ?"
                         p_rec.append(wing)
+                    if project:
+                        sql_recent += " AND project = ?"
+                        p_rec.append(project)
                     sql_recent += " ORDER BY ts DESC LIMIT ?;"
                     p_rec.append(limit)
                     rows = conn.execute(sql_recent, p_rec).fetchall()
 
+            hydrated = self._hydrate_rows_batch(conn, [dict(r) for r in rows])
             scored: list[tuple[float, dict[str, Any]]] = []
-            for r in rows:
-                d = self._hydrate_body(conn, dict(r))
+            for d in hydrated:
                 # In SQLite FTS5, bm25() returns negative numbers where more negative = better match
                 relevance = abs(float(d.pop("raw_bm25", -1.0) or -1.0))
                 age_days = max(0.0, (now_ts - float(d.get("ts", now_ts))) / 86400.0)
@@ -498,9 +532,9 @@ def ai_update_memory_summary(
         if g_key and not updated_md:
             try:
                 from openai import OpenAI
-                client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1")
+                client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1", timeout=15.0, max_retries=0)
                 resp = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="qwen/qwen3.8-27b",
                     messages=[
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": user_prompt},
@@ -515,7 +549,7 @@ def ai_update_memory_summary(
         if o_key and not updated_md:
             try:
                 from openai import OpenAI
-                client = OpenAI(api_key=o_key)
+                client = OpenAI(api_key=o_key, timeout=15.0, max_retries=0)
                 resp = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
@@ -531,7 +565,8 @@ def ai_update_memory_summary(
         gem_key = store.get_api_key("gemini")
         if gem_key and not updated_md:
             from google import genai
-            client = genai.Client(api_key=gem_key)
+            from google.genai import types
+            client = genai.Client(api_key=gem_key, http_options=types.HttpOptions(timeout=15000))
             for gm in ("gemini-4-hydrogen", "gemini-2.5-flash"):
                 try:
                     resp = client.models.generate_content(
@@ -601,9 +636,9 @@ def auto_evolve_user_profile_from_turn(
     if g_key and not raw_json:
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1")
+            client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1", timeout=15.0, max_retries=0)
             resp = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="qwen/qwen3.8-27b",
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": clean_msg[:2000]},
@@ -619,7 +654,7 @@ def auto_evolve_user_profile_from_turn(
     if o_key and not raw_json:
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=o_key)
+            client = OpenAI(api_key=o_key, timeout=15.0, max_retries=0)
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -751,7 +786,7 @@ class MemoryService:
                     content = str(rec.get("content") or "").strip()
                     if role == "user" and content:
                         last_q = content
-                    elif role == "assistant" and phase in {None, "synthesis"} and last_q and content:
+                    elif role == "assistant" and phase in {None, "synthesis", "voice_chat"} and last_q and content:
                         self.remember_exchange(
                             last_q,
                             content,
@@ -849,3 +884,98 @@ class MemoryService:
 
         except Exception as exc:
             return MemorySearchResult(context="", error=str(exc))
+
+
+_SAVE_MEMORY_ATTR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"')
+_SAVE_MEMORY_BLOCK_RE = re.compile(
+    r'\[SAVE_MEMORY([^\]]*)\](.*?)\[/SAVE_MEMORY\]',
+    re.IGNORECASE | re.DOTALL,
+)
+_SAVE_MEMORY_SINGLE_RE = re.compile(
+    r'\[SAVE_MEMORY\s+((?:[^\]"]|"[^"]*")*)\]',
+    re.IGNORECASE,
+)
+
+
+def parse_save_memory_tags(
+    text: str,
+    *,
+    replace_with_badge: bool = False,
+) -> tuple[str, list[dict[str, str]]]:
+    """Parse `[SAVE_MEMORY ...]` block and inline tags into structured dicts and stripped/badged text."""
+    raw = text or ""
+    if "[SAVE_MEMORY" not in raw.upper():
+        return raw, []
+
+    found: list[dict[str, str]] = []
+
+    def _collect(attrs_str: str, inner_body: str = "") -> str:
+        attrs = {k.lower(): v.strip() for k, v in _SAVE_MEMORY_ATTR_RE.findall(attrs_str or "")}
+        fact = (
+            (inner_body or "").strip()
+            or attrs.get("fact", "")
+            or attrs.get("body", "")
+            or attrs.get("content", "")
+            or attrs.get("text", "")
+        ).strip()
+        summary = attrs.get("summary", "").strip()
+        if not summary and fact:
+            summary = fact if len(fact) <= 100 else fact[:97] + "..."
+        if not fact and summary:
+            fact = summary
+        if not summary and not fact:
+            return ""
+        m_type = (attrs.get("memory_type") or attrs.get("type") or "standing").strip().lower() or "standing"
+        entry = {
+            "summary": summary[:140],
+            "fact": fact,
+            "project": attrs.get("project", "").strip(),
+            "memory_type": m_type,
+        }
+        found.append(entry)
+        return f'🧠 Saved to Memory Palace: "{entry["summary"]}"' if replace_with_badge else ""
+
+    out = _SAVE_MEMORY_BLOCK_RE.sub(lambda m: _collect(m.group(1), m.group(2)), raw)
+    out = _SAVE_MEMORY_SINGLE_RE.sub(lambda m: _collect(m.group(1)), out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, found
+
+
+def extract_and_save_memory_tags(
+    text: str,
+    memory_service: MemoryService | None,
+    *,
+    session_id: str = "",
+    project: str = "",
+    author: str = "council",
+    replace_with_badge: bool = True,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Execute any `[SAVE_MEMORY ...]` tags against `memory_service` and return `(cleaned_text, saved_entries)`."""
+    if not text or "[SAVE_MEMORY" not in text.upper() or memory_service is None:
+        return text or "", []
+    cleaned, parsed = parse_save_memory_tags(text, replace_with_badge=replace_with_badge)
+    saved: list[dict[str, Any]] = []
+    for item in parsed:
+        summary = item["summary"]
+        fact = item["fact"]
+        proj = item.get("project") or project or ""
+        mem_type = item.get("memory_type") or "standing"
+        try:
+            mem_id = memory_service.index.upsert(
+                summary=summary,
+                body=fact,
+                wing=memory_service.wing,
+                room=session_id or "general",
+                project=proj,
+                memory_type=mem_type,
+                visibility="private",
+                source={
+                    "kind": "explicit_ai_save",
+                    "session_id": session_id,
+                    "author": author,
+                },
+            )
+            saved.append({"id": mem_id, "summary": summary, "fact": fact, "memory_type": mem_type})
+        except Exception:
+            pass
+    return cleaned, saved

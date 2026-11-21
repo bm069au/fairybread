@@ -14,6 +14,7 @@ class GroqProvider(AIProvider):
         self.client = Groq(
             api_key=api_key,
             timeout=timeout,
+            max_retries=0,
         )
         self.model = model
         self.timeout = timeout

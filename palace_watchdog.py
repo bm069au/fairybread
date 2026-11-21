@@ -24,6 +24,7 @@ from pathlib import Path
 
 from palace_ouroboros import (
     EDITABLE_PALACE_FILES,
+    HANDOFF_PATH,
     LIVE_DIR,
     READY_HEARTBEAT_PATH,
     SANDBOX_ROOT,
@@ -54,24 +55,34 @@ def _log(msg: str, *, err: bool = False) -> None:
 
 def _stop_existing_palace_gui() -> None:
     """Stop any running `pythonw.exe` / `python.exe` executing `palace_gui.py`."""
+    cur_pid = int(os.getpid())
+    parent_pid = int(os.getppid()) if hasattr(os, "getppid") else -1
     ps_cmd = (
-        "Get-CimInstance Win32_Process -Filter \"CommandLine LIKE '%palace_gui.py%'\" | "
+        f"$ex1 = {cur_pid}; $ex2 = {parent_pid}; $me = $PID; "
+        "Get-CimInstance Win32_Process -Filter \"Name LIKE 'python%' AND CommandLine LIKE '%palace_gui.py%'\" | "
+        "Where-Object { $_.ProcessId -ne $me -and $_.ProcessId -ne $ex1 -and $_.ProcessId -ne $ex2 } | "
         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
     )
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=10)
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _log(f"[Watchdog] Warning stopping existing Palace process: {exc}", err=True)
 
 
 def _launch_palace_on_interactive_desktop() -> None:
     """Launch the active PalaceWindow instance onto the desktop."""
     if LIVE_DIR.resolve() == Path(r"C:\Palace_Live").resolve():
-        res = subprocess.run(
-            ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if res.returncode == 0:
-            return
+        try:
+            res = subprocess.run(
+                ["schtasks", "/Run", "/TN", "LaunchPalaceDesktop"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                return
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            _log(f"[Watchdog] Warning running LaunchPalaceDesktop task: {exc}", err=True)
     bat = LIVE_DIR / "Run_Palace_Live.bat"
     if bat.exists():
         subprocess.Popen(["cmd.exe", "/c", str(bat)], cwd=str(LIVE_DIR))
@@ -83,6 +94,16 @@ def _launch_palace_on_interactive_desktop() -> None:
         subprocess.Popen([launcher, str(gui_py)], cwd=str(LIVE_DIR))
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(".json.tmp")
+    raw = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    with open(tmp, "wb") as fh:
+        fh.write(raw)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
 def perform_hot_reboot(
     *,
     reason: str = "ouroboros_self_upgrade",
@@ -90,6 +111,7 @@ def perform_hot_reboot(
     session_id: str = "legacy",
     resumption_prompt: str = "",
     skip_tests: bool = False,
+    preserve_existing_handoff: bool = False,
 ) -> tuple[bool, str]:
     # 0. Sync any newer files from SOURCE_REPO_DIR (E:\Visual_studio\Palace) into STAGING_DIR first
     # so direct repo edits are never overwritten by older staging files!
@@ -107,7 +129,12 @@ def perform_hot_reboot(
     except OSError:
         pass
     _log("[Watchdog] Running Preflight Gate (py_compile + unittest)...")
-    test_res = validate_staged_palace(run_unit_tests=not skip_tests)
+    try:
+        test_res = validate_staged_palace(run_unit_tests=not skip_tests)
+    except Exception as exc:
+        msg = f"Preflight gate crashed — aborting hot-reboot: {exc}"
+        _log(f"[Watchdog] {msg}", err=True)
+        return False, msg
     if not test_res.get("passed"):
         msg = f"Preflight gate failed — aborting hot-reboot:\n{json.dumps(test_res, indent=2)}"
         _log(f"[Watchdog] {msg}", err=True)
@@ -120,22 +147,48 @@ def perform_hot_reboot(
         pass
     backup_live_to_last_known_good()
 
-    # 3. Write atomic handoff with Circuit Breaker check (L4 & L6)
-    ok_handoff, handoff_msg, _payload = write_reboot_handoff(
-        reason=reason,
-        applied_diff_summary=diff_summary,
-        test_results={
-            "py_compile": test_res.get("py_compile"),
-            "unittest_passed": test_res.get("unittest_passed"),
-        },
-        session_id=session_id,
-        resumption_prompt=resumption_prompt,
-    )
-    if not ok_handoff:
-        _log(f"[Watchdog] {handoff_msg}", err=True)
-        return False, handoff_msg
+    # 3. Write atomic handoff with Circuit Breaker check (L4 & L6), preserving pre-written Experimental continuity
+    preserved_handoff = False
+    if HANDOFF_PATH.exists():
+        try:
+            existing = json.loads(HANDOFF_PATH.read_text(encoding="utf-8"))
+            if isinstance(existing, dict) and not existing.get("consumed", True):
+                cont = existing.get("continuity") or {}
+                rec_ts = list((existing.get("reboot") or {}).get("recent_reboot_timestamps") or [])
+                latest_ts = float(rec_ts[-1]) if rec_ts else 0.0
+                recent_auto_idle = bool(cont.get("auto_resume_idle")) and (time.time() - latest_ts) <= 60.0
+                if preserve_existing_handoff or recent_auto_idle:
+                    existing.setdefault("reboot", {})
+                    if not (skip_tests and existing["reboot"].get("test_results")):
+                        existing["reboot"]["test_results"] = {
+                            "py_compile": test_res.get("py_compile"),
+                            "unittest_passed": test_res.get("unittest_passed"),
+                        }
+                    _atomic_write_json(HANDOFF_PATH, existing)
+                    preserved_handoff = True
+        except Exception:
+            preserved_handoff = False
+
+    if not preserved_handoff:
+        ok_handoff, handoff_msg, _payload = write_reboot_handoff(
+            reason=reason,
+            applied_diff_summary=diff_summary,
+            test_results={
+                "py_compile": test_res.get("py_compile"),
+                "unittest_passed": test_res.get("unittest_passed"),
+            },
+            session_id=session_id,
+            resumption_prompt=resumption_prompt,
+        )
+        if not ok_handoff:
+            _log(f"[Watchdog] {handoff_msg}", err=True)
+            return False, handoff_msg
 
     # 4. Stop old Palace window & atomically swap allowlisted files from staging/ -> Live & Repo
+    if not LIVE_DIR.exists():
+        msg = f"Live directory missing: {LIVE_DIR}"
+        _log(f"[Watchdog] {msg}", err=True)
+        return False, msg
     _log("[Watchdog] Stopping previous Palace instance and swapping staged files...")
     _stop_existing_palace_gui()
     time.sleep(0.6)
@@ -145,8 +198,7 @@ def perform_hot_reboot(
     for fname in EDITABLE_PALACE_FILES:
         staged_f = STAGING_DIR / fname
         if staged_f.exists():
-            if LIVE_DIR.exists():
-                shutil.copy2(staged_f, LIVE_DIR / fname)
+            shutil.copy2(staged_f, LIVE_DIR / fname)
             # Only copy to SOURCE_REPO_DIR if we are in a standalone single-folder install.
             # In owner dev mode, master E:\Visual_studio\Palace is protected from auto-reboot overwrites.
             if SOURCE_REPO_DIR.exists() and SOURCE_REPO_DIR.resolve() == LIVE_DIR.resolve():
@@ -184,6 +236,17 @@ def perform_hot_reboot(
     _log("[Watchdog] ERROR: READY heartbeat timed out! Rolling back to last_known_good...", err=True)
     _stop_existing_palace_gui()
     rollback_to_last_known_good()
+    rollback_reason = f"Startup failed READY heartbeat within 10s — rolled back to last_known_good ({diff_summary})"
+    if HANDOFF_PATH.exists():
+        try:
+            hd = json.loads(HANDOFF_PATH.read_text(encoding="utf-8"))
+            if isinstance(hd, dict) and not hd.get("consumed", True):
+                hd.setdefault("reboot", {})
+                hd["reboot"]["rolled_back"] = True
+                hd["reboot"]["rollback_reason"] = rollback_reason
+                _atomic_write_json(HANDOFF_PATH, hd)
+        except Exception:
+            pass
     try:
         write_crash_report(
             trigger="boot_timeout_or_startup_crash",
@@ -204,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session", type=str, default="legacy")
     parser.add_argument("--resumption-prompt", type=str, default="")
     parser.add_argument("--skip-tests", action="store_true")
+    parser.add_argument(
+        "--preserve-handoff",
+        action="store_true",
+        help="Preserve pre-written unconsumed reboot_handoff.json continuity (Experimental Mode auto-resume)",
+    )
     parser.add_argument("--auto-rollback", action="store_true", help="Immediately roll back to last_known_good after a runtime crash")
     args = parser.parse_args(argv)
 
@@ -221,6 +289,7 @@ def main(argv: list[str] | None = None) -> int:
         session_id=args.session,
         resumption_prompt=args.resumption_prompt,
         skip_tests=args.skip_tests,
+        preserve_existing_handoff=args.preserve_handoff,
     )
     return 0 if ok else 1
 

@@ -14,8 +14,9 @@ class MemoryProposalService:
 
     def __init__(self, path: Path | None = None):
         if path is None:
+            local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home())
             path = (
-                Path(os.environ["LOCALAPPDATA"])
+                Path(local_app_data)
                 / "Palace"
                 / "memory_proposals.jsonl"
             )

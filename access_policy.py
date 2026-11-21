@@ -117,18 +117,22 @@ def _sanitize_exclusions(raw_list: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen_norm: dict[str, int] = {}
     for item in raw_list:
+        block_reads = False
         if isinstance(item, str):
             raw_p = normalize_exclusion_path_str(item)
             inc = True
         elif isinstance(item, dict):
             raw_p = normalize_exclusion_path_str(item.get("path", ""))
             inc = bool(item.get("include_subdirs", True))
+            block_reads = bool(item.get("block_reads", False))
         else:
             continue
         if not raw_p:
             continue
         canon_key = os.path.normcase(str(_canonicalize_path(raw_p)))
-        entry = {"path": raw_p, "include_subdirs": inc}
+        entry: dict[str, Any] = {"path": raw_p, "include_subdirs": inc}
+        if block_reads:
+            entry["block_reads"] = True
         if canon_key in seen_norm:
             out[seen_norm[canon_key]] = entry
         else:
@@ -241,6 +245,8 @@ def match_write_exclusion(
         if matched and len(norm_entry) > best_len:
             best_len = len(norm_entry)
             best_match = {"path": raw_p, "include_subdirs": inc}
+            if bool(entry.get("block_reads", False)):
+                best_match["block_reads"] = True
     return best_match
 
 
@@ -253,11 +259,20 @@ def evaluate_path_access(
 ) -> AccessDecision:
     """Evaluate read/write/patch/delete against Write Exclusion List first, then Action Mode."""
     op = (operation or "write").strip().lower()
-    if op == "read":
-        return AccessDecision(decision="allow", excluded=False, reason="Read operations allowed.")
-
     cfg = dict(permissions) if isinstance(permissions, dict) else load_access_permissions(config_path)
     exclusions = _sanitize_exclusions(cfg.get("write_exclusions", []))
+
+    if op == "read":
+        hit = match_write_exclusion(target_path, exclusions)
+        if hit is not None and bool(hit.get("block_reads", False)):
+            return AccessDecision(
+                decision="ask",
+                excluded=True,
+                matched_entry=hit,
+                reason=f"Protected by Read+Write Exclusion ({hit['path']}) — read access blocked.",
+            )
+        return AccessDecision(decision="allow", excluded=False, reason="Read operations allowed.")
+
     mode = normalize_permission_mode(cfg.get("permission_mode"))
 
     hit = match_write_exclusion(target_path, exclusions)
@@ -302,32 +317,132 @@ def evaluate_command_access(
     exclusions = _sanitize_exclusions(cfg.get("write_exclusions", []))
     mode = normalize_permission_mode(cfg.get("permission_mode"))
 
-    # 1. Check any explicit drive/folder references inside command_text against exclusions
-    for entry in exclusions:
-        raw_p = normalize_exclusion_path_str(entry.get("path", ""))
-        inc = bool(entry.get("include_subdirs", True))
-        if not raw_p:
-            continue
-        if inc and re.fullmatch(r"[A-Za-z]:\\", raw_p):
-            dl = raw_p[0]
-            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(dl)}:(?![A-Za-z0-9_])", cmd, re.IGNORECASE):
-                return AccessDecision(
-                    decision="ask",
-                    excluded=True,
-                    matched_entry=entry,
-                    reason=f"Command references excluded drive {raw_p} (including subdirectories).",
-                )
-
-    for tok_m in _WINDOWS_PATH_TOKEN_RE.finditer(cmd):
-        tok = tok_m.group(1).strip().rstrip(".,;:")
-        hit = match_write_exclusion(tok, exclusions)
-        if hit is not None:
+    # 1. Check any explicit drive/folder references, encoded commands, env/UNC paths, and relative tokens against exclusions
+    if exclusions:
+        if re.search(r"(?i)(?:^|\s)-(?:e|ec|enc|encodedcommand)\b", cmd):
             return AccessDecision(
                 decision="ask",
                 excluded=True,
-                matched_entry=hit,
-                reason=f"Command targets Write Exclusion path ({hit['path']}).",
+                reason="Encoded PowerShell command cannot be statically verified against Write Exclusions.",
             )
+
+        for entry in exclusions:
+            raw_p = normalize_exclusion_path_str(entry.get("path", ""))
+            inc = bool(entry.get("include_subdirs", True))
+            if not raw_p:
+                continue
+            if inc and re.fullmatch(r"[A-Za-z]:\\", raw_p):
+                dl = raw_p[0]
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(dl)}:(?![A-Za-z0-9_])", cmd, re.IGNORECASE):
+                    return AccessDecision(
+                        decision="ask",
+                        excluded=True,
+                        matched_entry=entry,
+                        reason=f"Command references excluded drive {raw_p} (including subdirectories).",
+                    )
+
+        for tok_m in _WINDOWS_PATH_TOKEN_RE.finditer(cmd):
+            tok = tok_m.group(1).strip().rstrip(".,;:")
+            hit = match_write_exclusion(tok, exclusions)
+            if hit is not None:
+                return AccessDecision(
+                    decision="ask",
+                    excluded=True,
+                    matched_entry=hit,
+                    reason=f"Command targets Write Exclusion path ({hit['path']}).",
+                )
+
+        # Check UNC paths and Windows %VAR% / PowerShell $env:VAR path expressions
+        for unc_m in re.finditer(r'(\\\\[^\s"\'|;&<>`]+)', cmd):
+            unc_tok = unc_m.group(1).strip().rstrip(".,;:")
+            hit = match_write_exclusion(unc_tok, exclusions)
+            if hit is not None:
+                return AccessDecision(
+                    decision="ask",
+                    excluded=True,
+                    matched_entry=hit,
+                    reason=f"Command targets excluded UNC path ({hit['path']}).",
+                )
+
+        raw_tokens = [
+            next(g for g in m.groups() if g is not None)
+            for m in re.finditer(r'"([^"]+)"|\'([^\']+)\'|([^\s;|&()<>`]+)', cmd)
+        ]
+        cwd_str_pre = str(cwd or "").strip()
+        cwd_canon_pre = _canonicalize_path(cwd_str_pre) if cwd_str_pre else None
+
+        for raw_tok in raw_tokens:
+            cand_vals = [raw_tok]
+            if "=" in raw_tok and not raw_tok.startswith("="):
+                cand_vals.append(raw_tok.split("=", 1)[1].strip('"').strip("'"))
+            for tok in cand_vals:
+                tok = tok.strip().rstrip(".,;:")
+                if not tok or "://" in tok or tok.startswith("-"):
+                    continue
+                if re.fullmatch(r"/[A-Za-z0-9?]{1,6}", tok):
+                    continue
+
+                # Environment variable references (%VAR% or $env:VAR)
+                if re.search(r"%[A-Za-z0-9_()]+%", tok) or "$env:" in tok.lower():
+                    expanded = tok
+                    unresolved = False
+                    for vm in re.finditer(r"\$env:([A-Za-z0-9_]+)", tok, re.IGNORECASE):
+                        vname = vm.group(1)
+                        vval = os.environ.get(vname)
+                        if vval is None:
+                            unresolved = True
+                        else:
+                            expanded = re.sub(
+                                rf"\$env:{re.escape(vname)}\b",
+                                lambda _m, _v=vval: _v,
+                                expanded,
+                                flags=re.IGNORECASE,
+                            )
+                    if "%" in expanded:
+                        expanded2 = os.path.expandvars(expanded)
+                        if re.search(r"%[A-Za-z0-9_()]+%", expanded2):
+                            unresolved = True
+                        expanded = expanded2
+                    if unresolved:
+                        return AccessDecision(
+                            decision="ask",
+                            excluded=True,
+                            reason="Command references an unexpanded environment variable path while Write Exclusions are active.",
+                        )
+                    hit = match_write_exclusion(expanded, exclusions)
+                    if hit is not None:
+                        return AccessDecision(
+                            decision="ask",
+                            excluded=True,
+                            matched_entry=hit,
+                            reason=f"Expanded command path resolves inside Write Exclusion ({hit['path']}).",
+                        )
+                    continue
+
+                if re.match(r"^[A-Za-z]:", tok) or tok.startswith("\\\\"):
+                    continue
+
+                if cwd_canon_pre is not None and not tok.startswith("/"):
+                    rel_part = tok.lstrip("\\") if tok.startswith("\\") else tok
+                    if rel_part and (
+                        "\\" in tok
+                        or "/" in tok
+                        or ".." in tok
+                        or match_write_exclusion(cwd_canon_pre / rel_part, exclusions) is not None
+                    ):
+                        resolved_cand = (
+                            Path(f"{cwd_canon_pre.drive}\\{rel_part}")
+                            if tok.startswith("\\") and cwd_canon_pre.drive
+                            else (cwd_canon_pre / rel_part)
+                        )
+                        hit = match_write_exclusion(resolved_cand, exclusions)
+                        if hit is not None:
+                            return AccessDecision(
+                                decision="ask",
+                                excluded=True,
+                                matched_entry=hit,
+                                reason=f"Command relative path resolves inside Write Exclusion ({hit['path']}).",
+                            )
 
     cwd_str = str(cwd or "").strip()
     if cwd_str:

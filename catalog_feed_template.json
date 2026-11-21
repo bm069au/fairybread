@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-20T10:16:20Z",
-  "latest_app_version": "0.92a",
-  "release_summary": "Beta v0.92a: Corrected Proprietary Source-Available license text in About dialog, fixed Graphics Prompt-Optimization -> Image Engine follow-up routing & [PASS] failover, plus all v0.92 Live Update, Access Permissions, MCP Bridge & Restore Defaults upgrades.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92a-beta/Fairybread_v0.92a_beta_Win_x64_Setup.zip",
+  "updated_at": "2026-11-21T08:09:30Z",
+  "latest_app_version": "0.92b",
+  "release_summary": "Beta v0.92b: Antigravity-style sidebar discussion & project controls (hover pin/three-dots menu, 2x2 animated working indicator, blue unread dot, Rename/Duplicate/Archive/Delete drawer), Agent Mail READ/UNREAD controls, batched SQLite memory hydration, <=0.15s task cancel, ZipSlip restore protection, and provider timeout/retry hardening.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92b-beta/Fairybread_v0.92b_beta_Win_x64_Setup.zip",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "e7513d1e869938e9b65d519a04b096044b6844a7d9f7a6c571a9c0fc3c6283df",
+  "installer_sha256": "cbde249dd57efbed9f170a282fd491fdd021997e8a99af829088de23b45e78fa",
   "model_token_rates_per_1m": {
     "gemini-4-neon": [
       0.5,
@@ -211,11 +211,11 @@
       "billing_note": "Prepaid top-up or card-backed; set a Monthly Usage Limit in DeepInfra Billing."
     },
     "groq": {
-      "default_model": "llama-3.3-70b-versatile",
+      "default_model": "openai/gpt-oss-120b",
       "suggested_models": [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "qwen/qwen3.8-27b"
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b"
       ],
       "key_url": "https://console.groq.com/keys",
       "billing_note": "Free tier with strict per-minute TPM limits."
