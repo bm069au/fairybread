@@ -23,7 +23,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.92"
-FAIRYBREAD_VERSION = "0.92c"
+FAIRYBREAD_VERSION = "0.92d"
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
 
@@ -958,6 +958,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "close_to_tray": True,  # True: window X button minimizes Fairybread to system tray
     "auto_refresh_catalog": True,  # Auto-fetch rates/model updates & release notifications from fairybread.me
     "dismissed_update_version": "",  # Version tag dismissed by user until a newer release arrives
+    "spellcheck_enabled": True,  # Live red-underline spellcheck + right-click suggestions in Composer
 }
 
 
@@ -975,6 +976,8 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["close_to_tray"] = bool(raw["close_to_tray"])
     if "auto_refresh_catalog" in raw:
         merged["auto_refresh_catalog"] = bool(raw["auto_refresh_catalog"])
+    if "spellcheck_enabled" in raw:
+        merged["spellcheck_enabled"] = bool(raw["spellcheck_enabled"])
     if isinstance(raw.get("dismissed_update_version"), str):
         merged["dismissed_update_version"] = raw["dismissed_update_version"].strip()[:32]
     if raw.get("badge_display_mode") in {"icons_only", "icons_and_names", "names_only"}:
@@ -1005,6 +1008,7 @@ def save_ui_settings(
     current["include_palace_code"] = bool(current.get("include_palace_code", False))
     current["close_to_tray"] = bool(current.get("close_to_tray", True))
     current["auto_refresh_catalog"] = bool(current.get("auto_refresh_catalog", True))
+    current["spellcheck_enabled"] = bool(current.get("spellcheck_enabled", True))
     current["dismissed_update_version"] = str(current.get("dismissed_update_version") or "").strip()[:32]
     if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
         current["badge_display_mode"] = "icons_only"

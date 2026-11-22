@@ -15,7 +15,7 @@ from typing import Any
 import webbrowser
 
 from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QRect, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QTextCursor
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 try:
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
 except Exception:
@@ -879,13 +879,59 @@ class VoiceSummaryWorker(QThread):
             pass
 
 
+def _style_settings_card(card: QFrame, obj_name: str, lay=None, pad_h: int = 12, pad_v: int = 10) -> QFrame:
+    """Apply scoped QFrame border styling so child QLabels never inherit card borders."""
+    card.setObjectName(obj_name)
+    card.setStyleSheet(
+        f'QFrame#{obj_name} {{ background:#131720; border:1px solid #262c3a; border-radius:8px; }}'
+    )
+    if lay is not None:
+        lay.setContentsMargins(pad_h, pad_v, pad_h, pad_v)
+    return card
+
+
+class SpellCheckHighlighter(QSyntaxHighlighter):
+    """Live red-underline highlighter for misspelled words in Composer."""
+
+    def __init__(self, document, *, checker=None, enabled: bool = True):
+        super().__init__(document)
+        from spellcheck_service import get_spellchecker
+
+        self._checker = checker if checker is not None else get_spellchecker()
+        self.enabled = bool(enabled)
+        self._active_block = -1
+        self._active_col = -1
+        self._error_fmt = QTextCharFormat()
+        self._error_fmt.setUnderlineColor(QColor('#f85149'))
+        self._error_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+
+    def set_enabled(self, enabled: bool) -> None:
+        val = bool(enabled)
+        if self.enabled != val:
+            self.enabled = val
+            self.rehighlight()
+
+    def set_cursor_location(self, block_number: int, col: int) -> None:
+        self._active_block = int(block_number)
+        self._active_col = int(col)
+
+    def highlightBlock(self, text: str) -> None:
+        if not self.enabled or not text:
+            return
+        if not getattr(self._checker, 'available', False):
+            return
+        skip_col = self._active_col if self.currentBlock().blockNumber() == self._active_block else None
+        for start, length, _word in self._checker.find_misspelled_spans(text, skip_cursor_col=skip_col):
+            self.setFormat(start, length, self._error_fmt)
+
+
 class Composer(QTextEdit):
     files_added = Signal(list)
     image_pasted = Signal(bytes)
     send_requested = Signal()
     unsupported_paste = Signal()
 
-    def __init__(self, enter_to_send: bool = True):
+    def __init__(self, enter_to_send: bool = True, spellcheck_enabled: bool = True):
         super().__init__()
         self.enter_to_send = bool(enter_to_send)
         self.setObjectName('composerInput')
@@ -898,6 +944,106 @@ class Composer(QTextEdit):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFixedHeight(28)
         self.textChanged.connect(self._adjust_height)
+        self._spell_highlighter = SpellCheckHighlighter(self.document(), enabled=spellcheck_enabled)
+        self._active_word_block = -1
+        self._active_word_span: tuple[int, int] | None = None
+        self.cursorPositionChanged.connect(self._on_cursor_pos_changed)
+
+    def set_spellcheck_enabled(self, enabled: bool) -> None:
+        if hasattr(self, '_spell_highlighter') and self._spell_highlighter is not None:
+            self._spell_highlighter.set_enabled(bool(enabled))
+
+    def _on_cursor_pos_changed(self):
+        if not hasattr(self, '_spell_highlighter') or self._spell_highlighter is None:
+            return
+        from spellcheck_service import WORD_RE
+
+        cur = self.textCursor()
+        blk_num = cur.blockNumber()
+        col = cur.positionInBlock()
+        blk_text = cur.block().text()
+        new_span: tuple[int, int] | None = None
+        for m in WORD_RE.finditer(blk_text):
+            if m.start() <= col <= m.end():
+                new_span = (m.start(), m.end())
+                break
+
+        old_blk = self._active_word_block
+        old_span = self._active_word_span
+        self._spell_highlighter.set_cursor_location(blk_num, col)
+        self._active_word_block = blk_num
+        self._active_word_span = new_span
+
+        if not self._spell_highlighter.enabled:
+            return
+        doc = self.document()
+        if old_blk >= 0 and (old_blk != blk_num or (old_span is not None and old_span != new_span)):
+            blk = doc.findBlockByNumber(old_blk)
+            if blk.isValid():
+                self._spell_highlighter.rehighlightBlock(blk)
+
+    def contextMenuEvent(self, event):
+        menu = self.createStandardContextMenu(event.pos())
+        checker = getattr(getattr(self, '_spell_highlighter', None), '_checker', None)
+        sp_enabled = bool(getattr(getattr(self, '_spell_highlighter', None), 'enabled', False))
+        if sp_enabled and checker is not None and getattr(checker, 'available', False):
+            from spellcheck_service import WORD_RE, should_skip_word
+
+            cur = self.cursorForPosition(event.pos())
+            blk = cur.block()
+            blk_text = blk.text()
+            col = cur.position() - blk.position()
+            for m in WORD_RE.finditer(blk_text):
+                st, end = m.start(), m.end()
+                if st <= col <= end:
+                    word = m.group(0)
+                    if not should_skip_word(word, blk_text, st, end) and not checker.is_word_correct(word):
+                        abs_start = blk.position() + st
+                        abs_end = blk.position() + end
+                        sugs = checker.suggest(word, max_suggestions=5)
+                        first_act = menu.actions()[0] if menu.actions() else None
+                        if sugs:
+                            for sug in sugs:
+                                act = QAction(sug, menu)
+                                bold_f = act.font()
+                                bold_f.setBold(True)
+                                act.setFont(bold_f)
+
+                                def _apply_sug(_checked=False, s_a=abs_start, e_a=abs_end, repl=sug):
+                                    c = self.textCursor()
+                                    c.setPosition(s_a)
+                                    c.setPosition(e_a, QTextCursor.MoveMode.KeepAnchor)
+                                    c.insertText(repl)
+                                    self.setTextCursor(c)
+
+                                act.triggered.connect(_apply_sug)
+                                menu.insertAction(first_act, act)
+                        else:
+                            no_act = QAction('(No spelling suggestions)', menu)
+                            no_act.setEnabled(False)
+                            menu.insertAction(first_act, no_act)
+
+                        menu.insertSeparator(first_act)
+                        add_act = QAction(f'Add "{word}" to Dictionary', menu)
+
+                        def _do_add(_checked=False, w_val=word):
+                            checker.add_to_dictionary(w_val)
+                            self._spell_highlighter.rehighlight()
+
+                        add_act.triggered.connect(_do_add)
+                        menu.insertAction(first_act, add_act)
+
+                        ign_act = QAction(f'Ignore "{word}"', menu)
+
+                        def _do_ign(_checked=False, w_val=word):
+                            checker.ignore_word(w_val)
+                            self._spell_highlighter.rehighlight()
+
+                        ign_act.triggered.connect(_do_ign)
+                        menu.insertAction(first_act, ign_act)
+                        menu.insertSeparator(first_act)
+                    break
+        menu.exec(event.globalPos())
 
     def _adjust_height(self):
         doc_height = int(self.document().size().height()) + 4
@@ -1366,6 +1512,13 @@ class ManageAIsDialog(QDialog):
         self.auto_refresh_catalog_check.setToolTip('Silently refreshes token/voice/image rate tables & checks for new Fairybread releases on startup (6h cache)')
         lay.addWidget(self.auto_refresh_catalog_check)
 
+        self.spellcheck_check = QCheckBox(
+            'Automatic red-underline spellcheck && right-click suggestions in chat box (Windows en-AU / system dictionary)',
+            checked=bool(ui_cfg.get('spellcheck_enabled', True)),
+        )
+        self.spellcheck_check.setToolTip('Highlights spelling mistakes in red while typing (skips commands, URLs, file paths, and code) with right-click suggestions')
+        lay.addWidget(self.spellcheck_check)
+
         enter_form = QFormLayout()
         self.enter_mode_combo = QComboBox()
         self.enter_mode_combo.addItem('Enter submits message · Shift+Enter adds new line (Default)', True)
@@ -1414,8 +1567,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 1: Permissions · This Computer
         mode_card = QFrame()
-        mode_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         mc_lay = QVBoxLayout(mode_card)
+        _style_settings_card(mode_card, 'permModeCard', mc_lay, pad_h=12, pad_v=12)
         mc_lay.setSpacing(8)
         mc_hdr = QLabel('<b>Permissions · This Computer</b>')
         mc_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1454,8 +1607,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 2: Write Exclusion List (Always On Top — Overrides Turbo & Auto)
         excl_card = QFrame()
-        excl_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         ec_lay = QVBoxLayout(excl_card)
+        _style_settings_card(excl_card, 'permExclCard', ec_lay, pad_h=12, pad_v=12)
         ec_lay.setSpacing(8)
         ec_hdr = QLabel('<b>Write Exclusion List (Always On Top — Overrides Turbo &amp; Auto)</b>')
         ec_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1588,8 +1741,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 3: Agent Capabilities & Recursive Self-Improvement Safety
         cap_card = QFrame()
-        cap_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         cc_lay = QVBoxLayout(cap_card)
+        _style_settings_card(cap_card, 'permCapCard', cc_lay, pad_h=12, pad_v=12)
         cc_lay.setSpacing(6)
         cc_hdr = QLabel('<b>Agent Capabilities &amp; Workspace Tools</b>')
         cc_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1658,8 +1811,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 1: Response, Web Search, Output Detail & Reasoning Summary
         core_card = QFrame()
-        core_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         c_lay = QVBoxLayout(core_card)
+        _style_settings_card(core_card, 'agentDefaultsCoreCard', c_lay, pad_h=12, pad_v=12)
         c_lay.setSpacing(8)
         c_hdr = QLabel('<b>Response Style &amp; Web Search Defaults</b>')
         c_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1706,8 +1859,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 2: Performance, Fast Synthesizer & Smart Intent Routing
         perf_card = QFrame()
-        perf_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         p_lay = QVBoxLayout(perf_card)
+        _style_settings_card(perf_card, 'agentDefaultsPerfCard', p_lay, pad_h=12, pad_v=12)
         p_lay.setSpacing(8)
         p_hdr = QLabel('<b>Speed, Synthesizer &amp; Smart Intent Routing</b>')
         p_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1813,8 +1966,8 @@ class ManageAIsDialog(QDialog):
 
         # --- SECTION 1: THINKING AI (WHO THINKS & REPLIES) ---
         brain_card = QFrame()
-        brain_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         bc_lay = QVBoxLayout(brain_card)
+        _style_settings_card(brain_card, 'voiceBrainCard', bc_lay, pad_h=10, pad_v=10)
         bc_lay.setSpacing(8)
         bc_hdr = QLabel('<b>🧠 1. Thinking AI — Who thinks &amp; writes replies</b>')
         bc_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -1890,8 +2043,8 @@ class ManageAIsDialog(QDialog):
 
         # --- SECTION 2: SPEAKING VOICE, ENGINE SELECTION & INLINE KEY SETUP ---
         spk_card = QFrame()
-        spk_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         sc_lay = QVBoxLayout(spk_card)
+        _style_settings_card(spk_card, 'voiceSpeakerCard', sc_lay, pad_h=10, pad_v=10)
         sc_lay.setSpacing(8)
         sc_hdr = QLabel('<b>🔊 2. Speaking Voice — Only changes how replies sound aloud</b>')
         sc_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -2359,8 +2512,8 @@ class ManageAIsDialog(QDialog):
 
         # --- SECTION 3: MICROPHONE & LIVE VOICE INPUT ---
         mic_card = QFrame()
-        mic_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         mc_lay = QVBoxLayout(mic_card)
+        _style_settings_card(mic_card, 'voiceMicCard', mc_lay, pad_h=10, pad_v=10)
         mc_lay.setSpacing(8)
         mc_hdr = QLabel('<b>🎤 3. Microphone Input &amp; Live Level Meter (Used by Live Voice &amp; Dictation)</b>')
         mc_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -3183,8 +3336,8 @@ class ManageAIsDialog(QDialog):
         split_row.addLayout(left_col)
 
         right_card = QFrame()
-        right_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         right_lay = QVBoxLayout(right_card)
+        _style_settings_card(right_card, 'profileRightCard', right_lay, pad_h=12, pad_v=12)
         right_lay.setSpacing(10)
 
         form = QFormLayout()
@@ -3338,8 +3491,8 @@ class ManageAIsDialog(QDialog):
 
         # 1. MEMORY & AUTO-EVOLVING RICH PROFILE CARD
         mem_card = QFrame()
-        mem_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         mc_lay = QVBoxLayout(mem_card)
+        _style_settings_card(mem_card, 'memoryEnableCard', mc_lay, pad_h=10, pad_v=10)
         mc_lay.setSpacing(8)
 
         row1 = QHBoxLayout()
@@ -3380,8 +3533,8 @@ class ManageAIsDialog(QDialog):
 
         # 2. REFERENCE PHOTOS CARD (Face + Full-Body)
         ref_card = QFrame()
-        ref_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         ref_lay = QVBoxLayout(ref_card)
+        _style_settings_card(ref_card, 'memoryRefPhotosCard', ref_lay, pad_h=10, pad_v=10)
         ref_lay.setSpacing(6)
         ref_lay.addWidget(QLabel('<b>Reference photos</b> <span style="color:#8b949e; font-size:11.5px;">(Stored 100% locally — used when you ask to generate or edit an image of yourself)</span>'))
 
@@ -3445,8 +3598,8 @@ class ManageAIsDialog(QDialog):
 
         # 3. STYLE, TONE & FORMATTING CONTROLS CARD
         tone_card = QFrame()
-        tone_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         tone_grid = QGridLayout(tone_card)
+        _style_settings_card(tone_card, 'memoryToneCard', tone_grid, pad_h=10, pad_v=10)
         tone_grid.setSpacing(8)
 
         self.pers_base_style_combo = QComboBox()
@@ -3485,8 +3638,8 @@ class ManageAIsDialog(QDialog):
 
         # 4. CUSTOM INSTRUCTIONS (General Chat + Coding / Work)
         inst_card = QFrame()
-        inst_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
         inst_lay = QVBoxLayout(inst_card)
+        _style_settings_card(inst_card, 'memoryCustomInstCard', inst_lay, pad_h=10, pad_v=10)
         inst_lay.setSpacing(6)
         inst_lay.addWidget(QLabel('<b>Custom instructions (General Chat — applies to all Council AIs):</b>'))
         self.pers_general_inst_edit = QTextEdit()
@@ -3750,9 +3903,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 1: Clear built-in guide explaining Foreman vs Council Member modes & benefits
         guide_card = QFrame()
-        guide_card.setObjectName('externalBridgeGuideCard')
-        guide_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         g_lay = QVBoxLayout(guide_card)
+        _style_settings_card(guide_card, 'externalBridgeGuideCard', g_lay, pad_h=12, pad_v=12)
         g_lay.setSpacing(6)
         guide_hdr = QLabel('<b>How External AI Links Work — Pick One Mode Per App</b>')
         guide_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -3821,9 +3973,8 @@ class ManageAIsDialog(QDialog):
             info = detected.get(pk, {})
             meta = platform_meta[pk]
             card = QFrame()
-            card.setObjectName(f'bridgePlatformCard_{pk}')
-            card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;')
             c_lay = QVBoxLayout(card)
+            _style_settings_card(card, f'bridgePlatformCard_{pk}', c_lay, pad_h=10, pad_v=10)
             c_lay.setSpacing(6)
 
             top_row = QHBoxLayout()
@@ -3902,8 +4053,8 @@ class ManageAIsDialog(QDialog):
 
         # Card 3: Shared MCP Capabilities & Diagnostics
         cap_card = QFrame()
-        cap_card.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:12px;')
         cap_lay = QVBoxLayout(cap_card)
+        _style_settings_card(cap_card, 'bridgeCapCard', cap_lay, pad_h=12, pad_v=12)
         cap_lay.setSpacing(6)
         cap_hdr = QLabel('<b>Shared Bridge Capabilities &amp; Diagnostics</b>')
         cap_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -4145,9 +4296,9 @@ class ManageAIsDialog(QDialog):
 
         # --- 1. NORMAL MODE DRIVE SPACE SLIDER + LIVE USAGE & CAP WARNING ---
         space_grp = QFrame()
-        space_grp.setStyleSheet('background:#131720; border:1px solid #262c3a; border-radius:8px; padding:8px;')
         sp_lay = QVBoxLayout(space_grp)
-        sp_lay.setSpacing(6)
+        _style_settings_card(space_grp, 'storageSpaceCard', sp_lay, pad_h=12, pad_v=10)
+        sp_lay.setSpacing(8)
         self.normal_space_summary_lbl = QLabel()
         self.normal_space_summary_lbl.setWordWrap(True)
         self.normal_space_summary_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -4155,15 +4306,19 @@ class ManageAIsDialog(QDialog):
 
         cur_norm_mb = int(ui_cfg.get('normal_max_storage_mb', 0))
         norm_slider_row = QHBoxLayout()
-        norm_slider_row.addWidget(QLabel('Normal Mode Cap:'))
-        norm_slider_row.addWidget(QLabel('100 MB'))
+        norm_slider_row.setSpacing(8)
+        norm_cap_lbl = QLabel('Normal Mode Cap:')
+        norm_min_lbl = QLabel('100 MB')
+        norm_min_lbl.setStyleSheet('color:#8b949e; font-size:11.5px; background:transparent; border:none;')
+        norm_slider_row.addWidget(norm_cap_lbl)
+        norm_slider_row.addWidget(norm_min_lbl)
         self.normal_storage_slider = QSlider(Qt.Orientation.Horizontal)
         self.normal_storage_slider.setRange(0, len(STORAGE_SLIDER_STOPS_MB) - 1)
         self.normal_storage_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.normal_storage_slider.setTickInterval(1)
         self.normal_storage_slider.setValue(mb_to_slider_index(cur_norm_mb))
         self.normal_storage_edit = QLineEdit(format_storage_mb_label(cur_norm_mb))
-        self.normal_storage_edit.setFixedWidth(165)
+        self.normal_storage_edit.setFixedWidth(115)
 
         def _refresh_storage_summary_labels():
             st = compute_palace_storage_stats(self.config_path)
@@ -4203,17 +4358,23 @@ class ManageAIsDialog(QDialog):
 
         self.normal_storage_slider.valueChanged.connect(_on_norm_slider)
         self.normal_storage_edit.editingFinished.connect(_on_norm_edit)
+        norm_max_lbl = QLabel('Unlimited')
+        norm_max_lbl.setStyleSheet('color:#8b949e; font-size:11.5px; background:transparent; border:none;')
         norm_slider_row.addWidget(self.normal_storage_slider, 1)
-        norm_slider_row.addWidget(QLabel('Unlimited'))
+        norm_slider_row.addWidget(norm_max_lbl)
         norm_slider_row.addWidget(self.normal_storage_edit)
         sp_lay.addLayout(norm_slider_row)
 
         # --- 2. MOVE FAIRYBREAD MEMORY LOCATION (DIFFERENT DRIVE / FOLDER) ---
+        loc_lbl = QLabel('<b>Fairybread Storage Folder:</b>')
+        loc_lbl.setTextFormat(Qt.TextFormat.RichText)
+        sp_lay.addWidget(loc_lbl)
         loc_row = QHBoxLayout()
-        loc_row.addWidget(QLabel('Fairybread Storage Folder:'))
+        loc_row.setSpacing(8)
         self.palace_data_dir_edit = QLineEdit(str(stats['data_root']))
-        loc_browse_btn = QPushButton('Browse Drive/Folder…')
-        loc_move_btn = QPushButton('🚚 Move Fairybread Data Here')
+        loc_browse_btn = QPushButton('Browse…')
+        loc_browse_btn.setToolTip('Choose a different drive or folder for Fairybread storage')
+        loc_move_btn = QPushButton('🚚 Move Data')
         loc_move_btn.setToolTip('Copy all Fairybread Memory, Chats, Uploaded Files & Pictures to the selected drive/folder')
         loc_row.addWidget(self.palace_data_dir_edit, 1)
         loc_row.addWidget(loc_browse_btn)
@@ -4265,10 +4426,14 @@ class ManageAIsDialog(QDialog):
                 self.stored_files_list.addItem(lw)
 
         file_btn_row = QHBoxLayout()
-        dl_file_btn = QPushButton('💾 Download / Save Selected As…')
-        open_file_btn = QPushButton('🔍 Open / View Selected')
-        del_file_btn = QPushButton('🗑 Delete Selected Files')
-        refresh_files_btn = QPushButton('↻ Refresh List')
+        dl_file_btn = QPushButton('💾 Save As…')
+        dl_file_btn.setToolTip('Download / save selected files or pictures to another folder')
+        open_file_btn = QPushButton('🔍 Open')
+        open_file_btn.setToolTip('Open / view the selected file or picture')
+        del_file_btn = QPushButton('🗑 Delete')
+        del_file_btn.setToolTip('Delete selected stored files or pictures to reclaim disk space')
+        refresh_files_btn = QPushButton('↻ Refresh')
+        refresh_files_btn.setToolTip('Refresh stored files and disk usage breakdown')
         file_btn_row.addWidget(dl_file_btn)
         file_btn_row.addWidget(open_file_btn)
         file_btn_row.addWidget(del_file_btn)
@@ -4346,11 +4511,13 @@ class ManageAIsDialog(QDialog):
         lay.addLayout(pw_row)
 
         btn_row = QHBoxLayout()
-        export_btn = QPushButton('📦 Create Backup Archive (.zip)…')
+        export_btn = QPushButton('📦 Backup (.zip)…')
+        export_btn.setToolTip('Create a full password-locked backup archive (.zip)')
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        restore_btn = QPushButton('♻ Restore From Backup Archive (.zip)…')
+        restore_btn = QPushButton('♻ Restore (.zip)…')
+        restore_btn.setToolTip('Restore memory, settings, and API keys from a backup archive (.zip)')
         restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        restore_defaults_btn = QPushButton('↺ Restore Default Settings…')
+        restore_defaults_btn = QPushButton('↺ Reset Defaults…')
         restore_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         restore_defaults_btn.setToolTip('Reset app settings to factory defaults while keeping Memory Palaces, chats, API keys, and Write Exclusions')
         btn_row.addWidget(export_btn)
@@ -4665,6 +4832,7 @@ class ManageAIsDialog(QDialog):
             'enter_to_send': bool(self.enter_mode_combo.currentData()),
             'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else True,
             'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
+            'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
             'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
             'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
         }
@@ -5261,7 +5429,10 @@ class PalaceWindow(QMainWindow):
         self.composer_live_bar.hide()
         card_layout.addWidget(self.composer_live_bar)
 
-        self.composer = Composer(enter_to_send=bool(ui_cfg.get('enter_to_send', True)))
+        self.composer = Composer(
+            enter_to_send=bool(ui_cfg.get('enter_to_send', True)),
+            spellcheck_enabled=bool(ui_cfg.get('spellcheck_enabled', True)),
+        )
         self.composer.setToolTip('Type message, / for commands, paste image (Ctrl+V), or drop files')
         self.composer.files_added.connect(self.add_files)
         self.composer.image_pasted.connect(self.add_pasted_image)
@@ -8089,6 +8260,7 @@ class PalaceWindow(QMainWindow):
         self._item_html_cache.clear()
         ui_cfg = load_ui_settings(self.config_path)
         self.composer.enter_to_send = bool(ui_cfg.get('enter_to_send', True))
+        self.composer.set_spellcheck_enabled(bool(ui_cfg.get('spellcheck_enabled', True)))
         self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
         self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
         self.reload_provider_bar()
@@ -9215,7 +9387,7 @@ class PalaceWindow(QMainWindow):
                 },
             )
             row.setToolTip(f'{raw_title}\n(Hover for Pin / ⋮ options, or drag onto a Project)')
-            row.setSizeHint(QSize(0, 22))
+            row.setSizeHint(QSize(0, 23))
             row.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -9250,7 +9422,7 @@ class PalaceWindow(QMainWindow):
                     },
                 )
                 hdr.setFont(bold_font)
-                hdr.setSizeHint(QSize(0, 23))
+                hdr.setSizeHint(QSize(0, 24))
                 hdr.setForeground(QColor('#c9d1d9' if pid == selected_proj else '#8b949e'))
                 hdr.setFlags(
                     Qt.ItemFlag.ItemIsEnabled
@@ -9268,7 +9440,7 @@ class PalaceWindow(QMainWindow):
                     empty_row = QListWidgetItem('  No conversations yet')
                     empty_row.setData(Qt.ItemDataRole.UserRole, f'proj:{pid}')
                     empty_row.setFont(italic_font)
-                    empty_row.setSizeHint(QSize(0, 20))
+                    empty_row.setSizeHint(QSize(0, 21))
                     empty_row.setForeground(QColor('#484f58'))
                     empty_row.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                     self.session_list.addItem(empty_row)
@@ -9282,7 +9454,7 @@ class PalaceWindow(QMainWindow):
                 gen_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
                 gen_hdr.setData(SIDEBAR_META_ROLE, {'kind': 'project', 'id': '', 'title': 'Conversations', 'selected': False})
                 gen_hdr.setFont(bold_font)
-                gen_hdr.setSizeHint(QSize(0, 21))
+                gen_hdr.setSizeHint(QSize(0, 22))
                 gen_hdr.setForeground(QColor('#6e7681'))
                 gen_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
                 self.session_list.addItem(gen_hdr)
@@ -9297,7 +9469,7 @@ class PalaceWindow(QMainWindow):
             empty_proj.setIcon(folder_grey_qicon(False))
             empty_proj.setData(Qt.ItemDataRole.UserRole, 'proj:')
             empty_proj.setFont(italic_font)
-            empty_proj.setSizeHint(QSize(0, 20))
+            empty_proj.setSizeHint(QSize(0, 21))
             empty_proj.setForeground(QColor('#484f58'))
             self.session_list.addItem(empty_proj)
 
@@ -9305,7 +9477,7 @@ class PalaceWindow(QMainWindow):
             rec_hdr.setData(Qt.ItemDataRole.UserRole, 'proj:')
             rec_hdr.setData(SIDEBAR_META_ROLE, {'kind': 'project', 'id': '', 'title': 'Conversations', 'selected': False})
             rec_hdr.setFont(bold_font)
-            rec_hdr.setSizeHint(QSize(0, 21))
+            rec_hdr.setSizeHint(QSize(0, 22))
             rec_hdr.setForeground(QColor('#6e7681'))
             rec_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled)
             self.session_list.addItem(rec_hdr)
@@ -9324,7 +9496,7 @@ class PalaceWindow(QMainWindow):
                     'expanded': archived_expanded,
                 },
             )
-            arch_hdr.setSizeHint(QSize(0, 21))
+            arch_hdr.setSizeHint(QSize(0, 22))
             arch_hdr.setFlags(Qt.ItemFlag.ItemIsEnabled)
             arch_hdr.setToolTip('Click to expand or collapse archived discussions')
             self.session_list.addItem(arch_hdr)

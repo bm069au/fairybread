@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-21T22:48:30Z",
-  "latest_app_version": "0.92c",
-  "release_summary": "Beta v0.92c: Deepgram Flux (/v2/speak) + all 89 English Deepgram voices (36 Flux, 41 Aura-2, 12 Aura-1) in a contextual Voice Character dropdown with Flux Expressivity (-2..+2) and live Refresh Voices, two-stage 7500-char hybrid FTS5 + 128-d vector memory search with contradiction supersession & Tone Vector personalisation, and uniform user-bubble / compact sidebar line spacing.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92c-beta/Fairybread_v0.92c_beta_Win_x64_Setup.zip",
+  "updated_at": "2026-11-22T01:55:00Z",
+  "latest_app_version": "0.92d",
+  "release_summary": "Beta v0.92d: Native Windows en-AU live red-underline spellcheck & right-click suggestions in Composer (with Settings -> General toggle), scoped Settings cards fixing Backup & Restore child label borders, full storage folder width & trimmed buttons (0 clipped), and +1px chat sidebar topic row spacing.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92d-beta/Fairybread_v0.92d_beta_Win_x64_Setup.zip",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "187972fee9219112e1fd696e8344903b81fd298893e6d612a1ddc1e8ec39a76c",
+  "installer_sha256": "988844ddf15b0c7d4416c1b64a8233e56a0cbd641af3038090b4df94b009d7ba",
   "model_token_rates_per_1m": {
     "gemini-4-neon": [
       0.5,

@@ -3660,7 +3660,7 @@ class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
                 self.assertNotIn("line-height:1.48", user_html)
                 self.assertNotIn("line-height:1.6", ai_html)
 
-                # R10: compact sidebar topic row heights (22px session, 23px project) and 18x18 hover hitboxes
+                # R10: compact sidebar topic row heights (+1px adjustment: 23px session, 24px project) and 18x18 hover hitboxes
                 win.refresh_sessions()
                 app.processEvents()
                 sess_heights = []
@@ -3672,8 +3672,8 @@ class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
                         sess_heights.append(it.sizeHint().height())
                     elif key == f"proj:{p1}" and "proj" in key and it.text().startswith("AlphaProj"):
                         proj_heights.append(it.sizeHint().height())
-                self.assertEqual(sess_heights, [22, 22])
-                self.assertEqual(proj_heights, [23])
+                self.assertEqual(sess_heights, [23, 23])
+                self.assertEqual(proj_heights, [24])
 
                 rects = SidebarSessionList.action_rects_for_item(
                     win.session_list.visualItemRect(win.session_list.item(0)),
@@ -3842,6 +3842,98 @@ class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
                     dlg.close()
                 except Exception:
                     pass
+
+    def test_backup_settings_scoped_cards_and_native_spellcheck(self):
+        from PySide6.QtGui import QTextCharFormat
+        from PySide6.QtWidgets import QFrame, QLabel
+        from palace_config import load_ui_settings, save_ui_settings
+        from palace_gui import Composer, ManageAIsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+        from spellcheck_service import WindowsSpellChecker
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+
+            # 1. Backup & Restore card scoping + width + zero clipping
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="Backup & Restore")
+            try:
+                dlg.show()
+                app.processEvents()
+                card = dlg.findChild(QFrame, "storageSpaceCard")
+                self.assertIsNotNone(card)
+                self.assertIn("QFrame#storageSpaceCard", card.styleSheet())
+                for lbl in card.findChildren(QLabel):
+                    self.assertNotIn("border:1px", lbl.styleSheet())
+                self.assertGreaterEqual(dlg.palace_data_dir_edit.width(), 240)
+                aud = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud["clipped_widget_count"], 0, msg=str(aud.get("clipped_widgets")))
+
+                # Toggle spellcheck checkbox off in General tab and verify persistence
+                dlg.nav_list.setCurrentRow(dlg.SETTINGS_PAGES.index("General"))
+                app.processEvents()
+                self.assertTrue(dlg.spellcheck_check.isChecked())
+                dlg.spellcheck_check.setChecked(False)
+                dlg.save_settings()
+                self.assertFalse(load_ui_settings(cfg)["spellcheck_enabled"])
+                save_ui_settings({"spellcheck_enabled": True}, config_path=cfg)
+                self.assertTrue(load_ui_settings(cfg)["spellcheck_enabled"])
+            finally:
+                try:
+                    dlg.reject()
+                    dlg.close()
+                except Exception:
+                    pass
+
+        # 2. Native Windows en-AU SpellChecker + Composer highlighter
+        chk = WindowsSpellChecker()
+        try:
+            self.assertTrue(chk.available)
+            sample = r"Optimise colour in Fairybread via /autopatch palace_gui.py C:\Palace_Live\app improvment and misstake."
+            spans = chk.find_misspelled_spans(sample)
+            flagged_words = [w for _s, _l, w in spans]
+            self.assertIn("improvment", flagged_words)
+            self.assertIn("misstake", flagged_words)
+            for ok_tok in ("Optimise", "colour", "Fairybread", "autopatch", "palace", "gui", "py", "Palace", "Live"):
+                self.assertNotIn(ok_tok, flagged_words)
+            self.assertIn("improvement", chk.suggest("improvment"))
+            self.assertIn("mistake", chk.suggest("misstake"))
+
+            # ignore_word clears session error without writing to user OS dictionary
+            chk.ignore_word("speling")
+            self.assertEqual(chk.find_misspelled_spans("This has speling here"), [])
+
+            # Composer underlines misspelled words asynchronously away from cursor and toggles cleanly
+            comp = Composer(enter_to_send=True, spellcheck_enabled=True)
+            comp._spell_highlighter._checker = chk
+            comp.setPlainText("Optimise improvment text")
+            cur = comp.textCursor()
+            cur.setPosition(len("Optimise improvment text"))  # cursor at end ("text"), away from "improvment"
+            comp.setTextCursor(cur)
+            comp._spell_highlighter.rehighlight()
+            app.processEvents()
+
+            blk0 = comp.document().findBlockByNumber(0)
+            fmts = blk0.layout().formats()
+            imp_start = len("Optimise ")
+            imp_len = len("improvment")
+            has_spell_fmt = any(
+                f.start == imp_start
+                and f.length == imp_len
+                and f.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline
+                for f in fmts
+            )
+            self.assertTrue(has_spell_fmt, msg=f"Expected red underline format, got {[(f.start, f.length, f.format.underlineStyle()) for f in fmts]}")
+
+            comp.set_spellcheck_enabled(False)
+            app.processEvents()
+            fmts_off = comp.document().findBlockByNumber(0).layout().formats()
+            self.assertFalse(
+                any(f.format.underlineStyle() == QTextCharFormat.UnderlineStyle.SpellCheckUnderline for f in fmts_off)
+            )
+            comp.close()
+        finally:
+            chk.close()
 
 
 if __name__ == "__main__":

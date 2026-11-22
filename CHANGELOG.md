@@ -1,3 +1,20 @@
+# Fairybread — Beta v0.92d (Win_x64) Changelog
+**Release Date:** 2026-11-22
+**Version:** `v0.92d_beta_Win_x64`
+
+## Summary of Changes in `v0.92d`
+1. **✍️ Native Windows Live Spellcheck & Right-Click Suggestions (`spellcheck_service.py`, `palace_config.py`, `palace_gui.py`):**
+   - Added zero-dependency native Windows Spell Checking COM integration (`MsSpellCheckingFacility.dll` / `ISpellCheckerFactory` via `ctypes`, preferring `en-AU` with `en-US`/`en-GB` fallback).
+   - Added `SpellCheckHighlighter` (`SpellCheckUnderline` red squiggles, skipping the word currently under your cursor while typing) and `Composer.contextMenuEvent()` top-of-menu spelling suggestions, **Add to Dictionary**, and **Ignore Word**, while skipping `/commands`, `@mentions`, URLs, file paths, `snake_case`/`camelCase` tokens, acronyms, inline backticks, and built-in domain terms (`Fairybread`, `DeepSeek`, `Jellyfin`, etc.).
+   - Added persistent `spellcheck_enabled` setting (`DEFAULT_UI_SETTINGS`, default `True`) and Settings → General toggle.
+2. **📦 Backup & Restore + Settings Card Border & Width Cleanup (`palace_gui.py`):**
+   - Scoped all 17 Settings `QFrame` cards via `_style_settings_card()` (`QFrame#<objectName>`) with layout margins so plain child `QLabel`s (`Normal Mode Cap:`, `100 MB`, `Unlimited`, etc.) no longer inherit dark bordered boxes.
+   - Placed `Fairybread Storage Folder:` above its input row so the full folder path displays without clipping, narrowed the cap edit box (`165 px → 115 px`), and trimmed Backup & Restore action buttons (`Browse…`, `🚚 Move Data`, `💾 Save As…`, `🔍 Open`, `🗑 Delete`, `↻ Refresh`, `📦 Backup (.zip)…`, `♻ Restore (.zip)…`, `↺ Reset Defaults…`) for zero clipping at `960×720`.
+3. **💬 Chat Sidebar Topic Row Spacing (`+1 px`) (`palace_gui.py`):**
+   - Bumped `refresh_sessions()` sidebar `session_list` row heights by `+1 px` (`23 px` sessions, `24 px` projects, `21 px` empty placeholders, `22 px` section/archived headers).
+
+---
+
 # Fairybread — Beta v0.92c (Win_x64) Changelog
 **Release Date:** 2026-11-22
 **Version:** `v0.92c_beta_Win_x64`
