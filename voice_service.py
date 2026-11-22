@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from array import array
+import base64
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
@@ -30,6 +31,7 @@ TTS_ENGINES: list[tuple[str, str]] = [
     ("openai", "OpenAI Neural (gpt-4o-mini-tts · ~$0.015/min)"),
     ("gemini", "Gemini Neural (gemini-3.8-flash-lite-tts · ~$0.012/min)"),
     ("groq", "Groq Orpheus (orpheus-v1-english · ~$0.02/min)"),
+    ("openrouter", "OpenRouter Audio (gpt-audio-mini · Neural Voices)"),
     ("cartesia", "Cartesia Sonic (~$0.045/1k chars · ~50ms streaming)"),
     ("elevenlabs", "ElevenLabs (~$0.18/1k chars · Studio / Cloning)"),
     ("deepgram", "Deepgram Flux / Aura-2 (~$0.025–$0.03/1k chars · Low-Latency)"),
@@ -41,6 +43,7 @@ TTS_ENGINE_SHORT_LABELS: dict[str, str] = {
     "openai": "OpenAI",
     "gemini": "Gemini",
     "groq": "Groq Orpheus",
+    "openrouter": "OpenRouter Audio",
     "cartesia": "Cartesia Sonic",
     "elevenlabs": "ElevenLabs",
     "deepgram": "Deepgram Flux / Aura-2",
@@ -1256,6 +1259,7 @@ def fetch_tts_account_balance(
         "openai": "https://platform.openai.com/settings/organization/billing/overview",
         "gemini": "https://aistudio.google.com/",
         "groq": "https://console.groq.com/settings/billing",
+        "openrouter": "https://openrouter.ai/settings/credits",
     }
     b_url = billing_urls.get(eng, "")
     key = (api_key or "").strip()
@@ -1408,6 +1412,30 @@ def fetch_tts_account_balance(
                 "billing_url": b_url,
             }
 
+    if eng == "openrouter":
+        from catalog_sync import fetch_openrouter_credits
+        cred_res = fetch_openrouter_credits(key, timeout=timeout)
+        if cred_res.get("ok"):
+            rem = float(cred_res.get("remaining_usd", 0.0) or 0.0)
+            tot = float(cred_res.get("total_credits", 0.0) or 0.0)
+            used = float(cred_res.get("total_usage", 0.0) or 0.0)
+            return {
+                "engine": eng,
+                "supported": True,
+                "ok": True,
+                "summary": f"OpenRouter: ${rem:,.2f} USD remaining (${used:,.2f} / ${tot:,.2f} used)",
+                "detail": "",
+                "billing_url": b_url,
+            }
+        return {
+            "engine": eng,
+            "supported": True,
+            "ok": False,
+            "summary": f"OpenRouter balance check failed: {cred_res.get('error', 'error')}",
+            "detail": "",
+            "billing_url": b_url,
+        }
+
     return {
         "engine": eng,
         "supported": False,
@@ -1434,6 +1462,7 @@ def clean_text_for_speech(markdown_text: str) -> str:
     text = re.sub(r"\[TOOL:[^\]]*\]", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"[✓⚡⏸]\s*\[[^\]]+\]", " ", text)
     text = re.sub(r"\[GENERATE_IMAGE[^\]]*\]", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[WEATHER_MAP[^\]]*\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[PALACE_UI_SNAPSHOT[^\]]*\]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\[SAVE_MEMORY[^\]]*\].*?\[/SAVE_MEMORY\]", " ", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r'\[SAVE_MEMORY\s+(?:[^\]"]|"[^"]*")*\]', "", text, flags=re.IGNORECASE)
@@ -1932,6 +1961,56 @@ def _synthesize_groq_orpheus_pcm(
     return bytes(combined_pcm), out_sr
 
 
+def _synthesize_openrouter_audio_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice: str = "coral",
+    cancel_event: threading.Event | None = None,
+) -> tuple[bytes, int]:
+    """Synthesize spoken audio via OpenRouter `openai/gpt-audio-mini` (`modalities: [text, audio]`) cleanly."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        raise ValueError("openrouter: missing API key")
+    ov = (voice or "coral").strip().lower()
+    if ov not in _OPENAI_VOICE_IDS:
+        ov = "coral"
+    if cancel_event is not None and cancel_event.is_set():
+        return b"", 24000
+    body = json.dumps({
+        "model": "openai/gpt-audio-mini",
+        "modalities": ["text", "audio"],
+        "audio": {"voice": ov, "format": "wav"},
+        "messages": [
+            {
+                "role": "system",
+                "content": "Read the user text aloud verbatim with natural warmth and pacing. Do not add commentary or extra words.",
+            },
+            {"role": "user", "content": str(chunk_text or "").strip()},
+        ],
+    }).encode("utf-8")
+    req = urllib_request_req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {clean_key}",
+            "HTTP-Referer": "https://fairybread.me",
+            "X-Title": "Fairybread",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(urllib_request_req, timeout=30.0) as resp:
+        payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+    msg0 = (((payload.get("choices") or [{}])[0]).get("message") or {})
+    aud = msg0.get("audio") or {}
+    b64_data = str(aud.get("data") or "").strip()
+    if not b64_data:
+        raise RuntimeError("OpenRouter audio response did not contain wav audio payload")
+    raw_bytes = base64.b64decode(b64_data)
+    return _decode_audio_payload(raw_bytes, "audio/wav")
+
+
 def _iter_http_pcm_stream(req: urllib.request.Request, *, cancel_event: threading.Event | None = None, timeout: float = 25.0):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         carry = b""
@@ -2120,15 +2199,16 @@ def synthesize_speech_pcm(
     )
 
     order = {
-        "auto": ["openai", "gemini", "groq"],
-        "openai": ["openai", "gemini", "groq"],
-        "gemini": ["gemini", "openai", "groq"],
-        "groq": ["groq", "openai", "gemini"],
-        "cartesia": ["cartesia", "openai", "gemini"],
-        "elevenlabs": ["elevenlabs", "openai", "gemini"],
-        "deepgram": ["deepgram", "openai", "gemini"],
+        "auto": ["openai", "gemini", "groq", "openrouter"],
+        "openai": ["openai", "gemini", "groq", "openrouter"],
+        "gemini": ["gemini", "openai", "groq", "openrouter"],
+        "groq": ["groq", "openai", "gemini", "openrouter"],
+        "openrouter": ["openrouter", "openai", "gemini"],
+        "cartesia": ["cartesia", "openai", "gemini", "openrouter"],
+        "elevenlabs": ["elevenlabs", "openai", "gemini", "openrouter"],
+        "deepgram": ["deepgram", "openai", "gemini", "openrouter"],
         "system": [],
-    }.get(engine, ["openai", "gemini", "groq"])
+    }.get(engine, ["openai", "gemini", "groq", "openrouter"])
 
     errors: list[str] = []
     for candidate in order:
@@ -2182,6 +2262,21 @@ def synthesize_speech_pcm(
                     return pcm, sr, "groq:canopylabs/orpheus-v1-english"
             except Exception as exc:
                 errors.append(f"groq: {exc}")
+        elif candidate == "openrouter":
+            or_key = store.get_api_key("openrouter")
+            if not or_key:
+                errors.append("openrouter: missing API key")
+                continue
+            try:
+                pcm, sr = _synthesize_openrouter_audio_pcm(
+                    spoken,
+                    api_key=or_key,
+                    voice=str(cfg.get("voice_name") or "coral"),
+                )
+                if pcm:
+                    return pcm, sr, "openrouter:gpt-audio-mini"
+            except Exception as exc:
+                errors.append(f"openrouter: {exc}")
         elif candidate == "cartesia":
             ckey = store.get_api_key("cartesia")
             if not ckey:
@@ -2277,12 +2372,12 @@ def _build_tts_candidate_order(
     fb = (fallback_engine or "auto").strip().lower()
     all_ready = [
         eid
-        for eid in ("openai", "gemini", "groq", "cartesia", "elevenlabs", "deepgram")
+        for eid in ("openai", "gemini", "groq", "openrouter", "cartesia", "elevenlabs", "deepgram")
         if is_tts_engine_ready(eid, credential_store=store)
     ]
     order: list[str] = []
     if pri == "auto":
-        for eid in ("openai", "gemini", "groq"):
+        for eid in ("openai", "gemini", "groq", "openrouter"):
             if eid not in order:
                 order.append(eid)
         for eid in all_ready:
@@ -2610,6 +2705,61 @@ def speak_agent_response(
                             break
                         continue
 
+                elif candidate == "openrouter":
+                    or_key = store.get_api_key("openrouter")
+                    if not or_key:
+                        if engine == "openrouter":
+                            errors.append("openrouter: missing API key")
+                        continue
+                    try:
+                        or_voice = voice_name or "coral"
+                        for ch_txt in chunks:
+                            if cancel_ev.is_set():
+                                break
+                            pcm, sr = _synthesize_openrouter_audio_pcm(
+                                ch_txt,
+                                api_key=or_key,
+                                voice=or_voice,
+                                cancel_event=cancel_ev,
+                            )
+                            if not pcm:
+                                continue
+                            if stream is None:
+                                stream = _WaveOutStream(sample_rate=sr, channels=1, bits_per_sample=16)
+                                with _TTS_LOCK:
+                                    if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                        stream.stop()
+                                        stream = None
+                                        break
+                                    _ACTIVE_WAVEOUT = stream
+                                    _LAST_TTS_ENGINE_USED = f"openrouter:gpt-audio-mini ({or_voice})"
+                                if on_engine_status is not None:
+                                    try:
+                                        on_engine_status(_LAST_TTS_ENGINE_USED)
+                                    except Exception:
+                                        pass
+                            _write_or_raise(pcm, "openrouter")
+                            _emit_meta("openrouter", or_voice)
+                            try:
+                                from cost_service import emit_tts_cost
+                                emit_tts_cost("openrouter:gpt-audio-mini", len(pcm) / (float(sr or 24000) * 2.0), char_count=len(ch_txt))
+                            except Exception:
+                                pass
+                        if stream is not None and not cancel_ev.is_set() and played_any:
+                            stream.drain(cancel_ev)
+                        if played_any:
+                            break
+                    except Exception as exc:
+                        err_s = f"openrouter: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
+                        if stream is not None:
+                            stream.stop()
+                            stream = None
+                        if played_any:
+                            break
+                        continue
+
                 elif candidate in {"cartesia", "elevenlabs", "deepgram"}:
                     ext_key = store.get_api_key(candidate)
                     if not ext_key:
@@ -2842,4 +2992,38 @@ def transcribe_audio_file(
             except Exception:
                 continue
 
-    raise RuntimeError("Could not transcribe audio. Ensure Groq, OpenAI, or Gemini has an active API key.")
+    or_key = store.get_api_key("openrouter")
+    if or_key:
+        try:
+            b64_wav = base64.b64encode(audio_path.read_bytes()).decode("ascii")
+            body = json.dumps({
+                "model": "openai/gpt-audio-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe the spoken words in this audio clip verbatim. Output only the transcribed text."},
+                        {"type": "input_audio", "input_audio": {"data": b64_wav, "format": "wav"}},
+                    ],
+                }],
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {or_key}",
+                    "HTTP-Referer": "https://fairybread.me",
+                    "X-Title": "Fairybread",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=25.0) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+            txt = str((((payload.get("choices") or [{}])[0]).get("message") or {}).get("content") or "").strip()
+            if txt:
+                _emit_stt("openrouter:gpt-audio-mini")
+                return txt
+        except Exception:
+            pass
+
+    raise RuntimeError("Could not transcribe audio. Ensure Groq, OpenAI, Gemini, or OpenRouter has an active API key.")

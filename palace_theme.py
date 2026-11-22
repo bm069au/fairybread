@@ -32,7 +32,7 @@ from PySide6.QtGui import (
 from PySide6.QtSvg import QSvgRenderer
 
 from credential_store import CredentialStore
-from palace_config import PROVIDER_CATALOG
+from palace_config import PROVIDER_CATALOG, get_experimental_data_root, get_resource_path
 
 NEUTRAL_GREY = "#6e7681"
 NEUTRAL_GREY_TEXT = "#8b949e"
@@ -413,6 +413,11 @@ _PALACE_SNAPSHOT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_WEATHER_MAP_TAG_PATTERN = re.compile(
+    r'\[WEATHER_MAP\s+((?:[^\]"]|"[^"]*")*)\]',
+    re.IGNORECASE,
+)
+
 # Named social media, wallpaper, banner, and 300-DPI print presets
 IMAGE_SIZE_PRESETS: dict[str, tuple[int, int, str]] = {
     "default": (1024, 1024, "1024×1024 Square HD"),
@@ -668,9 +673,11 @@ def render_svg_to_png(svg_xml: str, title: str = "palace_drawing") -> Path | Non
     return out_path
 
 
-def _save_engine_badge(out_path: Path, engine_label: str) -> None:
+def _save_engine_badge(out_path: Path, engine_label: str, *, cost_usd: float | None = None) -> None:
     try:
         out_path.with_suffix(".engine").write_text(engine_label, encoding="utf-8")
+        if cost_usd is not None:
+            out_path.with_suffix(".cost").write_text(f"{float(cost_usd):.6f}", encoding="utf-8")
     except OSError:
         pass
 
@@ -681,6 +688,18 @@ def get_image_engine_badge(out_path: Path) -> str:
         if badge_path.exists():
             return badge_path.read_text(encoding="utf-8").strip()
     except OSError:
+        pass
+    return ""
+
+
+def get_image_cost_badge(out_path: Path) -> str:
+    try:
+        cost_fp = out_path.with_suffix(".cost")
+        if cost_fp.exists():
+            val = float(cost_fp.read_text(encoding="utf-8").strip())
+            from cost_service import format_usd_compact
+            return format_usd_compact(val)
+    except Exception:
         pass
     return ""
 
@@ -1079,6 +1098,85 @@ def generate_ai_image_to_png(
             attempted_errors.append(f"{flux_eng}: {exc}")
         return None, False
 
+    def _try_openrouter_image(or_model: str) -> tuple[Path | None, bool]:
+        or_key = cs.get_api_key("openrouter")
+        if not or_key:
+            attempted_errors.append(f"{or_model}: missing openrouter API key")
+            return None, False
+        clean_or_m = str(or_model or "").strip()
+        if clean_or_m == "openrouter":
+            clean_or_m = "google/gemini-3.1-flash-image" if is_low_quality else "openai/gpt-5-image-mini"
+        elif "/" not in clean_or_m:
+            if "pro" in clean_or_m:
+                clean_or_m = "google/gemini-3-pro-image"
+            elif "gpt-image" in clean_or_m or "openai" in clean_or_m:
+                clean_or_m = "openai/gpt-5-image-mini" if is_low_quality else "openai/gpt-5-image"
+            else:
+                clean_or_m = f"google/{clean_or_m}" if clean_or_m.startswith("gemini") else "google/gemini-3.1-flash-image"
+        try:
+            content_parts: Any = clean_prompt
+            used_ref = False
+            if valid_refs:
+                blocks: list[dict[str, Any]] = [{"type": "text", "text": clean_prompt}]
+                for rp in valid_refs:
+                    try:
+                        b64_r = base64.b64encode(rp.read_bytes()).decode("ascii")
+                        blocks.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{_mime_for(rp)};base64,{b64_r}"},
+                        })
+                        used_ref = True
+                    except OSError:
+                        pass
+                content_parts = blocks
+            payload = json.dumps({
+                "model": clean_or_m,
+                "messages": [{"role": "user", "content": content_parts}],
+                "modalities": ["image", "text"],
+            }).encode("utf-8")
+            req = urllib_request.Request(
+                "https://openrouter.ai/api/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {or_key}",
+                    "HTTP-Referer": "https://fairybread.me",
+                    "X-Title": "Fairybread",
+                },
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=115) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            msg0 = (((body.get("choices") or [{}])[0]).get("message") or {})
+            img_urls: list[str] = []
+            for img_item in msg0.get("images") or []:
+                if isinstance(img_item, dict):
+                    u = (img_item.get("image_url") or {}).get("url") or img_item.get("url") or ""
+                    if u:
+                        img_urls.append(str(u))
+            raw_content = msg0.get("content")
+            if isinstance(raw_content, list):
+                for part in raw_content:
+                    if isinstance(part, dict) and part.get("type") in {"image_url", "output_image"}:
+                        u = (part.get("image_url") or {}).get("url") or part.get("url") or ""
+                        if u:
+                            img_urls.append(str(u))
+            for u in img_urls:
+                if u.startswith("data:") and "," in u:
+                    b64_img = u.split(",", 1)[1]
+                    raw_bytes = base64.b64decode(b64_img)
+                elif u.startswith("https://"):
+                    with urllib_request.urlopen(urllib_request.Request(u, headers={"User-Agent": "Fairybread"}), timeout=30) as ir:
+                        raw_bytes = ir.read(15_000_000)
+                else:
+                    continue
+                if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                    return out_path, used_ref
+            attempted_errors.append(f"openrouter({clean_or_m}): empty images response")
+        except Exception as exc:
+            attempted_errors.append(f"openrouter({clean_or_m}): {exc}")
+        return None, False
+
     try:
         from palace_config import load_graphics_settings
         g_cfg = load_graphics_settings()
@@ -1105,7 +1203,7 @@ def generate_ai_image_to_png(
         raw_chain.extend(str(e).strip().lower() for e in fallback_engines if str(e).strip())
     else:
         raw_chain.extend(str(e).strip().lower() for e in (g_cfg.get("fallback_image_engines") or []) if str(e).strip())
-        for default_eng in ("gemini-3.1-flash-image", "gemini-3-pro-image", "gpt-image-2", "flux-1-dev"):
+        for default_eng in ("gemini-3.1-flash-image", "gemini-3-pro-image", "gpt-image-2", "flux-1-dev", "openrouter"):
             raw_chain.append(default_eng)
 
     engine_chain: list[str] = []
@@ -1114,11 +1212,22 @@ def generate_ai_image_to_png(
             engine_chain.append(e)
 
     def _run_engine(eng: str) -> tuple[Path | None, bool, str]:
+        if eng.startswith("openrouter") or "/" in eng:
+            p, ref = _try_openrouter_image(eng)
+            return p, ref, (f"openrouter:{eng}" if "/" in eng else "openrouter:image")
         if eng.startswith("gemini"):
             p, ref = _try_gemini_image(eng)
+            if p is None and not gem_key and cs.get_api_key("openrouter"):
+                p, ref = _try_openrouter_image(eng)
+                if p is not None:
+                    return p, ref, f"openrouter:{eng}"
             return p, ref, eng
         if "gpt-image" in eng or eng.startswith("openai"):
             p, ref = _try_openai_gpt_image_2()
+            if p is None and not openai_key and cs.get_api_key("openrouter"):
+                p, ref = _try_openrouter_image(eng)
+                if p is not None:
+                    return p, ref, "openrouter:openai/gpt-5-image-mini"
             return p, ref, "gpt-image-2"
         if "flux" in eng:
             p, ref = _try_deepinfra_flux(eng)
@@ -1143,13 +1252,14 @@ def generate_ai_image_to_png(
                 badge_label += " (fallback)"
             if used_ref:
                 badge_label += " +ref"
-            _save_engine_badge(out_path, badge_label)
-            _record_recent_render(base_key, out_path)
+            img_cost_usd: float | None = None
             try:
                 from cost_service import emit_image_cost
-                emit_image_cost(billed_eng)
+                img_cost_usd = emit_image_cost(billed_eng)
             except Exception:
                 pass
+            _save_engine_badge(out_path, badge_label, cost_usd=img_cost_usd)
+            _record_recent_render(base_key, out_path)
             return res_path
 
     return None
@@ -1284,7 +1394,7 @@ def format_markdown_and_drawings(content: str) -> str:
         except OSError:
             pass
         try:
-            audit_mtime = Path(r"C:\Palace_Idle_Sandbox\latest_ui_audit.json").stat().st_mtime_ns
+            audit_mtime = (get_experimental_data_root() / "latest_ui_audit.json").stat().st_mtime_ns
         except OSError:
             pass
         cache_key = f"{raw}\n@@SNAP:{snap_gen_mtime}:{audit_mtime}"
@@ -1396,7 +1506,9 @@ def format_markdown_and_drawings(content: str) -> str:
             esc_title = html.escape(img_title)
             esc_path = html.escape(str(png_path))
             engine_badge = get_image_engine_badge(png_path)
-            meta_txt = f"{engine_badge} · {size_label}" if engine_badge else size_label
+            cost_badge = get_image_cost_badge(png_path)
+            meta_parts = [p for p in (engine_badge, size_label, cost_badge) if p]
+            meta_txt = " · ".join(meta_parts) if meta_parts else size_label
             esc_size = html.escape(meta_txt)
             is_draft_sample = (
                 img_quality.lower() == "low"
@@ -1451,7 +1563,7 @@ def format_markdown_and_drawings(content: str) -> str:
             snaps = sorted(gen_dir.glob("palace_*snap*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
             if snaps:
                 png_path = snaps[0]
-        audit_file = Path(r"C:\Palace_Idle_Sandbox\latest_ui_audit.json")
+        audit_file = get_experimental_data_root() / "latest_ui_audit.json"
         if audit_file.exists():
             try:
                 aud = json.loads(audit_file.read_text(encoding="utf-8"))
@@ -1489,6 +1601,42 @@ def format_markdown_and_drawings(content: str) -> str:
         return "[Palace UI Snapshot Ready]"
 
     processed = _PALACE_SNAPSHOT_PATTERN.sub(_replace_ui_snap, processed)
+
+    # 2c. Extract and render any [WEATHER_MAP path="..." title="..."] inline radar cards
+    def _replace_weather_map(match: re.Match) -> str:
+        nonlocal all_media_rendered
+        attrs = _parse_generate_image_attrs(match.group(1))
+        map_path_str = (attrs.get("path") or "").strip()
+        map_title = (attrs.get("title") or "Live Weather Radar Map").strip()
+        mp = Path(map_path_str) if map_path_str else None
+        if mp is not None and mp.is_file():
+            try:
+                rendered_deps.append((str(mp), mp.stat().st_mtime_ns))
+            except OSError:
+                all_media_rendered = False
+            file_url = mp.as_uri()
+            esc_title = html.escape(map_title)
+            esc_path = html.escape(str(mp))
+            img_block = (
+                f'<table width="100%" cellspacing="0" cellpadding="8" style="margin:10px 0; background:#0d1117; border:1px solid #14b8a6;">'
+                f'<tr><td>'
+                f'<div style="color:#14b8a6; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
+                f'🗺️ {esc_title} &nbsp;·&nbsp; '
+                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
+                f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
+                f'</div>'
+                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="660"></a>'
+                f'</td></tr></table>'
+            )
+            idx = len(rendered_images_html)
+            rendered_images_html.append(img_block)
+            return f"@@PALACE_IMG_{idx}@@"
+        all_media_rendered = False
+        return ""
+
+    processed = _WEATHER_MAP_TAG_PATTERN.sub(_replace_weather_map, processed)
 
     # 4. Escape remaining text and format Markdown headings, bold, inline code, and horizontal rules
     escaped = html.escape(processed)
@@ -1538,7 +1686,7 @@ def fairybread_app_qicon() -> QIcon:
     titlebar/taskbar resolutions (16..256px), falling back to the top-left white-bread triangle if absent.
     """
     icon = QIcon()
-    asset_png = Path(__file__).resolve().parent / "fairybread_icon.png"
+    asset_png = get_resource_path("fairybread_icon.png")
     if asset_png.exists():
         base_pix = QPixmap(str(asset_png))
         if not base_pix.isNull():
@@ -1556,6 +1704,11 @@ def fairybread_app_qicon() -> QIcon:
             except Exception:
                 pass
             return icon
+    asset_ico = get_resource_path("fairybread_icon.ico")
+    if asset_ico.exists():
+        ico_loaded = QIcon(str(asset_ico))
+        if not ico_loaded.isNull():
+            return ico_loaded
 
     # Fallback: Coordinates matching the top-left white-bread triangle + loose sprinkles below the diagonal cut
     sprinkle_specs = [
@@ -1667,24 +1820,6 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
         "send_fg": "#ffffff",
         "sprinkles": False,
     },
-    "fairybread": {
-        "id": "fairybread",
-        "name": "Fairybread (Iced VoVo & 100s & 1000s)",
-        "bg_main": "#faf6f0",          # Soft Coconut Cream / Whipped White
-        "bg_sidebar": "#f3e5c8",       # Warm Buttered Bread Crumb
-        "bg_card": "#fce8ee",          # Iced VoVo Pink Fondant
-        "bg_hover": "#f8d4e0",
-        "border": "#dec49a",           # Toasted Golden Crust
-        "text_primary": "#261c1a",     # Deep Cocoa / Espresso
-        "text_secondary": "#3d2c29",
-        "text_muted": "#7a5e58",
-        "user_bubble_bg": "#fce4ec",   # Soft Iced VoVo Pink Pill
-        "user_bubble_border": "#e091a9",
-        "user_bubble_text": "#2b161b",
-        "send_bg": "#d81b60",          # Raspberry Jam Accent
-        "send_fg": "#ffffff",
-        "sprinkles": True,
-    },
     "winamp_1999": {
         "id": "winamp_1999",
         "name": "Winamp Classic 1999 (2.x LED)",
@@ -1774,6 +1909,16 @@ def get_themes_dir() -> Path:
 def ensure_builtin_theme_files() -> Path:
     tdir = get_themes_dir()
     tdir_key = str(tdir)
+    # Remove retired legacy Iced VoVo built-in theme file if present on disk
+    retired_fp = tdir / "fairybread.json"
+    if retired_fp.exists():
+        try:
+            loaded_old = json.loads(retired_fp.read_text(encoding="utf-8"))
+            old_name = str(loaded_old.get("name") or "").lower()
+            if isinstance(loaded_old, dict) and (loaded_old.get("id") == "fairybread" or "iced vovo" in old_name):
+                retired_fp.unlink(missing_ok=True)
+        except Exception:
+            pass
     with _THEME_CACHE_LOCK:
         if tdir_key in _ENSURED_THEME_DIRS:
             return tdir
@@ -1808,7 +1953,6 @@ def list_available_themes() -> list[tuple[str, str]]:
     ensure_builtin_theme_files()
     out: list[tuple[str, str]] = [
         ("dark", "Midnight Dark (Default)"),
-        ("fairybread", "Fairybread (Iced VoVo & 100s & 1000s)"),
         ("winamp_1999", "Winamp Classic 1999 (2.x LED)"),
         ("cyberpunk_2077", "Cyberpunk Night City"),
         ("matrix_crt", "Matrix Phosphor (CRT Terminal)"),
@@ -1819,7 +1963,7 @@ def list_available_themes() -> list[tuple[str, str]]:
     seen = {k for k, _ in out}
     for fp in sorted(get_themes_dir().glob("*.json")):
         slug = fp.stem.lower()
-        if slug in seen:
+        if slug in seen or slug == "fairybread":
             continue
         try:
             data = json.loads(fp.read_text(encoding="utf-8"))
@@ -1833,6 +1977,8 @@ def list_available_themes() -> list[tuple[str, str]]:
 def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
     tdir = ensure_builtin_theme_files()
     clean = (theme_id or "dark").strip().lower()
+    if clean == "fairybread":
+        clean = "dark"
     if clean == "system":
         clean = "light" if _detect_windows_light_theme() else "dark"
     custom_fp = tdir / f"{clean}.json"

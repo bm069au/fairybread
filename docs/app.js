@@ -799,7 +799,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.92e';
+    const currentSiteVersion = 'v0.93';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

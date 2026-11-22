@@ -385,7 +385,9 @@ class WindowTests(unittest.TestCase):
         self.provider.delay = 0.25
         self.window.composer.setPlainText('Wait a moment')
         self.window.send_message()
-        self.assertFalse(self.window.send_button.isEnabled())
+        self.assertIsNotNone(self.window.worker)
+        self.assertFalse(self.window.stop_button.isHidden())
+        self.assertTrue(self.window.send_button.isEnabled())
         self.assertFalse(self.window.close())
         self.assertTrue(self.window.isVisible())
         self.app.processEvents()
@@ -893,9 +895,14 @@ class WindowTests(unittest.TestCase):
         self.assertIn('anthropic', PROVIDER_CATALOG)
         self.assertIn('xai', PROVIDER_CATALOG)
 
-        self.window.apply_theme('fairybread')
-        self.assertEqual(self.window.active_theme, 'fairybread')
-        self.assertTrue(self.window.chat.sprinkles_enabled)
+        from palace_theme import BUILTIN_THEMES, list_available_themes, load_theme_dict
+        self.assertNotIn('fairybread', BUILTIN_THEMES)
+        self.assertNotIn('fairybread', {k for k, _ in list_available_themes()})
+        self.assertEqual(load_theme_dict('fairybread')['id'], 'dark')
+
+        self.window.apply_theme('dracula_pro')
+        self.assertEqual(self.window.active_theme, 'dracula_pro')
+        self.assertFalse(self.window.chat.sprinkles_enabled)
         self.assertFalse(self.window.windowIcon().isNull())
 
         # 4. Verify KDE/XFCE-style pixel-width responsive bottom Agents: bar
@@ -1140,7 +1147,7 @@ class WindowTests(unittest.TestCase):
         stopped_worker = self.window.worker
         self.assertFalse(self.window.stop_button.isHidden())
         self.assertFalse(self.window.steer_button.isHidden())
-        self.assertIn('Steer / Queue', self.window.steer_button.text())
+        self.assertIn('Steer', self.window.steer_button.text())
         self.assertTrue(self.window.queue_button.isHidden())
         self.assertEqual(
             classify_drawing_request('I want you to decide what to give me, and make 3 different banners and let me choose the best one. Surprise me.'),
@@ -1312,7 +1319,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.92e')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.93')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -1345,7 +1352,17 @@ class WindowTests(unittest.TestCase):
         self.window.idle_switch_btn.setChecked(False)
         self.assertIn('Experimental: OFF', self.window.idle_switch_btn.text())
 
-        # Busy-turn Enter key -> auto-steers instead of dropping keystroke
+        # Busy-turn Enter key -> auto-steers instead of dropping keystroke, and _show_busy_action_menu works with QCursor
+        import palace_gui as _pg
+        from PySide6.QtWidgets import QMenu
+
+        class _NoBlockMenu(QMenu):
+            exec_calls = 0
+
+            def exec(self, *args, **kwargs):
+                _NoBlockMenu.exec_calls += 1
+                return None
+
         self.provider.delay = 0.25
         self.window.composer.setPlainText('Initial turn question')
         self.window.send_message()
@@ -1355,6 +1372,20 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.composer.toPlainText(), '')
         self.assertIn('Apply. (just in case I confused you).', self.window.active_steering_state.get('notes', []))
         self.assertIn('Steer (1)', self.window.steer_button.text())
+        self.window.steer_button.resize(140, 28)
+        self.window.composer.setPlainText('Half typed text stay safe')
+        with patch.object(_pg, 'QMenu', _NoBlockMenu):
+            # Pure dropdown: clicking anywhere on steer_button always opens the menu without accidentally sending composer text!
+            self.window._show_busy_action_menu()
+            self.assertEqual(_NoBlockMenu.exec_calls, 1)
+            self.assertEqual(self.window.composer.toPlainText(), 'Half typed text stay safe')
+        # Clicking active ↑ while busy submits via the selected busy mode (steer by default)
+        self.window.send_button.click()
+        self.assertIn('Half typed text stay safe', self.window.active_steering_state.get('notes', []))
+        # Queue mode + persistent setting
+        self.window._busy_submit_mode = 'queue'
+        self.window._refresh_busy_mode_controls()
+        self.assertIn('Queue', self.window.steer_button.text())
         self.window.stop_active_turn()
         if busy_w is not None:
             busy_w.wait(1000)
@@ -1394,6 +1425,67 @@ class WindowTests(unittest.TestCase):
         )
         forced_idx = self.window.append_status_message('Status: Forced voice alert', severity='error', force=True)
         self.assertIsNotNone(forced_idx)
+
+    def test_v093_wizard_spend_cutoff_chips_zero_clipping(self):
+        from cost_service import ConversationCostLedger, GlobalBillingLedger
+        from credential_store import CredentialStore
+        from palace_ouroboros import audit_palace_window_geometry
+        from setup_wizard import GuidedSetupWizardDialog, SpendBillingDialog
+
+        cfg_p = self.root / 'wizard_cfg.json'
+        cred = CredentialStore(path=self.root / 'wiz_creds.json')
+        dlg = GuidedSetupWizardDialog(self.window, config_path=cfg_p, credential_store=cred, initial_page=0)
+        for sz in ((900, 700), (820, 620)):
+            dlg.resize(*sz)
+            for pg_i in (0, 1, 2, 3):
+                if pg_i == 2:
+                    dlg._advance_to_checklist()
+                else:
+                    dlg.pages_stack.setCurrentIndex(pg_i)
+                dlg.show()
+                self.app.processEvents()
+                aud = audit_palace_window_geometry(dlg)
+                self.assertEqual(
+                    aud['clipped_widget_count'],
+                    0,
+                    msg=f'Wizard page {pg_i} clipped at {sz}: {aud.get("clipped_widgets")}',
+                )
+        dlg.close()
+
+        gl = GlobalBillingLedger(path=self.root / 'billing_ledger.json', persist=True)
+        gl.record({'kind': 'llm', 'provider': 'openrouter', 'model': 'anthropic/claude-sonnet-5.5', 'cost_usd': 0.015})
+        gl.record({'kind': 'tts', 'provider': 'deepgram', 'cost_usd': 0.008})
+        cl = ConversationCostLedger()
+        s_dlg = SpendBillingDialog(self.window, conv_ledger=cl, global_ledger=gl, credential_store=cred)
+        for sz in ((820, 620), (760, 540)):
+            s_dlg.resize(*sz)
+            s_dlg.show()
+            self.app.processEvents()
+            aud = audit_palace_window_geometry(s_dlg)
+            self.assertEqual(
+                aud['clipped_widget_count'],
+                0,
+                msg=f'SpendBillingDialog clipped at {sz}: {aud.get("clipped_widgets")}',
+            )
+        s_dlg.close()
+
+        # Verify amber · Cutoff chips & bottom agent bar zero-clipping at minimum window size 860x600
+        self.window.resize(860, 600)
+        for pname in ('gemini', 'openai', 'qwen', 'deepseek', 'groq', 'cerebras'):
+            if pname not in self.window.provider_labels:
+                lbl = self.window.provider_labels['test'].__class__()
+                lbl.setFlat(True)
+                self.window.provider_labels[pname] = lbl
+                self.window.provider_states[pname] = True
+        self.window.set_provider_status('gemini', 'Cutoff', '#e2b96b', 'Timed out after 20.0s (straggler cutoff)')
+        self.window.set_provider_status('openai', 'Cutoff', '#e2b96b', 'Timed out after 20.0s (straggler cutoff)')
+        self.window.set_provider_status('qwen', 'Cutoff', '#e2b96b', 'Timed out after 20.0s (straggler cutoff)')
+        self.window.set_provider_status('deepseek', 'Responded', '#90d7c1')
+        self.app.processEvents()
+        self.assertIn('Cutoff', self.window.provider_labels['gemini'].text())
+        self.assertIn('#e2b96b', self.window.provider_labels['gemini'].styleSheet())
+        bar_aud = audit_palace_window_geometry(self.window.agent_workbench_frame)
+        self.assertEqual(bar_aud['clipped_widget_count'], 0, msg=str(bar_aud.get('clipped_widgets')))
 
 
 class VoiceUpgradeTests(unittest.TestCase):

@@ -1,15 +1,85 @@
+import ctypes
 import json
 import os
+import re
+import sys
 from pathlib import Path
 from typing import Any
+
+
+def is_frozen_app() -> bool:
+    """Return True when running from a compiled PyInstaller executable (Fairybread.exe / FairybreadMCP.exe)."""
+    return bool(getattr(sys, "frozen", False))
+
+
+def is_msix_packaged() -> bool:
+    """Return True when executing inside a Windows MSIX / Microsoft Store package identity."""
+    if os.name != "nt":
+        return False
+    try:
+        length = ctypes.c_uint32(0)
+        rc = ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)
+        return rc in (0, 122)  # ERROR_SUCCESS or ERROR_INSUFFICIENT_BUFFER
+    except Exception:
+        return False
+
+
+def get_appdata_root() -> Path:
+    """Return per-user anchored AppData root (%LOCALAPPDATA%\\Palace) for keys, config, and themes."""
+    appdata_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
+    appdata_dir.mkdir(parents=True, exist_ok=True)
+    return appdata_dir
+
+
+def get_app_install_dir() -> Path:
+    """Return the directory containing the running executable (frozen) or main Python source (dev)."""
+    if is_frozen_app():
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def get_resource_path(filename: str) -> Path:
+    """Resolve bundled read-only resource path cleanly across dev runs, PyInstaller _MEIPASS, and install dir."""
+    clean = str(filename or "").lstrip("/\\")
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / clean)
+    candidates.append(get_app_install_dir() / clean)
+    candidates.append(Path(__file__).resolve().parent / clean)
+    for cand in candidates:
+        try:
+            if cand.exists():
+                return cand
+        except OSError:
+            continue
+    return candidates[-1]
+
+
+def version_to_windows_4part(version_str: str) -> str:
+    """Convert Fairybread version ('0.92f', '0.9.1a') into strict 4-part Windows/MSIX numeric version."""
+    clean = str(version_str or "").strip().lstrip("vV")
+    m = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?([a-z])?$", clean, re.IGNORECASE)
+    if not m:
+        return "0.92.6.0"
+    major = int(m.group(1))
+    minor = int(m.group(2))
+    patch_raw = m.group(3)
+    letter = (m.group(4) or "").lower()
+    letter_num = (ord(letter) - ord("a") + 1) if letter else 0
+    if patch_raw is None:
+        return f"{major}.{minor}.{letter_num}.0"
+    return f"{major}.{minor}.{int(patch_raw)}.{letter_num}"
 
 
 def _resolve_default_config_path() -> Path:
     local_cfg = Path(__file__).with_name("palace_config.json")
     resolved_parts = [part.lower() for part in local_cfg.resolve().parts]
-    if any(part in {"program files", "program files (x86)"} for part in resolved_parts):
-        appdata_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
-        appdata_dir.mkdir(parents=True, exist_ok=True)
+    in_protected_dir = any(
+        part in {"program files", "program files (x86)", "windowsapps"} for part in resolved_parts
+    )
+    if is_frozen_app() or is_msix_packaged() or in_protected_dir:
+        appdata_dir = get_appdata_root()
         user_cfg = appdata_dir / "palace_config.json"
         if not user_cfg.exists() and local_cfg.exists():
             try:
@@ -22,10 +92,12 @@ def _resolve_default_config_path() -> Path:
 
 CONFIG_PATH = _resolve_default_config_path()
 
-FAIRYBREAD_BASE_VERSION = "0.92"
-FAIRYBREAD_VERSION = "0.92e"
+FAIRYBREAD_BASE_VERSION = "0.93"
+FAIRYBREAD_VERSION = "0.93"
+FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
+COMMUNITY_CONTRIBUTORS: tuple[str, ...] = ()
 
 
 def bump_minor_letter_version(version_str: str = FAIRYBREAD_VERSION) -> str:
@@ -513,7 +585,8 @@ def save_provider_config(
     enabled: bool = True,
     model: str | None = None,
     base_url: str | None = None,
-    config_path: Path = CONFIG_PATH
+    config_path: Path = CONFIG_PATH,
+    use_openrouter: bool | None = None,
 ) -> dict[str, dict[str, Any]]:
     normalized_name = provider_name.strip().lower()
     if not normalized_name:
@@ -536,9 +609,104 @@ def save_provider_config(
         else:
             entry.pop("base_url", None)
 
+    if use_openrouter is not None:
+        if use_openrouter:
+            entry["use_openrouter"] = True
+        else:
+            entry.pop("use_openrouter", None)
+
     providers[normalized_name] = entry
     _write_raw_config(data, config_path)
     return load_provider_configs(config_path=config_path)
+
+
+OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
+    "free": {
+        "claude": {"model": "meta-llama/llama-3.3-70b-instruct:free", "label": "Llama 3.3 70B (Free)"},
+        "gemini": {"model": "google/gemini-2.0-flash-exp:free", "label": "Gemini Flash (Free)"},
+        "openai": {"model": "openai/gpt-oss-120b:free", "label": "GPT-OSS 120B (Free)"},
+        "deepseek": {"model": "deepseek/deepseek-chat-v3-0324:free", "label": "DeepSeek Chat (Free)"},
+        "qwen": {"model": "qwen/qwen3-32b:free", "label": "Qwen 3 32B (Free)"},
+        "mistral": {"model": "mistralai/mistral-nemo:free", "label": "Mistral Nemo (Free)"},
+    },
+    "balanced": {
+        "claude": {"model": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5 (Warm & High-EQ)"},
+        "gemini": {"model": "google/gemini-4-neon", "label": "Gemini 4 Neon"},
+        "openai": {"model": "openai/gpt-5-mini", "label": "GPT-5 Mini"},
+        "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
+        "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
+        "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
+        "groq": {"model": "openai/gpt-oss-120b:nitro", "label": "GPT-OSS 120B (Nitro Fast)"},
+        "cohere": {"model": "cohere/command-a", "label": "Cohere Command A"},
+    },
+    "flagship": {
+        "claude": {"model": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5"},
+        "gemini": {"model": "google/gemini-4-neon", "label": "Gemini 4 Neon"},
+        "openai": {"model": "openai/gpt-5", "label": "GPT-5"},
+        "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
+        "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
+        "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
+        "grok": {"model": "x-ai/grok-4", "label": "Grok 4"},
+        "cohere": {"model": "cohere/command-a", "label": "Cohere Command A"},
+    },
+}
+
+DEFAULT_OPENROUTER_HUB_SETTINGS: dict[str, Any] = {
+    "auto_fill_seats": False,
+    "tier": "balanced",  # "free" | "balanced" | "flagship"
+    "routed_seats": [],
+    "enable_image_fallback": True,
+    "enable_audio_fallback": True,
+    "image_model_draft": "google/gemini-3.1-flash-image",
+    "image_model_high": "openai/gpt-5-image-mini",
+    "audio_voice": "coral",
+}
+
+
+def load_openrouter_hub_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    raw = data.get("openrouter_hub", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    merged = dict(DEFAULT_OPENROUTER_HUB_SETTINGS)
+    merged["routed_seats"] = []
+    if "auto_fill_seats" in raw:
+        merged["auto_fill_seats"] = bool(raw["auto_fill_seats"])
+    if raw.get("tier") in OPENROUTER_PRESET_TIERS:
+        merged["tier"] = str(raw["tier"])
+    if isinstance(raw.get("routed_seats"), list):
+        merged["routed_seats"] = [
+            str(s).strip().lower() for s in raw["routed_seats"] if str(s).strip()
+        ]
+    if "enable_image_fallback" in raw:
+        merged["enable_image_fallback"] = bool(raw["enable_image_fallback"])
+    if "enable_audio_fallback" in raw:
+        merged["enable_audio_fallback"] = bool(raw["enable_audio_fallback"])
+    for key in ("image_model_draft", "image_model_high", "audio_voice"):
+        if isinstance(raw.get(key), str) and raw[key].strip():
+            merged[key] = raw[key].strip()
+    return merged
+
+
+def save_openrouter_hub_settings(
+    settings: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    data = _read_raw_config(config_path)
+    current = load_openrouter_hub_settings(config_path)
+    current.update(settings or {})
+    current["auto_fill_seats"] = bool(current.get("auto_fill_seats", False))
+    if current.get("tier") not in OPENROUTER_PRESET_TIERS:
+        current["tier"] = "balanced"
+    seats = current.get("routed_seats") if isinstance(current.get("routed_seats"), list) else []
+    current["routed_seats"] = list(dict.fromkeys(str(s).strip().lower() for s in seats if str(s).strip()))
+    current["enable_image_fallback"] = bool(current.get("enable_image_fallback", True))
+    current["enable_audio_fallback"] = bool(current.get("enable_audio_fallback", True))
+    for key in ("image_model_draft", "image_model_high", "audio_voice"):
+        current[key] = str(current.get(key) or DEFAULT_OPENROUTER_HUB_SETTINGS[key]).strip()
+    data["openrouter_hub"] = current
+    _write_raw_config(data, config_path)
+    return load_openrouter_hub_settings(config_path)
 
 
 def set_provider_enabled(
@@ -952,13 +1120,16 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "enter_to_send": True,  # True: Enter sends, Shift+Enter newline; False: Shift+Enter sends, Enter newline
     "include_palace_code": False,
     "badge_display_mode": "icons_only",  # "icons_only" | "icons_and_names" | "names_only"
-    "theme": "dark",  # "dark" | "light" | "system" | "fairybread" | custom theme slug
+    "theme": "dark",  # "dark" | "light" | "system" | built-in or custom theme slug
     "normal_max_storage_mb": 0,  # 0 = Unlimited, or >= 100 MB (warns at 85% and 100%)
     "custom_data_dir": "",  # Empty = %LOCALAPPDATA%\Palace; or custom directory path on any drive
-    "close_to_tray": True,  # True: window X button minimizes Fairybread to system tray
+    "custom_experimental_dir": "",  # Empty = default sandbox dir; or custom directory path on any drive
+    "close_to_tray": False,  # False: window X exits cleanly (Windows/Store compliant); user can opt-in to tray
     "auto_refresh_catalog": True,  # Auto-fetch rates/model updates & release notifications from fairybread.me
     "dismissed_update_version": "",  # Version tag dismissed by user until a newer release arrives
     "spellcheck_enabled": True,  # Live red-underline spellcheck + right-click suggestions in Composer
+    "busy_submit_mode": "steer",  # "steer" | "queue" — persisted busy Enter action
+    "setup_wizard_completed": False,  # True once first-run / setup wizard has been completed or dismissed
 }
 
 
@@ -978,6 +1149,10 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["auto_refresh_catalog"] = bool(raw["auto_refresh_catalog"])
     if "spellcheck_enabled" in raw:
         merged["spellcheck_enabled"] = bool(raw["spellcheck_enabled"])
+    if raw.get("busy_submit_mode") in {"steer", "queue"}:
+        merged["busy_submit_mode"] = str(raw["busy_submit_mode"])
+    if "setup_wizard_completed" in raw:
+        merged["setup_wizard_completed"] = bool(raw["setup_wizard_completed"])
     if isinstance(raw.get("dismissed_update_version"), str):
         merged["dismissed_update_version"] = raw["dismissed_update_version"].strip()[:32]
     if raw.get("badge_display_mode") in {"icons_only", "icons_and_names", "names_only"}:
@@ -994,6 +1169,10 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         cdir = raw["custom_data_dir"].strip()
         if cdir and not cdir.upper().startswith("M:"):
             merged["custom_data_dir"] = cdir
+    if isinstance(raw.get("custom_experimental_dir"), str):
+        edir = raw["custom_experimental_dir"].strip()
+        if edir and not edir.upper().startswith("M:"):
+            merged["custom_experimental_dir"] = edir
     return merged
 
 
@@ -1006,9 +1185,12 @@ def save_ui_settings(
     current.update(ui_settings)
     current["enter_to_send"] = bool(current.get("enter_to_send", True))
     current["include_palace_code"] = bool(current.get("include_palace_code", False))
-    current["close_to_tray"] = bool(current.get("close_to_tray", True))
+    current["close_to_tray"] = bool(current.get("close_to_tray", False))
     current["auto_refresh_catalog"] = bool(current.get("auto_refresh_catalog", True))
     current["spellcheck_enabled"] = bool(current.get("spellcheck_enabled", True))
+    if current.get("busy_submit_mode") not in {"steer", "queue"}:
+        current["busy_submit_mode"] = "steer"
+    current["setup_wizard_completed"] = bool(current.get("setup_wizard_completed", False))
     current["dismissed_update_version"] = str(current.get("dismissed_update_version") or "").strip()[:32]
     if current.get("badge_display_mode") not in {"icons_only", "icons_and_names", "names_only"}:
         current["badge_display_mode"] = "icons_only"
@@ -1022,6 +1204,10 @@ def save_ui_settings(
     if cdir.upper().startswith("M:"):
         raise ValueError("M: drive is strictly off-limits for Palace storage.")
     current["custom_data_dir"] = cdir
+    edir = str(current.get("custom_experimental_dir") or "").strip()
+    if edir.upper().startswith("M:"):
+        raise ValueError("M: drive is strictly off-limits for Experimental Palace storage.")
+    current["custom_experimental_dir"] = edir
     data["ui_settings"] = current
     _write_raw_config(data, config_path)
     return load_ui_settings(config_path)
@@ -1138,7 +1324,7 @@ def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
 
 
 def get_palace_data_root(config_path: Path = CONFIG_PATH) -> Path:
-    """Resolve the active Palace data directory (custom drive/folder if set, otherwise %LOCALAPPDATA%\\Palace)."""
+    """Resolve the active Normal Palace data directory (custom drive/folder if set, otherwise %LOCALAPPDATA%\\Palace)."""
     try:
         ui = load_ui_settings(config_path)
         custom = str(ui.get("custom_data_dir") or "").strip()
@@ -1148,9 +1334,25 @@ def get_palace_data_root(config_path: Path = CONFIG_PATH) -> Path:
             return p
     except Exception:
         pass
-    default_root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace"
-    default_root.mkdir(parents=True, exist_ok=True)
-    return default_root
+    return get_appdata_root()
+
+
+def get_experimental_data_root(config_path: Path = CONFIG_PATH) -> Path:
+    """Resolve the active Experimental Mode sandbox database directory safely per edition."""
+    try:
+        ui = load_ui_settings(config_path)
+        custom = str(ui.get("custom_experimental_dir") or "").strip()
+        if custom and not custom.upper().startswith("M:"):
+            p = Path(custom)
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+    except Exception:
+        pass
+    if IS_DEVELOPER_EDITION and not is_frozen_app() and IDLE_SANDBOX_ROOT.exists():
+        return IDLE_SANDBOX_ROOT
+    exp_dir = get_appdata_root() / "experimental_sandbox"
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    return exp_dir
 
 
 def move_palace_data_to_directory(
@@ -1159,33 +1361,47 @@ def move_palace_data_to_directory(
     config_path: Path = CONFIG_PATH,
     remove_source_after_copy: bool = False,
 ) -> dict[str, Any]:
-    """Move or copy all Palace Memory, Conversations, Uploaded Files, Generated Images, and Idle Palace to a new folder/drive."""
+    """Move or copy Normal Palace Memory DB, Conversations, Uploaded Files & Pictures to a new folder/drive,
+    keeping encrypted API keys (credentials.json), palace_config.json, and themes anchored in %LOCALAPPDATA%\\Palace.
+    """
     import shutil
     target = Path(new_dir).resolve()
     if str(target.drive).upper().startswith("M:"):
         raise ValueError("M: drive is strictly off-limits.")
     old_root = get_palace_data_root(config_path).resolve()
     if target == old_root:
-        return {"moved_files": 0, "new_root": str(target)}
+        return {"moved_files": 0, "old_root": str(old_root), "new_root": str(target)}
     target.mkdir(parents=True, exist_ok=True)
 
+    anchored_files = {
+        "credentials.json",
+        "palace_config.json",
+        "palace_config.json.tmp",
+        "memory.db",
+        "memory.db-wal",
+        "memory.db-shm",
+    }
+    anchored_dirs = {"themes", "experimental_sandbox", "pre_upgrade_backups"}
+
     moved_count = 0
-    # Copy SQLite memory.db safely using online backup API if present
     mem_src = old_root / "memory.db"
     if mem_src.exists():
+        mem_dst = target / "memory.db"
         try:
             from memory_service import SQLiteMemoryIndex
-            SQLiteMemoryIndex(mem_src).backup_to_file(target / "memory.db")
-            moved_count += 1
+            SQLiteMemoryIndex(mem_src).backup_to_file(mem_dst)
         except Exception:
-            shutil.copy2(mem_src, target / "memory.db")
+            shutil.copy2(mem_src, mem_dst)
+        if mem_dst.is_file() and mem_dst.stat().st_size > 0:
             moved_count += 1
 
     for item in old_root.rglob("*"):
         if not item.is_file():
             continue
         rel = item.relative_to(old_root)
-        if rel.name in {"memory.db", "memory.db-wal", "memory.db-shm"}:
+        if rel.name.lower() in anchored_files:
+            continue
+        if rel.parts and rel.parts[0].lower() in anchored_dirs:
             continue
         dest_file = target / rel
         dest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1198,6 +1414,55 @@ def move_palace_data_to_directory(
             sp = old_root / sub
             if sp.is_dir():
                 shutil.rmtree(sp, ignore_errors=True)
+    return {"moved_files": moved_count, "old_root": str(old_root), "new_root": str(target)}
+
+
+def move_experimental_data_to_directory(
+    new_dir: str | Path,
+    *,
+    config_path: Path = CONFIG_PATH,
+    remove_source_after_copy: bool = False,
+) -> dict[str, Any]:
+    """Move or copy Experimental Palace DB (ai_idle_memory.json, agent_mailbox.json, shared files)
+    to a new folder/drive while leaving dev staging/source_mirror and anchored AppData credentials untouched.
+    """
+    import shutil
+    target = Path(new_dir).resolve()
+    if str(target.drive).upper().startswith("M:"):
+        raise ValueError("M: drive is strictly off-limits.")
+    old_root = get_experimental_data_root(config_path).resolve()
+    if target == old_root:
+        return {"moved_files": 0, "old_root": str(old_root), "new_root": str(target)}
+    target.mkdir(parents=True, exist_ok=True)
+
+    skip_dirs = {"staging", "source_mirror", "__pycache__", ".git"}
+    moved_count = 0
+    for item in old_root.rglob("*"):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(old_root)
+        if rel.parts and rel.parts[0].lower() in skip_dirs:
+            continue
+        if rel.name.lower() in {"credentials.json", "palace_config.json"}:
+            continue
+        dest_file = target / rel
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, dest_file)
+        moved_count += 1
+
+    save_ui_settings({"custom_experimental_dir": str(target)}, config_path=config_path)
+    if remove_source_after_copy:
+        for sub in ("idle_palace", "mailbox", "files"):
+            sp = old_root / sub
+            if sp.is_dir():
+                shutil.rmtree(sp, ignore_errors=True)
+        for leaf in ("ai_idle_memory.json", "agent_mailbox.json"):
+            lp = old_root / leaf
+            if lp.is_file():
+                try:
+                    lp.unlink()
+                except OSError:
+                    pass
     return {"moved_files": moved_count, "old_root": str(old_root), "new_root": str(target)}
 
 
@@ -1220,10 +1485,11 @@ def _dir_size_bytes(directory: Path) -> int:
 def compute_palace_storage_stats(
     config_path: Path = CONFIG_PATH,
     data_root: Path | None = None,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Compute live disk space breakdown and warning states for both Normal Mode and Idle Mode."""
+    """Compute live disk space breakdown and warning states for both Normal Mode and Experimental Mode."""
     root = Path(data_root) if data_root is not None else get_palace_data_root(config_path)
+    eff_sandbox = Path(sandbox_root) if sandbox_root is not None else get_experimental_data_root(config_path)
     ui_cfg = load_ui_settings(config_path)
     idle_cfg = load_idle_settings(config_path)
 
@@ -1249,9 +1515,29 @@ def compute_palace_storage_stats(
     img_bytes = _dir_size_bytes(root / "generated_images")
     normal_total = mem_bytes + sess_bytes + up_bytes + img_bytes
 
-    idle_bytes = _dir_size_bytes(root / "idle_palace") + _dir_size_bytes(Path(sandbox_root) / "files")
-    for ip in (root / "ai_idle_memory.json", Path(sandbox_root) / "ai_idle_memory.json"):
-        if ip.exists():
+    idle_bytes = 0
+    seen_dirs: set[Path] = set()
+    for d in (root / "idle_palace", eff_sandbox / "idle_palace" / "files", eff_sandbox / "files"):
+        try:
+            res_d = d.resolve()
+        except OSError:
+            res_d = d
+        if res_d not in seen_dirs:
+            seen_dirs.add(res_d)
+            idle_bytes += _dir_size_bytes(d)
+    seen_files: set[Path] = set()
+    for ip in (
+        root / "ai_idle_memory.json",
+        eff_sandbox / "ai_idle_memory.json",
+        eff_sandbox / "idle_palace" / "ai_idle_memory.json",
+        eff_sandbox / "mailbox" / "agent_mailbox.json",
+    ):
+        try:
+            res_ip = ip.resolve()
+        except OSError:
+            res_ip = ip
+        if res_ip not in seen_files and ip.exists():
+            seen_files.add(res_ip)
             try:
                 idle_bytes += ip.stat().st_size
             except OSError:
@@ -1275,6 +1561,7 @@ def compute_palace_storage_stats(
 
     return {
         "data_root": str(root),
+        "experimental_root": str(eff_sandbox),
         "memory_db_bytes": mem_bytes,
         "sessions_bytes": sess_bytes,
         "uploaded_files_bytes": up_bytes,
@@ -1295,17 +1582,19 @@ def compute_palace_storage_stats(
 def list_palace_stored_files(
     config_path: Path = CONFIG_PATH,
     data_root: Path | None = None,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> list[dict[str, Any]]:
     """List all user-accessible files stored in the Palace (Uploaded Files, Generated Images, and Idle Shared Files)."""
     from datetime import datetime
     root = Path(data_root) if data_root is not None else get_palace_data_root(config_path)
+    eff_sandbox = Path(sandbox_root) if sandbox_root is not None else get_experimental_data_root(config_path)
     items: list[dict[str, Any]] = []
     sources = [
         ("Uploaded File", root / "uploaded_files"),
         ("Generated Picture", root / "generated_images"),
         ("Idle Shared File", root / "idle_palace" / "files"),
-        ("Idle Shared File", Path(sandbox_root) / "files"),
+        ("Idle Shared File", eff_sandbox / "idle_palace" / "files"),
+        ("Idle Shared File", eff_sandbox / "files"),
     ]
     seen_paths: set[str] = set()
     for category, folder in sources:
@@ -1336,7 +1625,7 @@ def list_palace_stored_files(
 
 
 def get_source_mirror_dir(config_path: Path = CONFIG_PATH) -> Path:
-    """Return the configured Shared Source Code Mirror folder (defaulting to C:\\Palace_Idle_Sandbox\\source_mirror or %LOCALAPPDATA%\\Palace\\source_mirror)."""
+    """Return the configured Shared Source Code Mirror folder (or install/sandbox fallback)."""
     try:
         idle_cfg = load_idle_settings(config_path)
         custom = str(idle_cfg.get("source_mirror_dir") or "").strip()
@@ -1344,7 +1633,13 @@ def get_source_mirror_dir(config_path: Path = CONFIG_PATH) -> Path:
             return Path(custom)
     except Exception:
         pass
-    if IDLE_SANDBOX_ROOT.exists():
+    exp_root = get_experimental_data_root(config_path)
+    if (exp_root / "source_mirror").exists():
+        return exp_root / "source_mirror"
+    install_src = get_app_install_dir() / "source"
+    if is_frozen_app() and install_src.exists():
+        return install_src
+    if IS_DEVELOPER_EDITION and IDLE_SANDBOX_ROOT.exists():
         return IDLE_SANDBOX_ROOT / "source_mirror"
     return get_palace_data_root(config_path) / "source_mirror"
 
@@ -1369,7 +1664,13 @@ def build_palace_source_context(
         return ""
 
     mirror_dir = get_source_mirror_dir()
-    src_dir = mirror_dir if (mirror_dir.exists() and any(mirror_dir.glob("*.py"))) else Path(__file__).resolve().parent
+    install_src = get_app_install_dir() / "source"
+    if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
+        src_dir = mirror_dir
+    elif install_src.exists() and any(install_src.glob("*.py")):
+        src_dir = install_src
+    else:
+        src_dir = Path(__file__).resolve().parent
     excluded = {"key.txt", "credentials.json", "palace_config.json"}
     try:
         py_files = sorted(
@@ -1512,10 +1813,13 @@ def restore_default_settings(
 
     old_ui = existing.get("ui_settings") if isinstance(existing.get("ui_settings"), dict) else {}
     kept_custom_dir = str(old_ui.get("custom_data_dir") or "").strip()
+    kept_custom_exp_dir = str(old_ui.get("custom_experimental_dir") or "").strip()
 
     new_ui = dict(DEFAULT_UI_SETTINGS)
     if kept_custom_dir and not kept_custom_dir.upper().startswith("M:"):
         new_ui["custom_data_dir"] = kept_custom_dir
+    if kept_custom_exp_dir and not kept_custom_exp_dir.upper().startswith("M:"):
+        new_ui["custom_experimental_dir"] = kept_custom_exp_dir
 
     old_ap = existing.get("access_permissions") if isinstance(existing.get("access_permissions"), dict) else {}
     old_excl = old_ap.get("write_exclusions") if isinstance(old_ap.get("write_exclusions"), list) else []

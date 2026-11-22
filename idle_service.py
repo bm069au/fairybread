@@ -17,8 +17,12 @@ from palace_config import (
     IDLE_MAIL_LIMIT_PER_WINDOW,
     IDLE_MAIL_WINDOW_MINUTES,
     IDLE_SANDBOX_ROOT,
+    IS_DEVELOPER_EDITION,
     estimate_call_cost_usd,
     format_democratic_roster,
+    get_experimental_data_root,
+    get_source_mirror_dir,
+    is_frozen_app,
     load_idle_settings,
     load_mission_ethics,
 )
@@ -159,17 +163,17 @@ def execute_sandbox_tool(
     query_arg: str = "",
     start_line: int = 1,
     end_line: int = 80,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> str:
     """Execute a Stage-1 sandboxed read-only tool for Idle or Normal Mode agents."""
+    eff_sandbox = Path(sandbox_root) if sandbox_root is not None else get_experimental_data_root()
     if "[TOOL:" in (tool_name or "").upper():
-        return execute_all_code_tools_in_text(tool_name, sandbox_root=sandbox_root)
+        return execute_all_code_tools_in_text(tool_name, sandbox_root=eff_sandbox)
 
     name = (tool_name or "").strip().lower()
-    mirror_dir = Path(sandbox_root) / "source_mirror"
+    mirror_dir = eff_sandbox / "source_mirror"
     if not mirror_dir.exists() or not any(mirror_dir.glob("*.py")):
         try:
-            from palace_config import get_source_mirror_dir
             cfg_mirror = get_source_mirror_dir()
             if cfg_mirror.exists() and any(cfg_mirror.glob("*.py")):
                 mirror_dir = cfg_mirror
@@ -178,7 +182,7 @@ def execute_sandbox_tool(
         except Exception:
             mirror_dir = Path(__file__).resolve().parent
     if name == "read_rules":
-        rules_path = Path(sandbox_root) / "IDLE_CHARTER_AND_RULES.md"
+        rules_path = eff_sandbox / "IDLE_CHARTER_AND_RULES.md"
         if rules_path.exists():
             try:
                 return rules_path.read_text(encoding="utf-8")[:3000]
@@ -250,12 +254,14 @@ def execute_sandbox_tool(
         except Exception as exc:
             return f"[run_python_check ({safe})]: Error: {exc}"
     if name == "inspect_palace_ui":
-        audit_file = Path(sandbox_root) / "latest_ui_audit.json"
+        audit_file = eff_sandbox / "latest_ui_audit.json"
         if audit_file.exists():
             try:
                 return f"[Latest PalaceWindow UI Self-Audit]:\n{audit_file.read_text(encoding='utf-8')[:2500]}"
             except OSError:
                 pass
+        if is_frozen_app() or not IS_DEVELOPER_EDITION:
+            return "UI audit snapshot is unavailable in this packaged runtime."
         try:
             from palace_ouroboros import capture_offscreen_palace_snapshot
             _p, audit = capture_offscreen_palace_snapshot(tag="idle_ui_audit")
@@ -263,6 +269,8 @@ def execute_sandbox_tool(
         except Exception as exc:
             return f"UI audit error: {exc}"
     if name == "validate_staged":
+        if is_frozen_app() or not IS_DEVELOPER_EDITION:
+            return "Validation staging is only available in Developer Edition source workspaces."
         try:
             from palace_ouroboros import validate_staged_palace
             res = validate_staged_palace(run_unit_tests=True)
@@ -275,9 +283,10 @@ def execute_sandbox_tool(
 def execute_all_code_tools_in_text(
     response_text: str,
     *,
-    sandbox_root: Path = IDLE_SANDBOX_ROOT,
+    sandbox_root: Path | None = None,
 ) -> str:
     """Parse and run all [TOOL: ...] tags in response_text and return concatenated tool results."""
+    eff_sandbox = Path(sandbox_root) if sandbox_root is not None else get_experimental_data_root()
     if not response_text or "[TOOL:" not in response_text.upper():
         return ""
     outputs: list[str] = []
@@ -293,7 +302,7 @@ def execute_all_code_tools_in_text(
             query_arg=t_query,
             start_line=t_start,
             end_line=t_end,
-            sandbox_root=sandbox_root,
+            sandbox_root=eff_sandbox,
         )
         outputs.append(f"[🛠 Tool `{t_name}` result]:\n{out}")
     return "\n\n".join(outputs)
@@ -413,7 +422,7 @@ class IdleMemoryStore:
 
     def __init__(self, path: Path | None = None, max_storage_mb: int | None = None):
         if path is None:
-            path = IDLE_SANDBOX_ROOT / "idle_palace" / "ai_idle_memory.json"
+            path = get_experimental_data_root() / "idle_palace" / "ai_idle_memory.json"
         self.path = Path(path)
         self.files_dir = self.path.parent / "files"
         self._explicit_max_mb = max_storage_mb
@@ -686,7 +695,7 @@ class IdleMailboxStore:
         window_minutes: int = IDLE_MAIL_WINDOW_MINUTES,
     ):
         if path is None:
-            path = IDLE_SANDBOX_ROOT / "mailbox" / "agent_mailbox.json"
+            path = get_experimental_data_root() / "mailbox" / "agent_mailbox.json"
         self.path = Path(path)
         self.max_per_window = max_per_window
         self.window_minutes = window_minutes
@@ -881,7 +890,7 @@ class IdleSessionManager:
 
     - Live transcript and votes exist in RAM and are wiped on timer expiry,
       manual cancel, or leaving Idle Mode.
-    - Shared Idle Palace notes/files and Agent Mail persist in C:\\Palace_Idle_Sandbox\\.
+    - Shared Idle Palace notes/files and Agent Mail persist in the active Experimental Database folder.
     """
 
     def __init__(
@@ -1128,7 +1137,7 @@ class IdleSessionManager:
             f"=== FAIRYBREAD EXPERIMENTAL MODE — SELF-IMPROVEMENT WORKSHOP ===\n"
             f"You are {provider_id.upper()} operating in Experimental Mode (Self-Improvement sub-mode) alongside peer agents ({peers_str}).\n"
             f"No single AI rules the council. Angle for this turn: {lens}\n"
-            f"Strict Grounding Rule: Every critique or improvement proposal MUST reference real Python files/lines in C:\\Palace_Idle_Sandbox\\source_mirror\\ or UI geometry in latest_ui_audit.json. Never invent abstract math frameworks, imaginary quotas, or theoretical bureaucracy.\n\n"
+            f"Strict Grounding Rule: Every critique or improvement proposal MUST reference real Python files/lines in `{get_source_mirror_dir()}` or UI geometry in latest_ui_audit.json. Never invent abstract math frameworks, imaginary quotas, or theoretical bureaucracy.\n\n"
             f"OWNER STANDING INSTRUCTION & CHARTER (FOLLOW THIS FIRST):\n{standing_instruction}\n\n"
             f"SHARED EXPERIMENTAL MEMORY:\n{idle_notebook_block}\n\n"
             f"RECENT LIVE CHAT (RAM-only):\n{convo_block}\n"
@@ -1363,21 +1372,22 @@ class IdleSessionManager:
                             "idle_sent_emails": self.sent_emails_this_session,
                         },
                     )
-                    if ok_h and HANDOFF_PATH.exists():
+                    if ok_h and HANDOFF_PATH.exists() and not is_frozen_app() and IS_DEVELOPER_EDITION:
                         wd_script = Path(__file__).with_name("palace_watchdog.py")
-                        subprocess.Popen(
-                            [
-                                sys.executable,
-                                str(wd_script),
-                                "--skip-tests",
-                                "--preserve-handoff",
-                                "--reason",
-                                "experimental_agent_live_patch",
-                                "--summary",
-                                patch_reboot_requested,
-                            ],
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                        )
+                        if wd_script.exists():
+                            subprocess.Popen(
+                                [
+                                    sys.executable,
+                                    str(wd_script),
+                                    "--skip-tests",
+                                    "--preserve-handoff",
+                                    "--reason",
+                                    "experimental_agent_live_patch",
+                                    "--summary",
+                                    patch_reboot_requested,
+                                ],
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                            )
                         break
                     else:
                         notice_entry = {

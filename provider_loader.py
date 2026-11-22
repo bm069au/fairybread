@@ -104,8 +104,12 @@ def load_configured_providers(
             )
 
     providers: dict[str, AIProvider] = {}
+    configs_lower = {str(k).strip().lower(): v for k, v in configs.items()}
 
     for provider_name, factory in factories.items():
+        cfg_entry = configs_lower.get(provider_name, {})
+        if isinstance(cfg_entry, dict) and cfg_entry.get("use_openrouter"):
+            continue
         api_key = credentials.get_api_key(
             provider_name
         )
@@ -114,6 +118,60 @@ def load_configured_providers(
             providers[provider_name] = factory(
                 api_key
             )
+
+    # Hybrid OpenRouter support: direct keys take priority unless a seat explicitly selects use_openrouter=True;
+    # when openrouter_hub.auto_fill_seats is enabled, fill any missing enabled/preset seats via OpenRouter.
+    openrouter_key = credentials.get_api_key("openrouter")
+    if openrouter_key:
+        try:
+            from palace_config import (
+                CONFIG_PATH,
+                OPENROUTER_PRESET_TIERS,
+                load_openrouter_hub_settings,
+            )
+
+            eff_cfg_path = config_path if config_path is not None else CONFIG_PATH
+            hub = load_openrouter_hub_settings(eff_cfg_path)
+            tier_map = OPENROUTER_PRESET_TIERS.get(hub.get("tier", "balanced"), OPENROUTER_PRESET_TIERS["balanced"])
+
+            # 1) Explicit per-seat use_openrouter overrides
+            for pname, pcfg in configs_lower.items():
+                if pname == "openrouter" or not isinstance(pcfg, dict):
+                    continue
+                if pcfg.get("use_openrouter") and pcfg.get("enabled", True):
+                    tier_entry = tier_map.get(pname, {})
+                    or_model = str(pcfg.get("openrouter_model") or pcfg.get("model") or tier_entry.get("model") or "").strip()
+                    if not or_model:
+                        or_model = f"{pname}/auto" if "/" not in pname else pname
+                    providers[pname] = OpenAIProvider(
+                        api_key=openrouter_key,
+                        model=or_model,
+                        base_url="https://openrouter.ai/api/v1",
+                        provider_name=pname,
+                    )
+
+            # 2) Hub auto-fill for seats without a direct key
+            if hub.get("auto_fill_seats"):
+                for seat_name, meta in tier_map.items():
+                    if seat_name in providers:
+                        continue
+                    pcfg = configs_lower.get(seat_name)
+                    if isinstance(pcfg, dict) and pcfg.get("enabled") is False:
+                        continue
+                    or_model = (
+                        str(pcfg.get("openrouter_model") or pcfg.get("model") or "").strip()
+                        if isinstance(pcfg, dict)
+                        else ""
+                    ) or str(meta.get("model") or "").strip()
+                    if or_model:
+                        providers[seat_name] = OpenAIProvider(
+                            api_key=openrouter_key,
+                            model=or_model,
+                            base_url="https://openrouter.ai/api/v1",
+                            provider_name=seat_name,
+                        )
+        except Exception:
+            pass
 
     if include_local_cli and get_mcp_depth() < 1:
         try:

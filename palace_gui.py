@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -15,7 +16,7 @@ from typing import Any
 import webbrowser
 
 from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QRect, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QCursor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 try:
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
 except Exception:
@@ -49,17 +50,26 @@ from idle_service import IdleMailboxStore, IdleMemoryStore, IdleSessionManager, 
 from memory_proposal_service import MemoryProposalService
 from memory_service import MemoryService
 from palace_config import (
+    COMMUNITY_CONTRIBUTORS,
     CONFIG_PATH,
     DEFAULT_AI_SQUADS,
     IDLE_CREDIT_LIMIT_CHOICES,
     IDLE_DURATION_CHOICES,
     IDLE_TOKEN_LIMIT_CHOICES,
     IS_DEVELOPER_EDITION,
+    OPENROUTER_PRESET_TIERS,
     PROVIDER_CATALOG,
+    get_app_install_dir,
+    get_appdata_root,
+    get_experimental_data_root,
+    get_resource_path,
+    is_frozen_app,
+    is_msix_packaged,
     load_agent_defaults,
     load_ai_squads,
     load_idle_settings,
     load_mission_ethics,
+    load_openrouter_hub_settings,
     load_personalization_settings,
     load_provider_configs,
     load_tool_settings,
@@ -68,6 +78,7 @@ from palace_config import (
     save_ai_squads,
     save_idle_settings,
     save_mission_ethics,
+    save_openrouter_hub_settings,
     save_personalization_settings,
     save_provider_config,
     save_tool_settings,
@@ -567,11 +578,18 @@ class ResponsiveBarLabel(QLabel):
     exposes plain text length for responsive width calculations, and triggers bar relayout on setText.
     """
 
+    clicked = Signal()
+
     def __init__(self, text: str = '', on_change=None, parent=None):
         super().__init__(text, parent)
         self._raw_text = str(text or '')
         self._on_change = on_change
         self._updating_elide = False
+
+    def mousePressEvent(self, event):
+        if event is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
 
     def setText(self, text: str):
         if self._updating_elide:
@@ -630,6 +648,7 @@ class ChatBrowser(QTextBrowser):
                 if decoded.startswith(prefix):
                     file_path = decoded.split(prefix, 1)[1]
                     menu = QMenu(self)
+                    menu.setToolTipsVisible(True)
                     p_obj = Path(file_path)
                     is_img = p_obj.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}
                     if is_img:
@@ -1500,9 +1519,9 @@ class ManageAIsDialog(QDialog):
         ui_cfg = load_ui_settings(self.config_path)
         self.close_to_tray_check = QCheckBox(
             'Close button (✕) minimizes Fairybread to the Windows System Tray (right-click tray icon to Expand or Exit)',
-            checked=bool(ui_cfg.get('close_to_tray', True)),
+            checked=bool(ui_cfg.get('close_to_tray', False)),
         )
-        self.close_to_tray_check.setToolTip('Keep Fairybread running in the system tray when closed')
+        self.close_to_tray_check.setToolTip('Keep Fairybread running in the system tray instead of exiting when clicking ✕')
         lay.addWidget(self.close_to_tray_check)
 
         self.auto_refresh_catalog_check = QCheckBox(
@@ -1723,6 +1742,7 @@ class ManageAIsDialog(QDialog):
 
         def _on_drive_menu():
             menu = QMenu(self)
+            menu.setToolTipsVisible(True)
             for drv in list_local_drives():
                 act = QAction(drv, menu)
                 act.triggered.connect(lambda _c=False, d=drv: _add_exclusion_row(d, include_subdirs=True))
@@ -2910,15 +2930,18 @@ class ManageAIsDialog(QDialog):
         self.pages.addWidget(w)
 
     def _build_appearance_page(self):
-        w, lay = self._make_simple_page('Appearance & Themes', 'Choose a built-in theme (including Fairybread) or create/import custom JSON themes.')
+        w, lay = self._make_simple_page('Appearance & Themes', 'Choose a built-in theme or create/import custom JSON themes.')
 
         ui_cfg = load_ui_settings(self.config_path)
         badge_form = QFormLayout()
 
         self.theme_combo = QComboBox()
+        self.theme_combo.setToolTip('Select color palette and window styling across Fairybread')
         for tid, tname in list_available_themes():
             self.theme_combo.addItem(tname, tid)
         cur_theme = str(ui_cfg.get('theme', 'dark'))
+        if cur_theme == 'fairybread':
+            cur_theme = 'dark'
         t_idx = self.theme_combo.findData(cur_theme)
         if t_idx >= 0:
             self.theme_combo.setCurrentIndex(t_idx)
@@ -2926,6 +2949,7 @@ class ManageAIsDialog(QDialog):
         badge_form.addRow('Application Theme:', self.theme_combo)
 
         self.badge_mode_combo = QComboBox()
+        self.badge_mode_combo.setToolTip('Choose whether top/bottom AI badges show icons, full names, or both')
         self.badge_mode_combo.addItem('Icons Only — Compact tokens with hover name (Default)', 'icons_only')
         self.badge_mode_combo.addItem('Icons + Full Names (◆ Gemini)', 'icons_and_names')
         self.badge_mode_combo.addItem('Full Names Only (Gemini)', 'names_only')
@@ -2938,6 +2962,7 @@ class ManageAIsDialog(QDialog):
 
         theme_btn_row = QHBoxLayout()
         open_themes_btn = QPushButton('📂 Open Custom Themes Folder (Create / Edit JSON Themes)')
+        open_themes_btn.setToolTip('Open %LOCALAPPDATA%\\Palace\\themes in Explorer to customize or inspect theme JSON files')
         open_themes_btn.clicked.connect(lambda: webbrowser.open(str(get_themes_dir())))
         theme_btn_row.addWidget(open_themes_btn)
         theme_btn_row.addStretch()
@@ -3205,6 +3230,67 @@ class ManageAIsDialog(QDialog):
         self._loading_provider_fields = False
         self._active_provider_slug = ''
 
+        # Compact OpenRouter 1-Bill Hub Card
+        hub_card = QFrame()
+        hub_lay = QVBoxLayout(hub_card)
+        _style_settings_card(hub_card, 'openRouterHubCard', hub_lay, pad_h=12, pad_v=10)
+        hub_lay.setSpacing(6)
+        hub_cfg = load_openrouter_hub_settings(self.config_path)
+
+        hub_top = QHBoxLayout()
+        hub_title = QLabel('<b>⊕ OpenRouter All-in-One Hub (Optional Single-Bill Mode)</b>')
+        hub_title.setTextFormat(Qt.TextFormat.RichText)
+        hub_top.addWidget(hub_title, 1)
+        wizard_btn = QPushButton('🧭 Run Guided Setup Wizard…')
+        wizard_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        wizard_btn.setToolTip('Open the step-by-step Guided Setup & Selective Backup Restore Wizard')
+        def _launch_wizard():
+            p = self.parent()
+            if p is not None and hasattr(p, 'open_setup_wizard'):
+                p.open_setup_wizard(initial_page=0)
+        wizard_btn.clicked.connect(_launch_wizard)
+        hub_top.addWidget(wizard_btn)
+        hub_lay.addLayout(hub_top)
+
+        self.or_autofill_check = QCheckBox('Auto-fill unconfigured AI seats using my single OpenRouter key (direct keys always take priority)')
+        self.or_autofill_check.setChecked(bool(hub_cfg.get('auto_fill_seats', False)))
+        self.or_autofill_check.setToolTip('Automatically populate Claude, Gemini, GPT, DeepSeek, Qwen, and Mistral via your single OpenRouter wallet whenever no direct key is set')
+        hub_lay.addWidget(self.or_autofill_check)
+
+        tier_row = QHBoxLayout()
+        tier_row.addWidget(QLabel('OpenRouter Seat Tier Preset:'))
+        self.or_tier_combo = QComboBox()
+        self.or_tier_combo.setToolTip('Choose model quality/cost preset for OpenRouter-backed seats')
+        self.or_tier_combo.addItem('Free / Starter ($0 models)', 'free')
+        self.or_tier_combo.addItem('Balanced Best Value (Recommended)', 'balanced')
+        self.or_tier_combo.addItem('Flagship Top Models', 'flagship')
+        cur_tier = str(hub_cfg.get('tier', 'balanced'))
+        t_idx = self.or_tier_combo.findData(cur_tier)
+        self.or_tier_combo.setCurrentIndex(t_idx if t_idx >= 0 else 1)
+        tier_row.addWidget(self.or_tier_combo, 1)
+        hub_lay.addLayout(tier_row)
+
+        def _save_or_hub(*_args):
+            if getattr(self, '_loading_provider_fields', False):
+                return
+            try:
+                save_openrouter_hub_settings(
+                    {
+                        'auto_fill_seats': self.or_autofill_check.isChecked(),
+                        'tier': str(self.or_tier_combo.currentData() or 'balanced'),
+                    },
+                    config_path=self.config_path,
+                )
+                p = self.parent()
+                if p is not None and hasattr(p, 'reload_providers_from_config'):
+                    p.reload_providers_from_config()
+            except Exception:
+                pass
+
+        self.or_autofill_check.toggled.connect(_save_or_hub)
+        self.or_tier_combo.currentIndexChanged.connect(_save_or_hub)
+        lay.addWidget(hub_card)
+
         form = QFormLayout()
         prov_row = QHBoxLayout()
         self.provider_combo = QComboBox()
@@ -3238,6 +3324,11 @@ class ManageAIsDialog(QDialog):
         self.enabled_check.setChecked(True)
         self.enabled_check.toggled.connect(self._auto_save_current_provider)
         form.addRow('', self.enabled_check)
+
+        self.use_openrouter_check = QCheckBox('Route this provider via OpenRouter (uses OpenRouter key instead of direct key)')
+        self.use_openrouter_check.setToolTip('Route this specific AI seat through your OpenRouter API key even if a direct key exists')
+        self.use_openrouter_check.toggled.connect(self._auto_save_current_provider)
+        form.addRow('', self.use_openrouter_check)
 
         key_row = QHBoxLayout()
         self.api_key_edit = QLineEdit()
@@ -4093,10 +4184,10 @@ class ManageAIsDialog(QDialog):
         btn_row = QHBoxLayout()
         test_bridge_btn = QPushButton('🧪 Test MCP Bridge')
         test_bridge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_bridge_btn.setToolTip('Spawn python.exe fairybread_mcp.py over stdio and verify initialize, tools/list, and fairybread_status')
+        test_bridge_btn.setToolTip('Spawn Fairybread MCP server over stdio and verify initialize, tools/list, and fairybread_status')
         copy_mcp_btn = QPushButton('📋 Copy Generic MCP JSON (Cursor / Windsurf)')
         copy_mcp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_mcp_btn.setToolTip('Copy generic stdio JSON config (uses console python.exe)')
+        copy_mcp_btn.setToolTip('Copy generic stdio JSON config for external MCP clients')
         btn_row.addWidget(test_bridge_btn)
         btn_row.addWidget(copy_mcp_btn)
         cap_lay.addLayout(btn_row)
@@ -4112,7 +4203,7 @@ class ManageAIsDialog(QDialog):
             self._save_bridge_fields()
             QApplication.clipboard().setText(get_mcp_json_snippet())
             self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
-            self.bridge_status_label.setText('✓ Copied generic MCP JSON snippet (using python.exe) to clipboard.')
+            self.bridge_status_label.setText('✓ Copied generic stdio MCP JSON snippet to clipboard.')
 
         test_bridge_btn.clicked.connect(_run_bridge_test)
         copy_mcp_btn.clicked.connect(_copy_mcp)
@@ -4280,34 +4371,65 @@ class ManageAIsDialog(QDialog):
             format_storage_mb_label,
             list_palace_stored_files,
             mb_to_slider_index,
+            move_experimental_data_to_directory,
             move_palace_data_to_directory,
             parse_storage_mb_text,
             slider_index_to_mb,
         )
 
-        w, lay = self._make_simple_page(
-            '📦 Storage, Files & Password-Locked Backup',
-            'Manage Normal Mode drive space & optional cap, move Fairybread Memory to another drive/folder, '
-            'download or delete stored files & pictures, and create password-locked AES-256 backups.'
+        w, outer_lay = self._make_simple_page(
+            '📦 Storage, Databases & Password-Locked Backup',
+            'Manage database locations for Normal and Experimental Palaces, open key/config folders directly, '
+            'clean up stored media, and export AES-256 encrypted backups.'
         )
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 8, 4)
+        lay.setSpacing(12)
 
         ui_cfg = load_ui_settings(self.config_path)
         stats = compute_palace_storage_stats(self.config_path)
 
-        # --- 1. NORMAL MODE DRIVE SPACE SLIDER + LIVE USAGE & CAP WARNING ---
+        def _open_folder_safe(folder_path: Path, label: str):
+            try:
+                folder_path.mkdir(parents=True, exist_ok=True)
+                if hasattr(os, 'startfile'):
+                    os.startfile(str(folder_path))
+                else:
+                    webbrowser.open(folder_path.as_uri())
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                self.backup_status_label.setText(f'📂 Opened {label}: {folder_path}')
+            except Exception as exc:
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.backup_status_label.setText(f'⚠ Could not open {label}: {exc}')
+
+        # --- CARD 1: STORAGE CAP & NORMAL / EXPERIMENTAL DATABASE LOCATIONS ---
         space_grp = QFrame()
         sp_lay = QVBoxLayout(space_grp)
-        _style_settings_card(space_grp, 'storageSpaceCard', sp_lay, pad_h=12, pad_v=10)
+        _style_settings_card(space_grp, 'storageSpaceCard', sp_lay, pad_h=12, pad_v=12)
         sp_lay.setSpacing(8)
+
+        card1_hdr = QLabel('<b>💾 1. Storage Cap &amp; Palace Database Locations</b>')
+        card1_hdr.setTextFormat(Qt.TextFormat.RichText)
+        card1_hdr.setToolTip('View Normal Mode disk usage, configure storage limits, and move Normal or Experimental Palace databases')
+        sp_lay.addWidget(card1_hdr)
+
         self.normal_space_summary_lbl = QLabel()
         self.normal_space_summary_lbl.setWordWrap(True)
         self.normal_space_summary_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.normal_space_summary_lbl.setToolTip('Live breakdown of Normal Palace SQLite DB, chats, uploads, and generated images')
         sp_lay.addWidget(self.normal_space_summary_lbl)
 
         cur_norm_mb = int(ui_cfg.get('normal_max_storage_mb', 0))
         norm_slider_row = QHBoxLayout()
         norm_slider_row.setSpacing(8)
         norm_cap_lbl = QLabel('Normal Mode Cap:')
+        norm_cap_lbl.setToolTip('Optional soft warning threshold for Normal Palace disk usage')
         norm_min_lbl = QLabel('100 MB')
         norm_min_lbl.setStyleSheet('color:#8b949e; font-size:11.5px; background:transparent; border:none;')
         norm_slider_row.addWidget(norm_cap_lbl)
@@ -4317,8 +4439,10 @@ class ManageAIsDialog(QDialog):
         self.normal_storage_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.normal_storage_slider.setTickInterval(1)
         self.normal_storage_slider.setValue(mb_to_slider_index(cur_norm_mb))
+        self.normal_storage_slider.setToolTip('Slide left to set a space warning cap or far right for Unlimited')
         self.normal_storage_edit = QLineEdit(format_storage_mb_label(cur_norm_mb))
         self.normal_storage_edit.setFixedWidth(115)
+        self.normal_storage_edit.setToolTip('Enter a storage cap such as "500 MB", "2 GB", or "Unlimited"')
 
         def _refresh_storage_summary_labels():
             st = compute_palace_storage_stats(self.config_path)
@@ -4329,6 +4453,7 @@ class ManageAIsDialog(QDialog):
             up_mb = st['uploaded_files_bytes'] / (1024 * 1024)
             img_mb = st['generated_images_bytes'] / (1024 * 1024)
             tot_mb = st['normal_total_mb']
+            exp_mb = st['idle_total_mb']
             warn_html = ''
             if cap_mb > 0:
                 pct = (tot_mb / float(cap_mb)) * 100.0
@@ -4337,9 +4462,10 @@ class ManageAIsDialog(QDialog):
                 elif pct >= 85.0:
                     warn_html = f'<br><span style="color:#d29922; font-weight:700;">⚠ Approaching Data Limit ({pct:.1f}% of {cap_txt} used).</span>'
             self.normal_space_summary_lbl.setText(
-                f'<b>💾 Normal Mode Drive Space Used: {tot_mb:.2f} MB / {cap_txt}</b> '
+                f'<b>Normal DB Used: {tot_mb:.2f} MB / {cap_txt}</b> '
                 f'<span style="color:#8b949e; font-size:12px;">'
-                f'(Memory DB: {mem_mb:.2f} MB · Chats: {chat_mb:.2f} MB · Uploaded Files: {up_mb:.2f} MB · Pictures: {img_mb:.2f} MB)'
+                f'(Memory DB: {mem_mb:.2f} MB · Chats: {chat_mb:.2f} MB · Uploads: {up_mb:.2f} MB · Pictures: {img_mb:.2f} MB · '
+                f'Experimental DB: {exp_mb:.2f} MB)'
                 f'</span>{warn_html}'
             )
 
@@ -4365,25 +4491,66 @@ class ManageAIsDialog(QDialog):
         norm_slider_row.addWidget(self.normal_storage_edit)
         sp_lay.addLayout(norm_slider_row)
 
-        # --- 2. MOVE FAIRYBREAD MEMORY LOCATION (DIFFERENT DRIVE / FOLDER) ---
-        loc_lbl = QLabel('<b>Fairybread Storage Folder:</b>')
+        # Row A: Normal Palace DB & Media Folder
+        loc_lbl = QLabel('<b>Normal Palace Database &amp; Media Folder</b> <span style="color:#8b949e;">(memory.db, chats, uploads, pictures)</span>:')
         loc_lbl.setTextFormat(Qt.TextFormat.RichText)
+        loc_lbl.setToolTip('Directory holding your Normal Mode SQLite Memory Palace, conversations, uploaded files, and generated pictures')
         sp_lay.addWidget(loc_lbl)
         loc_row = QHBoxLayout()
-        loc_row.setSpacing(8)
+        loc_row.setSpacing(6)
         self.palace_data_dir_edit = QLineEdit(str(stats['data_root']))
+        self.palace_data_dir_edit.setToolTip('Active folder for Normal Palace memory.db and media (encrypted keys stay in %LOCALAPPDATA%\\Palace)')
         loc_browse_btn = QPushButton('Browse…')
-        loc_browse_btn.setToolTip('Choose a different drive or folder for Fairybread storage')
-        loc_move_btn = QPushButton('🚚 Move Data')
-        loc_move_btn.setToolTip('Copy all Fairybread Memory, Chats, Uploaded Files & Pictures to the selected drive/folder')
+        loc_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        loc_browse_btn.setToolTip('Select a destination drive or folder for your Normal Palace database')
+        loc_move_btn = QPushButton('🚚 Move')
+        loc_move_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        loc_move_btn.setToolTip('Safely copy Normal memory.db (via SQLite online backup), chats, and media to this folder')
+        loc_open_btn = QPushButton('📂 Open')
+        loc_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        loc_open_btn.setToolTip('Open the Normal Palace Database folder in File Explorer (close Fairybread before manually editing memory.db)')
         loc_row.addWidget(self.palace_data_dir_edit, 1)
         loc_row.addWidget(loc_browse_btn)
         loc_row.addWidget(loc_move_btn)
+        loc_row.addWidget(loc_open_btn)
         sp_lay.addLayout(loc_row)
+
+        # Row B: Experimental Palace DB Folder
+        exp_lbl = QLabel('<b>Experimental Palace Database Folder</b> <span style="color:#8b949e;">(ai_idle_memory.json, agent_mailbox.json, sandbox files)</span>:')
+        exp_lbl.setTextFormat(Qt.TextFormat.RichText)
+        exp_lbl.setToolTip('Isolated folder holding Experimental Mode persistent memory, Agent Mail, and shared sandbox files')
+        sp_lay.addWidget(exp_lbl)
+        exp_row = QHBoxLayout()
+        exp_row.setSpacing(6)
+        self.experimental_data_dir_edit = QLineEdit(str(stats.get('experimental_root') or get_experimental_data_root(self.config_path)))
+        self.experimental_data_dir_edit.setToolTip('Active folder for Experimental Mode memory and mailbox files')
+        exp_browse_btn = QPushButton('Browse…')
+        exp_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exp_browse_btn.setToolTip('Select a destination drive or folder for your Experimental Palace database')
+        exp_move_btn = QPushButton('🚚 Move')
+        exp_move_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exp_move_btn.setToolTip('Copy Experimental Mode memory and sandbox files to this folder and switch the active pointer')
+        exp_open_btn = QPushButton('📂 Open')
+        exp_open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        exp_open_btn.setToolTip('Open the Experimental Palace Database folder in File Explorer')
+        exp_row.addWidget(self.experimental_data_dir_edit, 1)
+        exp_row.addWidget(exp_browse_btn)
+        exp_row.addWidget(exp_move_btn)
+        exp_row.addWidget(exp_open_btn)
+        sp_lay.addLayout(exp_row)
+
+        anchor_note = QLabel(
+            '<i>Note: Windows DPAPI-encrypted API keys (<code>credentials.json</code>) and config pointers remain '
+            'safely anchored in <code>%LOCALAPPDATA%\\Palace</code> even when you move your databases.</i>'
+        )
+        anchor_note.setTextFormat(Qt.TextFormat.RichText)
+        anchor_note.setWordWrap(True)
+        anchor_note.setStyleSheet('color:#8b949e; font-size:11.5px;')
+        sp_lay.addWidget(anchor_note)
         lay.addWidget(space_grp)
 
         def _browse_data_dir():
-            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Fairybread Memory Storage', self.palace_data_dir_edit.text())
+            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Normal Palace Database', self.palace_data_dir_edit.text())
             if chosen:
                 self.palace_data_dir_edit.setText(chosen)
 
@@ -4395,27 +4562,107 @@ class ManageAIsDialog(QDialog):
                 res = move_palace_data_to_directory(target_dir, config_path=self.config_path)
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                 self.backup_status_label.setText(
-                    f'✓ Moved {res["moved_files"]} Fairybread files to {res["new_root"]}. Active storage updated!'
+                    f'✓ Moved {res["moved_files"]} Normal Palace file(s) to {res["new_root"]}. Encrypted keys stay in AppData.'
                 )
                 _refresh_storage_summary_labels()
                 _refresh_stored_files_list()
             except Exception as exc:
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
-                self.backup_status_label.setText(f'⚠ Could not move Fairybread data: {exc}')
+                self.backup_status_label.setText(f'⚠ Could not move Normal Palace database: {exc}')
+
+        def _browse_exp_dir():
+            chosen = QFileDialog.getExistingDirectory(self, 'Select Folder / Drive for Experimental Palace Database', self.experimental_data_dir_edit.text())
+            if chosen:
+                self.experimental_data_dir_edit.setText(chosen)
+
+        def _move_exp_dir():
+            target_dir = self.experimental_data_dir_edit.text().strip()
+            if not target_dir:
+                return
+            try:
+                res = move_experimental_data_to_directory(target_dir, config_path=self.config_path)
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+                self.backup_status_label.setText(
+                    f'✓ Moved {res["moved_files"]} Experimental Palace file(s) to {res["new_root"]}. Active storage updated!'
+                )
+                _refresh_storage_summary_labels()
+                _refresh_stored_files_list()
+            except Exception as exc:
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.backup_status_label.setText(f'⚠ Could not move Experimental Palace database: {exc}')
 
         loc_browse_btn.clicked.connect(_browse_data_dir)
         loc_move_btn.clicked.connect(_move_data_dir)
+        loc_open_btn.clicked.connect(lambda: _open_folder_safe(Path(self.palace_data_dir_edit.text().strip() or str(stats['data_root'])), 'Normal DB Folder'))
+        exp_browse_btn.clicked.connect(_browse_exp_dir)
+        exp_move_btn.clicked.connect(_move_exp_dir)
+        exp_open_btn.clicked.connect(lambda: _open_folder_safe(Path(self.experimental_data_dir_edit.text().strip() or str(get_experimental_data_root(self.config_path))), 'Experimental DB Folder'))
 
-        # --- 3. MANAGE STORED FILES & PICTURES (DOWNLOAD OR DELETE OLD FILES) ---
-        files_hdr = QLabel('<b>🗂 Stored Fairybread Files &amp; Pictures (Retrieve / Download or Delete Old Files Taking Up Space):</b>')
+        # --- CARD 2: QUICK-OPEN FOLDERS (MANUAL INSPECTION & EDITING) ---
+        folders_card = QFrame()
+        fc_lay = QVBoxLayout(folders_card)
+        _style_settings_card(folders_card, 'quickFoldersCard', fc_lay, pad_h=12, pad_v=12)
+        fc_lay.setSpacing(8)
+
+        card2_hdr = QLabel('<b>📂 2. Quick-Open Folders (Inspect &amp; Manual Edit)</b>')
+        card2_hdr.setTextFormat(Qt.TextFormat.RichText)
+        card2_hdr.setToolTip('Jump straight to Fairybread program binaries, AppData keys/config, or either database folder in File Explorer')
+        fc_lay.addWidget(card2_hdr)
+
+        qfolder_row = QHBoxLayout()
+        qfolder_row.setSpacing(8)
+        open_inst_btn = QPushButton('📂 Install Folder')
+        open_inst_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_inst_btn.setToolTip(f'Open installed Fairybread binaries & optional \\source\\ folder: {get_app_install_dir()}')
+
+        open_appdata_btn = QPushButton('📂 AppData & Keys')
+        open_appdata_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_appdata_btn.setToolTip(f'Open {get_appdata_root()} containing palace_config.json, encrypted credentials.json, and custom themes')
+
+        open_norm_btn = QPushButton('📂 Normal DB')
+        open_norm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_norm_btn.setToolTip('Open active Normal Palace DB folder (close Fairybread before editing memory.db directly)')
+
+        open_exp_btn = QPushButton('📂 Experimental DB')
+        open_exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_exp_btn.setToolTip('Open active Experimental Palace DB folder (ai_idle_memory.json, agent_mailbox.json, shared files)')
+
+        for b in (open_inst_btn, open_appdata_btn, open_norm_btn, open_exp_btn):
+            qfolder_row.addWidget(b)
+        qfolder_row.addStretch()
+        fc_lay.addLayout(qfolder_row)
+
+        reloc_note = QLabel(
+            f'<span style="color:#8b949e; font-size:11.5px;">Install Folder: <code>{html.escape(str(get_app_install_dir()))}</code> · '
+            'To relocate the program installation directory safely without breaking shortcuts or uninstallers, re-run Setup.exe and choose Reinstall.</span>'
+        )
+        reloc_note.setTextFormat(Qt.TextFormat.RichText)
+        reloc_note.setWordWrap(True)
+        fc_lay.addWidget(reloc_note)
+        lay.addWidget(folders_card)
+
+        open_inst_btn.clicked.connect(lambda: _open_folder_safe(get_app_install_dir(), 'Install Folder'))
+        open_appdata_btn.clicked.connect(lambda: _open_folder_safe(get_appdata_root(), 'AppData & Keys'))
+        open_norm_btn.clicked.connect(lambda: _open_folder_safe(get_palace_appdata_root(), 'Normal DB'))
+        open_exp_btn.clicked.connect(lambda: _open_folder_safe(get_experimental_data_root(self.config_path), 'Experimental DB'))
+
+        # --- CARD 3: MANAGE STORED FILES & PICTURES ---
+        files_card = QFrame()
+        fl_lay = QVBoxLayout(files_card)
+        _style_settings_card(files_card, 'storedFilesCard', fl_lay, pad_h=12, pad_v=12)
+        fl_lay.setSpacing(8)
+
+        files_hdr = QLabel('<b>🗂 3. Stored Files &amp; Generated Pictures</b>')
         files_hdr.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(files_hdr)
+        files_hdr.setToolTip('Export, view, or delete uploaded files and generated PNG pictures to free disk space')
+        fl_lay.addWidget(files_hdr)
 
         self.stored_files_list = QListWidget()
         self.stored_files_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.stored_files_list.setMinimumHeight(110)
-        self.stored_files_list.setMaximumHeight(145)
-        lay.addWidget(self.stored_files_list)
+        self.stored_files_list.setMinimumHeight(105)
+        self.stored_files_list.setMaximumHeight(140)
+        self.stored_files_list.setToolTip('Select one or more stored files/images to save elsewhere, open, or delete')
+        fl_lay.addWidget(self.stored_files_list)
 
         def _refresh_stored_files_list():
             self.stored_files_list.clear()
@@ -4426,20 +4673,26 @@ class ManageAIsDialog(QDialog):
                 self.stored_files_list.addItem(lw)
 
         file_btn_row = QHBoxLayout()
+        file_btn_row.setSpacing(8)
         dl_file_btn = QPushButton('💾 Save As…')
-        dl_file_btn.setToolTip('Download / save selected files or pictures to another folder')
+        dl_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dl_file_btn.setToolTip('Download / copy selected files or pictures to another folder')
         open_file_btn = QPushButton('🔍 Open')
+        open_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_file_btn.setToolTip('Open / view the selected file or picture')
         del_file_btn = QPushButton('🗑 Delete')
-        del_file_btn.setToolTip('Delete selected stored files or pictures to reclaim disk space')
+        del_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_file_btn.setToolTip('Permanently delete selected stored files or pictures to reclaim disk space')
         refresh_files_btn = QPushButton('↻ Refresh')
-        refresh_files_btn.setToolTip('Refresh stored files and disk usage breakdown')
+        refresh_files_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_files_btn.setToolTip('Refresh stored files list and disk usage summary')
         file_btn_row.addWidget(dl_file_btn)
         file_btn_row.addWidget(open_file_btn)
         file_btn_row.addWidget(del_file_btn)
         file_btn_row.addWidget(refresh_files_btn)
         file_btn_row.addStretch()
-        lay.addLayout(file_btn_row)
+        fl_lay.addLayout(file_btn_row)
+        lay.addWidget(files_card)
 
         def _download_selected():
             sel = self.stored_files_list.selectedItems()
@@ -4453,6 +4706,7 @@ class ManageAIsDialog(QDialog):
                 if dest_str:
                     import shutil
                     shutil.copy2(src_p, dest_str)
+                    self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                     self.backup_status_label.setText(f'✓ Downloaded {src_p.name} to {dest_str}')
 
         def _open_selected():
@@ -4480,6 +4734,7 @@ class ManageAIsDialog(QDialog):
                         pass
             _refresh_stored_files_list()
             _refresh_storage_summary_labels()
+            self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
             self.backup_status_label.setText(f'✓ Deleted {deleted_n} file(s), freed {reclaimed / 1024.0:.1f} KB.')
 
         dl_file_btn.clicked.connect(_download_selected)
@@ -4487,74 +4742,113 @@ class ManageAIsDialog(QDialog):
         del_file_btn.clicked.connect(_delete_selected)
         refresh_files_btn.clicked.connect(lambda: (_refresh_stored_files_list(), _refresh_storage_summary_labels()))
 
-        # --- 4. PASSWORD-LOCKED AES-256 BACKUP & RESTORE ---
-        bak_hdr = QLabel('<b>🔐 Password-Locked Backup &amp; Restore (Shared Memory + Settings &amp; API Keys):</b>')
+        # --- CARD 4: PASSWORD-LOCKED AES-256 BACKUP & RESTORE ---
+        bak_card = QFrame()
+        bk_lay = QVBoxLayout(bak_card)
+        _style_settings_card(bak_card, 'backupVaultCard', bk_lay, pad_h=12, pad_v=12)
+        bk_lay.setSpacing(8)
+
+        bak_hdr = QLabel('<b>🔐 4. Password-Locked Backup &amp; Restore</b>')
         bak_hdr.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(bak_hdr)
+        bak_hdr.setToolTip('Create portable AES-256-GCM password-locked archives for full backups or lightweight API keys + settings only')
+        bk_lay.addWidget(bak_hdr)
 
         chk_row = QHBoxLayout()
-        self.backup_include_memory_check = QCheckBox('Shared Memory, Chats && Idle Memory', checked=True)
-        self.backup_include_settings_check = QCheckBox('All Settings && API Keys (AES-256 Password Locked)', checked=True)
-        self.backup_include_images_check = QCheckBox('Generated PNG Pictures', checked=True)
+        chk_row.setSpacing(12)
+        self.backup_include_memory_check = QCheckBox('Memory, Chats && Experimental DB', checked=True)
+        self.backup_include_memory_check.setToolTip('Include Normal SQLite memory.db, conversations, uploads, and Experimental sandbox data')
+        self.backup_include_settings_check = QCheckBox('Settings && API Keys (AES-256)', checked=True)
+        self.backup_include_settings_check.setToolTip('Include palace_config.json, custom themes, and encrypted API keys vault')
+        self.backup_include_images_check = QCheckBox('Generated Pictures', checked=True)
+        self.backup_include_images_check.setToolTip('Include generated PNG images stored by Fairybread')
         self.backup_include_creds_check = self.backup_include_settings_check
         chk_row.addWidget(self.backup_include_memory_check)
         chk_row.addWidget(self.backup_include_settings_check)
         chk_row.addWidget(self.backup_include_images_check)
-        lay.addLayout(chk_row)
+        chk_row.addStretch()
+        bk_lay.addLayout(chk_row)
 
         pw_row = QHBoxLayout()
-        pw_row.addWidget(QLabel('🔑 Backup / Restore Password (protects API keys across PCs):'))
+        pw_row.setSpacing(8)
+        pw_lbl = QLabel('🔑 Backup / Restore Password:')
+        pw_lbl.setToolTip('Required whenever API keys are included so backups stay portable and safe across PCs')
         self.backup_password_edit = QLineEdit()
         self.backup_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.backup_password_edit.setPlaceholderText('Enter password to lock/unlock API keys inside backup archive…')
+        self.backup_password_edit.setPlaceholderText('Password to lock/unlock API keys inside backup archive…')
+        self.backup_password_edit.setToolTip('Password used to encrypt/decrypt your API keys with PBKDF2-HMAC-SHA256 + AES-256-GCM')
+        pw_row.addWidget(pw_lbl)
         pw_row.addWidget(self.backup_password_edit, 1)
-        lay.addLayout(pw_row)
+        bk_lay.addLayout(pw_row)
 
         btn_row = QHBoxLayout()
-        export_btn = QPushButton('📦 Backup (.zip)…')
-        export_btn.setToolTip('Create a full password-locked backup archive (.zip)')
+        btn_row.setSpacing(8)
+        export_btn = QPushButton('📦 Full Backup (.zip)…')
+        export_btn.setToolTip('Create a backup archive using the checkboxes selected above (AES-256 password-locked if API keys included)')
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        keys_only_btn = QPushButton('🔑 Keys & Settings (.zip)…')
+        keys_only_btn.setToolTip('Export ONLY your AES-256 password-locked API keys, provider settings, and custom themes (~20 KB portable vault)')
+        keys_only_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
         restore_btn = QPushButton('♻ Restore (.zip)…')
-        restore_btn.setToolTip('Restore memory, settings, and API keys from a backup archive (.zip)')
+        restore_btn.setToolTip('Verify SHA-256 checksums and restore Memory, Settings, and/or API keys from a backup archive (.zip)')
         restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
         restore_defaults_btn = QPushButton('↺ Reset Defaults…')
         restore_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         restore_defaults_btn.setToolTip('Reset app settings to factory defaults while keeping Memory Palaces, chats, API keys, and Write Exclusions')
+
         btn_row.addWidget(export_btn)
+        btn_row.addWidget(keys_only_btn)
         btn_row.addWidget(restore_btn)
         btn_row.addWidget(restore_defaults_btn)
         btn_row.addStretch()
-        lay.addLayout(btn_row)
+        bk_lay.addLayout(btn_row)
+        lay.addWidget(bak_card)
 
         self.backup_status_label = QLabel(
-            f'Active Config: {self.config_path}  |  Active Data Root: {get_palace_appdata_root()}'
+            f'Config: {self.config_path}  |  Active Data Root: {get_palace_appdata_root()}'
         )
         self.backup_status_label.setWordWrap(True)
-        self.backup_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
+        self.backup_status_label.setStyleSheet('font-size: 11.5px; color: #8b949e;')
         lay.addWidget(self.backup_status_label)
 
-        def _do_export():
-            from datetime import datetime
+        def _prompt_password_if_missing(purpose_msg: str) -> str | None:
             pw = self.backup_password_edit.text().strip()
-            inc_settings = self.backup_include_settings_check.isChecked()
-            if inc_settings and not pw:
-                pw_in, ok = QInputDialog.getText(
-                    self,
-                    'Set Backup Password for API Keys',
-                    'Because this backup contains your API keys, enter a password to encrypt them (AES-256-GCM):',
-                    QLineEdit.EchoMode.Password,
-                )
-                if not ok or not pw_in.strip():
-                    self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
-                    self.backup_status_label.setText('⚠ Backup cancelled: a password is required when backing up API keys.')
-                    return
-                pw = pw_in.strip()
-                self.backup_password_edit.setText(pw)
+            if pw:
+                return pw
+            pw_in, ok = QInputDialog.getText(
+                self,
+                'Set Backup Password for API Keys',
+                purpose_msg,
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok or not pw_in.strip():
+                self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
+                self.backup_status_label.setText('⚠ Backup cancelled: a password is required when backing up API keys.')
+                return None
+            pw = pw_in.strip()
+            self.backup_password_edit.setText(pw)
+            return pw
 
-            default_name = f"Fairybread_Full_Backup_{datetime.now().strftime('%Y-%m-%d_%H%M')}.zip"
+        def _run_backup(*, keys_only: bool = False):
+            from datetime import datetime
+            inc_settings = True if keys_only else self.backup_include_settings_check.isChecked()
+            inc_memory = False if keys_only else self.backup_include_memory_check.isChecked()
+            inc_images = False if keys_only else self.backup_include_images_check.isChecked()
+            pw = self.backup_password_edit.text().strip()
+            if inc_settings and not pw:
+                pw = _prompt_password_if_missing(
+                    'Enter a password to encrypt your API keys & settings (AES-256-GCM):'
+                )
+                if not pw:
+                    return
+
+            prefix = 'Fairybread_Keys_Settings_Backup' if keys_only else 'Fairybread_Full_Backup'
+            default_name = f"{prefix}_{datetime.now().strftime('%Y-%m-%d_%H%M')}.zip"
             dest_str, _ = QFileDialog.getSaveFileName(
                 self,
-                'Save Fairybread Backup Archive',
+                'Save Fairybread Keys & Settings Backup' if keys_only else 'Save Fairybread Backup Archive',
                 str(Path.home() / 'Documents' / default_name),
                 'ZIP Archives (*.zip)',
             )
@@ -4564,16 +4858,17 @@ class ManageAIsDialog(QDialog):
                 manifest = create_full_backup_zip(
                     Path(dest_str),
                     config_path=self.config_path,
-                    include_memory=self.backup_include_memory_check.isChecked(),
+                    include_memory=inc_memory,
                     include_settings=inc_settings,
-                    include_generated_images=self.backup_include_images_check.isChecked(),
+                    include_generated_images=inc_images,
                     include_credentials=inc_settings,
                     backup_password=pw,
                 )
                 lock_tag = 'AES-256 Password-Locked' if manifest.get('password_protected') else 'No API keys'
+                kind_lbl = 'Keys & Settings backup' if keys_only else 'Backup'
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
                 self.backup_status_label.setText(
-                    f'✓ Backup saved ({manifest["file_count"]} files, {lock_tag}, SHA-256 verified):\n{dest_str}'
+                    f'✓ {kind_lbl} saved ({manifest["file_count"]} files, {lock_tag}, SHA-256 verified):\n{dest_str}'
                 )
             except Exception as exc:
                 self.backup_status_label.setStyleSheet('font-size: 12px; color: #f85149;')
@@ -4607,8 +4902,8 @@ class ManageAIsDialog(QDialog):
                     Path(src_str),
                     config_path=self.config_path,
                     backup_password=pw,
-                    restore_memory=self.backup_include_memory_check.isChecked(),
-                    restore_settings=self.backup_include_settings_check.isChecked(),
+                    restore_memory=bool(info.get('included_memory', True)) and self.backup_include_memory_check.isChecked(),
+                    restore_settings=bool(info.get('included_settings', True)) and self.backup_include_settings_check.isChecked(),
                 )
                 if summary.get('password_unlocked'):
                     cred_note = f"Unlocked & re-sealed {summary.get('restored_keys_count', 0)} API keys into Windows DPAPI."
@@ -4653,13 +4948,16 @@ class ManageAIsDialog(QDialog):
                 self._stop_settings_mic_test()
                 self.accept()
 
-        export_btn.clicked.connect(_do_export)
+        export_btn.clicked.connect(lambda: _run_backup(keys_only=False))
+        keys_only_btn.clicked.connect(lambda: _run_backup(keys_only=True))
         restore_btn.clicked.connect(_do_restore)
         restore_defaults_btn.clicked.connect(_do_restore_defaults)
         _refresh_storage_summary_labels()
         _refresh_stored_files_list()
 
         lay.addStretch()
+        scroll.setWidget(inner)
+        outer_lay.addWidget(scroll, 1)
         self.pages.addWidget(w)
 
     def _clear_idle_memory(self):
@@ -4681,11 +4979,17 @@ class ManageAIsDialog(QDialog):
             except Exception:
                 pass
         try:
+            use_or = (
+                bool(self.use_openrouter_check.isChecked())
+                if (hasattr(self, 'use_openrouter_check') and name not in {'openrouter', 'ollama'})
+                else False
+            )
             save_provider_config(
                 provider_name=name,
                 enabled=self.enabled_check.isChecked(),
                 model=self.model_edit.text(),
                 base_url=self.base_url_edit.text(),
+                use_openrouter=use_or,
                 config_path=self.config_path,
             )
             if hasattr(self, 'auto_save_status_label'):
@@ -4753,6 +5057,10 @@ class ManageAIsDialog(QDialog):
 
             default_en = bool(cfg.get('enabled', has_key))
             self.enabled_check.setChecked(default_en)
+            if hasattr(self, 'use_openrouter_check'):
+                show_or = clean not in {'openrouter', 'ollama'}
+                self.use_openrouter_check.setVisible(show_or)
+                self.use_openrouter_check.setChecked(bool(cfg.get('use_openrouter', False)) if show_or else False)
 
             saved_model = str(cfg.get('model') or cat.get('default_model') or '').strip()
             if clean == 'cerebras' and saved_model.lower() in {'llama3.1-8b', 'llama-3.1-8b', 'llama-3.3-70b'}:
@@ -4830,7 +5138,7 @@ class ManageAIsDialog(QDialog):
         )
         ui_updates = {
             'enter_to_send': bool(self.enter_mode_combo.currentData()),
-            'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else True,
+            'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else False,
             'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
             'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
             'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
@@ -4840,8 +5148,12 @@ class ManageAIsDialog(QDialog):
             ui_updates['normal_max_storage_mb'] = parse_storage_mb_text(self.normal_storage_edit.text())
         if hasattr(self, 'palace_data_dir_edit'):
             chosen_dir = self.palace_data_dir_edit.text().strip()
-            default_appdata = str(Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'Palace')
+            default_appdata = str(get_appdata_root())
             ui_updates['custom_data_dir'] = '' if chosen_dir == default_appdata else chosen_dir
+        if hasattr(self, 'experimental_data_dir_edit'):
+            chosen_exp = self.experimental_data_dir_edit.text().strip()
+            default_exp = str(get_appdata_root() / 'experimental_sandbox')
+            ui_updates['custom_experimental_dir'] = '' if chosen_exp == default_exp else chosen_exp
         save_ui_settings(
             ui_updates,
             config_path=self.config_path,
@@ -4955,6 +5267,9 @@ class PalaceWindow(QMainWindow):
         self.pulse_step = 0
         self.demo = demo
         ui_cfg = load_ui_settings(self.config_path)
+        self._busy_submit_mode = str(ui_cfg.get('busy_submit_mode') or 'steer').strip().lower()
+        if self._busy_submit_mode not in {'steer', 'queue'}:
+            self._busy_submit_mode = 'steer'
         self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
         self.active_theme = str(ui_cfg.get('theme', 'dark') or 'dark')
         self.setWindowTitle('Fairybread — Preview' if demo else 'Fairybread')
@@ -5351,22 +5666,18 @@ class PalaceWindow(QMainWindow):
         self.attachment_list.hide()
         card_layout.addWidget(self.attachment_list)
 
-        # Auto-hiding Live Status Strip (0px when idle; holds Live Voice / Stop / Steer / Remove controls)
+        # Auto-hiding 2-row Live Status Strip (0px when idle; holds Voice controls on row 1 & Telemetry/Attachments on row 2)
         self.composer_live_bar = QFrame()
         self.composer_live_bar.setObjectName('composerLiveBar')
         self.composer_live_bar.setStyleSheet('QFrame#composerLiveBar { background: transparent; border: none; }')
-        live_bar_lay = QHBoxLayout(self.composer_live_bar)
-        live_bar_lay.setContentsMargins(0, 0, 0, 2)
-        live_bar_lay.setSpacing(5)
+        live_bar_outer = QVBoxLayout(self.composer_live_bar)
+        live_bar_outer.setContentsMargins(0, 0, 0, 2)
+        live_bar_outer.setSpacing(3)
 
-        self.voice_level_badge = QLabel('')
-        self.voice_level_badge.setToolTip('Live microphone volume meter (speak naturally — auto-sends on pause)')
-        self.voice_level_badge.setStyleSheet(
-            'font-family: Consolas, monospace; font-size: 11px; font-weight: 700; color: #22c55e; '
-            'background: #11281b; border: 1px solid #22c55e; border-radius: 6px; padding: 3px 7px;'
-        )
-        self.voice_level_badge.hide()
-        live_bar_lay.addWidget(self.voice_level_badge)
+        self._composer_live_row1 = QWidget()
+        live_r1_lay = QHBoxLayout(self._composer_live_row1)
+        live_r1_lay.setContentsMargins(0, 0, 0, 0)
+        live_r1_lay.setSpacing(5)
 
         self.voice_brain_btn = QPushButton('🧠 Auto ▾')
         self.voice_brain_btn.setObjectName('voiceBrainButton')
@@ -5374,7 +5685,7 @@ class PalaceWindow(QMainWindow):
         self.voice_brain_btn.setToolTip('Thinking AI (🧠): who thinks & writes replies in Voice/Talk Mode (click to switch anytime)')
         self.voice_brain_btn.clicked.connect(self._show_voice_brain_menu)
         self.voice_brain_btn.hide()
-        live_bar_lay.addWidget(self.voice_brain_btn)
+        live_r1_lay.addWidget(self.voice_brain_btn)
 
         self.voice_tts_btn = QPushButton('🔊 Auto ▾')
         self.voice_tts_btn.setObjectName('voiceTtsButton')
@@ -5387,7 +5698,7 @@ class PalaceWindow(QMainWindow):
         )
         self.voice_tts_btn.clicked.connect(self._show_voice_tts_menu)
         self.voice_tts_btn.hide()
-        live_bar_lay.addWidget(self.voice_tts_btn)
+        live_r1_lay.addWidget(self.voice_tts_btn)
 
         self.voice_mute_btn = QPushButton('🔇 Mute')
         self.voice_mute_btn.setObjectName('voiceMuteButton')
@@ -5402,7 +5713,7 @@ class PalaceWindow(QMainWindow):
         )
         self.voice_mute_btn.toggled.connect(self._toggle_voice_mute)
         self.voice_mute_btn.hide()
-        live_bar_lay.addWidget(self.voice_mute_btn)
+        live_r1_lay.addWidget(self.voice_mute_btn)
 
         self.end_talk_btn = QPushButton('✕ End Talk')
         self.end_talk_btn.setObjectName('endTalkButton')
@@ -5415,16 +5726,44 @@ class PalaceWindow(QMainWindow):
         )
         self.end_talk_btn.clicked.connect(lambda: self.stop_all_voice_modes(notice='Talk Mode / Live Voice ended.'))
         self.end_talk_btn.hide()
-        live_bar_lay.addWidget(self.end_talk_btn)
+        live_r1_lay.addWidget(self.end_talk_btn)
+        live_r1_lay.addStretch()
+        self._composer_live_row1.hide()
+        live_bar_outer.addWidget(self._composer_live_row1)
+
+        self._composer_live_row2 = QWidget()
+        live_r2_lay = QHBoxLayout(self._composer_live_row2)
+        live_r2_lay.setContentsMargins(0, 0, 0, 0)
+        live_r2_lay.setSpacing(5)
+
+        self.voice_level_badge = QLabel('')
+        self.voice_level_badge.setToolTip('Live microphone volume meter (speak naturally — auto-sends on pause)')
+        self.voice_level_badge.setStyleSheet(
+            'font-family: Consolas, monospace; font-size: 11px; font-weight: 700; color: #22c55e; '
+            'background: #11281b; border: 1px solid #22c55e; border-radius: 6px; padding: 3px 7px;'
+        )
+        self.voice_level_badge.hide()
+        live_r2_lay.addWidget(self.voice_level_badge)
+
+        self.voice_cost_badge = QLabel('💵 Voice: ~$0.000')
+        self.voice_cost_badge.setObjectName('voiceCostBadge')
+        self.voice_cost_badge.setToolTip('Live Voice Mode spend this conversation (TTS + STT) — click bottom cost bar for full breakdown')
+        self.voice_cost_badge.setStyleSheet(
+            'font-family: Consolas, monospace; font-size: 11px; font-weight: 700; color: #90d7c1; '
+            'background: #102a27; border: 1px solid #14b8a6; border-radius: 6px; padding: 3px 7px;'
+        )
+        self.voice_cost_badge.hide()
+        live_r2_lay.addWidget(self.voice_cost_badge)
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
         self.remove_button.setToolTip('Remove selected attachment')
         self.remove_button.clicked.connect(self.remove_attachment)
         self.remove_button.hide()
-        live_bar_lay.addWidget(self.remove_button)
-
-        live_bar_lay.addStretch()
+        live_r2_lay.addWidget(self.remove_button)
+        live_r2_lay.addStretch()
+        self._composer_live_row2.hide()
+        live_bar_outer.addWidget(self._composer_live_row2)
 
         self.composer_live_bar.hide()
         card_layout.addWidget(self.composer_live_bar)
@@ -5476,9 +5815,9 @@ class PalaceWindow(QMainWindow):
             'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
             'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
         )
-        self.steer_button = QPushButton('Steer / Queue ▾')
+        self.steer_button = QPushButton('🧭 Steer ▾')
         self.steer_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steer_button.setToolTip('Steer active turn or queue next')
+        self.steer_button.setToolTip('Choose default busy action (Steer active turn or Queue for next turn)')
         self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
         self.steer_button.clicked.connect(self._show_busy_action_menu)
         self.steer_button.hide()
@@ -6061,11 +6400,15 @@ class PalaceWindow(QMainWindow):
         self.bottom_token_label = ResponsiveBarLabel('Tokens: 0.0k · Conv: ~$0.000', on_change=self._relayout_agent_bar)
         self.bottom_token_label.setWordWrap(False)
         self.bottom_token_label.setMaximumHeight(22)
+        self.bottom_token_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.bottom_token_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.bottom_token_label.setStyleSheet(
             'font-family: Consolas, monospace; font-size: 11.5px; color: #8b949e; padding: 1px 6px;'
         )
-        self.bottom_token_label.setToolTip('Live Conversation Cost Estimate (API Usage)')
+        self.bottom_token_label.setToolTip(
+            'Live Conversation Cost Estimate (API Usage) — Click to open Spend & Billing Dashboard (per-provider tickers & reset)'
+        )
+        self.bottom_token_label.clicked.connect(self.open_spend_billing_dialog)
 
         self.right_status_grid.addWidget(self.status_label, 0, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.right_status_grid.addWidget(self.bottom_token_label, 0, 1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -6171,7 +6514,8 @@ class PalaceWindow(QMainWindow):
         self.update_privacy_label()
         self.refresh_projects()
         self.refresh_sessions()
-        from cost_service import ConversationCostLedger, register_cost_listener
+        from cost_service import ConversationCostLedger, get_global_billing_ledger, register_cost_listener
+        self._global_billing_ledger = get_global_billing_ledger()
         self._cost_ledger = ConversationCostLedger()
         self._cost_event_signal.connect(self._on_cost_event)
         self._cost_listener_cb = lambda ev: self._cost_event_signal.emit(ev)
@@ -6182,9 +6526,16 @@ class PalaceWindow(QMainWindow):
         self._force_quit = False
         self._tray_hint_shown = False
         self._catalog_sync_done.connect(self._apply_catalog_sync_result)
+        self._refresh_busy_mode_controls()
         if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
             self._ensure_system_tray()
             QTimer.singleShot(1500, lambda: self.check_for_updates_and_catalog(manual=False))
+            try:
+                has_any_keys = len(CredentialStore().list_providers()) > 0
+            except Exception:
+                has_any_keys = False
+            if not demo and not bool(ui_cfg.get('setup_wizard_completed', False)) and not has_any_keys:
+                QTimer.singleShot(600, self.open_setup_wizard)
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
 
     def _ensure_system_tray(self):
@@ -6194,7 +6545,9 @@ class PalaceWindow(QMainWindow):
             self._tray_icon = QSystemTrayIcon(fairybread_app_qicon(), self)
             self._tray_icon.setToolTip('Fairybread — Right-click to Expand or Exit')
             tray_menu = QMenu(self)
+            tray_menu.setToolTipsVisible(True)
             expand_act = QAction('🔼 Expand / Open Fairybread', tray_menu)
+            expand_act.setToolTip('Bring the Fairybread desktop window back to the foreground')
             expand_act.triggered.connect(self.restore_from_tray)
             tray_menu.addAction(expand_act)
             tray_menu.addSeparator()
@@ -6344,99 +6697,155 @@ class PalaceWindow(QMainWindow):
 
     def _build_menu_bar(self):
         menubar = self.menuBar()
+        store_packaged = is_msix_packaged()
+
         palace_menu = menubar.addMenu('Fairybread')
+        palace_menu.setToolTipsVisible(True)
         new_convo_act = QAction('New Conversation\tCtrl+N', self)
+        new_convo_act.setToolTip('Start a clean conversation thread (Ctrl+N)')
         new_convo_act.triggered.connect(self.new_conversation)
         palace_menu.addAction(new_convo_act)
         new_proj_act = QAction('New Project…', self)
+        new_proj_act.setToolTip('Create a project folder in the sidebar to group related chats and files')
         new_proj_act.triggered.connect(lambda: self.new_project())
         palace_menu.addAction(new_proj_act)
         attach_act = QAction('Attach Documents or Pictures…\tCtrl+O', self)
+        attach_act.setToolTip('Attach documents, PDFs, code files, or images to your next prompt (Ctrl+O)')
         attach_act.triggered.connect(self.choose_files)
         palace_menu.addAction(attach_act)
         palace_menu.addSeparator()
+        wizard_act = QAction('🧭 Guided Setup && Restore Wizard…', self)
+        wizard_act.setToolTip('Run the step-by-step Setup Wizard, OpenRouter 1-bill hub setup, or Selective Backup Restore')
+        wizard_act.triggered.connect(lambda: self.open_setup_wizard(initial_page=0))
+        palace_menu.addAction(wizard_act)
+        spend_act = QAction('💵 Spend && Billing Dashboard…', self)
+        spend_act.setToolTip('View cumulative spend, resettable per-provider payment tickers, live voice spend, and live account balances')
+        spend_act.triggered.connect(self.open_spend_billing_dialog)
+        palace_menu.addAction(spend_act)
+        palace_menu.addSeparator()
         exit_act = QAction('Exit Fairybread', self)
+        exit_act.setToolTip('Close and exit Fairybread completely')
         exit_act.triggered.connect(self.exit_application)
         palace_menu.addAction(exit_act)
 
         self.mode_menu = menubar.addMenu('Mode')
+        self.mode_menu.setToolTipsVisible(True)
         self.mode_menu.aboutToShow.connect(self._rebuild_mode_menu)
         self._rebuild_mode_menu()
 
         view_menu = menubar.addMenu('View')
+        view_menu.setToolTipsVisible(True)
         self.theme_menu = view_menu.addMenu('🎨 Theme')
+        self.theme_menu.setToolTipsVisible(True)
         self._rebuild_theme_menu()
         view_menu.addSeparator()
         mem_sum_act = QAction('📝 Memory Summary (View && Edit)…', self)
+        mem_sum_act.setToolTip('Inspect or edit your shared local Memory Summary profile')
         mem_sum_act.triggered.connect(self.show_memory_summary_dialog)
         view_menu.addAction(mem_sum_act)
         mem_act = QAction('Toggle Shared Memory Panel', self)
+        mem_act.setToolTip('Show or hide the right-hand Memory Palace side panel')
         mem_act.triggered.connect(lambda: self.memory_button.click())
         view_menu.addAction(mem_act)
         peer_act = QAction('Expand / Collapse All Peer Deliberations', self)
+        peer_act.setToolTip('Expand or collapse peer deliberation bubbles inside the active conversation')
         peer_act.triggered.connect(self.toggle_all_deliberations)
         view_menu.addAction(peer_act)
         snap_act = QAction('Capture Fairybread UI Snapshot', self)
+        snap_act.setToolTip('Take a local PNG snapshot of the Fairybread window and run UI clipping diagnostics')
         snap_act.triggered.connect(self.capture_and_insert_ui_snapshot)
         view_menu.addAction(snap_act)
 
         settings_menu = menubar.addMenu('Settings')
-        settings_act = QAction('Fairybread Settings…', self)
-        settings_act.triggered.connect(lambda: self.open_manage_ais('AI Providers'))
-        settings_menu.addAction(settings_act)
-        access_perm_act = QAction('🛡 AI Access Permissions (Modes && Write Exclusions)…', self)
-        access_perm_act.triggered.connect(lambda: self.open_manage_ais('AI Access Permissions'))
-        settings_menu.addAction(access_perm_act)
-        agent_defaults_act = QAction('⚙ Agent Defaults (Response && Speed)…', self)
-        agent_defaults_act.triggered.connect(lambda: self.open_manage_ais('Agent Defaults'))
-        settings_menu.addAction(agent_defaults_act)
-        profiles_settings_act = QAction('🎛 Profiles && AI Squads…', self)
-        profiles_settings_act.triggered.connect(lambda: self.open_manage_ais('Profiles'))
-        settings_menu.addAction(profiles_settings_act)
-        voice_settings_act = QAction('🎙️ Voice && Audio (Human Voice, Microphone && Speaker)…', self)
-        voice_settings_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
-        settings_menu.addAction(voice_settings_act)
-        email_settings_act = QAction('📧 Email && Notifications…', self)
-        email_settings_act.triggered.connect(lambda: self.open_manage_ais('Email & Notifications'))
-        settings_menu.addAction(email_settings_act)
-        bridge_settings_act = QAction('🔗 External Agent Bridge (ChatGPT / Antigravity / Grok / Claude)…', self)
-        bridge_settings_act.triggered.connect(lambda: self.open_manage_ais('External Agent Bridge (MCP)'))
-        settings_menu.addAction(bridge_settings_act)
-        idle_settings_act = QAction('🧪 Experimental Mode Settings…', self)
-        idle_settings_act.triggered.connect(lambda: self.open_manage_ais('Experimental Mode'))
-        settings_menu.addAction(idle_settings_act)
+        settings_menu.setToolTipsVisible(True)
+        settings_nav_specs = [
+            ('⚙ General Settings…', 'General', 'Startup, tray behavior, automatic spellcheck, and Enter-key submission'),
+            ('🤖 AI Providers && API Keys…', 'AI Providers', 'Configure API keys, models, and enabled status for all AI providers'),
+            ('🛡 AI Access Permissions…', 'AI Access Permissions', 'Set execution mode and manage your Write Exclusion List'),
+            ('⚡ Agent Defaults (Response && Speed)…', 'Agent Defaults', 'Set default search depth, output detail, timeouts, and smart routing'),
+            ('🎨 Appearance && Theme…', 'Appearance', 'Switch application themes, chip display styles, and open themes folder'),
+            ('🎛 Profiles && AI Squads…', 'Profiles', 'Manage preset multi-AI squads and custom role assignments'),
+            ('🧠 Memory && Personalization…', 'Memory & Personalization', 'Configure tone weights, speech style, custom instructions, and reference photos'),
+            ('🎙️ Voice && Audio…', 'Voice & Audio', 'Configure TTS voices, Thinking AI, microphone input, and Live Voice Mode'),
+            ('📧 Email && Notifications…', 'Email & Notifications', 'Configure desktop alerts and IMAP/SMTP Agent Mail'),
+            ('🔗 External Agent Bridge (MCP)…', 'External Agent Bridge (MCP)', 'Connect ChatGPT/Codex, Antigravity, Grok, or Claude over local stdio MCP'),
+            ('🧪 Experimental Mode…', 'Experimental Mode', 'Configure autonomous Idle/Experimental Mode timers, cost caps, and charters'),
+            ('📦 Storage, Databases && Backup…', 'Backup & Restore', 'Move Normal/Experimental databases, open key/config folders, and create AES-256 backups'),
+        ]
+        for label_txt, page_key, tip_txt in settings_nav_specs:
+            s_act = QAction(label_txt, self)
+            s_act.setToolTip(tip_txt)
+            s_act.triggered.connect(lambda _c=False, pk=page_key: self.open_manage_ais(pk))
+            settings_menu.addAction(s_act)
+        settings_menu.addSeparator()
+        wiz_settings_act = QAction('🧭 Guided Setup && Restore Wizard…', self)
+        wiz_settings_act.setToolTip('Walk through needs-based setup, OpenRouter 1-bill hub, voice setup, or selective backup restore')
+        wiz_settings_act.triggered.connect(lambda: self.open_setup_wizard(initial_page=0))
+        settings_menu.addAction(wiz_settings_act)
+        spend_settings_act = QAction('💵 Spend && Billing Tickers…', self)
+        spend_settings_act.setToolTip('View cumulative, per-provider resettable, and active session spend tickers')
+        spend_settings_act.triggered.connect(self.open_spend_billing_dialog)
+        settings_menu.addAction(spend_settings_act)
         settings_menu.addSeparator()
         restore_defaults_act = QAction('↺ Restore Default Settings…', self)
+        restore_defaults_act.setToolTip('Reset app settings to factory defaults while keeping Memory Palaces, chats, and API keys')
         restore_defaults_act.triggered.connect(self.show_restore_defaults_dialog)
         settings_menu.addAction(restore_defaults_act)
 
         help_menu = menubar.addMenu('Help')
+        help_menu.setToolTipsVisible(True)
         guide_act = QAction('📖 User Guide && Drawing Instructions…\tF1', self)
+        guide_act.setToolTip('Open the built-in Fairybread User Guide & Drawing Instructions (F1)')
         guide_act.setShortcut(QKeySequence('F1'))
         guide_act.triggered.connect(self.show_user_guide_dialog)
         help_menu.addAction(guide_act)
+        privacy_act = QAction('🔒 Privacy Policy…', self)
+        privacy_act.setToolTip('Read the Fairybread local-first Privacy Policy and BYOK third-party provider disclosures')
+        privacy_act.triggered.connect(self.show_privacy_policy_dialog)
+        help_menu.addAction(privacy_act)
         web_act = QAction('🌐 Fairybread.me (Community Forums, Skins && News) ↗', self)
+        web_act.setToolTip('Visit fairybread.me in your web browser')
         web_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
         help_menu.addAction(web_act)
-        check_updates_act = QAction('🔄 Check for Updates && Refresh Model Rates…', self)
+        upd_label = '🔄 Refresh Model Catalog && Rates…' if store_packaged else '🔄 Check for Updates && Refresh Model Rates…'
+        upd_tip = (
+            'Fetch updated AI model lists & pricing rates from fairybread.me (app updates come from Microsoft Store)'
+            if store_packaged
+            else 'Fetch updated AI model lists & pricing rates and check for newer Fairybread releases'
+        )
+        check_updates_act = QAction(upd_label, self)
+        check_updates_act.setToolTip(upd_tip)
         check_updates_act.triggered.connect(lambda: self.check_for_updates_and_catalog(manual=True))
         help_menu.addAction(check_updates_act)
         donate_act = QAction('❤️ Donate (USD) / Corporate License…', self)
+        donate_act.setToolTip('Support Fairybread development or arrange a corporate team license (>2 seats)')
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
         help_menu.addSeparator()
         about_act = QAction('About Fairybread', self)
+        about_act.setToolTip('View Fairybread version, edition, integrity verification, and license information')
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
+        self._top_menus = {
+            'fairybread': palace_menu,
+            'mode': self.mode_menu,
+            'view': view_menu,
+            'theme': self.theme_menu,
+            'settings': settings_menu,
+            'help': help_menu,
+        }
 
     def _rebuild_mode_menu(self):
         if not hasattr(self, 'mode_menu'):
             return
+        self.mode_menu.setToolTipsVisible(True)
         self.mode_menu.clear()
         normal_mode_act = QAction('💬 Normal AI Mode', self.mode_menu)
+        normal_mode_act.setToolTip('Switch to Normal multi-AI chat, Memory Palace, and image creation mode')
         normal_mode_act.triggered.connect(self._activate_normal_mode_from_menu)
         self.mode_menu.addAction(normal_mode_act)
         idle_act = QAction('🧪 Experimental Mode', self.mode_menu)
+        idle_act.setToolTip('Switch to isolated Experimental / Idle multi-AI workshop mode')
         idle_act.triggered.connect(self._activate_experimental_mode_from_menu)
         self.mode_menu.addAction(idle_act)
         self.mode_menu.addSeparator()
@@ -6591,7 +7000,7 @@ class PalaceWindow(QMainWindow):
         dlg.exec()
 
     def show_user_guide_dialog(self):
-        guide_path = Path(__file__).with_name('USER_GUIDE.md')
+        guide_path = get_resource_path('USER_GUIDE.md')
         md_text = (
             guide_path.read_text(encoding='utf-8', errors='replace')
             if guide_path.exists()
@@ -6622,11 +7031,74 @@ class PalaceWindow(QMainWindow):
         v.addLayout(btn_row)
         dlg.exec()
 
+    def show_privacy_policy_dialog(self):
+        priv_path = get_resource_path('PRIVACY.md')
+        md_text = (
+            priv_path.read_text(encoding='utf-8', errors='replace')
+            if priv_path.exists()
+            else '# Fairybread Privacy Policy\n\nPrivacy policy file (`PRIVACY.md`) not found.'
+        )
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Fairybread — Privacy Policy')
+        dlg.resize(780, 620)
+        dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
+        v = QVBoxLayout(dlg)
+        browser = QTextBrowser(dlg)
+        browser.setOpenExternalLinks(True)
+        browser.setStyleSheet(
+            'background:#131720; color:#e6edf3; border:1px solid #262c3a; '
+            'border-radius:8px; padding:14px; font-size:13px;'
+        )
+        browser.setMarkdown(md_text)
+        v.addWidget(browser, 1)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        close_btn = QPushButton('Close', dlg)
+        close_btn.setStyleSheet(
+            'background:#21262d; color:#f0f6fc; border:1px solid #30363d; '
+            'border-radius:6px; padding:6px 18px; font-weight:600;'
+        )
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        v.addLayout(btn_row)
+        dlg.exec()
+
+    def show_integrity_check_dialog(self):
+        from integrity_service import verify_installation_integrity
+
+        res = verify_installation_integrity()
+        QMessageBox.information(self, 'Fairybread Installation Integrity', res['message'])
+
     def show_mission_ethics_dialog(self):
         self.open_manage_ais(initial_page='Idle Mode')
 
+    def open_setup_wizard(self, initial_page: int = 0):
+        from setup_wizard import GuidedSetupWizardDialog
+        dlg = GuidedSetupWizardDialog(
+            self,
+            config_path=self.config_path,
+            credential_store=CredentialStore(),
+            initial_page=initial_page,
+        )
+        dlg.exec()
+        if getattr(dlg, 'open_manual_requested', False):
+            self.open_manage_ais(initial_page='AI Providers')
+
+    def open_spend_billing_dialog(self):
+        from cost_service import get_global_billing_ledger
+        from setup_wizard import SpendBillingDialog
+        if getattr(self, '_global_billing_ledger', None) is None:
+            self._global_billing_ledger = get_global_billing_ledger()
+        dlg = SpendBillingDialog(
+            self,
+            conv_ledger=getattr(self, '_cost_ledger', None),
+            global_ledger=self._global_billing_ledger,
+            credential_store=CredentialStore(),
+        )
+        dlg.exec()
+
     def show_about_dialog(self):
-        from palace_config import FAIRYBREAD_VERSION, IS_DEVELOPER_EDITION
+        from palace_config import COMMUNITY_CONTRIBUTORS, FAIRYBREAD_VERSION, IS_DEVELOPER_EDITION
         ed_label = 'Developer Edition' if IS_DEVELOPER_EDITION else 'Public Edition'
         pub_note = (
             ''
@@ -6638,12 +7110,25 @@ class PalaceWindow(QMainWindow):
                 'or email <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a>.</p>'
             )
         )
+        if COMMUNITY_CONTRIBUTORS:
+            contrib_html = (
+                '<p><b>Community Contributors (Features &amp; Ideas):</b> '
+                + ', '.join(html.escape(c) for c in COMMUNITY_CONTRIBUTORS)
+                + '</p>'
+            )
+        else:
+            contrib_html = (
+                '<p style="color:#8b949e; font-size:11.5px;"><b>Community Contributors:</b> '
+                'Suggest an idea or improvement on <a href="https://fairybread.me">Fairybread.me</a> or Facebook — '
+                'adopted ideas earn credit right here.</p>'
+            )
         box = QMessageBox(self)
         box.setWindowTitle(f'About Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION})')
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setText(
             f'<h3>Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
             '<p>Created by <b>Brett Martin Moore</b>.</p>'
+            f'{contrib_html}'
             f'{pub_note}'
             '<p><b>License:</b> Proprietary Source-Available Donationware (NOT Open Source) — Copyright &copy; 2026 Brett Martin Moore. All Rights Reserved. '
             'Free for personal use &amp; small teams (up to 2 seats); no redistribution, competing forks, or rebranding without written permission. '
@@ -6651,13 +7136,20 @@ class PalaceWindow(QMainWindow):
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
             '<p>Contact &amp; Corporate Licensing: <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></p>'
         )
+        verify_btn = box.addButton('🛡 Verify Integrity', QMessageBox.ButtonRole.ActionRole)
+        privacy_btn = box.addButton('🔒 Privacy Policy', QMessageBox.ButtonRole.ActionRole)
         contact_btn = box.addButton('Contact / Corporate License', QMessageBox.ButtonRole.ActionRole)
         donate_btn = box.addButton('❤️ Donate (USD)', QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Ok)
         box.exec()
-        if box.clickedButton() == contact_btn:
+        clicked = box.clickedButton()
+        if clicked == verify_btn:
+            self.show_integrity_check_dialog()
+        elif clicked == privacy_btn:
+            self.show_privacy_policy_dialog()
+        elif clicked == contact_btn:
             webbrowser.open('mailto:bm069au@gmail.com?subject=Fairybread%20Support%20or%20Corporate%20License')
-        elif box.clickedButton() == donate_btn:
+        elif clicked == donate_btn:
             self.show_donation_license_dialog()
 
     @staticmethod
@@ -6884,6 +7376,7 @@ class PalaceWindow(QMainWindow):
         if not raw_role or raw_role == 'archived_toggle':
             return
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         if raw_role.startswith('proj:'):
             proj_id = raw_role.split(':', 1)[1] or None
             new_in_proj = menu.addAction('+ New Conversation Here')
@@ -6924,6 +7417,7 @@ class PalaceWindow(QMainWindow):
         unread_act = menu.addAction('✓ Mark Read' if is_unread else '● Mark Unread')
         menu.addSeparator()
         copy_menu = menu.addMenu('📋 Copy')
+        copy_menu.setToolTipsVisible(True)
         copy_title_act = copy_menu.addAction('Copy Title')
         copy_full_act = copy_menu.addAction('Copy Full Transcript')
         dup_act = menu.addAction('⧉ Duplicate Discussion')
@@ -6931,6 +7425,7 @@ class PalaceWindow(QMainWindow):
         projects = getattr(self.store, 'projects', [])
         if projects and hasattr(self.store, 'assign_session_project'):
             move_menu = menu.addMenu('📁 Move to Project…')
+            move_menu.setToolTipsVisible(True)
             for proj in projects:
                 act = move_menu.addAction(f'📁 {proj["name"]}')
                 move_actions[act] = proj['id']
@@ -7032,6 +7527,7 @@ class PalaceWindow(QMainWindow):
             max_cap = int(sq_val.get('max_ais') or 0)
             avail_members = [m for m in members if m in all_names] or members
             sub = menu.addMenu(f'{squad_title_menu}')
+            sub.setToolTipsVisible(True)
             if menu_style:
                 sub.setStyleSheet(menu_style)
             joined_disp = ', '.join(_esc_amp(provider_display_name(m)) for m in avail_members)
@@ -7106,6 +7602,7 @@ class PalaceWindow(QMainWindow):
             'QMenu::item:selected { background: #232938; }'
         )
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         menu.setStyleSheet(menu_style)
         self._populate_profiles_and_ais_menu(menu, menu_style=menu_style)
 
@@ -7125,8 +7622,11 @@ class PalaceWindow(QMainWindow):
             self.voice_brain_btn.show()
         if hasattr(self, 'voice_tts_btn'):
             self.voice_tts_btn.show()
+        if hasattr(self, 'voice_cost_badge'):
+            self.voice_cost_badge.show()
         if hasattr(self, 'end_talk_btn'):
             self.end_talk_btn.show()
+        self._refresh_bottom_cost_label()
         self._sync_composer_live_bar_visibility()
         self._sync_voice_footer_state()
         self.status_label.setTextFormat(Qt.TextFormat.RichText)
@@ -7149,6 +7649,8 @@ class PalaceWindow(QMainWindow):
             self.current_squad_label = ''
         if hasattr(self, 'end_talk_btn'):
             self.end_talk_btn.hide()
+        if hasattr(self, 'voice_cost_badge'):
+            self.voice_cost_badge.hide()
         if not (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
             if hasattr(self, 'voice_brain_btn'):
                 self.voice_brain_btn.hide()
@@ -7335,24 +7837,29 @@ class PalaceWindow(QMainWindow):
         label = self.provider_labels.get(name)
         if not label:
             return
-        self.provider_details[name] = {'status': status, 'detail': detail}
+        self.provider_details[name] = {'status': status, 'detail': detail, 'color': colour}
         if status == 'Off':
             label.setVisible(False)
+            if not getattr(self, '_in_agent_bar_relayout', False):
+                self._relayout_agent_bar()
             return
         label.setVisible(True)
         icon = provider_icon(name)
         display_name = provider_display_name(name)
         fg = provider_color(name)
-        mode = getattr(self, 'badge_display_mode', 'icons_only')
 
         if status in {'Enabled', 'Responded', 'Working'}:
             state_key = 'working' if status == 'Working' else 'active'
             label.setIcon(provider_token_qicon(name, state_key, self.pulse_step))
             label.setIconSize(QSize(13, 13))
-            label.setFixedSize(QSize(16777215, 22))
-            label.setMinimumWidth(0)
             suffix = ' …' if status == 'Working' else ''
-            label.setText(f' {display_name}{suffix}')
+            chip_text = f' {display_name}{suffix}'
+            label.setText(chip_text)
+            est_w = max(int(len(chip_text.strip()) * 6.5 + 16), 24)
+            label.setFixedHeight(22)
+            label.setMinimumWidth(est_w)
+            label.setMaximumWidth(16777215)
+            label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             label.setStyleSheet(
                 f'QPushButton {{ background: transparent; color: {fg}; border: none; '
                 f'padding: 2px 6px; border-radius: 4px; font-size: 11.5px; font-weight: 600; }} '
@@ -7360,20 +7867,34 @@ class PalaceWindow(QMainWindow):
             )
             label.setToolTip(f'{icon} {display_name} — Active ({status})\nClick to toggle ON/OFF for this discussion')
         else:
-            # Inactive / Limited / Failed -> Pure Neutral Grey (#6e7681), subtle & compact with symbol + name on main bar
             suffix = '' if status == 'Inactive' else f' · {status}'
+            if status in {'Cutoff', 'Timeout', 'Limited', 'Unavailable'}:
+                chip_col = str(colour or '#e2b96b')
+                chip_weight = '600'
+            elif status == 'Failed':
+                chip_col = str(colour or '#ff9595')
+                chip_weight = '600'
+            else:
+                chip_col = '#6e7681'
+                chip_weight = '500'
             label.setIcon(provider_token_qicon(name, 'inactive', 0))
             label.setIconSize(QSize(13, 13))
-            label.setFixedSize(QSize(16777215, 22))
-            label.setMinimumWidth(0)
-            label.setText(f' {display_name}{suffix}')
+            chip_text = f' {display_name}{suffix}'
+            label.setText(chip_text)
+            est_w = max(int(len(chip_text.strip()) * 6.5 + 16), 24)
+            label.setFixedHeight(22)
+            label.setMinimumWidth(est_w)
+            label.setMaximumWidth(16777215)
+            label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             label.setStyleSheet(
-                'QPushButton { background: transparent; color: #6e7681; border: none; '
-                'padding: 2px 6px; border-radius: 4px; font-size: 11.5px; font-weight: 500; } '
-                'QPushButton:hover { background: #1c2128; }'
+                f'QPushButton {{ background: transparent; color: {chip_col}; border: none; '
+                f'padding: 2px 6px; border-radius: 4px; font-size: 11.5px; font-weight: {chip_weight}; }} '
+                f'QPushButton:hover {{ background: #1c2128; }}'
             )
             tip_detail = f'\nDetail: {detail}' if detail else ''
-            label.setToolTip(f'{icon} {display_name} — {status} (Inactive / Paused){tip_detail}\nClick to toggle active')
+            label.setToolTip(f'{icon} {display_name} — {status}{tip_detail}\nClick to toggle active')
+        if not getattr(self, '_in_agent_bar_relayout', False):
+            self._relayout_agent_bar()
 
     def _apply_experimental_topbar_indicator(self, active: bool):
         """Keep the window title bar and menu bar in normal dark theme; highlight only the Experimental notice badge."""
@@ -7517,8 +8038,20 @@ class PalaceWindow(QMainWindow):
         ledger = getattr(self, '_cost_ledger', None)
         if ledger is None:
             return
+        from cost_service import format_usd_compact
         self.bottom_token_label.setText(ledger.format_bottom_bar())
-        self.bottom_token_label.setToolTip(ledger.format_tooltip())
+        self.bottom_token_label.setToolTip(
+            ledger.format_tooltip()
+            + '\n\nClick to open Spend & Billing Dashboard (cumulative, resettable per-provider & live balances).'
+        )
+        if hasattr(self, 'voice_cost_badge'):
+            v_usd = float(getattr(ledger, 'voice_tts_cost_usd', 0.0) or 0.0) + float(getattr(ledger, 'voice_stt_cost_usd', 0.0) or 0.0)
+            self.voice_cost_badge.setText(f'💵 Voice: {format_usd_compact(v_usd)}')
+            self.voice_cost_badge.setToolTip(
+                f'Live Voice Mode spend this conversation: {format_usd_compact(v_usd)} USD\n'
+                f'(TTS: {getattr(ledger, "voice_tts_seconds", 0.0):.0f}s · {format_usd_compact(getattr(ledger, "voice_tts_cost_usd", 0.0))} | '
+                f'STT: {getattr(ledger, "voice_stt_seconds", 0.0):.0f}s · {format_usd_compact(getattr(ledger, "voice_stt_cost_usd", 0.0))})'
+            )
 
     @Slot(object)
     def _on_cost_event(self, event):
@@ -8431,20 +8964,37 @@ class PalaceWindow(QMainWindow):
         btn_row = QHBoxLayout()
         dl_btn = QPushButton('⬇ Download && Verify Installer')
         dl_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dl_btn.setToolTip('Download verified installer archive to your Downloads folder')
         dl_btn.setStyleSheet(
             'QPushButton { background:#238636; color:#ffffff; border:none; '
             'padding:7px 12px; border-radius:6px; font-weight:700; }'
         )
+        install_now_btn = QPushButton('🚀 Install Update && Hot-Reboot Now')
+        install_now_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        install_now_btn.setToolTip('Update Fairybread binaries cleanly without touching API keys or memory, and relaunch automatically')
+        install_now_btn.setStyleSheet(
+            'QPushButton { background:#1f6feb; color:#ffffff; border:none; '
+            'padding:7px 12px; border-radius:6px; font-weight:700; }'
+        )
+        install_now_btn.hide()
+        open_installer_btn = QPushButton('⚙ Open Full Installer')
+        open_installer_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        open_installer_btn.setToolTip('Launch the interactive Setup wizard (Update only / Reinstall clean copy / Source code / Uninstall)')
+        open_installer_btn.hide()
         rel_btn = QPushButton('🌐 Open Release Page')
         rel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         skip_btn = QPushButton('Skip This Version')
         close_btn = QPushButton('Close')
         btn_row.addWidget(dl_btn)
+        btn_row.addWidget(install_now_btn)
+        btn_row.addWidget(open_installer_btn)
         btn_row.addWidget(rel_btn)
         btn_row.addWidget(skip_btn)
         btn_row.addStretch()
         btn_row.addWidget(close_btn)
         lay.addLayout(btn_row)
+
+        downloaded_exe: list[Path | None] = [None]
 
         def _do_download():
             if not dl_url:
@@ -8463,11 +9013,40 @@ class PalaceWindow(QMainWindow):
             dl_btn.setEnabled(True)
             dl_status.setStyleSheet(f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};')
             dl_status.setText(f'{"✓" if ok else "⚠"} {msg}')
-            if ok and saved_path is not None and hasattr(os, 'startfile'):
-                try:
-                    os.startfile(str(saved_path.parent))
-                except OSError:
-                    pass
+            if ok and saved_path is not None:
+                if saved_path.suffix.lower() == '.exe' and saved_path.is_file():
+                    downloaded_exe[0] = saved_path
+                    install_now_btn.show()
+                    open_installer_btn.show()
+                elif hasattr(os, 'startfile'):
+                    try:
+                        os.startfile(str(saved_path.parent))
+                    except OSError:
+                        pass
+
+        def _do_install_hot_reboot():
+            exe_p = downloaded_exe[0]
+            if exe_p is None or not exe_p.is_file():
+                return
+            try:
+                subprocess.Popen([str(exe_p), '/SILENT', '/UPDATEONLY', '/NORESTART'])
+            except Exception as exc:
+                dl_status.setStyleSheet('font-size: 12px; color: #f85149;')
+                dl_status.setText(f'⚠ Could not launch updater: {exc}')
+                return
+            self._force_quit = True
+            dlg.accept()
+            QTimer.singleShot(50, self.exit_application)
+
+        def _do_open_full_installer():
+            exe_p = downloaded_exe[0]
+            if exe_p is None or not exe_p.is_file():
+                return
+            try:
+                subprocess.Popen([str(exe_p)])
+            except Exception as exc:
+                dl_status.setStyleSheet('font-size: 12px; color: #f85149;')
+                dl_status.setText(f'⚠ Could not launch installer: {exc}')
 
         def _do_skip():
             save_ui_settings({'dismissed_update_version': latest_ver}, config_path=self.config_path)
@@ -8475,6 +9054,8 @@ class PalaceWindow(QMainWindow):
             dlg.accept()
 
         dl_btn.clicked.connect(_do_download)
+        install_now_btn.clicked.connect(_do_install_hot_reboot)
+        open_installer_btn.clicked.connect(_do_open_full_installer)
         rel_btn.clicked.connect(lambda: webbrowser.open(rel_url))
         skip_btn.clicked.connect(_do_skip)
         close_btn.clicked.connect(dlg.reject)
@@ -8693,10 +9274,28 @@ class PalaceWindow(QMainWindow):
                  - Left AI chips wrap into 2 balanced rows (ceil(N/2) columns)
                  - Right status_label (row 0) and bottom_token_label (row 1) stack into 2 rows.
         """
+        if getattr(self, '_in_agent_bar_relayout', False):
+            return
         if not hasattr(self, 'agent_chips_grid') or not hasattr(self, 'agent_workbench_frame'):
             return
-        while self.agent_chips_grid.count():
-            self.agent_chips_grid.takeAt(0)
+        self._in_agent_bar_relayout = True
+        try:
+            self._relayout_agent_bar_inner()
+        finally:
+            self._in_agent_bar_relayout = False
+
+    def _relayout_agent_bar_inner(self):
+        def _clear_layout_items(lay):
+            while lay.count():
+                it = lay.takeAt(0)
+                if it is None:
+                    continue
+                sub = it.layout()
+                if sub is not None:
+                    _clear_layout_items(sub)
+                    sub.deleteLater()
+
+        _clear_layout_items(self.agent_chips_grid)
 
         visible = [
             (name, btn)
@@ -8721,7 +9320,7 @@ class PalaceWindow(QMainWindow):
 
         # Left AI chips width (including 'Agents:' caption ~56px)
         left_normal_px = 58 + sum(28 + len(btn.text().strip()) * 7.2 for _, btn in visible) + max(0, len(visible) - 1) * 6
-        left_compact_px = 52 + sum(20 + len(btn.text().strip()) * 5.6 for _, btn in visible) + max(0, len(visible) - 1) * 4
+        left_compact_px = 52 + sum(max(24, int(len(btn.text().strip()) * 6.5 + 16)) for _, btn in visible) + max(0, len(visible) - 1) * 4
 
         # Right status + token labels width on 1 row
         right_normal_1row_px = (len(status_plain) * 7.0 + 14) + (len(token_plain) * 7.2 + 16) + 16
@@ -8750,32 +9349,81 @@ class PalaceWindow(QMainWindow):
         btn_h = 19 if compact else 22
         icon_sz = 11 if compact else 13
 
+        chip_widths = []
+        for _, btn in visible:
+            txt_s = btn.text().strip()
+            chip_widths.append(max(int(len(txt_s) * 6.5 + 16), 24) if txt_s else 24)
+
         # Determine if left chips themselves need 2 rows in state 3
-        right_2row_needed_px = min(max(180, int(bar_w * 0.42)), max(len(status_plain) * 5.8, len(token_plain) * 6.0) + 20)
-        left_avail_in_state3 = max(160, bar_w - right_2row_needed_px - 20)
-        if state == 3 and len(visible) > 1 and (left_compact_px > left_avail_in_state3 or len(visible) > 6):
+        right_2row_needed_px = min(max(145, int(bar_w * 0.34)), max(len(status_plain) * 5.8, len(token_plain) * 6.0) + 16)
+        left_avail_in_state3 = max(160, bar_w - 58 - right_2row_needed_px - 16)
+        if state == 3 and len(visible) > 1 and (sum(chip_widths) + max(0, len(visible) - 1) * 4 > left_avail_in_state3 or len(visible) > 6):
             chip_rows = 2
-            chip_cols = (len(visible) + 1) // 2
         else:
             chip_rows = 1
-            chip_cols = max(1, len(visible))
 
+        styled_chips = []
         for idx, (name, btn) in enumerate(visible):
-            status = self.provider_details.get(name, {}).get('status', 'Enabled')
+            info = self.provider_details.get(name, {})
+            status = info.get('status', 'Enabled')
             active = status in {'Enabled', 'Responded', 'Working'}
-            fg = provider_color(name) if active else '#6e7681'
-            weight = '600' if active else '500'
+            if active:
+                fg = provider_color(name)
+                weight = '600'
+            elif status in {'Cutoff', 'Timeout', 'Limited', 'Unavailable'}:
+                fg = str(info.get('color') or '#e2b96b')
+                weight = '600'
+            elif status == 'Failed':
+                fg = str(info.get('color') or '#ff9595')
+                weight = '600'
+            else:
+                fg = '#6e7681'
+                weight = '500'
+            est_w = chip_widths[idx]
             btn.setIconSize(QSize(icon_sz, icon_sz))
-            btn.setFixedSize(QSize(16777215, btn_h))
+            btn.setFixedHeight(btn_h)
+            btn.setMinimumWidth(est_w)
+            btn.setMaximumWidth(16777215)
+            btn.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             btn.setStyleSheet(
                 f'QPushButton {{ background: transparent; color: {fg}; border: none; '
                 f'padding: {pad}; border-radius: 4px; font-size: {font_sz}; font-weight: {weight}; }} '
                 f'QPushButton:hover {{ background: #1c2128; }}'
             )
             btn.setVisible(True)
-            row = idx // chip_cols if chip_rows == 2 else 0
-            col = idx % chip_cols if chip_rows == 2 else idx
-            self.agent_chips_grid.addWidget(btn, row, col)
+            styled_chips.append((btn, est_w))
+
+        row0_w = 0
+        row1_w = 0
+        if chip_rows == 1:
+            row0_lay = QHBoxLayout()
+            row0_lay.setContentsMargins(0, 0, 0, 0)
+            row0_lay.setSpacing(4)
+            for btn, w_est in styled_chips:
+                row0_lay.addWidget(btn)
+                row0_w += w_est + 4
+            row0_lay.addStretch(1)
+            self.agent_chips_grid.addLayout(row0_lay, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        else:
+            # Pack chips into 2 balanced horizontal rows by pixel width so long 'Cutoff' chips do not stretch empty columns
+            row0_lay = QHBoxLayout()
+            row0_lay.setContentsMargins(0, 0, 0, 0)
+            row0_lay.setSpacing(4)
+            row1_lay = QHBoxLayout()
+            row1_lay.setContentsMargins(0, 0, 0, 0)
+            row1_lay.setSpacing(4)
+            target_half = max(left_avail_in_state3, (sum(chip_widths) + len(chip_widths) * 4) // 2)
+            for idx_c, (btn, w_est) in enumerate(styled_chips):
+                if idx_c == 0 or (row0_w + w_est <= target_half and len(styled_chips) - idx_c > 1):
+                    row0_lay.addWidget(btn)
+                    row0_w += w_est + 4
+                else:
+                    row1_lay.addWidget(btn)
+                    row1_w += w_est + 4
+            row0_lay.addStretch(1)
+            row1_lay.addStretch(1)
+            self.agent_chips_grid.addLayout(row0_lay, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self.agent_chips_grid.addLayout(row1_lay, 1, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         # Layout right-side status_label + bottom_token_label using the exact same state rules
         if hasattr(self, 'right_status_grid') and hasattr(self, 'status_label') and hasattr(self, 'bottom_token_label'):
@@ -8802,10 +9450,18 @@ class PalaceWindow(QMainWindow):
                 f'font-family: Consolas, monospace; font-size: {font_sz}; color: {cost_col}; padding: {token_pad};'
             )
 
-            used_left_px = (left_compact_px // 2 + 40) if chip_rows == 2 else (left_compact_px if compact else left_normal_px)
-            avail_right_px = max(150, bar_w - used_left_px - 24)
+            used_left_px = max(row0_w, row1_w) + 58 if chip_rows == 2 else (left_compact_px if compact else left_normal_px)
+            avail_right_px = max(130, bar_w - used_left_px - 20)
 
             align_r = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            if hasattr(self, 'right_status_host'):
+                self.right_status_host.setMinimumWidth(0)
+                if state == 3:
+                    self.right_status_host.setMaximumWidth(avail_right_px)
+                    self.right_status_host.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Preferred)
+                else:
+                    self.right_status_host.setMaximumWidth(16777215)
+                    self.right_status_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             if state in (1, 2):
                 token_w = int(len(token_plain) * (6.0 if compact else 7.2) + 16)
                 status_max_w = max(80, avail_right_px - token_w - 8)
@@ -8817,6 +9473,8 @@ class PalaceWindow(QMainWindow):
                 # State 3: Stack status_label on row 0 and bottom_token_label on row 1
                 if hasattr(self.status_label, 'apply_elided_width'):
                     self.status_label.apply_elided_width(avail_right_px)
+                if hasattr(self.bottom_token_label, 'apply_elided_width'):
+                    self.bottom_token_label.apply_elided_width(avail_right_px)
                 self.right_status_grid.addWidget(self.status_label, 0, 0, align_r)
                 self.right_status_grid.addWidget(self.bottom_token_label, 1, 0, align_r)
 
@@ -9277,6 +9935,7 @@ class PalaceWindow(QMainWindow):
         if not proj_id:
             return
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         cur_folder = self.store.get_project_folder(proj_id) if hasattr(self.store, 'get_project_folder') else ''
         attach_act = menu.addAction('📁 Change Attached Folder…' if cur_folder else '📁 Attach Folder to Project…')
         detach_act = menu.addAction('✕ Detach Folder') if cur_folder else None
@@ -9647,6 +10306,7 @@ class PalaceWindow(QMainWindow):
         cur = str(v_cfg.get('voice_llm_provider') or 'auto').lower()
         cred = CredentialStore()
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         menu.setStyleSheet(
             'QMenu { background: #161922; color: #e6edf3; border: 1px solid #2b313e; padding: 6px; border-radius: 8px; } '
             'QMenu::item { padding: 6px 14px; border-radius: 5px; font-size: 12.5px; } '
@@ -9709,6 +10369,7 @@ class PalaceWindow(QMainWindow):
         cur = str(v_cfg.get('tts_engine') or 'auto').lower()
         cred = CredentialStore()
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         menu.setStyleSheet(
             'QMenu { background: #161922; color: #e6edf3; border: 1px solid #2b313e; padding: 6px; border-radius: 8px; } '
             'QMenu::item { padding: 6px 14px; border-radius: 5px; font-size: 12.5px; } '
@@ -9784,15 +10445,24 @@ class PalaceWindow(QMainWindow):
     def _sync_composer_live_bar_visibility(self):
         if not hasattr(self, 'composer_live_bar'):
             return
-        widgets = (
-            getattr(self, 'voice_level_badge', None),
+        r1_widgets = (
             getattr(self, 'voice_brain_btn', None),
             getattr(self, 'voice_tts_btn', None),
             getattr(self, 'voice_mute_btn', None),
             getattr(self, 'end_talk_btn', None),
+        )
+        r2_widgets = (
+            getattr(self, 'voice_level_badge', None),
+            getattr(self, 'voice_cost_badge', None),
             getattr(self, 'remove_button', None),
         )
-        self.composer_live_bar.setVisible(any(w is not None and not w.isHidden() for w in widgets))
+        r1_vis = any(w is not None and not w.isHidden() for w in r1_widgets)
+        r2_vis = any(w is not None and not w.isHidden() for w in r2_widgets)
+        if hasattr(self, '_composer_live_row1'):
+            self._composer_live_row1.setVisible(r1_vis)
+        if hasattr(self, '_composer_live_row2'):
+            self._composer_live_row2.setVisible(r2_vis)
+        self.composer_live_bar.setVisible(r1_vis or r2_vis)
 
     def _toggle_voice_mute(self, muted: bool):
         sess = getattr(self, '_active_voice_session', None)
@@ -9862,6 +10532,8 @@ class PalaceWindow(QMainWindow):
             self.voice_mute_btn.blockSignals(False)
         if hasattr(self, 'voice_level_badge'):
             self.voice_level_badge.hide()
+        if hasattr(self, 'voice_cost_badge'):
+            self.voice_cost_badge.hide()
         still_talk = bool(getattr(self, '_talk_only_mode', False)) and (not exit_talk_only)
         if not still_talk:
             if hasattr(self, 'voice_brain_btn'):
@@ -9977,6 +10649,9 @@ class PalaceWindow(QMainWindow):
                 self.voice_brain_btn.show()
             if hasattr(self, 'voice_tts_btn'):
                 self.voice_tts_btn.show()
+            if hasattr(self, 'voice_cost_badge'):
+                self.voice_cost_badge.show()
+                self._refresh_bottom_cost_label()
             if hasattr(self, 'voice_mute_btn'):
                 self.voice_mute_btn.blockSignals(True)
                 self.voice_mute_btn.setChecked(False)
@@ -11412,6 +12087,7 @@ class PalaceWindow(QMainWindow):
 
     def _show_slash_commands_menu(self):
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         from palace_config import IS_DEVELOPER_EDITION
         commands = []
         if IS_DEVELOPER_EDITION:
@@ -11453,8 +12129,9 @@ class PalaceWindow(QMainWindow):
 
     def _show_search_depth_menu(self):
         menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         choices = [
-            ('default', '🔍 Default (Light Search — /search)'),
+            ('default', '🔍 Default (Auto Live Weather/News + Light Web)'),
             ('moderate', '🔎 Moderate (Sharded Multi-Angle — /searchm)'),
             ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /searchd)'),
         ]
@@ -11462,6 +12139,7 @@ class PalaceWindow(QMainWindow):
             act = QAction(label, menu)
             act.setCheckable(True)
             act.setChecked(getattr(self, 'current_search_depth', 'default') == depth_key)
+            act.setToolTip(label)
 
             def _pick(_checked=False, dk=depth_key):
                 self._set_search_depth(dk)
@@ -11495,26 +12173,88 @@ class PalaceWindow(QMainWindow):
                 'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
             )
 
-    def _show_busy_action_menu(self):
-        note_present = bool(self.composer.toPlainText().strip())
-        local_pos = self.steer_button.mapFromGlobal(QCursor.pos())
-        clicked_arrow = local_pos.x() >= max(24, self.steer_button.width() - 24)
-        if note_present and not clicked_arrow:
-            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
-                self.queue_next_turn()
+    def _refresh_busy_mode_controls(self):
+        mode = getattr(self, '_busy_submit_mode', 'steer')
+        if mode not in {'steer', 'queue'}:
+            mode = 'steer'
+        is_busy = self.worker is not None
+        steer_n = len((getattr(self, 'active_steering_state', None) or {}).get('notes', [])) if is_busy else 0
+        queue_n = len(getattr(self, 'queued_prompts', None) or [])
+
+        if hasattr(self, 'steer_button'):
+            if mode == 'queue':
+                base = f'⏳ Queue ({queue_n}) ▾' if queue_n > 0 else '⏳ Queue ▾'
+                if steer_n > 0:
+                    base = f'⏳ Queue ({queue_n}) · {steer_n} Steered ▾' if queue_n > 0 else f'⏳ Queue · {steer_n} Steered ▾'
+                self.steer_button.setText(base)
+                self.steer_button.setStyleSheet(
+                    'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
+                    'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                )
             else:
-                self.steer_active_turn()
-            return
+                base = f'🧭 Steer ({steer_n}) ▾' if steer_n > 0 else '🧭 Steer ▾'
+                if queue_n > 0:
+                    base = f'{base[:-2]} · {queue_n} Queued ▾'
+                self.steer_button.setText(base)
+                if steer_n > 0:
+                    self.steer_button.setStyleSheet(
+                        'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+                        'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                    )
+                elif hasattr(self, '_neutral_busy_btn_style'):
+                    self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
+
+        if hasattr(self, 'composer') and getattr(self, 'current_profile', '') != 'Idle':
+            if is_busy:
+                self.composer.setPlaceholderText(
+                    'Type follow-up prompt to Queue for next turn (Enter or ↑)…'
+                    if mode == 'queue'
+                    else 'Type live instructions to Steer the active turn (Enter or ↑)…'
+                )
+            else:
+                self.composer.setPlaceholderText('Ask anything, @ to mention, or drop files')
+
+        if hasattr(self, 'send_button'):
+            if is_busy:
+                self.send_button.setToolTip(
+                    'Queue prompt for next turn (Enter)'
+                    if mode == 'queue'
+                    else 'Inject Live Steer into active turn (Enter)'
+                )
+            else:
+                self.send_button.setToolTip('Send message (Enter)')
+
+    def _show_busy_action_menu(self):
+        cur_mode = getattr(self, '_busy_submit_mode', 'steer')
         menu = QMenu(self)
-        steer_act = menu.addAction('🧭 Steer Active Turn (inject into current turn · Enter)')
-        queue_act = menu.addAction('⏳ Queue for Next Turn (run after current turn)')
+        menu.setToolTipsVisible(True)
+        steer_act = menu.addAction('🧭 Steer Active Turn (Default for Enter / ↑)')
+        steer_act.setCheckable(True)
+        steer_act.setChecked(cur_mode != 'queue')
+        steer_act.setToolTip('Pressing Enter or ↑ injects your message directly into the running turn')
+        queue_act = menu.addAction('⏳ Queue for Next Turn (Default for Enter / ↑)')
+        queue_act.setCheckable(True)
+        queue_act.setChecked(cur_mode == 'queue')
+        queue_act.setToolTip('Pressing Enter or ↑ saves your message to run right after the current turn finishes')
         chosen = menu.exec(self.steer_button.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
         if chosen == steer_act:
             self._busy_submit_mode = 'steer'
-            self.steer_active_turn()
+            try:
+                save_ui_settings({'busy_submit_mode': 'steer'}, config_path=self.config_path)
+            except Exception:
+                pass
+            self._refresh_busy_mode_controls()
+            self.composer.setFocus()
+            self.show_notice('Live Steer mode selected — Enter / ↑ will steer the working turn.')
         elif chosen == queue_act:
             self._busy_submit_mode = 'queue'
-            self.queue_next_turn()
+            try:
+                save_ui_settings({'busy_submit_mode': 'queue'}, config_path=self.config_path)
+            except Exception:
+                pass
+            self._refresh_busy_mode_controls()
+            self.composer.setFocus()
+            self.show_notice('Queue mode selected — Enter / ↑ will queue your next turn.')
 
     @Slot()
     def stop_active_turn(self):
@@ -11577,11 +12317,7 @@ class PalaceWindow(QMainWindow):
             self.active_steering_state.setdefault('notes', []).append(note)
             self.composer.clear()
             count = len(self.active_steering_state['notes'])
-            self.steer_button.setText(f"🧭 Steer ({count}) ▾")
-            self.steer_button.setStyleSheet(
-                'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
-                'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
-            )
+            self._refresh_busy_mode_controls()
             # Display the steer comment in chat stream immediately so the user can see it!
             self.append_message(
                 'user',
@@ -11602,11 +12338,7 @@ class PalaceWindow(QMainWindow):
             self.queued_prompts = []
         self.queued_prompts.append(question)
         self.composer.clear()
-        self.steer_button.setText(f'⏳ Queued ({len(self.queued_prompts)}) ▾')
-        self.steer_button.setStyleSheet(
-            'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
-        )
+        self._refresh_busy_mode_controls()
         self.show_notice(f'⏳ Queued ({len(self.queued_prompts)}): "{question[:55]}" — will run automatically next.')
 
     @Slot()
@@ -12005,8 +12737,16 @@ class PalaceWindow(QMainWindow):
                 self.set_provider_status(name, 'Responded', '#90d7c1')
             else:
                 error = response.error or 'Unknown provider error'
-                degraded = any(word in error.lower() for word in ['429', 'rate', 'quota', 'timeout'])
-                self.set_provider_status(name, 'Limited' if degraded else 'Failed', '#e2b96b' if degraded else '#ff9595', error)
+                err_low = error.lower()
+                if 'straggler cutoff' in err_low:
+                    chip_status, chip_col = 'Cutoff', '#e2b96b'
+                elif 'timed out' in err_low or 'timeout' in err_low:
+                    chip_status, chip_col = 'Timeout', '#e2b96b'
+                elif any(w in err_low for w in ('429', 'rate', 'quota')):
+                    chip_status, chip_col = 'Limited', '#e2b96b'
+                else:
+                    chip_status, chip_col = 'Failed', '#ff9595'
+                self.set_provider_status(name, chip_status, chip_col, error)
                 failed_notes.append(f'{provider_display_name(name)} ({error[:75]})')
         warnings = [result.context_error, result.memory_error]
         if result.synthesis and not result.synthesis.succeeded:
@@ -12059,13 +12799,17 @@ class PalaceWindow(QMainWindow):
             except Exception:
                 pass
             def _trigger_autopatch_reboot():
+                if is_frozen_app() or not IS_DEVELOPER_EDITION:
+                    return
                 import subprocess, sys
                 wd_script = Path(__file__).with_name('palace_watchdog.py')
-                subprocess.Popen(
-                    [sys.executable, str(wd_script), '--skip-tests', '--summary', ap_sum or 'Normal Mode /autopatch'],
-                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-                )
-            QTimer.singleShot(1500, _trigger_autopatch_reboot)
+                if wd_script.exists():
+                    subprocess.Popen(
+                        [sys.executable, str(wd_script), '--skip-tests', '--summary', ap_sum or 'Normal Mode /autopatch'],
+                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                    )
+            if not is_frozen_app() and IS_DEVELOPER_EDITION:
+                QTimer.singleShot(1500, _trigger_autopatch_reboot)
 
     def show_desktop_toast(self, title: str, message: str):
         try:
@@ -12148,13 +12892,13 @@ class PalaceWindow(QMainWindow):
         self.worker.start()
 
     def set_busy(self, busy):
-        for widget in (self.send_button, self.attach_button, self.remove_button,
+        for widget in (self.attach_button, self.remove_button,
                        self.pinned_list, self.project_list, self.new_project_button, self.attach_project_folder_btn,
                        self.history_toggle, self.peer_rounds_toggle, self.deliberate_pill_btn,
                        self.tangent_btn, self.no_history_btn,
                        self.ai_pill_button, self.profile_combo):
             widget.setEnabled(not busy)
-        # Hide pre-turn setup buttons while busy so the composer row never crowds or clips!
+        # Hide pre-turn setup buttons while busy so the composer row never crowds or clips; keep send_button active for Steer / Queue!
         for setup_w in (
             self.attach_button,
             self.ai_pill_button,
@@ -12163,30 +12907,32 @@ class PalaceWindow(QMainWindow):
             self.search_depth_btn,
             self.permission_pill_btn,
             self.mic_button,
-            self.send_button,
         ):
             setup_w.setVisible(not busy)
         if hasattr(self, 'permission_pill_btn'):
             self.permission_pill_btn.setEnabled(not busy)
-        # Keep composer, Settings & AIs, and Fairybread Code toggle unlocked during work!
+        # Keep composer, send_button (for Steer/Queue), Settings & AIs, and Fairybread Code toggle unlocked during work!
         self.manage_ais_button.setEnabled(True)
         self.composer.setEnabled(True)
+        self.send_button.setEnabled(True)
+        self.send_button.setVisible(True)
+        self.send_button.setText('↑')
         self.palace_code_btn.setEnabled(True)
         self.new_button.setEnabled(True)
         self.session_list.setEnabled(True)
         if hasattr(self, 'stop_button'):
             self.stop_button.setVisible(bool(busy))
         if hasattr(self, 'steer_button'):
-            self.steer_button.setVisible(bool(busy))
-            if not busy and hasattr(self, '_neutral_busy_btn_style') and not getattr(self, 'queued_prompts', None):
-                self.steer_button.setText('Steer / Queue ▾')
-                self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
+            self.steer_button.setVisible(bool(busy) or bool(getattr(self, 'queued_prompts', None)))
         if hasattr(self, 'queue_button'):
             self.queue_button.hide()
         if self.current_profile == 'Idle':
             self.profile_combo.setEnabled(True)
             self.manage_ais_button.setEnabled(True)
-        self.send_button.setText('…' if busy else '↑')
+            if not getattr(getattr(self, 'idle_manager', None), 'operator_admitted', False):
+                self.composer.setEnabled(False)
+                self.send_button.setEnabled(False)
+        self._refresh_busy_mode_controls()
         self._sync_composer_live_bar_visibility()
 
     @Slot(str)
@@ -12225,6 +12971,7 @@ class PalaceWindow(QMainWindow):
         self._check_storage_warnings()
         if getattr(self, 'queued_prompts', None):
             next_q = self.queued_prompts.pop(0)
+            self._refresh_busy_mode_controls()
             self.composer.setPlainText(next_q)
             QTimer.singleShot(40, self.send_message)
 
@@ -12249,7 +12996,7 @@ class PalaceWindow(QMainWindow):
         if (
             not force_quit
             and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
-            and bool(load_ui_settings(self.config_path).get('close_to_tray', True))
+            and bool(load_ui_settings(self.config_path).get('close_to_tray', False))
         ):
             # Stop live microphone & speech whenever hiding to tray so nothing keeps talking invisibly
             try:
@@ -12371,7 +13118,17 @@ def _seed_demo_store(store: SessionStore):
 
 
 def _trigger_zero_touch_autofallback(trigger: str, exc_type: str, exc_msg: str, tb_str: str, session_id: str = 'legacy') -> None:
-    """Write forensic crash_report.json + post_reboot_task.json and invoke palace_watchdog.py --auto-rollback."""
+    """Write forensic crash_report.json + post_reboot_task.json and invoke palace_watchdog.py --auto-rollback (Dev source only)."""
+    if is_frozen_app() or not IS_DEVELOPER_EDITION:
+        try:
+            crash_log = get_appdata_root() / 'palace_crash.log'
+            crash_log.write_text(
+                f'[{datetime.now().isoformat()}] {trigger} {exc_type}: {exc_msg}\n{tb_str}\n',
+                encoding='utf-8',
+            )
+        except Exception:
+            pass
+        return
     try:
         import subprocess
         from palace_ouroboros import write_crash_report, write_post_reboot_task
@@ -12450,6 +13207,17 @@ def main(argv=None):
             single_server = None
 
     window_ref = [None]
+
+    def _on_os_shutdown(_manager=None):
+        win = window_ref[0]
+        if win is not None:
+            win._force_quit = True
+
+    try:
+        app.commitDataRequest.connect(_on_os_shutdown)
+    except Exception:
+        pass
+
     orig_excepthook = sys.excepthook
 
     def _palace_runtime_excepthook(exc_type, exc_value, exc_tb):

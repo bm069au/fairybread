@@ -3,11 +3,17 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import html
+import io
 import json
+import math
 import re
+import time
+from pathlib import Path
 from typing import Any
 from urllib import parse as urllib_parse, request as urllib_request
+from xml.etree import ElementTree as ET
 
 
 SEARCH_DEPTH_CHOICES: list[tuple[str, str]] = [
@@ -38,6 +44,21 @@ _NATURAL_DEEP_SEARCH_RE = re.compile(
 
 _NATURAL_MOD_SEARCH_RE = re.compile(
     r"\b(?:do\s+a\s+moderate\s+search|moderate\s+search|search\s+the\s+web\s+for|search\s+online\s+for|look\s+up\s+online)\b",
+    re.IGNORECASE,
+)
+
+_WEATHER_QUERY_RE = re.compile(
+    r"\b(?:weather|forecast|temperature|temp\b|rain(?:fall|ing)?|humidity|uv\s+index|wind\s+speed|bom\.gov)\b",
+    re.IGNORECASE,
+)
+
+_AUTO_REALTIME_RE = re.compile(
+    r"\b(?:"
+    r"weather|forecast|temperature|rainfall|"
+    r"latest\s+news|current\s+(?:price|rate|news|events|score|standings|weather|forecast)|"
+    r"today'?s\s+(?:weather|forecast|news|score|price)|"
+    r"right\s+now|what\s+is\s+the\s+(?:weather|temperature|exchange\s+rate|stock\s+price)"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -274,6 +295,8 @@ def parse_search_command(
         return "moderate", raw
     if ui_mode == "light":
         return "light", raw
+    if ui_mode == "default" and (_WEATHER_QUERY_RE.search(raw) or _AUTO_REALTIME_RE.search(raw)):
+        return "light", raw
 
     return "none", raw
 
@@ -332,6 +355,502 @@ def fetch_page_clean_text(url: str, max_chars: int = 2400, timeout: float = 6.5)
         return ""
 
 
+_WMO_WEATHER_CODES: dict[int, str] = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Moderate drizzle",
+    55: "Dense drizzle",
+    61: "Slight rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    71: "Slight snow",
+    73: "Moderate snow",
+    75: "Heavy snow",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    99: "Thunderstorm with heavy hail",
+}
+
+_WEATHER_STOPWORDS = {
+    "what", "whats", "is", "the", "current", "currently", "live", "today", "tonight", "now",
+    "weather", "forecast", "for", "and", "in", "at", "of", "near", "around", "area", "code",
+    "postcode", "post", "zip", "suburb", "city", "town", "please", "tell", "me", "give",
+    "next", "days", "day", "week", "outlook", "temperature", "temp", "like", "how",
+}
+
+
+def _deg_to_compass(deg: float | int | None) -> str:
+    if deg is None:
+        return ""
+    dirs = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    idx = int((float(deg) + 22.5) // 45.0) % 8
+    return dirs[idx]
+
+
+def is_weather_query(question: str) -> bool:
+    return bool(_WEATHER_QUERY_RE.search(question or ""))
+
+
+def fetch_live_weather_bundle(question: str, *, timeout: float = 5.0) -> dict[str, Any]:
+    """Resolve postcodes/cities via free Zippopotam + Open-Meteo APIs (BOM ACCESS-G in AU) with UV/gusts/hourly."""
+    raw = (question or "").strip()
+    empty = {"text": "", "locations": [], "primary_location": None, "primary_weather": {}}
+    if not raw or not is_weather_query(raw):
+        return empty
+
+    locations: list[dict[str, Any]] = []
+    seen_coords: set[tuple[float, float]] = set()
+
+    def _add_loc(label: str, lat: float, lon: float) -> None:
+        key = (round(float(lat), 2), round(float(lon), 2))
+        if key in seen_coords:
+            return
+        seen_coords.add(key)
+        locations.append({"label": label, "lat": float(lat), "lon": float(lon)})
+
+    # 1. Resolve 4-digit postcodes (Australian default via Zippopotam)
+    for pc in re.findall(r"\b(\d{4})\b", raw):
+        if 200 <= int(pc) <= 9999:
+            try:
+                req = urllib_request.Request(
+                    f"https://api.zippopotam.us/au/{pc}",
+                    headers={"User-Agent": "FairybreadWeather/1.0"},
+                )
+                with urllib_request.urlopen(req, timeout=timeout) as resp:
+                    zdata = json.loads(resp.read().decode("utf-8"))
+                places = zdata.get("places") or []
+                if places:
+                    p0 = places[0]
+                    names = ", ".join(str(p.get("place name") or "") for p in places[:3] if p.get("place name"))
+                    st_abbr = str(p0.get("state abbreviation") or "").strip()
+                    lbl = f"{names} (Postcode {pc}{', ' + st_abbr if st_abbr else ''})"
+                    _add_loc(lbl, float(p0["latitude"]), float(p0["longitude"]))
+            except Exception:
+                pass
+
+    # 2. Extract candidate place tokens / TitleCase multi-word names
+    candidate_names: list[str] = []
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]+", raw)
+    filtered = [w for w in words if w.lower() not in _WEATHER_STOPWORDS and len(w) >= 3]
+    for w in filtered[:3]:
+        if w.lower() not in {c.lower() for c in candidate_names}:
+            candidate_names.append(w)
+
+    for cname in candidate_names[:2]:
+        try:
+            gurl = "https://geocoding-api.open-meteo.com/v1/search?" + urllib_parse.urlencode(
+                {"name": cname, "count": 2, "language": "en", "format": "json"}
+            )
+            req = urllib_request.Request(gurl, headers={"User-Agent": "FairybreadWeather/1.0"})
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                gdata = json.loads(resp.read().decode("utf-8"))
+            res = (gdata.get("results") or [])
+            if res:
+                top = res[0]
+                lbl_parts = [str(top.get("name") or cname)]
+                if top.get("admin1"):
+                    lbl_parts.append(str(top["admin1"]))
+                if top.get("country_code"):
+                    lbl_parts.append(str(top["country_code"]))
+                _add_loc(", ".join(lbl_parts), float(top["latitude"]), float(top["longitude"]))
+        except Exception:
+            pass
+
+    if not locations:
+        return empty
+
+    blocks: list[str] = [
+        "=== [LIVE WEATHER DATA — Open-Meteo / BOM ACCESS-G (Fetched Live Now)] ===",
+        "Instructions: Answer using ONLY these verified live figures. State current conditions cleanly with a concise 3-day outlook table (or full 7-day forecast + UV/wind gusts/hourly rain if asked), then offer the 7-day breakdown if not already shown. Never invent file paths or pretend an external plugin is needed.",
+    ]
+    primary_weather: dict[str, Any] = {}
+    for idx_loc, loc in enumerate(locations[:2]):
+        try:
+            furl = "https://api.open-meteo.com/v1/forecast?" + urllib_parse.urlencode({
+                "latitude": f"{loc['lat']:.4f}",
+                "longitude": f"{loc['lon']:.4f}",
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,precipitation",
+                "hourly": "temperature_2m,precipitation_probability,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,uv_index_max,sunrise,sunset,wind_speed_10m_max,wind_gusts_10m_max",
+                "timezone": "auto",
+                "forecast_days": 7,
+            })
+            req = urllib_request.Request(furl, headers={"User-Agent": "FairybreadWeather/1.0"})
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                wdata = json.loads(resp.read().decode("utf-8"))
+            if idx_loc == 0:
+                primary_weather = wdata
+            cur = wdata.get("current") or {}
+            tz_name = str(wdata.get("timezone") or "")
+            wcode = int(cur.get("weather_code", -1)) if cur.get("weather_code") is not None else -1
+            sky = _WMO_WEATHER_CODES.get(wcode, f"Code {wcode}")
+            wdir = _deg_to_compass(cur.get("wind_direction_10m"))
+            gusts = cur.get("wind_gusts_10m")
+            gust_txt = f" (gusts {gusts} km/h)" if gusts is not None else ""
+            blocks.append(
+                f"\nLocation: {loc['label']} (Timezone: {tz_name}, Lat {loc['lat']:.3f}, Lon {loc['lon']:.3f})\n"
+                f"Observed At: {cur.get('time', 'Now')}\n"
+                f"Current: {cur.get('temperature_2m', '?')}°C (feels like {cur.get('apparent_temperature', '?')}°C), "
+                f"{sky}, Humidity {cur.get('relative_humidity_2m', '?')}%, "
+                f"Wind {cur.get('wind_speed_10m', '?')} km/h {wdir}{gust_txt}, Precip {cur.get('precipitation', 0)} mm"
+            )
+            hourly = wdata.get("hourly") or {}
+            h_times = hourly.get("time") or []
+            h_temps = hourly.get("temperature_2m") or []
+            h_probs = hourly.get("precipitation_probability") or []
+            cur_time_str = str(cur.get("time") or "")[:13]
+            if h_times:
+                start_h = 0
+                for hi_idx, ht in enumerate(h_times):
+                    if str(ht)[:13] >= cur_time_str:
+                        start_h = hi_idx
+                        break
+                h_slice = []
+                for j in range(start_h, min(len(h_times), start_h + 12), 2):
+                    hh = str(h_times[j])[-5:]
+                    tt = h_temps[j] if j < len(h_temps) else "?"
+                    pp = h_probs[j] if j < len(h_probs) else "?"
+                    h_slice.append(f"{hh}: {tt}°C ({pp}% rain)")
+                if h_slice:
+                    blocks.append("Next 12h Hourly: " + " | ".join(h_slice))
+            daily = wdata.get("daily") or {}
+            dates = daily.get("time") or []
+            tmax = daily.get("temperature_2m_max") or []
+            tmin = daily.get("temperature_2m_min") or []
+            pcodes = daily.get("weather_code") or []
+            pprob = daily.get("precipitation_probability_max") or []
+            psum = daily.get("precipitation_sum") or []
+            uv_max = daily.get("uv_index_max") or []
+            sun_rise = daily.get("sunrise") or []
+            sun_set = daily.get("sunset") or []
+            if dates:
+                day_lines = ["7-Day Forecast:"]
+                for idx, dt in enumerate(dates[:7]):
+                    dc = int(pcodes[idx]) if idx < len(pcodes) and pcodes[idx] is not None else -1
+                    dsky = _WMO_WEATHER_CODES.get(dc, "")
+                    hi = tmax[idx] if idx < len(tmax) else "?"
+                    lo = tmin[idx] if idx < len(tmin) else "?"
+                    pr = pprob[idx] if idx < len(pprob) else "?"
+                    mm = psum[idx] if idx < len(psum) else 0
+                    uv = uv_max[idx] if idx < len(uv_max) and uv_max[idx] is not None else None
+                    uv_part = f", Max UV {uv}" if uv is not None else ""
+                    sun_part = ""
+                    if idx == 0 and idx < len(sun_rise) and idx < len(sun_set):
+                        sr = str(sun_rise[0])[-5:]
+                        ss = str(sun_set[0])[-5:]
+                        if sr and ss:
+                            sun_part = f", Sunrise {sr} / Sunset {ss}"
+                    day_lines.append(f"  - {dt}: {lo}°C – {hi}°C, {dsky}, Rain {pr}% ({mm} mm){uv_part}{sun_part}")
+                blocks.append("\n".join(day_lines))
+        except Exception:
+            continue
+
+    txt = "\n".join(blocks) if len(blocks) > 2 else ""
+    return {
+        "text": txt,
+        "locations": locations,
+        "primary_location": locations[0] if locations else None,
+        "primary_weather": primary_weather,
+    }
+
+
+def fetch_live_weather_context(question: str, *, timeout: float = 5.0) -> str:
+    """Resolve postcodes/cities via free Zippopotam + Open-Meteo APIs (BOM ACCESS-G in AU) with zero scraping."""
+    return str(fetch_live_weather_bundle(question, timeout=timeout).get("text") or "")
+
+
+_RAINVIEWER_META_CACHE: tuple[float, dict[str, Any]] | None = None
+
+
+def _lat_lon_to_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float]:
+    lat_c = max(-85.0511, min(85.0511, float(lat)))
+    n = 2.0 ** int(zoom)
+    xtile = (float(lon) + 180.0) / 360.0 * n
+    lat_rad = math.radians(lat_c)
+    ytile = (1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n
+    return xtile, ytile
+
+
+def render_live_weather_map_png(
+    location: dict[str, Any],
+    weather_data: dict[str, Any] | None = None,
+    *,
+    out_dir: Path | None = None,
+    cache_dir: Path | None = None,
+    timeout: float = 5.0,
+) -> Path | None:
+    """Stitch a CartoDB Dark Matter base map + live RainViewer z=7 radar overlay + HUD via Pillow (or Qt fallback)."""
+    global _RAINVIEWER_META_CACHE
+    use_pil = True
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        use_pil = False
+        try:
+            from PySide6.QtCore import QRect
+            from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+        except Exception:
+            return None
+
+    try:
+        lat = float(location.get("lat"))
+        lon = float(location.get("lon"))
+    except (TypeError, ValueError):
+        return None
+    label = str(location.get("label") or f"{lat:.2f}, {lon:.2f}").strip()
+
+    try:
+        from palace_config import get_appdata_root
+        eff_cache = Path(cache_dir) if cache_dir is not None else (get_appdata_root() / "cache" / "map_tiles")
+    except Exception:
+        eff_cache = Path(cache_dir) if cache_dir is not None else Path("cache/map_tiles")
+    eff_cache.mkdir(parents=True, exist_ok=True)
+
+    if out_dir is None:
+        try:
+            from palace_theme import get_generated_images_dir
+            eff_out = get_generated_images_dir()
+        except Exception:
+            eff_out = eff_cache.parent
+    else:
+        eff_out = Path(out_dir)
+    eff_out.mkdir(parents=True, exist_ok=True)
+
+    zoom = 7
+    n_tiles = 1 << zoom
+    fx, fy = _lat_lon_to_tile_xy(lat, lon, zoom)
+    cx = int(math.floor(fx))
+    cy = int(math.floor(fy))
+    px_in_center = int(round((fx - cx) * 256))
+    py_in_center = int(round((fy - cy) * 256))
+
+    dx_list = [-1, 0, 1]
+    dy_list = [-1, 0] if py_in_center < 128 else [0, 1]
+    if py_in_center < 96:
+        dy_list = [-1, 0]
+    pin_px = (1 * 256) + px_in_center
+    pin_py = ((0 if dy_list[0] == 0 else 1) * 256) + py_in_center
+
+    def _fetch_bytes(url: str) -> bytes:
+        req = urllib_request.Request(url, headers={"User-Agent": "FairybreadWeatherMap/1.0"})
+        with urllib_request.urlopen(req, timeout=float(timeout)) as resp:
+            return resp.read(2_000_000)
+
+    radar_host = "https://tilecache.rainviewer.com"
+    radar_path = ""
+    radar_ts = 0
+    now_mono = time.monotonic()
+    rv_data: dict[str, Any] | None = None
+    if _RAINVIEWER_META_CACHE is not None and (now_mono - _RAINVIEWER_META_CACHE[0]) <= 300.0:
+        rv_data = _RAINVIEWER_META_CACHE[1]
+    else:
+        try:
+            rv_raw = _fetch_bytes("https://api.rainviewer.com/public/weather-maps.json")
+            loaded = json.loads(rv_raw.decode("utf-8", errors="replace"))
+            if isinstance(loaded, dict):
+                rv_data = loaded
+                _RAINVIEWER_META_CACHE = (now_mono, loaded)
+        except Exception:
+            rv_data = _RAINVIEWER_META_CACHE[1] if _RAINVIEWER_META_CACHE else None
+
+    if isinstance(rv_data, dict):
+        radar_host = str(rv_data.get("host") or radar_host).rstrip("/")
+        past = ((rv_data.get("radar") or {}).get("past") or [])
+        if past and isinstance(past[-1], dict):
+            radar_path = str(past[-1].get("path") or "")
+            radar_ts = int(past[-1].get("time") or 0)
+
+    def _fetch_base_bytes(gx: int, gy: int) -> bytes:
+        if gy < 0 or gy >= n_tiles:
+            return b""
+        wx = gx % n_tiles
+        tile_fp = eff_cache / f"carto_dark_{zoom}_{wx}_{gy}.png"
+        if tile_fp.is_file() and tile_fp.stat().st_size > 100:
+            try:
+                return tile_fp.read_bytes()
+            except OSError:
+                pass
+        url = f"https://a.basemaps.cartocdn.com/dark_all/{zoom}/{wx}/{gy}.png"
+        try:
+            raw_b = _fetch_bytes(url)
+            if len(raw_b) > 100:
+                tile_fp.write_bytes(raw_b)
+            return raw_b
+        except Exception:
+            return b""
+
+    def _fetch_radar_bytes(gx: int, gy: int) -> bytes:
+        if not radar_path or gy < 0 or gy >= n_tiles:
+            return b""
+        wx = gx % n_tiles
+        url = f"{radar_host}{radar_path}/256/{zoom}/{wx}/{gy}/2/1_1.png"
+        try:
+            return _fetch_bytes(url)
+        except Exception:
+            return b""
+
+    cur = ((weather_data or {}).get("current") or {}) if isinstance(weather_data, dict) else {}
+    daily = ((weather_data or {}).get("daily") or {}) if isinstance(weather_data, dict) else {}
+    wcode = int(cur.get("weather_code", -1)) if cur.get("weather_code") is not None else -1
+    sky = _WMO_WEATHER_CODES.get(wcode, "")
+    temp = cur.get("temperature_2m", "?")
+    feels = cur.get("apparent_temperature", "?")
+    wind = cur.get("wind_speed_10m", "?")
+    hum = cur.get("relative_humidity_2m", "?")
+    uv0 = (daily.get("uv_index_max") or [None])[0]
+    uv_txt = f" | UV {uv0}" if uv0 is not None else ""
+    short_lbl = label.split("(")[0].strip()[:26] or label[:26]
+    top_txt = f"{short_lbl} · {temp}C (feels {feels}C) {sky} · Wind {wind} km/h · RH {hum}%{uv_txt}"
+    ts_txt = (
+        datetime.fromtimestamp(radar_ts, tz=timezone.utc).strftime("Radar %H:%M UTC")
+        if radar_ts > 0
+        else (f"Forecast {cur.get('time', 'Live')}" if cur.get("time") else "Live Radar")
+    )
+    attr_txt = f"{ts_txt}  |  Base: CARTO/OSM · Radar: RainViewer · Data: Open-Meteo/BOM"
+    legend_cols = [(56, 189, 248), (34, 197, 94), (250, 204, 21), (249, 115, 22), (239, 68, 68)]
+    lbl_w = max(70, len(short_lbl) * 6 + 14)
+    bx = max(6, min(768 - lbl_w - 6, pin_px + 10))
+    by = max(40, min(468, pin_py - 22))
+    safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", short_lbl)[:24] or "weather"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_fp = eff_out / f"weather_radar_{safe_slug}_{stamp}.png"
+
+    base_loaded = 0
+    radar_loaded = 0
+
+    if use_pil:
+        canvas = Image.new("RGBA", (768, 512), (13, 17, 23, 255))
+        for row_i, dy in enumerate(dy_list):
+            for col_i, dx in enumerate(dx_list):
+                gx, gy = cx + dx, cy + dy
+                px, py = col_i * 256, row_i * 256
+                raw_b = _fetch_base_bytes(gx, gy)
+                if raw_b:
+                    try:
+                        base_im = Image.open(io.BytesIO(raw_b)).convert("RGBA")
+                        canvas.alpha_composite(base_im, (px, py))
+                        base_loaded += 1
+                    except Exception:
+                        pass
+                raw_r = _fetch_radar_bytes(gx, gy)
+                if raw_r:
+                    try:
+                        im = Image.open(io.BytesIO(raw_r)).convert("RGBA")
+                        r, g, b, a = im.split()
+                        a = a.point(lambda v: int(v * 0.72))
+                        canvas.alpha_composite(Image.merge("RGBA", (r, g, b, a)), (px, py))
+                        radar_loaded += 1
+                    except Exception:
+                        pass
+        if base_loaded == 0 and radar_loaded == 0:
+            return None
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        draw.ellipse((pin_px - 11, pin_py - 11, pin_px + 11, pin_py + 11), fill=(34, 197, 94, 70), outline=(34, 197, 94, 220), width=2)
+        draw.ellipse((pin_px - 4, pin_py - 4, pin_px + 4, pin_py + 4), fill=(255, 255, 255, 255), outline=(13, 17, 23, 255), width=1)
+        draw.rounded_rectangle((bx, by, bx + lbl_w, by + 18), radius=4, fill=(13, 17, 23, 215), outline=(59, 130, 246, 220), width=1)
+        draw.text((bx + 6, by + 3), short_lbl, fill=(240, 246, 252, 255))
+        draw.rectangle((0, 0, 768, 30), fill=(13, 17, 23, 225))
+        draw.text((10, 8), top_txt[:118], fill=(240, 246, 252, 255))
+        draw.rectangle((0, 484, 768, 512), fill=(13, 17, 23, 225))
+        draw.text((10, 492), "Rain:", fill=(139, 148, 158, 255))
+        for i, lc in enumerate(legend_cols):
+            lx = 48 + i * 16
+            draw.rectangle((lx, 494, lx + 13, 502), fill=(*lc, 235))
+        draw.text((140, 492), attr_txt[:104], fill=(139, 148, 158, 255))
+        canvas.save(str(out_fp), format="PNG")
+    else:
+        qcanvas = QImage(768, 512, QImage.Format.Format_ARGB32_Premultiplied)
+        qcanvas.fill(QColor(13, 17, 23, 255))
+        painter = QPainter(qcanvas)
+        try:
+            for row_i, dy in enumerate(dy_list):
+                for col_i, dx in enumerate(dx_list):
+                    gx, gy = cx + dx, cy + dy
+                    px, py = col_i * 256, row_i * 256
+                    raw_b = _fetch_base_bytes(gx, gy)
+                    if raw_b:
+                        qim = QImage.fromData(raw_b)
+                        if not qim.isNull():
+                            painter.setOpacity(1.0)
+                            painter.drawImage(px, py, qim)
+                            base_loaded += 1
+                    raw_r = _fetch_radar_bytes(gx, gy)
+                    if raw_r:
+                        qrad = QImage.fromData(raw_r)
+                        if not qrad.isNull():
+                            painter.setOpacity(0.72)
+                            painter.drawImage(px, py, qrad)
+                            radar_loaded += 1
+            if base_loaded == 0 and radar_loaded == 0:
+                return None
+            painter.setOpacity(1.0)
+            painter.setPen(QPen(QColor(34, 197, 94, 220), 2))
+            painter.setBrush(QColor(34, 197, 94, 70))
+            painter.drawEllipse(pin_px - 11, pin_py - 11, 22, 22)
+            painter.setPen(QPen(QColor(13, 17, 23, 255), 1))
+            painter.setBrush(QColor(255, 255, 255, 255))
+            painter.drawEllipse(pin_px - 4, pin_py - 4, 8, 8)
+            painter.setPen(QPen(QColor(59, 130, 246, 220), 1))
+            painter.setBrush(QColor(13, 17, 23, 215))
+            painter.drawRoundedRect(bx, by, lbl_w, 18, 4.0, 4.0)
+            painter.setFont(QFont("Segoe UI", 8))
+            painter.setPen(QColor(240, 246, 252, 255))
+            painter.drawText(QRect(bx + 6, by + 1, lbl_w - 8, 16), 0x81, short_lbl)
+            painter.fillRect(0, 0, 768, 30, QColor(13, 17, 23, 225))
+            painter.drawText(QRect(10, 4, 748, 22), 0x81, top_txt[:118])
+            painter.fillRect(0, 484, 768, 28, QColor(13, 17, 23, 225))
+            painter.setPen(QColor(139, 148, 158, 255))
+            painter.drawText(QRect(10, 488, 36, 20), 0x81, "Rain:")
+            for i, lc in enumerate(legend_cols):
+                painter.fillRect(48 + i * 16, 494, 13, 8, QColor(*lc, 235))
+            painter.drawText(QRect(140, 488, 620, 20), 0x81, attr_txt[:104])
+        finally:
+            painter.end()
+        if not qcanvas.save(str(out_fp), "PNG"):
+            return None
+    return out_fp if out_fp.is_file() else None
+
+
+def _search_bing_rss(query: str, max_results: int = 8, angle: str = "general") -> list[WebSearchHit]:
+    """Query Bing RSS feed (reliable XML web search without anti-bot HTML CAPTCHAs)."""
+    hits: list[WebSearchHit] = []
+    try:
+        url = "https://www.bing.com/search?" + urllib_parse.urlencode({"q": query, "format": "rss"})
+        req = urllib_request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FairybreadResearch/1.0"},
+        )
+        with urllib_request.urlopen(req, timeout=7.0) as resp:
+            xml_bytes = resp.read(220_000)
+        root = ET.fromstring(xml_bytes.decode("utf-8", errors="replace"))
+        for item in root.findall(".//item")[:max_results]:
+            title = _clean_html_to_text(item.findtext("title") or "", 160)
+            link = (item.findtext("link") or "").strip()
+            desc = _clean_html_to_text(item.findtext("description") or "", 320)
+            if not link.startswith(("http://", "https://")):
+                continue
+            hits.append(
+                WebSearchHit(
+                    title=title or link,
+                    url=link,
+                    snippet=desc,
+                    source="bing",
+                    angle=angle,
+                )
+            )
+    except Exception:
+        pass
+    return hits
+
+
 def _search_duckduckgo_html(query: str, max_results: int = 8, angle: str = "general") -> list[WebSearchHit]:
     hits: list[WebSearchHit] = []
     try:
@@ -341,6 +860,8 @@ def _search_duckduckgo_html(query: str, max_results: int = 8, angle: str = "gene
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) FairybreadResearch/1.0"},
         )
         with urllib_request.urlopen(req, timeout=7.0) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return _search_bing_rss(query, max_results=max_results, angle=angle)
             page = resp.read(180_000).decode("utf-8", errors="replace")
         blocks = re.findall(
             r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?(?:<a[^>]+class="result__snippet"[^>]*>(.*?)</a>)?',
@@ -366,6 +887,8 @@ def _search_duckduckgo_html(query: str, max_results: int = 8, angle: str = "gene
             )
     except Exception:
         pass
+    if not hits:
+        return _search_bing_rss(query, max_results=max_results, angle=angle)
     return hits
 
 
@@ -463,8 +986,10 @@ def run_multi_tier_search(
     angles = build_query_angles(question, norm_depth)
     raw_hits: list[WebSearchHit] = []
 
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=8) as ex:
         futs = []
+        if angles:
+            futs.append(ex.submit(_search_bing_rss, angles[0][1], 8, "primary"))
         for angle_name, q_str in angles:
             per_q_max = 8 if norm_depth == "light" else (7 if norm_depth == "moderate" else 8)
             futs.append(ex.submit(_search_duckduckgo_html, q_str, per_q_max, angle_name))

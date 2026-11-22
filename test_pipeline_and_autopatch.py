@@ -4153,5 +4153,609 @@ class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
             self.assertFalse(data_dir.exists())
 
 
+class V092fConformanceWeatherAndIntegrityTests(unittest.TestCase):
+    def test_ms_store_defaults_privacy_iced_vovo_cleanup_and_4part_version(self):
+        from memory_service import DEFAULT_MEMORY_SUMMARY_MARKDOWN
+        from palace_config import (
+            DEFAULT_UI_SETTINGS,
+            FAIRYBREAD_WINDOWS_VERSION,
+            load_ui_settings,
+            version_to_windows_4part,
+        )
+        import palace_theme
+        import catalog_sync
+
+        self.assertEqual(version_to_windows_4part("0.92f"), "0.92.6.0")
+        self.assertEqual(version_to_windows_4part("0.93"), "0.93.0.0")
+        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.93.0.0")
+        self.assertEqual(version_to_windows_4part("0.9.1a"), "0.9.1.1")
+        self.assertFalse(DEFAULT_UI_SETTINGS["close_to_tray"])
+        self.assertTrue((Path(__file__).with_name("PRIVACY.md")).is_file())
+
+        # No personal creator bio in default user profile
+        for leak in ("bm069au", r"E:\Visual_studio", "EvidenceBench", "M:", "ginger beer"):
+            self.assertNotIn(leak, DEFAULT_MEMORY_SUMMARY_MARKDOWN)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(root)}):
+                self.assertFalse(load_ui_settings(root / "cfg.json")["close_to_tray"])
+                themes_dir = root / "Palace" / "themes"
+                themes_dir.mkdir(parents=True, exist_ok=True)
+                legacy_fp = themes_dir / "fairybread.json"
+                legacy_fp.write_text(
+                    json.dumps({"id": "fairybread", "name": "Fairybread (Iced VoVo & 100s & 1000s)"}),
+                    encoding="utf-8",
+                )
+                palace_theme._ENSURED_THEME_DIRS.clear()
+                available = {k for k, _ in palace_theme.list_available_themes()}
+                self.assertNotIn("fairybread", available)
+                self.assertFalse(legacy_fp.exists())
+                self.assertEqual(palace_theme.load_theme_dict("fairybread")["id"], "dark")
+
+                # MSIX suppression blocks external binary installer prompts while keeping catalog sync
+                with patch.object(catalog_sync, "is_msix_packaged", return_value=True):
+                    res = catalog_sync.sync_remote_catalog(
+                        config_path=root / "cfg.json",
+                        cache_path=root / "cache.json",
+                        current_version="0.92f",
+                        force=True,
+                        fetcher=lambda _u, _e, _t: (
+                            200,
+                            {
+                                "schema_version": 1,
+                                "latest_app_version": "0.99z",
+                                "download_url": "https://fairybread.me/Setup.exe",
+                                "model_token_rates_per_1m": {},
+                            },
+                            "",
+                        ),
+                    )
+                    self.assertTrue(res["store_managed_updates"])
+                    self.assertFalse(res["has_newer_version"])
+                    self.assertFalse(res["update_available"])
+                    self.assertEqual(res["download_url"], "")
+
+    def test_move_normal_and_experimental_dbs_and_keys_only_backup(self):
+        from backup_service import create_full_backup_zip, inspect_backup_zip, restore_full_backup_zip
+        from credential_store import CredentialStore
+        from palace_config import (
+            compute_palace_storage_stats,
+            move_experimental_data_to_directory,
+            move_palace_data_to_directory,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local_app = root / "localapp"
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app)}):
+                app_dir = local_app / "Palace"
+                app_dir.mkdir(parents=True)
+                cfg = app_dir / "palace_config.json"
+                cfg.write_text('{"providers": {"openai": {"enabled": true}}}', encoding="utf-8")
+                CredentialStore(app_dir / "credentials.json").set_api_key("openai", "sk-anchor-test-999")
+                (app_dir / "sessions").mkdir()
+                (app_dir / "sessions" / "chat1.json").write_text("[]", encoding="utf-8")
+                exp_src = app_dir / "experimental_sandbox" / "idle_palace"
+                exp_src.mkdir(parents=True)
+                (exp_src / "ai_idle_memory.json").write_text('{"notes": [{"title": "exp1"}]}', encoding="utf-8")
+
+                # Move Normal DB to another folder while keeping credentials.json & palace_config.json in AppData
+                norm_dst = root / "D_NormalDB"
+                res_n = move_palace_data_to_directory(norm_dst, config_path=cfg)
+                self.assertEqual(Path(res_n["new_root"]), norm_dst.resolve())
+                self.assertTrue((norm_dst / "sessions" / "chat1.json").is_file())
+                self.assertFalse((norm_dst / "credentials.json").exists())
+                self.assertFalse((norm_dst / "palace_config.json").exists())
+                self.assertTrue((app_dir / "credentials.json").is_file())
+
+                # Move Experimental DB independently
+                exp_dst = root / "E_ExpDB"
+                res_e = move_experimental_data_to_directory(exp_dst, config_path=cfg)
+                self.assertEqual(Path(res_e["new_root"]), exp_dst.resolve())
+                self.assertTrue((exp_dst / "idle_palace" / "ai_idle_memory.json").is_file())
+                st = compute_palace_storage_stats(cfg)
+                self.assertEqual(Path(st["experimental_root"]), exp_dst.resolve())
+
+                # Keys & Settings Only backup excludes memory/sessions/images
+                keys_zip = root / "keys_only.zip"
+                m = create_full_backup_zip(
+                    keys_zip,
+                    config_path=cfg,
+                    include_memory=False,
+                    include_settings=True,
+                    include_generated_images=False,
+                    include_credentials=True,
+                    backup_password="StrongKeyPassword1!",
+                )
+                self.assertTrue(m["password_protected"])
+                self.assertFalse(m["included_memory"])
+                info = inspect_backup_zip(keys_zip)
+                self.assertFalse(any("sessions/" in f or "memory.db" in f for f in info["files"]))
+                self.assertIn("vault/credentials.vault.enc", info["files"])
+
+                rest_app = root / "restored_app"
+                rest_cfg = root / "restored_cfg.json"
+                rsum = restore_full_backup_zip(
+                    keys_zip,
+                    config_path=rest_cfg,
+                    appdata_root=rest_app,
+                    backup_password="StrongKeyPassword1!",
+                    restore_memory=False,
+                    restore_settings=True,
+                )
+                self.assertTrue(rsum["password_unlocked"])
+                self.assertEqual(
+                    CredentialStore(rest_app / "credentials.json").get_api_key("openai"),
+                    "sk-anchor-test-999",
+                )
+
+    def test_weather_auto_search_bing_fallback_qwen_retry_synthesizer_and_integrity(self):
+        from openai_provider import OpenAIProvider
+        from providers import ProviderResponse
+        from provider_result import ProviderResult
+        import search_service
+        from synthesizer import PalaceSynthesizer
+        from integrity_service import build_integrity_manifest, get_or_create_signing_keypair, verify_installation_integrity
+
+        # 1) Real-time auto-promotion in Default mode
+        depth, _q = search_service.parse_search_command(
+            "what is the current weather forecast for Adelaide and area code 5075",
+            ui_search_depth="default",
+        )
+        self.assertEqual(depth, "light")
+        off_depth, _q2 = search_service.parse_search_command(
+            "what is the current weather forecast for Adelaide",
+            ui_search_depth="off",
+        )
+        self.assertEqual(off_depth, "none")
+
+        # 2) Mocked live weather lookup (Zippopotam + Open-Meteo)
+        class _FakeHTTPResp:
+            def __init__(self, status: int, body: bytes):
+                self.status = status
+                self._body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self, *_n): return self._body
+
+        def _fake_net(req, timeout=5.0):
+            u = req.full_url
+            if "api.zippopotam.us/au/5075" in u:
+                return _FakeHTTPResp(200, json.dumps({
+                    "places": [{"place name": "Paradise", "state abbreviation": "SA", "latitude": "-34.8679", "longitude": "138.6767"}]
+                }).encode("utf-8"))
+            if "geocoding-api.open-meteo.com" in u:
+                return _FakeHTTPResp(200, json.dumps({
+                    "results": [{"name": "Adelaide", "admin1": "South Australia", "country_code": "AU", "latitude": -34.928, "longitude": 138.598}]
+                }).encode("utf-8"))
+            if "api.open-meteo.com/v1/forecast" in u:
+                return _FakeHTTPResp(200, json.dumps({
+                    "timezone": "Australia/Adelaide",
+                    "current": {"time": "2026-11-22T15:00", "temperature_2m": 24.1, "apparent_temperature": 23.5, "relative_humidity_2m": 52, "weather_code": 2, "wind_speed_10m": 11.0, "wind_direction_10m": 315, "precipitation": 0.0},
+                    "daily": {"time": ["2026-11-22", "2026-11-23", "2026-11-24"], "weather_code": [2, 61, 0], "temperature_2m_max": [28.7, 19.1, 22.2], "temperature_2m_min": [14.0, 12.1, 10.5], "precipitation_probability_max": [10, 80, 5], "precipitation_sum": [0.0, 4.2, 0.0]},
+                }).encode("utf-8"))
+            if "html.duckduckgo.com" in u:
+                return _FakeHTTPResp(202, b"<html>anomaly challenge</html>")
+            if "bing.com/search" in u:
+                return _FakeHTTPResp(200, b"<rss><channel><item><title>Adelaide Forecast</title><link>https://example.org/adelaide</link><description>Sunny 28C</description></item></channel></rss>")
+            raise AssertionError(f"Unexpected URL in mock: {u}")
+
+        with patch("urllib.request.urlopen", side_effect=_fake_net):
+            wblk = search_service.fetch_live_weather_context("weather forecast Adelaide 5075")
+            self.assertIn("24.1", wblk)
+            self.assertIn("Paradise", wblk)
+            self.assertIn("BOM ACCESS-G", wblk)
+            ddg_hits = search_service._search_duckduckgo_html("Adelaide weather")
+            self.assertEqual(len(ddg_hits), 1)
+            self.assertEqual(ddg_hits[0].source, "bing")
+
+        # 3) Qwen empty-content auto-retry with enable_thinking=False
+        calls = []
+        class _FakeMsg:
+            def __init__(self, content, reasoning=""):
+                self.content = content
+                self.reasoning_content = reasoning
+                self.model_extra = {}
+        class _FakeChoice:
+            def __init__(self, msg, finish_reason="stop"):
+                self.message = msg
+                self.finish_reason = finish_reason
+        class _FakeComp:
+            def __init__(self, msg):
+                self.choices = [_FakeChoice(msg)]
+        class _FakeChatComp:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    return _FakeComp(_FakeMsg("", "thinking..."))
+                return _FakeComp(_FakeMsg("24.1°C and partly cloudy."))
+
+        qwen = OpenAIProvider("k", model="Qwen/Qwen3.8-27B", base_url="https://api.deepinfra.com/v1/openai", provider_name="qwen", max_tokens=8192)
+        qwen.client = type("_C", (), {"chat": type("_Chat", (), {"completions": _FakeChatComp()})()})()
+        qres = qwen.generate("Weather?")
+        self.assertEqual(qres.text, "24.1°C and partly cloudy.")
+        self.assertEqual(calls[1]["extra_body"]["chat_template_kwargs"]["enable_thinking"], False)
+
+        # 4) Normal conversational synthesizer suppresses PAUSED / ALL TASKS COMPLETED footer instruction
+        syn_prompts = []
+        spy = type("_Spy", (), {"generate": lambda _s, p: (syn_prompts.append(p) or ProviderResponse(text="Sunny today.", provider="gemini"))})()
+        syn = PalaceSynthesizer("gemini", spy)
+        syn.synthesize(
+            "What is the weather in Adelaide?",
+            {
+                "gemini": ProviderResult(provider_name="gemini", response=ProviderResponse(text="24C", provider="gemini")),
+                "deepseek": ProviderResult(provider_name="deepseek", response=ProviderResponse(text="24C", provider="deepseek")),
+            },
+            allow_autopatch_banner=False,
+        )
+        self.assertNotIn("MANDATORY END-OF-TURN STATUS BANNER", syn_prompts[-1])
+        self.assertIn("NORMAL REPLY FORMAT RULE", syn_prompts[-1])
+
+        # 5) Integrity Ed25519 manifest signing & tamper detection
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            key_dir = root / "keys"
+            app_dir = root / "app"
+            app_dir.mkdir()
+            (app_dir / "Fairybread.exe").write_bytes(b"MZ-OFFICIAL-EXE")
+            (app_dir / "palace_gui.py").write_text("print('ok')\n", encoding="utf-8")
+            priv_pem, pub_b64 = get_or_create_signing_keypair(key_dir)
+            build_integrity_manifest(app_dir, version="0.92f", private_pem=priv_pem, public_b64=pub_b64)
+            v_ok = verify_installation_integrity(app_dir, public_b64=pub_b64)
+            self.assertTrue(v_ok["ok"])
+            self.assertEqual(v_ok["status"], "verified")
+            # Tamper 1 byte -> must catch!
+            (app_dir / "palace_gui.py").write_text("print('tampered')\n", encoding="utf-8")
+            v_bad = verify_installation_integrity(app_dir, public_b64=pub_b64)
+            self.assertFalse(v_bad["ok"])
+            self.assertIn("palace_gui.py", v_bad["mismatches"])
+
+    def test_backup_restore_4_cards_tooltips_and_top_menus_ui_audit(self):
+        from PySide6.QtWidgets import QApplication, QCheckBox, QFrame, QLineEdit, QPushButton, QSlider
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from session_store import SessionStore
+
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "palace_config.json"
+
+            class _FakeMem:
+                def build_prompt_context(self, _q): return ""
+
+            win = PalaceWindow(
+                store=SessionStore(root / "sess"),
+                palace_factory=lambda _c: PalaceOrchestrator(_FakeMem(), ProviderDispatcher(ProviderRegistry())),
+                provider_states={"gemini": True, "openai": True},
+                config_path=cfg,
+            )
+            win.show()
+            app.processEvents()
+            for m in win._top_menus.values():
+                self.assertTrue(m.toolTipsVisible())
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="Backup & Restore")
+            dlg.resize(960, 740)
+            dlg.show()
+            app.processEvents()
+            for cname in ("storageSpaceCard", "quickFoldersCard", "storedFilesCard", "backupVaultCard"):
+                self.assertIsNotNone(dlg.findChild(QFrame, cname), msg=f"Missing card {cname}")
+            cur_pg = dlg.pages.currentWidget()
+            for cls in (QPushButton, QCheckBox, QLineEdit, QSlider):
+                for w in cur_pg.findChildren(cls):
+                    self.assertTrue(bool(w.toolTip()), msg=f"Missing tooltip on {cls.__name__}: {getattr(w, 'text', lambda: '')()}")
+            aud = audit_palace_window_geometry(dlg)
+            self.assertEqual(aud["clipped_widget_count"], 0, msg=str(aud.get("clipped_widgets")))
+            dlg.reject()
+            dlg.close()
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+
+class V093ReleaseFeaturesTests(unittest.TestCase):
+    def test_1_weather_map_radar_and_speech_stripping(self):
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QColor, QImage
+        import urllib.request
+        from palace_theme import format_markdown_and_drawings
+        from search_service import render_live_weather_map_png
+        from voice_service import clean_text_for_speech
+
+        def _make_png_bytes(r: int, g: int, b: int, a: int) -> bytes:
+            im = QImage(256, 256, QImage.Format.Format_ARGB32)
+            im.fill(QColor(r, g, b, a))
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            im.save(buf, "PNG")
+            return bytes(buf.data())
+
+        tile_bytes = _make_png_bytes(25, 35, 50, 255)
+        radar_bytes = _make_png_bytes(56, 189, 248, 120)
+
+        class _FakeResp:
+            def __init__(self, data: bytes):
+                self._data = data
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self, *_a):
+                return self._data
+
+        def _fake_urlopen(req, timeout=5.0):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "weather-maps.json" in url:
+                return _FakeResp(json.dumps({
+                    "host": "https://tilecache.rainviewer.com",
+                    "radar": {"past": [{"path": "/v2/radar/1700000000", "time": 1700000000}]},
+                }).encode("utf-8"))
+            if "rainviewer" in url:
+                return _FakeResp(radar_bytes)
+            return _FakeResp(tile_bytes)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+                png_p = render_live_weather_map_png(
+                    {"label": "Adelaide SA", "lat": -34.9285, "lon": 138.6007},
+                    weather_data={"current": {"temperature_2m": 22.4, "apparent_temperature": 21.0, "wind_speed_10m": 14, "relative_humidity_2m": 55, "weather_code": 2}, "daily": {"uv_index_max": [7.5]}},
+                    out_dir=root / "out",
+                    cache_dir=root / "cache",
+                )
+            self.assertIsNotNone(png_p)
+            self.assertTrue(png_p.is_file())
+            out_img = QImage(str(png_p))
+            self.assertEqual((out_img.width(), out_img.height()), (768, 512))
+
+            rendered = format_markdown_and_drawings(
+                f'[WEATHER_MAP path="{png_p}" title="Adelaide Live Radar"]\n\nMostly cloudy today.'
+            )
+            self.assertIn("Adelaide Live Radar", rendered)
+            self.assertIn("<img", rendered)
+            spoken = clean_text_for_speech(f'[WEATHER_MAP path="{png_p}" title="Adelaide Live Radar"] Warm afternoon ahead.')
+            self.assertNotIn("WEATHER_MAP", spoken)
+            self.assertIn("Warm afternoon ahead.", spoken)
+
+    def test_2_straggler_grace_scaling_preserves_tiny_unit_test_timers(self):
+        captured_graces: list[float | None] = []
+
+        class _CapDispatcher:
+            def __init__(self):
+                self.providers = {k: object() for k in ("gemini", "openai", "qwen", "deepseek")}
+                self.registry = None
+
+            def dispatch(self, prompt, provider_names=None, on_result=None, per_provider_timeout=None, straggler_grace_seconds=None, cancel_event=None, **kw):
+                captured_graces.append(straggler_grace_seconds)
+                return {
+                    p: ProviderResult(provider_name=p, response=ProviderResponse(text="ok", provider=p))
+                    for p in (provider_names or ["gemini"])
+                }
+
+        class _NullMem:
+            def search(self, _q):
+                return SimpleNamespace(succeeded=True, context="ctx", error=None)
+
+        orch = PalaceOrchestrator(_NullMem(), _CapDispatcher(), synthesizer=None)
+        # Small test timer (< 5.0s) MUST NOT be inflated!
+        with patch("palace_config.load_agent_defaults", return_value={
+            **DEFAULT_AGENT_DEFAULTS,
+            "smart_routing": False,
+            "provider_timeout_sec": 45,
+            "straggler_grace_sec": 0.25,
+            "output_detail": "high",
+        }):
+            orch.run("Explain system architecture in detail", provider_names=["gemini", "openai", "qwen", "deepseek"], include_context=False)
+        self.assertEqual(captured_graces[-1], 0.25)
+
+        # Normal production grace (>= 5.0s) scales cleanly to >= 30.0s for reasoning models / high detail!
+        with patch("palace_config.load_agent_defaults", return_value={
+            **DEFAULT_AGENT_DEFAULTS,
+            "smart_routing": False,
+            "provider_timeout_sec": 45,
+            "straggler_grace_sec": 15,
+            "output_detail": "high",
+        }):
+            orch.run("Quick compare", provider_names=["gemini", "openai", "qwen", "deepseek"], include_context=False)
+        self.assertGreaterEqual(float(captured_graces[-1] or 0.0), 30.0)
+
+    def test_3_conversational_synthesizer_rapport_history_and_banter_fast_path(self):
+        from memory_service import MemoryService
+        from synthesizer import PalaceSynthesizer
+        seen_hist: list[Any] = []
+        seen_synth_prompts: list[str] = []
+
+        class _ConvProv:
+            def __init__(self, name: str):
+                self.name = name
+                self.calls = 0
+
+            def generate(self, prompt: str, *, history_messages=None):
+                self.calls += 1
+                if "Create one strong final answer for the user." in prompt:
+                    seen_synth_prompts.append(prompt)
+                    seen_hist.append(history_messages)
+                    return ProviderResponse(text="Natural direct synthesis", provider=self.name)
+                return ProviderResponse(text=f"reply from {self.name}", provider=self.name)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ctx = ContextService(root / "sess.jsonl", session_id="s1")
+            ctx.append_exchange("Let's fix the mutex bug", "Sure, here is the fix.")
+            provs = {"openai": _ConvProv("openai"), "gemini": _ConvProv("gemini"), "deepseek": _ConvProv("deepseek")}
+            reg = ProviderRegistry()
+            for k, v in provs.items():
+                reg.register(k, v)
+            orch = PalaceOrchestrator(MemoryService(db_path=root / "mem.db"), ProviderDispatcher(reg), synthesizer=PalaceSynthesizer("openai", provs["openai"]), context_service=ctx)
+            # Deep / regular coding runs council + synthesis receives direct-voice prompt & history
+            orch.run("Compare mutex vs semaphore design tradeoffs cleanly", max_rounds=1)
+            self.assertTrue(seen_synth_prompts)
+            self.assertIn("Create one strong final answer for the user.", seen_synth_prompts[-1])
+            self.assertIn("You are Fairybread, speaking directly to the user", seen_synth_prompts[-1])
+            self.assertIsInstance(seen_hist[-1], list)
+            self.assertTrue(any(m["role"] == "user" for m in seen_hist[-1]))
+
+            # Pure short banter interlude routes to 1 fast natural voice without wasting all 3 calls
+            calls_before = sum(p.calls for p in provs.values())
+            res_banter = orch.run("haha tell me a quick programming joke!", max_rounds=2)
+            calls_after = sum(p.calls for p in provs.values())
+            self.assertEqual(len(res_banter.provider_results), 1)
+            self.assertEqual(calls_after - calls_before, 1)
+
+    def test_4_openrouter_hybrid_usage_cost_and_image_sidecar(self):
+        from credential_store import CredentialStore
+        from openai_provider import OpenAIProvider
+        from palace_config import load_provider_configs, save_openrouter_hub_settings, save_provider_config
+        from palace_theme import _save_engine_badge, get_image_cost_badge
+        from provider_loader import load_configured_providers
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = root / "cfg.json"
+            cred = CredentialStore(path=root / "creds.json")
+            cred.set_api_key("openrouter", "sk-or-test-key")
+            cred.set_api_key("gemini", "AIza-direct-gemini")
+            save_openrouter_hub_settings({"auto_fill_seats": True, "tier": "balanced"}, config_path=cfg)
+            save_provider_config("deepseek", enabled=True, use_openrouter=True, config_path=cfg)
+
+            loaded = load_configured_providers(cred, load_provider_configs(cfg), config_path=cfg, include_local_cli=False)
+            # Direct key wins for gemini; OpenRouter fills deepseek (override) & openai/claude (auto-fill)
+            self.assertIn("gemini", loaded)
+            self.assertNotIsInstance(loaded["gemini"], OpenAIProvider)
+            self.assertIn("deepseek", loaded)
+            self.assertIsInstance(loaded["deepseek"], OpenAIProvider)
+            self.assertEqual(loaded["deepseek"].base_url, "https://openrouter.ai/api/v1")
+            self.assertIn("claude", loaded)
+
+            # Extract exact usage.cost from OpenRouter response object
+            fake_completion = SimpleNamespace(
+                usage=SimpleNamespace(prompt_tokens=120, completion_tokens=45, cost=0.00123),
+                choices=[SimpleNamespace(message=SimpleNamespace(content="Hello OpenRouter", reasoning_content=None), finish_reason="stop")],
+            )
+            self.assertAlmostEqual(OpenAIProvider._extract_explicit_cost(fake_completion), 0.00123, places=6)
+
+            img_p = root / "sample.png"
+            img_p.write_bytes(b"png")
+            _save_engine_badge(img_p, "openai/gpt-5-image-mini (OpenRouter)", cost_usd=0.025)
+            badge = get_image_cost_badge(img_p)
+            self.assertIn("0.025", badge)
+
+    def test_5_wizard_plan_selective_backup_restore_and_billing_ledger(self):
+        from backup_service import create_full_backup_zip, inspect_backup_zip, restore_full_backup_zip
+        from cost_service import GlobalBillingLedger
+        from credential_store import CredentialStore
+        from memory_service import MemoryService
+        from setup_wizard import recommend_setup_plan
+
+        plan = recommend_setup_plan(
+            {"everything"},
+            voice_pref="best_deepgram",
+            tone_pref="warm",
+            billing_pref="openrouter_one_bill",
+            budget_pref="balanced",
+        )
+        ids = [i["id"] for i in plan["required_items"]]
+        self.assertIn("openrouter", ids)
+        self.assertIn("deepgram", ids)
+        self.assertTrue(plan["auto_fill_seats"])
+        self.assertEqual(plan["voice_settings_patch"]["tts_engine"], "deepgram")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src_app = root / "src_app"
+            src_app.mkdir()
+            src_cfg = root / "src_cfg.json"
+            src_cfg.write_text('{"ui_settings": {"theme": "dark"}}', encoding="utf-8")
+            CredentialStore(path=src_app / "credentials.json").set_api_key("openai", "sk-secret-key-99")
+            ms = MemoryService(db_path=src_app / "memory.db")
+            ms.index.upsert("Router IP", "Router gateway is 192.168.1.1")
+
+            zip_fp = root / "full_bak.zip"
+            create_full_backup_zip(
+                zip_fp,
+                config_path=src_cfg,
+                appdata_root=src_app,
+                include_memory=True,
+                include_settings=True,
+                include_credentials=True,
+                backup_password="pw123",
+            )
+            info = inspect_backup_zip(zip_fp)
+            self.assertTrue(info["has_memory"])
+            self.assertTrue(info["has_settings"])
+            self.assertTrue(info["has_credentials"])
+            self.assertTrue(info["password_protected"])
+
+            # Selective restore: Memory ONLY (do not touch target credentials or config!)
+            dst_app = root / "dst_app"
+            dst_app.mkdir()
+            dst_cfg = root / "dst_cfg.json"
+            dst_cfg.write_text('{"ui_settings": {"theme": "custom"}}', encoding="utf-8")
+            restore_full_backup_zip(
+                zip_fp,
+                config_path=dst_cfg,
+                appdata_root=dst_app,
+                restore_memory=True,
+                restore_settings=False,
+                restore_credentials=False,
+            )
+            self.assertTrue((dst_app / "memory.db").is_file())
+            self.assertFalse((dst_app / "credentials.json").exists())
+            self.assertIn("custom", dst_cfg.read_text(encoding="utf-8"))
+
+            # GlobalBillingLedger cumulative + per-provider reset
+            gl = GlobalBillingLedger(path=root / "gl.json", persist=True)
+            gl.record({"kind": "llm", "provider": "openrouter", "cost_usd": 0.25})
+            gl.record({"kind": "image", "provider": "gemini", "cost_usd": 0.04})
+            gl.mark_provider_paid("openrouter", note="Paid card")
+            snap = gl.snapshot()
+            self.assertAlmostEqual(snap["lifetime_total_usd"], 0.29, places=6)
+            self.assertAlmostEqual(snap["providers"]["openrouter"]["cycle_usd"], 0.0, places=6)
+            self.assertAlmostEqual(snap["providers"]["openrouter"]["lifetime_usd"], 0.25, places=6)
+            self.assertAlmostEqual(snap["providers"]["gemini"]["cycle_usd"], 0.04, places=6)
+
+    def test_6_free_agent_local_memory_fast_recall_and_recheck_bypass(self):
+        from memory_service import MemoryService
+        called: list[str] = []
+
+        class _RecProv:
+            def __init__(self, name: str):
+                self.name = name
+            def generate(self, _p: str):
+                called.append(self.name)
+                return ProviderResponse(text=f"From {self.name}: gateway is 10.0.0.1", provider=self.name)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ms = MemoryService(db_path=root / "mem.db")
+            ms.index.upsert("Home Router Gateway Address", "Home router gateway LAN IP address is 10.0.0.1")
+            # Warm vector index / confirm recall hit exists
+            hits = ms.find_high_confidence_local_recall("What is my home router gateway address?")
+            self.assertTrue(hits)
+
+            provs = {"openai": _RecProv("openai"), "cohere": _RecProv("cohere")}
+            reg = ProviderRegistry()
+            for k, v in provs.items():
+                reg.register(k, v)
+            orch = PalaceOrchestrator(ms, ProviderDispatcher(reg), synthesizer=None)
+            res = orch.run("What is my home router gateway address?", include_memory=True, include_context=False)
+            self.assertEqual(called, ["cohere"])
+            self.assertIn("$0.00", res.final_answer or "")
+
+            # Recheck bypasses free-agent shortcut and runs normal council
+            called.clear()
+            orch.run("recheck with full council what is my home router gateway address?", include_memory=True, include_context=False)
+            self.assertEqual(set(called), {"openai", "cohere"})
+
+    def test_7_installer_iss_v093_and_update_only(self):
+        iss = (Path(__file__).with_name("fairybread_setup.iss")).read_text(encoding="utf-8")
+        self.assertIn('AppDispVer "0.93"', iss)
+        self.assertIn('AppWinVer "0.93.0.0"', iss)
+        self.assertIn("1. Update only (Recommended", iss)
+        self.assertIn("/UPDATEONLY", iss)
+        self.assertIn("ShouldAutoRelaunchUpdateOnly", iss)
+
+
 if __name__ == "__main__":
     unittest.main()

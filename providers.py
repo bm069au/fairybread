@@ -10,6 +10,7 @@ class ProviderResponse:
     provider: Optional[str] = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cost_usd: Optional[float] = None
 
 
 class AIProvider(ABC):

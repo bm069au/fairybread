@@ -1,3 +1,28 @@
+# Fairybread — v0.93 (Win_x64) Changelog
+**Release Date:** 2026-11-22
+**Version:** `0.93` (`0.93.0.0`)
+
+## Summary of Changes in `v0.93`
+1. **🧭 Guided Setup Wizard & Selective Backup Restore (`setup_wizard.py`, `backup_service.py`, `palace_gui.py`):**
+   - Added `GuidedSetupWizardDialog` with workflow usage profiles (*Light Chat & Research*, *Assignments & Writing*, *Coding*, or *Everything*), a clickable tick-off API key checklist, and first-run + Settings re-launch (`Settings → Launch Setup Wizard…`).
+   - Added independent selective backup restore (`restore_credentials`, settings, and memory) in both Setup Wizard and Settings.
+2. **🌐 All-in-One Hybrid OpenRouter Hub (`palace_config.py`, `providers.py`, `openai_provider.py`, `provider_loader.py`, `catalog_sync.py`, `voice_service.py`):**
+   - Single DPAPI `openrouter` key auto-fills unconfigured Council seats across `free`, `balanced`, and `flagship` preset tiers while keeping direct provider keys at top priority.
+   - Added exact `usage.cost` extraction, `/api/v1/credits` + `/api/v1/models` live syncing, and OpenRouter image/audio fallback with `.cost` sidecar badges.
+3. **💵 3-Layer Live Cost Tickers (`cost_service.py`, `setup_wizard.py`, `palace_gui.py`):**
+   - Added `GlobalBillingLedger` (`billing_ledger.json`) with cumulative & per-provider resettable spend dashboard (`SpendBillingDialog`, clickable bottom spend bar), per-picture cost badges, and live ongoing Voice Mode cost badge in `composer_live_bar`.
+4. **🌦️ Live Weather Radar Map (`search_service.py`, `palace_theme.py`, `orchestrator.py`, `voice_service.py`):**
+   - Enriched `fetch_live_weather_bundle()` and `render_live_weather_map_png()` (RainViewer `z=7` precipitation radar + CartoDB Dark Matter `z=7` + Open-Meteo UV, gusts, sunrise/sunset, 12h hourly, and 7-day forecast) with Pillow + `PySide6.QtGui.QImage` fallback, inline `[WEATHER_MAP]` card rendering, and speech stripping.
+5. **🏛️ Free-Agent Local Memory Fast-Recall (`$0.00`) (`memory_service.py`, `orchestrator.py`):**
+   - Added `find_high_confidence_local_recall()` so high-confidence local SQLite matches skip paid web search and route 1 round to free-tier agents (`$0.00`), with explicit `"recheck with full council"` bypass.
+6. **💬 Natural Conversational Synthesizer, Steer/Queue & Zero-Clipping Status Chips (`synthesizer.py`, `dispatcher.py`, `orchestrator.py`, `palace_gui.py`):**
+   - Passed `personalization_context`, compact user profile summary, `conversational_scale`, and multi-turn `history_messages` into `PalaceSynthesizer`, plus a 1-voice fast-path for brief casual banter.
+   - Added pure **Steer / Queue** composer dropdown (`busy_submit_mode`) and context/reasoning-aware straggler cutoff scaling with honest amber `Cutoff`/`Timeout` chips and width-balanced zero-clipping agent bar layout.
+7. **📦 64-Bit Inno Setup `Update only` Hot-Reboot Installer, MSIX & Contributors (`fairybread_setup.iss`, `build_release.py`, `palace_config.py`, `palace_gui.py`):**
+   - Updated version to `0.93` (`0.93.0.0`), added default `Update only` installer option + `/UPDATEONLY` silent relaunch, Ed25519 + SHA-256 verification (`integrity_manifest.json`, `SHA256SUMS.txt`, `verify.html`), Microsoft Store MSIX packaging (`0.93.0.0`), 1-click in-app update download dialog, and `Community Contributors` in About.
+
+---
+
 # Fairybread — Beta v0.92e (Win_x64) Changelog
 **Release Date:** 2026-11-22
 **Version:** `v0.92e_beta_Win_x64`

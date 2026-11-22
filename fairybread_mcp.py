@@ -24,7 +24,14 @@ from local_cli_provider import (
     find_cli_binary,
     get_mcp_depth,
 )
-from palace_config import CONFIG_PATH, FAIRYBREAD_VERSION, _read_raw_config, _write_raw_config
+from palace_config import (
+    CONFIG_PATH,
+    FAIRYBREAD_VERSION,
+    _read_raw_config,
+    _write_raw_config,
+    get_app_install_dir,
+    is_frozen_app,
+)
 
 
 EXTERNAL_PLATFORMS: tuple[str, ...] = ("codex", "antigravity", "grok", "claude")
@@ -124,6 +131,10 @@ def resolve_console_python_executable(exe: str | None = None) -> str:
 
 
 def get_mcp_script_path() -> Path:
+    if is_frozen_app():
+        mcp_exe = get_app_install_dir() / "FairybreadMCP.exe"
+        if mcp_exe.is_file():
+            return mcp_exe
     return Path(__file__).resolve()
 
 
@@ -131,10 +142,91 @@ def get_mcp_server_entry(
     python_exe: str | None = None,
     script_path: Path | None = None,
 ) -> dict[str, Any]:
+    if python_exe is None and script_path is None and is_frozen_app():
+        mcp_exe = get_app_install_dir() / "FairybreadMCP.exe"
+        if mcp_exe.is_file():
+            return {"command": str(mcp_exe), "args": []}
     return {
         "command": resolve_console_python_executable(python_exe),
         "args": [str(script_path or get_mcp_script_path())],
     }
+
+
+def _norm_dir_match(raw: str | Path) -> str:
+    try:
+        s = str(Path(raw).resolve())
+    except Exception:
+        s = str(raw)
+    return s.replace("/", "\\").rstrip("\\").lower()
+
+
+def _entry_points_into_dir(entry: Any, norm_dir: str) -> bool:
+    if not norm_dir:
+        return False
+    if isinstance(entry, str):
+        return norm_dir in entry.replace("/", "\\").lower()
+    if isinstance(entry, dict):
+        return any(_entry_points_into_dir(v, norm_dir) for v in entry.values())
+    if isinstance(entry, (list, tuple)):
+        return any(_entry_points_into_dir(v, norm_dir) for v in entry)
+    return False
+
+
+def cleanup_external_mcp_for_dir(
+    install_dir: str | Path,
+    *,
+    home_dir: Path | None = None,
+    appdata_dir: Path | None = None,
+    server_name: str = "fairybread",
+) -> list[str]:
+    """Remove external MCP bridge entries only when they point inside install_dir."""
+    norm_dir = _norm_dir_match(install_dir)
+    home, appdata = _resolve_roots(home_dir, appdata_dir)
+    cleaned: list[str] = []
+
+    for cfg_path, remove_skill in (
+        (_antigravity_mcp_path(home), True),
+        (_claude_config_path(appdata), False),
+    ):
+        if not cfg_path.is_file():
+            continue
+        try:
+            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        servers = loaded.get("mcpServers") if isinstance(loaded, dict) else None
+        if not isinstance(servers, dict) or server_name not in servers:
+            continue
+        if not _entry_points_into_dir(servers[server_name], norm_dir):
+            continue
+        servers.pop(server_name, None)
+        cfg_path.write_text(json.dumps(loaded, indent=2) + "\n", encoding="utf-8")
+        cleaned.append(str(cfg_path))
+        if remove_skill:
+            skill_md = _antigravity_skill_path(home)
+            if skill_md.is_file():
+                try:
+                    skill_md.unlink()
+                    cleaned.append(str(skill_md))
+                except OSError:
+                    pass
+
+    for toml_path in (_codex_config_path(home), _grok_config_path(home)):
+        if not toml_path.is_file():
+            continue
+        try:
+            raw = toml_path.read_text(encoding="utf-8")
+            parsed = tomllib.loads(raw) if raw.strip() else {}
+        except Exception:
+            continue
+        entry = (parsed.get("mcp_servers") or {}).get(server_name)
+        if not entry or not _entry_points_into_dir(entry, norm_dir):
+            continue
+        ok, _ = remove_toml_mcp_server(toml_path, server_name=server_name)
+        if ok:
+            cleaned.append(str(toml_path))
+
+    return cleaned
 
 
 def _backup_config_file(path: Path) -> None:
@@ -802,11 +894,19 @@ def test_mcp_bridge_live(
     script_path: Path | None = None,
     timeout_sec: float = 12.0,
 ) -> tuple[bool, str]:
-    """Spawn python.exe fairybread_mcp.py over real stdio pipes and verify JSON-RPC responses."""
-    py_exe = resolve_console_python_executable()
-    mcp_script = Path(script_path or get_mcp_script_path())
-    if not mcp_script.is_file():
-        return False, f"MCP script not found: {mcp_script}"
+    """Spawn Fairybread MCP server (python.exe fairybread_mcp.py or frozen FairybreadMCP.exe) over stdio pipes."""
+    use_frozen_exe = False
+    frozen_exe = get_app_install_dir() / "FairybreadMCP.exe"
+    if script_path is None and is_frozen_app() and frozen_exe.is_file():
+        use_frozen_exe = True
+        cmd = [str(frozen_exe)]
+        py_exe = str(frozen_exe)
+    else:
+        py_exe = resolve_console_python_executable()
+        mcp_script = Path(script_path or get_mcp_script_path())
+        if not mcp_script.is_file():
+            return False, f"MCP script not found: {mcp_script}"
+        cmd = [py_exe, str(mcp_script)]
 
     requests = [
         {
@@ -845,11 +945,11 @@ def test_mcp_bridge_live(
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     try:
-        proc = subprocess.run([py_exe, str(mcp_script)], **kwargs)
+        proc = subprocess.run(cmd, **kwargs)
     except subprocess.TimeoutExpired:
         return False, f"MCP self-test timed out after {timeout_sec:.0f}s."
     except Exception as exc:
-        return False, f"Could not launch MCP server '{py_exe}': {exc}"
+        return False, f"Could not launch MCP server '{cmd[0]}': {exc}"
 
     if proc.returncode != 0:
         err = (proc.stderr or f"exit code {proc.returncode}").strip()[:280]
@@ -894,7 +994,10 @@ def test_mcp_bridge_live(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--cli":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--cleanup-install-dir":
+        removed = cleanup_external_mcp_for_dir(sys.argv[2])
+        print(json.dumps({"removed": removed}, indent=2))
+    elif len(sys.argv) >= 3 and sys.argv[1] == "--cli":
         t_name = sys.argv[2]
         t_args = json.loads(sys.argv[3]) if len(sys.argv) >= 4 else {}
         print(json.dumps(execute_bridge_tool(t_name, t_args), indent=2))

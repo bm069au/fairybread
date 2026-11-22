@@ -17,25 +17,30 @@ class ProviderDispatcher:
         name: str,
         prompt: str,
         images: list[Any] | None = None,
+        *,
+        system_prompt: str | None = None,
+        history_messages: list[dict[str, str]] | None = None,
     ) -> ProviderResult:
         try:
             provider = self.registry.get(name)
-            if images:
-                accepts_images = True
+            call_kw: dict[str, Any] = {}
+            if images or system_prompt or history_messages:
                 try:
                     sig = inspect.signature(provider.generate)
-                    accepts_images = (
-                        "images" in sig.parameters
-                        or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-                    )
+                    params = sig.parameters
+                    has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
                 except (TypeError, ValueError):
-                    accepts_images = False
-                if accepts_images:
-                    response = provider.generate(prompt, images=images)
-                else:
-                    response = provider.generate(prompt)
-            else:
-                response = provider.generate(prompt)
+                    params = {}
+                    has_varkw = False
+
+                if images and (has_varkw or "images" in params):
+                    call_kw["images"] = images
+                if system_prompt and (has_varkw or "system_prompt" in params):
+                    call_kw["system_prompt"] = system_prompt
+                if history_messages and (has_varkw or "history_messages" in params):
+                    call_kw["history_messages"] = history_messages
+
+            response = provider.generate(prompt, **call_kw) if call_kw else provider.generate(prompt)
 
             return ProviderResult(
                 provider_name=name,
@@ -55,6 +60,8 @@ class ProviderDispatcher:
         on_result: Callable[[ProviderResult], None] | None = None,
         *,
         images: list[Any] | None = None,
+        system_prompt: str | None = None,
+        history_messages: list[dict[str, str]] | None = None,
         per_provider_timeout: float | None = None,
         straggler_grace_seconds: float | None = None,
         cancel_event: Any = None,
@@ -83,6 +90,8 @@ class ProviderDispatcher:
                     name,
                     prompt.get(name, next(iter(prompt.values()), "")) if isinstance(prompt, dict) else prompt,
                     images,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
                 ): name
                 for name in provider_names
             }

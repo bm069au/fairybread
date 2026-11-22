@@ -25,6 +25,7 @@ from palace_config import (
     FAIRYBREAD_VERSION,
     PROVIDER_CATALOG,
     get_palace_data_root,
+    is_msix_packaged,
     load_ui_settings,
 )
 
@@ -361,24 +362,26 @@ def sync_remote_catalog(
             err_msg = str(exc)
 
     applied = apply_catalog_overrides(active_payload) if active_payload else {"rates_updated": 0, "providers_updated": 0}
+    store_managed = bool(is_msix_packaged())
     latest_ver = str(active_payload.get("latest_app_version") or "").strip()
     dismissed = str(ui_cfg.get("dismissed_update_version") or "").strip()
-    has_newer = bool(latest_ver) and compare_versions(latest_ver, current_version) > 0
+    has_newer = (False if store_managed else (bool(latest_ver) and compare_versions(latest_ver, current_version) > 0))
     is_dismissed = bool(has_newer and dismissed and compare_versions(latest_ver, dismissed) == 0)
-    update_available = bool(has_newer and (force or not is_dismissed))
+    update_available = False if store_managed else bool(has_newer and (force or not is_dismissed))
 
     return {
         "ok": source != "offline_fallback" or bool(cached_payload),
         "skipped": False,
         "source": source,
         "current_version": current_version,
-        "latest_app_version": latest_ver,
+        "latest_app_version": "" if store_managed else latest_ver,
         "has_newer_version": has_newer,
         "update_available": update_available,
-        "release_summary": str(active_payload.get("release_summary") or ""),
-        "download_url": str(active_payload.get("download_url") or ""),
+        "store_managed_updates": store_managed,
+        "release_summary": "" if store_managed else str(active_payload.get("release_summary") or ""),
+        "download_url": "" if store_managed else str(active_payload.get("download_url") or ""),
         "release_page_url": str(active_payload.get("release_page_url") or DEFAULT_RELEASES_URL),
-        "installer_sha256": str(active_payload.get("installer_sha256") or ""),
+        "installer_sha256": "" if store_managed else str(active_payload.get("installer_sha256") or ""),
         "updated_at": str(active_payload.get("updated_at") or ""),
         "rates_updated": applied["rates_updated"],
         "providers_updated": applied["providers_updated"],
@@ -396,7 +399,7 @@ def _safe_filename_from_url(url: str) -> str:
     parsed = urllib_parse.urlparse(url)
     leaf = Path(urllib_parse.unquote(parsed.path)).name.strip()
     cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", leaf)
-    return cleaned or "Fairybread_Installer_Setup.zip"
+    return cleaned or "Fairybread_Installer_Setup.exe"
 
 
 def download_and_verify_installer(
@@ -458,3 +461,67 @@ def download_and_verify_installer(
         except OSError:
             pass
         return False, f"Download failed: {exc}", None
+
+
+def fetch_openrouter_credits(api_key: str, *, timeout: float = 6.0) -> dict[str, Any]:
+    """Query OpenRouter remaining prepaid credits cleanly."""
+    clean_key = str(api_key or "").strip()
+    if not clean_key:
+        return {"ok": False, "error": "Missing OpenRouter API key."}
+    req = urllib_request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={
+            "Authorization": f"Bearer {clean_key}",
+            "Accept": "application/json",
+            "User-Agent": "Fairybread",
+        },
+        method="GET",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=float(timeout)) as resp:
+            raw = json.loads(resp.read(262144).decode("utf-8", errors="replace"))
+        data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else (raw if isinstance(raw, dict) else {})
+        total_credits = float(data.get("total_credits", 0.0) or 0.0)
+        total_usage = float(data.get("total_usage", 0.0) or 0.0)
+        remaining = max(0.0, total_credits - total_usage)
+        return {
+            "ok": True,
+            "total_credits": round(total_credits, 6),
+            "total_usage": round(total_usage, 6),
+            "remaining_usd": round(remaining, 6),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def fetch_openrouter_live_catalog(
+    *,
+    timeout: float = 8.0,
+    cache_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch OpenRouter's live /api/v1/models list and cache it locally."""
+    eff_cache = Path(cache_path) if cache_path is not None else (get_appdata_root() / "openrouter_models_cache.json")
+    try:
+        req = urllib_request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json", "User-Agent": "Fairybread"},
+            method="GET",
+        )
+        with urllib_request.urlopen(req, timeout=float(timeout)) as resp:
+            payload = json.loads(resp.read(8 * 1024 * 1024).decode("utf-8", errors="replace"))
+        items = payload.get("data") if isinstance(payload, dict) else []
+        if isinstance(items, list) and items:
+            eff_cache.parent.mkdir(parents=True, exist_ok=True)
+            eff_cache.write_text(json.dumps({"data": items}, ensure_ascii=False), encoding="utf-8")
+            return [m for m in items if isinstance(m, dict)]
+    except Exception:
+        pass
+    if eff_cache.is_file():
+        try:
+            cached = json.loads(eff_cache.read_text(encoding="utf-8", errors="replace"))
+            items = cached.get("data") if isinstance(cached, dict) else []
+            if isinstance(items, list):
+                return [m for m in items if isinstance(m, dict)]
+        except Exception:
+            pass
+    return []

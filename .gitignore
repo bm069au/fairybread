@@ -9,8 +9,14 @@ __pycache__/
 .idea/
 .vs/
 .learning/
+.build_venv/
 build/
 dist/
+store_build/
+*.msix
+*.pfx
+*.cer
+*.exe
 memory/
 gpt_palace/
 grok_palace/

@@ -6,10 +6,15 @@ and network image generations incrementally in real time, with per-session persi
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
+import json
+import os
+from pathlib import Path
+import sys
 import threading
 from typing import Any, Callable
 
-from palace_config import PROVIDER_TOKEN_RATES_PER_1M
+from palace_config import PROVIDER_TOKEN_RATES_PER_1M, get_appdata_root
 
 
 # Per-model approximate (input_usd_per_1m, output_usd_per_1m) rates
@@ -39,6 +44,8 @@ MODEL_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
 TTS_COST_PER_MINUTE_USD: dict[str, float] = {
     "openai:gpt-4o-mini-tts": 0.015,
     "openai:tts-1": 0.015,
+    "openrouter:gpt-audio-mini": 0.015,
+    "openrouter:gpt-audio": 0.060,
     "gemini:gemini-3.8-flash-lite-tts": 0.012,
     "gemini:gemini-3.8-flash-tts": 0.018,
     "gemini:gemini-2.5-flash-preview-tts": 0.015,
@@ -281,10 +288,17 @@ def emit_llm_cost(
     prompt_text: str = "",
     output_text: str = "",
     source: str = "chat",
+    explicit_cost_usd: float | None = None,
 ) -> float:
     in_tok = int(input_tokens or 0) or estimate_tokens_from_text(prompt_text)
     out_tok = int(output_tokens or 0) or estimate_tokens_from_text(output_text)
-    cost = estimate_llm_cost_usd(provider, model, in_tok, out_tok)
+    if explicit_cost_usd is not None:
+        try:
+            cost = max(0.0, float(explicit_cost_usd))
+        except (TypeError, ValueError):
+            cost = estimate_llm_cost_usd(provider, model, in_tok, out_tok)
+    else:
+        cost = estimate_llm_cost_usd(provider, model, in_tok, out_tok)
     if in_tok > 0 or out_tok > 0 or cost > 0.0:
         emit_cost_event({
             "kind": "llm",
@@ -328,9 +342,25 @@ def emit_stt_cost(engine: str, duration_sec: float) -> float:
     return cost
 
 
-def emit_image_cost(engine: str) -> float:
-    cost = estimate_image_cost_usd(engine)
-    prov = "gemini" if "gemini" in (engine or "").lower() else ("openai" if "gpt" in (engine or "").lower() else "image")
+def emit_image_cost(engine: str, *, explicit_cost_usd: float | None = None) -> float:
+    if explicit_cost_usd is not None:
+        try:
+            cost = max(0.0, float(explicit_cost_usd))
+        except (TypeError, ValueError):
+            cost = estimate_image_cost_usd(engine)
+    else:
+        cost = estimate_image_cost_usd(engine)
+    eng_low = (engine or "").lower()
+    if "openrouter" in eng_low:
+        prov = "openrouter"
+    elif "gemini" in eng_low:
+        prov = "gemini"
+    elif "gpt" in eng_low or "openai" in eng_low:
+        prov = "openai"
+    elif "flux" in eng_low or "deepinfra" in eng_low:
+        prov = "deepinfra"
+    else:
+        prov = "image"
     emit_cost_event({
         "kind": "image",
         "provider": prov,
@@ -458,3 +488,169 @@ class ConversationCostLedger:
             lines.append("• By Provider: " + ", ".join(f"{k} {format_usd_compact(v)}" for k, v in top_p))
         lines.append("Note: Estimated from real API token/audio/image counts and model rate table.")
         return "\n".join(lines)
+
+
+class GlobalBillingLedger:
+    """Persistent cumulative + per-provider resettable cycle spend ledger (%LOCALAPPDATA%\\Palace\\billing_ledger.json)."""
+
+    def __init__(self, path: Path | None = None, *, persist: bool | None = None):
+        self.path = Path(path) if path is not None else (get_appdata_root() / "billing_ledger.json")
+        if persist is None:
+            in_tests = ("unittest" in sys.modules) or (os.environ.get("QT_QPA_PLATFORM") == "offscreen")
+            self._persist = (path is not None) or (not in_tests)
+        else:
+            self._persist = bool(persist)
+        self._lock = threading.RLock()
+        self.lifetime_total_usd: float = 0.0
+        self.lifetime_llm_usd: float = 0.0
+        self.lifetime_image_usd: float = 0.0
+        self.lifetime_tts_usd: float = 0.0
+        self.lifetime_stt_usd: float = 0.0
+        self.lifetime_image_count: int = 0
+        self.providers: dict[str, dict[str, Any]] = {}
+        self.load()
+
+    def load(self) -> None:
+        with self._lock:
+            if not self._persist or not self.path.is_file():
+                return
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                return
+            if not isinstance(raw, dict):
+                return
+            self.lifetime_total_usd = max(0.0, float(raw.get("lifetime_total_usd", 0.0) or 0.0))
+            self.lifetime_llm_usd = max(0.0, float(raw.get("lifetime_llm_usd", 0.0) or 0.0))
+            self.lifetime_image_usd = max(0.0, float(raw.get("lifetime_image_usd", 0.0) or 0.0))
+            self.lifetime_tts_usd = max(0.0, float(raw.get("lifetime_tts_usd", 0.0) or 0.0))
+            self.lifetime_stt_usd = max(0.0, float(raw.get("lifetime_stt_usd", 0.0) or 0.0))
+            self.lifetime_image_count = max(0, int(raw.get("lifetime_image_count", 0) or 0))
+            raw_provs = raw.get("providers") if isinstance(raw.get("providers"), dict) else {}
+            clean_provs: dict[str, dict[str, Any]] = {}
+            for pname, pdata in raw_provs.items():
+                if not isinstance(pdata, dict):
+                    continue
+                pn = str(pname).strip().lower()
+                if not pn:
+                    continue
+                hist = pdata.get("payment_history")
+                clean_provs[pn] = {
+                    "cycle_usd": max(0.0, float(pdata.get("cycle_usd", 0.0) or 0.0)),
+                    "cycle_llm_usd": max(0.0, float(pdata.get("cycle_llm_usd", 0.0) or 0.0)),
+                    "cycle_image_usd": max(0.0, float(pdata.get("cycle_image_usd", 0.0) or 0.0)),
+                    "cycle_voice_usd": max(0.0, float(pdata.get("cycle_voice_usd", 0.0) or 0.0)),
+                    "lifetime_usd": max(0.0, float(pdata.get("lifetime_usd", 0.0) or 0.0)),
+                    "last_reset_at": str(pdata.get("last_reset_at") or ""),
+                    "payment_history": list(hist[-20:]) if isinstance(hist, list) else [],
+                }
+            self.providers = clean_provs
+
+    def save(self) -> None:
+        with self._lock:
+            if not self._persist:
+                return
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "schema_version": 1,
+                "updated_at": datetime.now().astimezone().isoformat(),
+                "lifetime_total_usd": round(self.lifetime_total_usd, 8),
+                "lifetime_llm_usd": round(self.lifetime_llm_usd, 8),
+                "lifetime_image_usd": round(self.lifetime_image_usd, 8),
+                "lifetime_tts_usd": round(self.lifetime_tts_usd, 8),
+                "lifetime_stt_usd": round(self.lifetime_stt_usd, 8),
+                "lifetime_image_count": int(self.lifetime_image_count),
+                "providers": self.providers,
+            }
+            tmp = self.path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            os.replace(tmp, self.path)
+
+    def _ensure_provider_unlocked(self, prov: str) -> dict[str, Any]:
+        pn = (prov or "other").strip().lower() or "other"
+        if pn not in self.providers:
+            self.providers[pn] = {
+                "cycle_usd": 0.0,
+                "cycle_llm_usd": 0.0,
+                "cycle_image_usd": 0.0,
+                "cycle_voice_usd": 0.0,
+                "lifetime_usd": 0.0,
+                "last_reset_at": "",
+                "payment_history": [],
+            }
+        return self.providers[pn]
+
+    def record(self, event: dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        kind = str(event.get("kind") or "llm").lower()
+        cost = max(0.0, float(event.get("cost_usd", 0.0) or 0.0))
+        prov = str(event.get("provider") or "other").strip().lower() or "other"
+        with self._lock:
+            self.lifetime_total_usd += cost
+            entry = self._ensure_provider_unlocked(prov)
+            entry["cycle_usd"] = round(float(entry.get("cycle_usd", 0.0)) + cost, 8)
+            entry["lifetime_usd"] = round(float(entry.get("lifetime_usd", 0.0)) + cost, 8)
+            if kind == "llm":
+                self.lifetime_llm_usd += cost
+                entry["cycle_llm_usd"] = round(float(entry.get("cycle_llm_usd", 0.0)) + cost, 8)
+            elif kind == "image":
+                self.lifetime_image_count += 1
+                self.lifetime_image_usd += cost
+                entry["cycle_image_usd"] = round(float(entry.get("cycle_image_usd", 0.0)) + cost, 8)
+            elif kind == "tts":
+                self.lifetime_tts_usd += cost
+                entry["cycle_voice_usd"] = round(float(entry.get("cycle_voice_usd", 0.0)) + cost, 8)
+            elif kind == "stt":
+                self.lifetime_stt_usd += cost
+                entry["cycle_voice_usd"] = round(float(entry.get("cycle_voice_usd", 0.0)) + cost, 8)
+            self.save()
+
+    def mark_provider_paid(self, provider_name: str, note: str = "") -> dict[str, Any]:
+        pn = (provider_name or "").strip().lower()
+        if not pn:
+            raise ValueError("Provider name required.")
+        with self._lock:
+            entry = self._ensure_provider_unlocked(pn)
+            prev_cycle = float(entry.get("cycle_usd", 0.0) or 0.0)
+            now_iso = datetime.now().astimezone().isoformat()
+            hist = list(entry.get("payment_history") or [])
+            hist.append({
+                "paid_at": now_iso,
+                "cleared_cycle_usd": round(prev_cycle, 8),
+                "note": str(note or "").strip()[:160],
+            })
+            entry["payment_history"] = hist[-20:]
+            entry["cycle_usd"] = 0.0
+            entry["cycle_llm_usd"] = 0.0
+            entry["cycle_image_usd"] = 0.0
+            entry["cycle_voice_usd"] = 0.0
+            entry["last_reset_at"] = now_iso
+            self.save()
+            return dict(entry)
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "lifetime_total_usd": self.lifetime_total_usd,
+                "lifetime_llm_usd": self.lifetime_llm_usd,
+                "lifetime_image_usd": self.lifetime_image_usd,
+                "lifetime_tts_usd": self.lifetime_tts_usd,
+                "lifetime_stt_usd": self.lifetime_stt_usd,
+                "lifetime_voice_usd": self.lifetime_tts_usd + self.lifetime_stt_usd,
+                "lifetime_image_count": self.lifetime_image_count,
+                "providers": {k: dict(v) for k, v in self.providers.items()},
+            }
+
+
+_GLOBAL_BILLING_LEDGER: GlobalBillingLedger | None = None
+_GLOBAL_LEDGER_LOCK = threading.RLock()
+
+
+def get_global_billing_ledger() -> GlobalBillingLedger:
+    global _GLOBAL_BILLING_LEDGER
+    with _GLOBAL_LEDGER_LOCK:
+        if _GLOBAL_BILLING_LEDGER is None:
+            _GLOBAL_BILLING_LEDGER = GlobalBillingLedger()
+            register_cost_listener(_GLOBAL_BILLING_LEDGER.record)
+        return _GLOBAL_BILLING_LEDGER

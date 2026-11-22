@@ -241,6 +241,63 @@ _DEEP_ANALYSIS_RE = re.compile(
     re.IGNORECASE,
 )
 
+_RECHECK_OR_FRESH_RE = re.compile(
+    r"\b(?:recheck|fresh\s+lookup|search\s+again|verify\s+online|full\s+council|ask\s+everyone|"
+    r"check\s+live|latest|today|right\s+now|current\s+price|current\s+weather)\b",
+    re.IGNORECASE,
+)
+
+_CASUAL_BANTER_RE = re.compile(
+    r"\b(?:joke|funny|humor|humour|laugh|banter|hi|hello|hey|g'?day|good\s+morning|good\s+evening|"
+    r"how\s+are\s+you|how's\s+it\s+going|thanks|thank\s+you|cheers|mate|lol|haha|roast|riddle|pun)\b",
+    re.IGNORECASE,
+)
+
+_RESEARCH_OR_FACTUAL_RE = re.compile(
+    r"\b(?:weather|forecast|rain|price|news|search|research|write|essay|assignment|report|compare|"
+    r"versus|vs|translate|summary|summar(?:y|ize|ise)|document|history|calculate|formula|equation|what\s+port)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_session_history_messages(session_context: str, max_turns: int = 8) -> list[dict[str, str]]:
+    """Parse formatted `USER:` / `ASSISTANT:` history text into structured multi-turn messages."""
+    raw = (session_context or "").strip()
+    if not raw:
+        return []
+    blocks = re.split(r"\n\n(?=(?:USER|ASSISTANT(?:\s*\([^)]+\))?):\s*)", raw)
+    msgs: list[dict[str, str]] = []
+    for blk in blocks:
+        s = blk.strip()
+        if not s:
+            continue
+        if s.startswith("USER:"):
+            txt = s[5:].strip()
+            if txt:
+                msgs.append({"role": "user", "content": txt[:1500]})
+        elif s.startswith("ASSISTANT"):
+            colon_idx = s.find(":")
+            if colon_idx != -1:
+                txt = s[colon_idx + 1 :].strip()
+                if txt:
+                    msgs.append({"role": "assistant", "content": txt[:1500]})
+    limit = max(2, int(max_turns) * 2)
+    return msgs[-limit:]
+
+
+def _is_free_tier_provider(name: str, cfg_map: dict[str, Any] | None = None, reg_provider: Any = None) -> bool:
+    clean = (name or "").strip().lower()
+    if clean in {"cohere", "ollama"}:
+        return True
+    cfg_entry = (cfg_map or {}).get(clean)
+    if isinstance(cfg_entry, dict):
+        m = str(cfg_entry.get("model") or "").strip().lower()
+        om = str(cfg_entry.get("openrouter_model") or "").strip().lower()
+        if m.endswith(":free") or om.endswith(":free"):
+            return True
+    prov_model = str(getattr(reg_provider, "model", "") or "").strip().lower()
+    return prov_model.endswith(":free")
+
 
 def classify_drawing_request(question: str) -> str:
     """Return 'direct_draw' for standard 1-pass drawing requests, 'council_draw' when the user
@@ -921,7 +978,106 @@ Instructions:
         except Exception:
             attached_images = []
 
-        if drawing_mode in {"direct_draw", "council_draw"}:
+        smart_routing_enabled = (
+            agent_defaults.get("smart_routing", True)
+            if smart_routing_override is None
+            else bool(smart_routing_override)
+        )
+        weather_turn = False
+        weather_map_tag = ""
+        local_recall_footer = ""
+        try:
+            from search_service import is_weather_query as _is_weather_q
+            weather_turn = (drawing_mode == "none" and effective_ui_depth != "off" and _is_weather_q(cleaned_q))
+        except Exception:
+            weather_turn = False
+
+        # Feature #7: Free-Agent Local Memory Fast-Recall ($0.00) when memory.db already holds a strong direct answer
+        local_recall_hit_list: list[dict[str, Any]] = []
+        if (
+            include_memory
+            and self.memory_service is not None
+            and drawing_mode == "none"
+            and not is_autopatch
+            and not attached_images
+            and not weather_turn
+            and not _EXPLICIT_ALL_AGENTS_RE.search(q_no_att)
+            and not _CODE_OR_ARCH_EXCLUSION_RE.search(q_no_att)
+            and not _RECHECK_OR_FRESH_RE.search(q_no_att)
+            and resolved_search_depth == "none"
+            and pool
+        ):
+            recall_fn = getattr(self.memory_service, "find_high_confidence_local_recall", None)
+            if callable(recall_fn):
+                try:
+                    local_recall_hit_list = list(recall_fn(q_no_att) or [])
+                except Exception:
+                    local_recall_hit_list = []
+            if local_recall_hit_list:
+                try:
+                    from palace_config import load_provider_configs
+                    _cfg_map = load_provider_configs()
+                except Exception:
+                    _cfg_map = {}
+                free_agent = next(
+                    (
+                        p_name
+                        for p_name in pool
+                        if _is_free_tier_provider(
+                            p_name,
+                            _cfg_map,
+                            reg.get(p_name) if (reg is not None and hasattr(reg, "get")) else None,
+                        )
+                    ),
+                    None,
+                )
+                if free_agent:
+                    recall_lines = [
+                        f"- {h.get('summary', '')}: {str(h.get('body') or h.get('detail') or '')[:600]}"
+                        for h in local_recall_hit_list[:3]
+                    ]
+                    extra_blocks.insert(
+                        0,
+                        "[HIGH-CONFIDENCE LOCAL MEMORY RECALL — FAST $0.00 ANSWER]:\n"
+                        "Answer directly and warmly using this verified local memory match without paid web search.\n"
+                        + "\n".join(recall_lines),
+                    )
+                    effective_providers = [free_agent]
+                    effective_max_rounds = 1
+                    resolved_search_depth = "none"
+                    local_recall_footer = (
+                        '\n\n*⚡ Answered from your local Memory Palace via free agent ($0.00) — '
+                        'say "recheck with full council" anytime for a fresh multi-AI lookup.*'
+                    )
+
+        # Feature #4: Conversational scale classification ("casual" | "balanced" | "deep") & banter fast-path
+        if (
+            is_autopatch
+            or _CODE_OR_ARCH_EXCLUSION_RE.search(q_no_att)
+            or _DEEP_ANALYSIS_RE.search(q_no_att)
+            or resolved_search_depth in {"moderate", "deep"}
+            or len(q_no_att) > 350
+        ):
+            conversational_scale = "deep"
+        elif (
+            drawing_mode == "none"
+            and not is_autopatch
+            and not attached_images
+            and not weather_turn
+            and not local_recall_footer
+            and resolved_search_depth == "none"
+            and len(q_no_att.strip()) <= 120
+            and not _EXPLICIT_ALL_AGENTS_RE.search(q_no_att)
+            and not _RESEARCH_OR_FACTUAL_RE.search(q_no_att)
+            and bool(_CASUAL_BANTER_RE.search(q_no_att))
+        ):
+            conversational_scale = "casual"
+        else:
+            conversational_scale = "balanced"
+
+        if local_recall_footer:
+            pass
+        elif drawing_mode in {"direct_draw", "council_draw"}:
             if drawing_mode == "council_draw" and _EXPLICIT_ALL_AGENTS_RE.search(q_no_att):
                 # Honor explicit "All agents / All AIs / Everyone" request across the active pool
                 if pool:
@@ -955,7 +1111,20 @@ Instructions:
                     coding_order.append(p_name)
             effective_providers = coding_order[:3]
         elif (
-            (agent_defaults.get("smart_routing", True) if smart_routing_override is None else bool(smart_routing_override))
+            conversational_scale == "casual"
+            and smart_routing_enabled
+            and provider_names is None
+            and len(pool) >= 2
+        ):
+            # Seamless humor/banter interlude: 1 fast natural voice in 1 round so banter feels effortless
+            banter_pref = next(
+                (p for p in ("openai", "anthropic", "gemini", "xai", "deepseek", "openrouter", "groq", "cerebras") if p in pool),
+                pool[0],
+            )
+            effective_providers = [banter_pref]
+            effective_max_rounds = 1
+        elif (
+            smart_routing_enabled
             and drawing_mode == "none"
             and not is_autopatch
             and len(pool) >= 4
@@ -977,6 +1146,36 @@ Instructions:
                         quick_pool.append(p_name)
                 effective_providers = quick_pool[:2]
                 effective_max_rounds = 1
+
+        # Feature #1: Inject native live weather data + stitched radar map PNG automatically when weather/forecast is asked
+        try:
+            from search_service import (
+                fetch_live_weather_bundle,
+                fetch_live_weather_context,
+                is_weather_query,
+                render_live_weather_map_png,
+            )
+            if drawing_mode == "none" and effective_ui_depth != "off" and is_weather_query(cleaned_q):
+                w_bundle = fetch_live_weather_bundle(cleaned_q)
+                weather_blk = str(w_bundle.get("text") or "").strip() if isinstance(w_bundle, dict) else ""
+                if not weather_blk:
+                    weather_blk = fetch_live_weather_context(cleaned_q)
+                if weather_blk:
+                    extra_blocks.insert(0, weather_blk)
+                prim_loc = w_bundle.get("primary_location") if isinstance(w_bundle, dict) else None
+                if prim_loc:
+                    try:
+                        map_png = render_live_weather_map_png(
+                            prim_loc,
+                            weather_data=w_bundle.get("primary_weather") or {},
+                        )
+                        if map_png is not None:
+                            safe_title = str(prim_loc.get("label") or "Live Weather Radar").replace('"', "'").strip()
+                            weather_map_tag = f'[WEATHER_MAP path="{map_png}" title="{safe_title} — Live Radar & Conditions"]'
+                    except Exception:
+                        weather_map_tag = ""
+        except Exception:
+            pass
 
         # Run 3-tier web search if requested via /search, /msearch, /deepsearch or UI Search Depth pill
         sharded_dispatch_prompts: dict[str, str] | None = None
@@ -1103,6 +1302,7 @@ Instructions:
                     prompt_text=prompt_txt,
                     output_text=res.response.text or "",
                     source=source,
+                    explicit_cost_usd=getattr(res.response, "cost_usd", None),
                 )
             except Exception:
                 pass
@@ -1155,6 +1355,29 @@ Instructions:
 
         p_timeout = float(agent_defaults.get("provider_timeout_sec", 45) or 45)
         s_grace = float(agent_defaults.get("straggler_grace_sec", 15) or 0)
+        eff_prov_list = list(effective_providers) if effective_providers is not None else list(pool)
+        eff_count = len(eff_prov_list)
+        total_ctx_chars = len(cleaned_q or "") + len(session_context or "") + len(memory_context or "")
+        out_detail_key = str(output_detail_override or agent_defaults.get("output_detail") or "").strip().lower()
+        has_reasoning_model = any(
+            p in {"gemini", "openai", "qwen", "anthropic", "deepseek"} for p in eff_prov_list
+        )
+        if (
+            s_grace >= 5.0
+            and eff_count >= 4
+            and (
+                total_ctx_chars > 4000
+                or out_detail_key == "high"
+                or has_reasoning_model
+                or len(cleaned_q or "") > 115
+                or _CODE_OR_ARCH_EXCLUSION_RE.search(cleaned_q or "")
+                or resolved_search_depth in {"moderate", "deep"}
+            )
+        ):
+            target_grace = 30.0 if (total_ctx_chars > 4000 or out_detail_key == "high" or has_reasoning_model) else 25.0
+            s_grace = min(p_timeout, max(s_grace, target_grace))
+
+        parsed_history_messages = _parse_session_history_messages(session_context, max_turns=8)
 
         def _dispatch_with_compat(
             prompt_arg: Any,
@@ -1182,6 +1405,8 @@ Instructions:
                 sent_on_result = True
             if _supports("images"):
                 kw["images"] = attached_images or None
+            if _supports("history_messages") and parsed_history_messages:
+                kw["history_messages"] = parsed_history_messages
             if _supports("per_provider_timeout"):
                 kw["per_provider_timeout"] = p_timeout
             if _supports("straggler_grace_seconds"):
@@ -1568,6 +1793,18 @@ Instructions:
                     on_phase_status({"event": "phase", "text": "Synthesizing Final Council Consensus…"})
                 except Exception:
                     pass
+            personalization_ctx = ""
+            try:
+                from palace_config import format_personalization_prompt_block
+                p_parts = [format_personalization_prompt_block()]
+                if self.memory_service is not None and hasattr(self.memory_service, "index"):
+                    from memory_service import load_memory_summary
+                    ms_txt = str(load_memory_summary(self.memory_service.index.db_path).get("text") or "").strip()
+                    if ms_txt:
+                        p_parts.append(f"[USER PROFILE SUMMARY]:\n{ms_txt[:600]}")
+                personalization_ctx = "\n\n".join(p for p in p_parts if p)
+            except Exception:
+                personalization_ctx = ""
             try:
                 synthesis = (
                     self.synthesizer.synthesize(
@@ -1576,16 +1813,30 @@ Instructions:
                         session_context=session_context,
                         detail_directive=detail_directive,
                         allow_autopatch_banner=is_autopatch,
+                        personalization_context=personalization_ctx,
+                        conversational_scale=conversational_scale,
+                        history_messages=parsed_history_messages,
                     )
                 )
             except TypeError:
-                synthesis = (
-                    self.synthesizer.synthesize(
-                        synth_question,
-                        synth_inputs,
-                        session_context=session_context
+                try:
+                    synthesis = (
+                        self.synthesizer.synthesize(
+                            synth_question,
+                            synth_inputs,
+                            session_context=session_context,
+                            detail_directive=detail_directive,
+                            allow_autopatch_banner=is_autopatch,
+                        )
                     )
-                )
+                except TypeError:
+                    synthesis = (
+                        self.synthesizer.synthesize(
+                            synth_question,
+                            synth_inputs,
+                            session_context=session_context
+                        )
+                    )
             if synthesis and synthesis.succeeded and getattr(synthesis, "api_called", False):
                 try:
                     from cost_service import emit_llm_cost
@@ -1597,6 +1848,7 @@ Instructions:
                         prompt_text=synth_question,
                         output_text=synthesis.text or "",
                         source="synthesis",
+                        explicit_cost_usd=getattr(synthesis, "cost_usd", None),
                     )
                 except Exception:
                     pass
@@ -1612,6 +1864,35 @@ Instructions:
                 and "[GENERATE_IMAGE" in synthesis.text.upper()
             ):
                 synthesis.text = re.sub(r'\[GENERATE_IMAGE\s+(?:[^\]"]|"[^"]*")*\]', "", synthesis.text, flags=re.IGNORECASE).strip()
+
+        if (weather_map_tag or local_recall_footer) and not (
+            cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()
+        ):
+            def _apply_weather_and_recall_decorations(txt: str) -> str:
+                out_t = txt or ""
+                if weather_map_tag and "[WEATHER_MAP" not in out_t.upper():
+                    out_t = f"{weather_map_tag}\n\n{out_t}".strip()
+                if local_recall_footer and "$0.00" not in out_t:
+                    out_t = f"{out_t}{local_recall_footer}".strip()
+                return out_t
+
+            if synthesis and synthesis.succeeded and synthesis.text is not None:
+                synthesis.text = _apply_weather_and_recall_decorations(synthesis.text)
+            elif synthesis is None:
+                first_ok_name = ""
+                first_ok_txt = ""
+                for _pn, _pr in active_results.items():
+                    if _pr.succeeded and _pr.response is not None and (_pr.response.text or "").strip():
+                        first_ok_name = _pn
+                        first_ok_txt = _pr.response.text or ""
+                        break
+                if first_ok_txt:
+                    synthesis = SynthesisResult(
+                        text=_apply_weather_and_recall_decorations(first_ok_txt),
+                        provider_name=first_ok_name or "palace",
+                        contributors=tuple(succeeded_initial) or ((first_ok_name,) if first_ok_name else ()),
+                        api_called=False,
+                    )
 
         autopatch_summary = ""
         applied_files: list[str] = []

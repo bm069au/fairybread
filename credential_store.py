@@ -135,10 +135,16 @@ class CredentialStore:
         self._explicit_path = path is not None
         if path is None:
             local_path = _default_local_credentials_path()
+            use_dev_vault = False
+            try:
+                from palace_config import IS_DEVELOPER_EDITION, is_frozen_app
+                use_dev_vault = bool(IS_DEVELOPER_EDITION and not is_frozen_app() and VAULT_CREDENTIALS_PATH.exists())
+            except Exception:
+                use_dev_vault = False
             try:
                 if local_path.exists():
                     path = local_path
-                elif VAULT_CREDENTIALS_PATH.exists():
+                elif use_dev_vault:
                     path = VAULT_CREDENTIALS_PATH
                 else:
                     path = local_path

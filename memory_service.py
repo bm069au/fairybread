@@ -774,24 +774,15 @@ class MemorySearchResult:
 
 DEFAULT_MEMORY_SUMMARY_MARKDOWN = (
     "### Overview\n"
-    "You're an Australian Gen X creator and systems builder, around 60 (`bm069au`). You bring a practical, "
-    "pattern-focused approach to technology and creative work, and prefer useful specifics and candid technical "
-    "pushback over generic reassurance or flattery. Your main interests include building software and multi-AI tools, "
-    "making music and animated comedy, health and gut-microbiome wellness, and hands-on projects such as brewing ginger beer.\n\n"
+    "Welcome to Fairybread! This Memory Summary is your private, 100% local profile shared across your chosen AI providers. "
+    "You can edit these notes anytime, or let Fairybread update them naturally from your conversations.\n\n"
     "### How You Like to Work\n"
-    "You prefer concise, personable answers with an optional deeper technical layer when needed. You value direct options "
-    "and risks, dislike canned reassurance and a policing tone, and are comfortable with banter when the subject is light. "
-    "For development, you want a clear summary and plan before implementation steps or code changes. You edit in Notepad++ "
-    "or Visual Studio and use Git savepoints. Your drive conventions are `G:` for notes and checkpoints, `E:` for active "
-    "projects (`E:\\Visual_studio\\Palace`), and `M:` for private backups/media (strictly off-limits unless explicitly authorized).\n\n"
-    "### Software & Creative Projects\n"
-    "- **Fairybread (formerly Palace, `E:\\Visual_studio\\Palace`):** Your source-available donationware multi-AI council "
-    "desktop workspace (`https://github.com/bm069au/fairybread`) where 8 AI providers (`Gemini`, `OpenAI`, `DeepSeek`, `Groq`, "
-    "`Qwen`, `Cohere`, `Mistral`, `Cerebras`) collaborate, share a 100% local SQLite FTS5 Memory Palace, render 300-DPI artwork "
-    "and banners, use Live Voice Mode, and run autonomous multi-agent experiments in Idle Mode.\n"
-    "- **EvidenceBench (`E:\\Visual_studio\\EvidenceBenchDesktop`):** Your local-first evidence workspace with imports, metadata, "
-    "graphing, exhaustive email search, and backups.\n"
-    "- **Creative & Community Work:** Your upcoming animated comedy series and your Facebook wellness / gut-microbiome community group."
+    "- Prefer direct, helpful responses tailored to your workflow.\n"
+    "- Keep technical details concise when browsing and thorough when debugging.\n\n"
+    "### Speech & Communication Style\n"
+    "- Everyday conversational phrasing works best; avoid filler and unnecessary disclaimers.\n\n"
+    "### Active Projects & Interests\n"
+    "- Add your active projects, hardware/OS setup, writing preferences, or recurring topics here."
 )
 
 
@@ -1348,6 +1339,41 @@ class MemoryService:
 
         except Exception as exc:
             return MemorySearchResult(context="", error=str(exc))
+
+    def find_high_confidence_local_recall(
+        self,
+        query: str,
+        *,
+        min_score: float = 0.72,
+    ) -> list[dict[str, Any]]:
+        """Check whether local Memory Palace already holds a strong, direct factual answer."""
+        raw = (query or "").strip()
+        if not raw or len(raw) < 12:
+            return []
+        stop = {
+            "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
+            "the", "and", "for", "with", "that", "this", "from", "into", "about",
+            "have", "does", "did", "was", "were", "will", "would", "could", "should",
+            "can", "you", "your", "please", "tell", "give", "show", "make", "need",
+        }
+        tokens = [t.lower() for t in re.findall(r"[A-Za-z0-9_'-]{4,}", raw) if t.lower() not in stop]
+        if len(tokens) < 2:
+            return []
+        try:
+            hits = self.index.search(raw, wing=self.wing, limit=5)
+        except Exception:
+            return []
+        strong: list[dict[str, Any]] = []
+        for h in hits:
+            if str(h.get("id") or "") == "palace_master_memory_summary":
+                continue
+            body_l = (str(h.get("summary") or "") + " " + str(h.get("body") or h.get("detail") or "")).lower()
+            matched_tokens = sum(1 for tok in set(tokens) if tok in body_l)
+            cov = matched_tokens / float(max(1, len(set(tokens))))
+            sc = float(h.get("score") or 0.0)
+            if (sc >= float(min_score) and matched_tokens >= 2) or (cov >= 0.65 and matched_tokens >= 2 and sc >= 0.48):
+                strong.append(h)
+        return strong[:3]
 
 
 _SAVE_MEMORY_ATTR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*"([^"]*)"')

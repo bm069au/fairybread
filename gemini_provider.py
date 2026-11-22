@@ -41,6 +41,8 @@ class GeminiProvider(AIProvider):
         prompt: str,
         *,
         images: list[Path | str] | None = None,
+        system_prompt: str = "",
+        history_messages: list[dict[str, str]] | None = None,
     ) -> ProviderResponse:
         valid_parts: list[Any] = []
         for raw_p in (images or [])[:3]:
@@ -56,11 +58,43 @@ class GeminiProvider(AIProvider):
             except OSError:
                 pass
 
+        sys_clean = (system_prompt or "").strip()
+        hist_prefix = ""
+        if history_messages and isinstance(history_messages, list):
+            hist_lines = []
+            for m in history_messages[-12:]:
+                r = str(m.get("role") or "user").strip().capitalize()
+                c = str(m.get("content") or "").strip()
+                if c:
+                    hist_lines.append(f"{r}: {c}")
+            if hist_lines:
+                hist_prefix = "\n\n".join(hist_lines) + "\n\nUser: "
+        effective_prompt = f"{hist_prefix}{prompt}" if hist_prefix else prompt
+
+        cfg_kw: dict[str, Any] = {}
+        if sys_clean and hasattr(types, "GenerateContentConfig"):
+            try:
+                cfg_kw["config"] = types.GenerateContentConfig(system_instruction=sys_clean)
+            except Exception:
+                pass
+
         if valid_parts:
-            resp = self.client.models.generate_content(
-                model=self.model,
-                contents=[*valid_parts, prompt],
+            full_contents = (
+                [f"SYSTEM INSTRUCTIONS:\n{sys_clean}\n", *valid_parts, effective_prompt]
+                if sys_clean and "config" not in cfg_kw
+                else [*valid_parts, effective_prompt]
             )
+            try:
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=full_contents,
+                    **cfg_kw,
+                )
+            except TypeError:
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=[*valid_parts, prompt],
+                )
             txt = getattr(resp, "text", None) or ""
             if not txt.strip():
                 raise RuntimeError(f"gemini ({self.model}) returned empty multimodal response")
@@ -73,22 +107,45 @@ class GeminiProvider(AIProvider):
                 output_tokens=out_tok,
             )
 
-        try:
-            interaction = self.client.interactions.create(
-                model=self.model,
-                input=prompt
-            )
-            out_txt = getattr(interaction, "output_text", None) or ""
-            usage_src = interaction
-        except AttributeError:
-            if not hasattr(self.client, "models"):
-                raise
-            resp = self.client.models.generate_content(
-                model=self.model,
-                contents=prompt,
-            )
-            out_txt = getattr(resp, "text", None) or ""
-            usage_src = resp
+        if not sys_clean and not hist_prefix:
+            try:
+                interaction = self.client.interactions.create(
+                    model=self.model,
+                    input=prompt
+                )
+                out_txt = getattr(interaction, "output_text", None) or ""
+                usage_src = interaction
+            except AttributeError:
+                if not hasattr(self.client, "models"):
+                    raise
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                )
+                out_txt = getattr(resp, "text", None) or ""
+                usage_src = resp
+        else:
+            if hasattr(self.client, "models"):
+                try:
+                    resp = self.client.models.generate_content(
+                        model=self.model,
+                        contents=effective_prompt if "config" in cfg_kw else f"SYSTEM INSTRUCTIONS:\n{sys_clean}\n\n{effective_prompt}",
+                        **cfg_kw,
+                    )
+                except TypeError:
+                    resp = self.client.models.generate_content(
+                        model=self.model,
+                        contents=f"{sys_clean}\n\n{effective_prompt}".strip(),
+                    )
+                out_txt = getattr(resp, "text", None) or ""
+                usage_src = resp
+            else:
+                interaction = self.client.interactions.create(
+                    model=self.model,
+                    input=f"{sys_clean}\n\n{effective_prompt}".strip() if sys_clean else effective_prompt,
+                )
+                out_txt = getattr(interaction, "output_text", None) or ""
+                usage_src = interaction
         if not out_txt.strip():
             raise RuntimeError(f"gemini ({self.model}) returned empty output")
 

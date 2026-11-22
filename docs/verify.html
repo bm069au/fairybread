@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verify Official Fairybread Download (SHA-256)</title>
+<style>
+  body { font-family: "Segoe UI", system-ui, sans-serif; background:#0d1117; color:#f0f6fc; max-width:780px; margin:40px auto; padding:0 20px; }
+  h1 { font-size:24px; margin-bottom:6px; }
+  .muted { color:#8b949e; font-size:14px; }
+  .drop { border:2px dashed #30363d; border-radius:12px; padding:36px 20px; text-align:center; background:#161b22; margin:24px 0; cursor:pointer; }
+  .drop.drag { border-color:#58a6ff; background:#132238; }
+  .ok { background:#0f291e; border:1px solid #2ea043; color:#7ee787; padding:14px; border-radius:8px; margin-top:16px; }
+  .bad { background:#2c1517; border:1px solid #f85149; color:#ff7b72; padding:14px; border-radius:8px; margin-top:16px; }
+  code, pre { background:#161b22; border:1px solid #262c3a; border-radius:6px; padding:2px 6px; font-family:Consolas, monospace; font-size:12.5px; word-break:break-all; }
+  table { width:100%; border-collapse:collapse; margin-top:18px; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #21262d; }
+</style>
+</head>
+<body>
+  <h1>🛡 Verify Your Fairybread Download (v0.93)</h1>
+  <p class="muted">100% local verification in your browser using Web Crypto SHA-256 — nothing is uploaded anywhere.</p>
+  <div id="dropZone" class="drop">
+    <strong>Drop your downloaded <code>.exe</code> or <code>.msix</code> here</strong><br><br>
+    <input type="file" id="fileInput">
+  </div>
+  <div id="result"></div>
+  <h3>Official v0.93 Release SHA-256 Hashes</h3>
+  <p class="muted">Ed25519 Public Key: <code>eQdJg8kz/l271ID/hC7u8dhEO2+OuJV9UTGSq3QHqW8=</code></p>
+  <table>
+    <thead><tr><th>File</th><th>Official SHA-256</th></tr></thead>
+    <tbody id="hashTable"></tbody>
+  </table>
+<script>
+const OFFICIAL = [
+  {
+    "name": "Fairybread_v0.93_Win_x64_Setup.exe",
+    "sha256": "439801df35d691141573e55af13ba0cb7a50d6932b90edf0f78e09ede5679f43",
+    "size": 94535077
+  },
+  {
+    "name": "Fairybread_v0.93_Win_x64_StoreUpload.msix",
+    "sha256": "07863d9b49d1dfb51654782cd8f93dbd75f0af0ebe552ca4e1e8b72a621f71d2",
+    "size": 121703069
+  },
+  {
+    "name": "Fairybread_Developer_v0.93_Win_x64_Setup.exe",
+    "sha256": "4af0a8e0b341f6cca43b7ec7110ad7cb0df88febb51393166702f68cecd33c8f",
+    "size": 95328671
+  }
+];
+const tbody = document.getElementById('hashTable');
+for (const item of OFFICIAL) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><code>${item.name}</code></td><td><code>${item.sha256}</code></td>`;
+  tbody.appendChild(tr);
+}
+async function checkFile(file) {
+  const res = document.getElementById('result');
+  res.innerHTML = '<p class="muted">Hashing file locally…</p>';
+  const buf = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').toLowerCase();
+  const match = OFFICIAL.find(o => o.sha256 === hex);
+  if (match) {
+    res.innerHTML = `<div class="ok"><strong>✓ VERIFIED OFFICIAL FAIRYBREAD RELEASE</strong><br>Matches <code>${match.name}</code><br>SHA-256: <code>${hex}</code></div>`;
+  } else {
+    res.innerHTML = `<div class="bad"><strong>⚠ UNRECOGNIZED OR MODIFIED FILE</strong><br>Your file's SHA-256 did not match any official v0.93 build.<br>Computed SHA-256: <code>${hex}</code></div>`;
+  }
+}
+const dz = document.getElementById('dropZone');
+const fi = document.getElementById('fileInput');
+fi.addEventListener('change', e => { if (e.target.files[0]) checkFile(e.target.files[0]); });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) checkFile(e.dataTransfer.files[0]); });
+</script>
+</body>
+</html>

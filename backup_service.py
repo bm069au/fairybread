@@ -13,7 +13,7 @@ from typing import Any
 import zipfile
 
 from credential_store import CredentialStore, dpapi_decrypt, dpapi_encrypt
-from palace_config import CONFIG_PATH, get_palace_data_root
+from palace_config import CONFIG_PATH, get_appdata_root, get_experimental_data_root, get_palace_data_root
 
 
 BACKUP_FORMAT_VERSION = 2
@@ -88,18 +88,6 @@ def decrypt_vault_payload(vault_bytes: bytes, password: str) -> dict[str, Any]:
         raise PermissionError("Incorrect backup password — could not unlock API keys vault.") from exc
 
 
-def inspect_backup_zip(src_zip_path: Path) -> dict[str, Any]:
-    """Inspect a backup ZIP's manifest without extracting or modifying live files."""
-    src_zip = Path(src_zip_path)
-    if not src_zip.exists():
-        raise FileNotFoundError(f"Backup archive not found: {src_zip}")
-    with zipfile.ZipFile(src_zip, "r") as zf:
-        if "manifest.json" not in zf.namelist():
-            raise ValueError("Invalid backup archive: missing manifest.json.")
-        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-        return manifest if isinstance(manifest, dict) else {}
-
-
 def _extract_decrypted_api_keys(cred_file: Path) -> dict[str, str]:
     """Read credentials.json (or live CredentialStore) and decrypt all DPAPI keys in memory."""
     decrypted_keys: dict[str, str] = {}
@@ -171,10 +159,16 @@ def create_full_backup_zip(
 
             if include_credentials:
                 cred_file = root / "credentials.json"
+                if appdata_root is None:
+                    anchored_cred = get_appdata_root() / "credentials.json"
+                    if anchored_cred.exists() or not cred_file.exists():
+                        cred_file = anchored_cred
                 if clean_pw:
                     api_keys = _extract_decrypted_api_keys(cred_file)
                     email_plain_pw = ""
-                    email_cfg = cfg_dict.get("email_settings", {}) if isinstance(cfg_dict, dict) else {}
+                    email_cfg = (
+                        cfg_dict.get("email_and_notifications") or cfg_dict.get("email_settings") or {}
+                    ) if isinstance(cfg_dict, dict) else {}
                     if isinstance(email_cfg, dict) and email_cfg.get("password_dpapi"):
                         email_plain_pw = dpapi_decrypt(str(email_cfg["password_dpapi"]))
                     vault_payload = {
@@ -188,12 +182,13 @@ def create_full_backup_zip(
                 else:
                     _stage_file(cred_file, "appdata/credentials.json")
 
-            # Custom themes
-            themes_dir = root / "themes"
+            # Custom themes (anchored in %LOCALAPPDATA%\Palace\themes unless appdata_root overridden)
+            themes_base = root if appdata_root is not None else get_appdata_root()
+            themes_dir = themes_base / "themes"
             if themes_dir.is_dir():
                 for fp in sorted(themes_dir.rglob("*")):
                     if fp.is_file():
-                        rel = fp.relative_to(root).as_posix()
+                        rel = fp.relative_to(themes_base).as_posix()
                         _stage_file(fp, f"appdata/{rel}")
 
         # 2. Palace Memory, Conversations, Uploaded Files, Idle Palace & Generated Images
@@ -234,16 +229,21 @@ def create_full_backup_zip(
                             rel = fp.relative_to(root).as_posix()
                             _stage_file(fp, f"appdata/{rel}")
 
-            sandbox_root = Path(r"C:\Palace_Idle_Sandbox")
+            sandbox_root = get_experimental_data_root(config_path)
             if sandbox_root.is_dir():
-                for sb_file in ("ai_idle_memory.json", "agent_mailbox.json"):
-                    _stage_file(sandbox_root / sb_file, f"sandbox/{sb_file}")
-                sb_files_dir = sandbox_root / "files"
-                if sb_files_dir.is_dir():
-                    for fp in sorted(sb_files_dir.rglob("*")):
-                        if fp.is_file():
-                            rel = fp.relative_to(sandbox_root).as_posix()
-                            _stage_file(fp, f"sandbox/{rel}")
+                for sb_rel in (
+                    "ai_idle_memory.json",
+                    "agent_mailbox.json",
+                    "idle_palace/ai_idle_memory.json",
+                    "mailbox/agent_mailbox.json",
+                ):
+                    _stage_file(sandbox_root / sb_rel, f"sandbox/{sb_rel}")
+                for sb_dir in (sandbox_root / "files", sandbox_root / "idle_palace" / "files"):
+                    if sb_dir.is_dir():
+                        for fp in sorted(sb_dir.rglob("*")):
+                            if fp.is_file():
+                                rel = fp.relative_to(sandbox_root).as_posix()
+                                _stage_file(fp, f"sandbox/{rel}")
 
         manifest = {
             "format_version": BACKUP_FORMAT_VERSION,
@@ -279,6 +279,43 @@ def _safe_resolve_under(base_dir: Path, rel_path: str, *, label: str) -> Path:
     return candidate
 
 
+def inspect_backup_zip(src_zip_path: Path) -> dict[str, Any]:
+    """Read backup manifest.json cleanly without extracting files, reporting contents and password status."""
+    src_zip = Path(src_zip_path)
+    if not src_zip.is_file():
+        raise FileNotFoundError(f"Backup archive not found: {src_zip}")
+    with zipfile.ZipFile(src_zip, "r") as zf:
+        if "manifest.json" not in zf.namelist():
+            raise ValueError("Invalid backup archive: missing manifest.json.")
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+    files_meta: dict[str, dict[str, Any]] = manifest.get("files") or {}
+    arc_names = set(files_meta.keys())
+    has_creds = ("vault/credentials.vault.enc" in arc_names) or ("appdata/credentials.json" in arc_names)
+    has_settings = (
+        "config/palace_config.json" in arc_names
+        or any(name.startswith("appdata/themes/") for name in arc_names)
+    )
+    has_memory = any(
+        (name.startswith("appdata/") and name != "appdata/credentials.json" and not name.startswith("appdata/themes/"))
+        or name.startswith("sandbox/")
+        for name in arc_names
+    )
+    return {
+        "path": str(src_zip),
+        "created_at": str(manifest.get("created_at") or ""),
+        "format_version": manifest.get("format_version", BACKUP_FORMAT_VERSION),
+        "file_count": len(arc_names),
+        "files": files_meta,
+        "included_memory": bool(manifest.get("included_memory", has_memory)),
+        "included_settings": bool(manifest.get("included_settings", has_settings)),
+        "has_memory": has_memory,
+        "has_settings": has_settings,
+        "has_credentials": has_creds,
+        "password_protected": bool(manifest.get("password_protected") or ("vault/credentials.vault.enc" in arc_names)),
+        "same_machine": manifest.get("machine_fingerprint") == _get_machine_fingerprint(),
+    }
+
+
 def restore_full_backup_zip(
     src_zip_path: Path,
     *,
@@ -287,10 +324,12 @@ def restore_full_backup_zip(
     backup_password: str = "",
     restore_memory: bool = True,
     restore_settings: bool = True,
+    restore_credentials: bool | None = None,
 ) -> dict[str, Any]:
     """Verify SHA-256 manifest checksums, unlock AES-256-GCM password-protected API keys (if present)
     and re-seal them into local Windows DPAPI, and atomically restore selected components.
     """
+    eff_restore_creds = bool(restore_settings) if restore_credentials is None else bool(restore_credentials)
     src_zip = Path(src_zip_path)
     if not src_zip.exists():
         raise FileNotFoundError(f"Backup archive not found: {src_zip}")
@@ -325,10 +364,10 @@ def restore_full_backup_zip(
             if actual_sha != meta.get("sha256"):
                 raise ValueError(f"Checksum mismatch in backup archive for {arc_rel}")
 
-        # 2. If restoring settings and a password-locked vault is present, verify password FIRST
+        # 2. If restoring credentials and a password-locked vault is present, verify password FIRST
         vault_rel = "vault/credentials.vault.enc"
         unlocked_vault: dict[str, Any] | None = None
-        if restore_settings and vault_rel in files_meta:
+        if eff_restore_creds and vault_rel in files_meta:
             vault_fp = _safe_resolve_under(extract_dir, vault_rel, label="backup vault")
             unlocked_vault = decrypt_vault_payload(vault_fp.read_bytes(), backup_password)
 
@@ -342,27 +381,35 @@ def restore_full_backup_zip(
             if arc_rel == vault_rel:
                 continue
             src_fp = _safe_resolve_under(extract_dir, str(arc_rel), label="backup manifest")
+            is_cred_item = (arc_rel == "appdata/credentials.json")
             is_setting_item = (
                 arc_rel == "config/palace_config.json"
-                or arc_rel == "appdata/credentials.json"
                 or arc_rel.startswith("appdata/themes/")
             )
+            if is_cred_item and not eff_restore_creds:
+                continue
             if is_setting_item and not restore_settings:
                 continue
-            if not is_setting_item and not restore_memory:
+            if not is_cred_item and not is_setting_item and not restore_memory:
                 continue
 
             if arc_rel == "config/palace_config.json":
                 target = Path(config_path)
-            elif arc_rel == "appdata/credentials.json" and not same_machine:
-                skipped_credentials = True
-                continue
+            elif arc_rel == "appdata/credentials.json":
+                if not same_machine:
+                    skipped_credentials = True
+                    continue
+                target = (root / "credentials.json") if appdata_root is not None else (get_appdata_root() / "credentials.json")
+            elif arc_rel.startswith("appdata/themes/"):
+                sub_rel = arc_rel[len("appdata/") :]
+                themes_base = root if appdata_root is not None else get_appdata_root()
+                target = _safe_resolve_under(themes_base, sub_rel, label="themes restore target")
             elif arc_rel.startswith("appdata/"):
                 sub_rel = arc_rel[len("appdata/") :]
                 target = _safe_resolve_under(root, sub_rel, label="appdata restore target")
             elif arc_rel.startswith("sandbox/"):
                 sub_rel = arc_rel[len("sandbox/") :]
-                target = _safe_resolve_under(Path(r"C:\Palace_Idle_Sandbox"), sub_rel, label="sandbox restore target")
+                target = _safe_resolve_under(get_experimental_data_root(config_path), sub_rel, label="sandbox restore target")
             else:
                 continue
 
@@ -376,7 +423,8 @@ def restore_full_backup_zip(
         if unlocked_vault is not None:
             api_keys = unlocked_vault.get("api_keys", {})
             if isinstance(api_keys, dict) and api_keys:
-                cred_store = CredentialStore(path=root / "credentials.json")
+                cred_dst = (root / "credentials.json") if appdata_root is not None else (get_appdata_root() / "credentials.json")
+                cred_store = CredentialStore(path=cred_dst)
                 for pname, plain_key in api_keys.items():
                     if plain_key:
                         cred_store.set_api_key(str(pname), str(plain_key))
@@ -386,9 +434,13 @@ def restore_full_backup_zip(
             if email_pw and Path(config_path).exists():
                 try:
                     cfg_data = json.loads(Path(config_path).read_text(encoding="utf-8"))
-                    if isinstance(cfg_data, dict) and isinstance(cfg_data.get("email_settings"), dict):
-                        cfg_data["email_settings"]["password_dpapi"] = dpapi_encrypt(email_pw)
-                        Path(config_path).write_text(json.dumps(cfg_data, indent=2) + "\n", encoding="utf-8")
+                    if isinstance(cfg_data, dict):
+                        email_block = cfg_data.get("email_and_notifications")
+                        if not isinstance(email_block, dict):
+                            email_block = cfg_data.get("email_settings")
+                        if isinstance(email_block, dict):
+                            email_block["password_dpapi"] = dpapi_encrypt(email_pw)
+                            Path(config_path).write_text(json.dumps(cfg_data, indent=2) + "\n", encoding="utf-8")
                 except Exception:
                     pass
 
