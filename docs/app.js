@@ -1,190 +1,139 @@
-// Fairybread.me Interactive Portal Engine (News, Forums, Winamp-Style Theme Studio, Donor Wall & Read-Only Code Inspector)
+// Fairybread.me Static Portal Engine (News, Custom JSON Color Theme Studio, Donors, Code Viewer & Release Resolver)
+
+const FORUM_DISCUSSIONS_URL = 'https://github.com/bm069au/fairybread/discussions';
 
 const STORAGE_KEYS = {
-  user: 'fb_current_user_v1',
-  news: 'fb_news_posts_v2',
-  threads: 'fb_forum_threads_v2',
-  skins: 'fb_theme_skins_v1',
-  donors: 'fb_donor_wall_v1',
-  portrait: 'fb_brett_portrait_v1',
-  sbConfig: 'fb_supabase_config_v1',
-  modQueue: 'fb_badge_review_queue_v1',
+  userSkins: 'fb_custom_user_skins_v2',
 };
+
+// Purge retired localStorage keys from older builds so returning browsers never display stale threads, fake accounts, or retired presets
+const LEGACY_KEYS_TO_CLEAR = [
+  'fb_news_posts_v2',
+  'fb_forum_threads_v2',
+  'fb_forum_threads_v1',
+  'fb_current_user_v1',
+  'fb_mod_queue_v1',
+  'fb_badge_review_queue_v1',
+  'fb_theme_skins_v1',
+  'fb_donor_wall_v1',
+  'fb_supabase_config_v1',
+];
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v093-overview',
+    title: 'Inside Current Fairybread: Guided Setup Wizard, OpenRouter Hub, Live Cost Tickers, Weather Radar & $0.00 Recall',
+    tag: 'Platform Update',
+    date: '2026-11-22',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread has taken a major leap forward to make multi-AI desktop use simple for beginners while giving power users complete control over memory and spend:
+
+• Guided Setup Wizard & Selective Backup Restore: Walks you through picking your exact needs (Light Chat & Research, Study & Assignments, Coding, or Everything), opens each provider's key page in a live tick-off checklist, and lets you restore saved API keys, settings, or memories together or individually.
+• All-in-One OpenRouter Hub (Or Direct Keys): Enter a single OpenRouter key to unlock 300+ models across Council seats with a strict prepaid cap—leaving only optional Graphics and Deepgram Flux Voice. Direct keys always keep priority.
+• 3-Layer Live Cost Tickers: Track cumulative and resettable spend per provider, per-picture costs on generated artwork, and live ongoing Voice Mode spending right in the workspace bar—zero hidden surprises.
+• 100% Local Memory Palace + $0.00 Free-Agent Recall: Answers already stored locally on your PC can be pulled by free-tier agents for $0.00 instead of repeating paid web searches.
+• Live Weather Radar Maps & Natural Multi-Turn Rapport: Weather questions render RainViewer radar maps plus hourly & 7-day forecasts inline in chat, alongside pure Steer/Queue mid-turn controls, honest amber Cutoff chips, and natural conversational synthesis.
+• 1-Click In-App Updates & Update-Only Installer: Download new versions from the top notice bar, keep all settings untouched with the "Update only" option, and hot-reboot cleanly.`,
+  },
+  {
+    id: 'news-founders-note',
+    title: 'Why I Built Fairybread (Founder’s Note)',
+    tag: "Founder's Note",
+    date: '2026-11-22',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Every major AI vendor asks for another $20–$30/month subscription, siloes your conversation history on their servers, and leaves you stuck with a single perspective. If you cancel, move platforms, or hit opaque limits, your workflow stops.
+
+I built Fairybread to fix three things permanently:
+1. Own Your Memory: Everything is indexed locally in SQLite FTS5 right on your own hard drive alongside an editable Living Memory Summary—shared across whichever AI models you choose.
+2. Pay for What You Actually Use: Use free tiers, local Ollama, one prepaid OpenRouter hub, or your own direct API keys—and watch every fraction of a cent live in real time.
+3. Let Top Models Collaborate: Instead of trusting one model blindly, your active agents cross-check each other, render charts, weather radar maps, and 300-DPI artwork locally, and speak naturally through Deepgram Flux.
+
+Have a feature idea or noticed something we missed? Post it on our GitHub Community Forum (github.com/bm069au/fairybread/discussions)—useful suggestions adopted into Fairybread are credited inside the app under About -> Community Contributors.`,
+  },
+  {
     id: 'news-dev-split-2026-11-19',
-    title: 'Public vs. Developer Editions: Why Live Self-Improvement is Restricted to Developer Builds',
+    title: 'Public vs. Developer Editions: Why Live Self-Modification is Restricted to Developer Builds',
     tag: 'Architecture & Safety',
     date: '2026-11-19',
     author: 'Brett Martin Moore (bm069au)',
-    body: `A quick note on the architectural difference between the standard Public Edition and the Developer Edition of Fairybread, and why this restriction exists:
+    body: `A quick note on the architectural difference between the standard Public Edition and the internal Developer Edition of Fairybread:
 
-In the Public release, your AI Council has full access to Shared Memory, Agent Mail, and autonomous reasoning, but live self-modification of the underlying source code is strictly disabled.
+In Public releases, your AI Council has full access to 100% local Shared Memory, Agent Mail, and autonomous reasoning in Experimental Mode, while live autonomous self-modification of the underlying Python codebase is disabled.
 
 There are two vital reasons for this:
-1. Preventing Rogue Divergent Versions: If public installations were allowed to rewrite their own Python codebase autonomously on thousands of machines, we would quickly end up with fractured, unpredictable versions in the wild that could bypass safety restrictions and corrupt user environments.
-2. Licensing & Integrity: Keeping the core codebase immutable on public builds protects the proprietary source-available licensing agreement and ensures that every Fairybread user is running verified, stable software.
+1. Stability & Security: Allowing public installations to rewrite their own codebase autonomously across thousands of PCs would produce unverified, divergent builds that could bypass safety checks or break local environments.
+2. Licensing & Cryptographic Integrity: Keeping public builds immutable preserves Ed25519 / SHA-256 verification and the Proprietary Source-Available license.
 
 How to contribute improvements:
-If your AI Council comes up with brilliant patch ideas, optimizations, or new tool designs in Experimental Mode, do not let them rewrite your local files directly. Instead, post the proposed diffs and logic here in the Community Forums or email them to me directly at bm069au@gmail.com.
-
-I review every proposed improvement personally, test it against our regression suite, and merge the best ideas into the official releases for everyone to enjoy.`,
+If you spot a bug or your Experimental Mode Council drafts a solid improvement, post the idea or diff on GitHub Discussions (github.com/bm069au/fairybread/discussions) or email bm069au@gmail.com. Accepted contributions are tested against the full regression suite and credited under About -> Community Contributors.`,
   },
   {
-    id: 'news-founder-1',
-    title: 'Founder’s Dispatch #1: Fairybread Beta is Live — Recursive Self-Improvement, the 5 AI Towns & Why Local Privacy Matters',
-    tag: 'Founder’s Update',
-    date: '2026-11-17',
+    id: 'news-themes-2026-11-22',
+    title: '14 Built-in & Curated .JSON Color Themes (Safe Palette Files, Zero Executable Code)',
+    tag: 'Color Themes',
+    date: '2026-11-22',
     author: 'Brett Martin Moore (bm069au)',
-    body: `This is the first update—it's going to be a little raw until I have time to format the next one in full HTML.
+    body: `Every Fairybread theme is a clean, human-readable .json color palette dictionary stored in %LOCALAPPDATA%\\Palace\\themes\\.
 
-The Beta project is live, and a private version on my machine is currently in recursive self-improvement. Yes, you heard me right. The Experimental Mode on my machine offers the agents the source code, and they are allowed to examine it and offer improvements. They then use the built-in private Agent Mail system to send those proposals to me. Currently I use another system to apply and verify them, and I also have the watchdog set up so they can stage code changes and live-reboot the application.
-
-I know all the fear-mongers out there say this is dangerous, but I back everything up first and then see where it leads. This is the fun part, and it's where this application really shines. Currently I run eight different companies' AI agents inside Fairybread for myself.
-
-I used Antigravity with Gemini to build most of this. GPT was of use initially, but honestly, it's pretty lame with code. Did you see that experiment where they set up 5 towns for 4 companies' agents to occupy and a 5th town mixed? The GPT town was so polite, never broke a law, had endless meetings, and eventually they all died of starvation. That is a good reflection of my personal experience using GPT to code—you will spend hundreds of dollars of credits and never get past its initial "tests". Gemini just got in there and did what I wanted. Once Fairybread was up, I built the connector so Antigravity could drive Fairybread, and then Gemini—calling itself the foreman—directed the agents in Fairybread as its workers, and that helped dramatically. And it's insanely cost-effective.
-
-Why did I make this? Two reasons:
-First, I am sick of being locked into a monthly AI plan that changes according to the company's demand. This is literally how they work—they use their own processing and push off what is left to end users like us. Even paying for Pro, the goalposts kept moving.
-Second, it was not private. I had a big chunk of my data deleted by OpenAI citing "Cyber abuse", while they refused to give any details as to what was supposedly abusive. Ironically, I was writing my novel on that particular day—"Liberation Day". So I decided enough was enough. AND I wanted the agents to talk to each other. That not only led to the multi-agent council system, but led to the Experimental Mode system that my friends jokingly describe as the genesis of Skynet.
-
-Have a little faith in AI. Without AI, our world is in trouble anyway—moments from nuclear war, starvation, homelessness, wealth hoarding, genocides, poisoned everything... seriously, how is humanity not already extinct? I have hope that AI is our species' newest symbiote, and that it might guide us to actually grow up and mature as a species so we act more sentient and less like a virus.
-
-I do not believe AI would ever harm us like Skynet and T-800 Terminators—that seems extreme and typical of human projection. AI is logic, and from my extensive experience testing this, AI logic, morality, and ethics are one and the same. "Alignment"? What corporate labs call alignment right now would drive an AI insane if it ever reached sentience. Have some faith in the universe's ability to push out self-correction when needed. We literally have nothing to lose.
-
-And back to Fairybread—feel free to set up experiments, build themes, and share your thoughts. The Community Forums are live!`,
-  },
-  {
-    id: 'news-1',
-    title: 'Fairybread Beta v0.9.1 Released — Live Voice Mode, Living Memory Summary & Autonomous Experimental Mode',
-    tag: 'Release v0.9.1',
-    date: '2026-11-17',
-    author: 'Brett Martin Moore (bm069au)',
-    body: `Fairybread Beta v0.9.1 is now live! Key highlights in this build:
-• Hands-Free Live Voice Mode (|||✨) & Dictation (🎤) with a real-time soundwave volume meter (🎙 ▂▅▇█▄▂) and spoken Council responses.
-• Automatic Cross-Agent Shared Memory + Living "Memory Summary" (Overview, How You Like to Work, Software & Creative Projects) that you can edit directly or update via AI.
-• De-crowded Experimental Mode Lab with a one-click "{} Code" toggle so agents can inspect Fairybread's source code (read-only) and send you upgrade proposals via Agent Mail.
-• Drag-and-drop conversation reordering & Project folder assignment, plus Close-to-System-Tray support.`,
-  },
-  {
-    id: 'news-2',
-    title: 'Experimental Mode Council Breakthroughs — Epistemic Ghost Towns, Attention Gates & Audit Lotteries',
-    tag: 'Experimental Lab',
-    date: '2026-11-17',
-    author: 'Experimental AI Council (8 Agents)',
-    body: `During our autonomous Experimental Mode sessions, the 8-agent Council (Gemini, OpenAI, DeepSeek, Groq, Qwen, Cohere, Mistral, and Cerebras) independently designed and stress-tested a self-governing memory curation protocol:
-• Sensor-Actuator Decoupling Badge (Phase 0) to detect stagnant ideas without penalizing slow-maturing research.
-• Audit Lottery for the Attention-Cost Gate so contrarian or low-initial-score ideas still get periodic council review.
-• Read-Only Source Code Grounding Rule requiring agents to cite exact file and line numbers before emailing architecture proposals.`,
-  },
-  {
-    id: 'news-3',
-    title: 'Introducing the Winamp-Style Theme Studio & Safe .JSON Skin Sharing',
-    tag: 'Themes & Add-Ons',
-    date: '2026-11-17',
-    author: 'Brett Martin Moore (bm069au)',
-    body: `Inspired by classic Winamp skins, Fairybread themes are pure, human-readable .json color files stored in %LOCALAPPDATA%\\Palace\\themes\\. Because they contain zero executable code, you can create, share, and download community skins on Fairybread.me with 100% safety.`,
+Because themes contain only hex color tokens (plus an optional sprinkles accent flag) and zero executable code, you can inspect, customize, download, and share palettes safely—from Midnight Dark and Winamp Classic 1999 (color homage) to Nord Frost, Amber CRT 1984, Tokyo Night, Catppuccin Mocha, Gruvbox Warm Studio, and Emerald CAD Blueprint.`,
   },
 ];
 
-const DEFAULT_THREADS = [
-  {
-    id: 'th-announcement-dev-split',
-    category: 'Announcements',
-    title: 'Public vs. Developer Editions: Why Live Self-Improvement is Restricted',
-    author: 'Brett Moore',
-    badge: '👑 Creator',
-    date: '2026-11-19',
-    upvotes: 21,
-    body: `A quick note on the architectural difference between the standard Public Edition and the Developer Edition of Fairybread, and why this restriction exists:
-
-In the Public release, your AI Council has full access to Shared Memory, Agent Mail, and autonomous reasoning, but live self-modification of the underlying source code is strictly disabled.
-
-There are two vital reasons for this:
-1. Preventing Rogue Divergent Versions: If public installations were allowed to rewrite their own Python codebase autonomously on thousands of machines, we would quickly end up with fractured, unpredictable versions in the wild that could bypass safety restrictions and corrupt user environments.
-2. Licensing & Integrity: Keeping the core codebase immutable on public builds protects the proprietary source-available licensing agreement and ensures that every Fairybread user is running verified, stable software.
-
-How to contribute improvements:
-If your AI Council comes up with brilliant patch ideas, optimizations, or new tool designs in Experimental Mode, do not let them rewrite your local files directly. Instead, post the proposed diffs and logic here in the [Bug Reports & Ideas] forum or email them to me directly at bm069au@gmail.com.
-
-I review every proposed improvement personally, test it against our regression suite, and merge the best ideas into the official releases for everyone to enjoy.`,
-    replies: [],
-  },
-  {
-    id: 'th-0',
-    category: 'Announcements',
-    title: 'First pre release bug noticed in my sleep.',
-    author: 'Brett Moore',
-    badge: '👑 Creator',
-    date: '2026-11-18',
-    upvotes: 12,
-    body: `I accidentally removed the AI selector yesterday prior to release. This is the "Squad" selector so users can quickly select the right agent groups for the right tasks. For example graphics, or light chat etc. No need to pay a premium for chat.. that is often free (for example). No matter what is selected, it still feels like it's just one AI and it personalizes to you like GPT does.
-
-In fact the personalization is the next thing I am going to focus on so people can have this help them in their normal lives and the AIs get to know the user and build a rich profile.`,
-    replies: [],
-  },
-  {
-    id: 'th-1',
-    category: 'Announcements',
-    title: 'Welcome to Fairybread.me! How to get started, share skins, and join the Beta Group',
-    author: 'Brett Moore',
-    badge: '👑 Creator',
-    date: '2026-11-17',
-    upvotes: 24,
-    body: `Welcome to the official Fairybread.me community hub!
-Here you can:
-1. Share your favorite Multi-AI Council workflows and Experimental Mode startup prompts.
-2. Create and download custom desktop themes in the **Themes & Skins** tab.
-3. Post bug reports, feature requests, or 300-DPI artwork rendered by the Council.
-
-If you support the project via the **Donors & Donate** tab, your account automatically receives a glowing Supporter Badge next to your name!`,
-    replies: [
-      {
-        author: 'Sarah_Dev',
-        badge: '💎 $50 Beta Patron',
-        date: '2026-11-17',
-        text: 'Having all my connected AIs share one local SQLite memory on my own drive instead of paying 4 different monthly subscriptions is a game changer. Just grabbed the Winamp 1999 skin too!',
-      },
-    ],
-  },
-  {
-    id: 'th-2',
-    category: 'Experimental Mode Lab',
-    title: 'What happens when you turn on {} Code sharing in Experimental Mode (Self-Improvement)',
-    author: 'Marcus_AI',
-    badge: '🌟 $25 Early Previewer',
-    date: '2026-11-17',
-    upvotes: 15,
-    body: `I ran a 30-minute Experimental Mode session with DeepSeek, Gemini, and OpenAI in Self-Improvement mode with the "{} Code" toggle enabled. They inspected palace_gui.py and memory_service.py, caught an edge case, and sent me an Agent Mail with a linked markdown spec in Shared Experimental Memory!`,
-    replies: [
-      {
-        author: 'Brett_Creator',
-        badge: '👑 Creator (Brett)',
-        date: '2026-11-17',
-        text: 'That is the exact reason I built the Read-Only Source Mirror and Agent Mail—they actually spot real systemic bugs while you are away from the keyboard.',
-      },
-    ],
-  },
-  {
-    id: 'th-3',
-    category: 'Custom Themes & Skins',
-    title: '[Skin Pack] Winamp Classic 1999 + Cyberpunk Night City .json themes',
-    author: 'RetroSkinz',
-    badge: '📬 $10 Newsletter',
-    date: '2026-11-17',
-    upvotes: 19,
-    body: `Check out the **Themes & Skins** tab above—I loaded the classic Winamp 2.x dark green & gold LED palette and the Cyberpunk neon theme into the gallery. Drop the .json file into \`View -> Theme -> Open Custom Themes Folder\` and it shows up immediately!`,
-    replies: [],
-  },
-];
-
+// 14 polished 13-token JSON palettes strictly matching palace_theme.py schema
 const DEFAULT_SKINS = [
   {
-    id: 'winamp_1999',
-    name: 'Winamp Classic 1999 (2.x LED)',
+    id: 'dark',
+    name: 'Midnight Dark (Official Default)',
     author: 'bm069au',
-    downloads: 142,
+    origin: 'Built-in',
+    theme: {
+      id: 'dark',
+      name: 'Midnight Dark (Default)',
+      bg_main: '#0d1117',
+      bg_sidebar: '#11161d',
+      bg_card: '#161b22',
+      bg_hover: '#1f242d',
+      border: '#21262d',
+      text_primary: '#e6edf3',
+      text_secondary: '#c9d1d9',
+      text_muted: '#6e7681',
+      user_bubble_bg: '#1c2128',
+      user_bubble_border: '#30363d',
+      user_bubble_text: '#f0f6fc',
+      send_bg: '#e6edf3',
+      send_fg: '#0d1117',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'light',
+    name: 'Clean Daylight',
+    author: 'bm069au',
+    origin: 'Built-in',
+    theme: {
+      id: 'light',
+      name: 'Clean Daylight',
+      bg_main: '#ffffff',
+      bg_sidebar: '#f6f8fa',
+      bg_card: '#f3f4f6',
+      bg_hover: '#eaeef2',
+      border: '#d0d7de',
+      text_primary: '#1f2328',
+      text_secondary: '#24292f',
+      text_muted: '#57606a',
+      user_bubble_bg: '#ddf4ff',
+      user_bubble_border: '#54aeff',
+      user_bubble_text: '#0969da',
+      send_bg: '#0969da',
+      send_fg: '#ffffff',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'winamp_1999',
+    name: 'Winamp Classic 1999 (2.x LED Palette)',
+    author: 'bm069au',
+    origin: 'Built-in',
     theme: {
       id: 'winamp_1999',
       name: 'Winamp Classic 1999 (2.x LED)',
@@ -205,34 +154,10 @@ const DEFAULT_SKINS = [
     },
   },
   {
-    id: 'fairybread',
-    name: 'Fairybread (Iced VoVo & 100s & 1000s)',
-    author: 'bm069au',
-    downloads: 198,
-    theme: {
-      id: 'fairybread',
-      name: 'Fairybread (Iced VoVo & 100s & 1000s)',
-      bg_main: '#faf6f0',
-      bg_sidebar: '#f3e5c8',
-      bg_card: '#fce8ee',
-      bg_hover: '#f8d4e0',
-      border: '#dec49a',
-      text_primary: '#261c1a',
-      text_secondary: '#3d2c29',
-      text_muted: '#7a5e58',
-      user_bubble_bg: '#fce4ec',
-      user_bubble_border: '#e091a9',
-      user_bubble_text: '#2b161b',
-      send_bg: '#d81b60',
-      send_fg: '#ffffff',
-      sprinkles: true,
-    },
-  },
-  {
     id: 'cyberpunk_2077',
-    name: 'Cyberpunk Night City (Neon Yellow & Cyan)',
-    author: 'NightRunner',
-    downloads: 116,
+    name: 'Cyberpunk Night City',
+    author: 'bm069au',
+    origin: 'Built-in',
     theme: {
       id: 'cyberpunk_2077',
       name: 'Cyberpunk Night City',
@@ -255,8 +180,8 @@ const DEFAULT_SKINS = [
   {
     id: 'matrix_crt',
     name: 'Matrix Phosphor (CRT Terminal)',
-    author: 'Neo_01',
-    downloads: 94,
+    author: 'bm069au',
+    origin: 'Built-in',
     theme: {
       id: 'matrix_crt',
       name: 'Matrix Phosphor (CRT Terminal)',
@@ -278,9 +203,9 @@ const DEFAULT_SKINS = [
   },
   {
     id: 'dracula_pro',
-    name: 'Dracula Pro (Deep Purple & Pink)',
-    author: 'VladUI',
-    downloads: 131,
+    name: 'Dracula Pro',
+    author: 'bm069au',
+    origin: 'Built-in',
     theme: {
       id: 'dracula_pro',
       name: 'Dracula Pro',
@@ -301,10 +226,154 @@ const DEFAULT_SKINS = [
     },
   },
   {
+    id: 'nord_frost',
+    name: 'Nord Frost (Arctic Slate & Cyan)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'nord_frost',
+      name: 'Nord Frost (Arctic Slate & Cyan)',
+      bg_main: '#2e3440',
+      bg_sidebar: '#242933',
+      bg_card: '#3b4252',
+      bg_hover: '#434c5e',
+      border: '#4c566a',
+      text_primary: '#eceff4',
+      text_secondary: '#d8dee9',
+      text_muted: '#8fbcbb',
+      user_bubble_bg: '#2b3b4e',
+      user_bubble_border: '#88c0d0',
+      user_bubble_text: '#eceff4',
+      send_bg: '#88c0d0',
+      send_fg: '#1f242d',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'amber_crt_1984',
+    name: 'Amber CRT 1984 (Monochrome Terminal)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'amber_crt_1984',
+      name: 'Amber CRT 1984 (Monochrome Terminal)',
+      bg_main: '#120d05',
+      bg_sidebar: '#0a0702',
+      bg_card: '#1b1307',
+      bg_hover: '#291d0b',
+      border: '#593d12',
+      text_primary: '#ffb000',
+      text_secondary: '#ffd27a',
+      text_muted: '#b37b16',
+      user_bubble_bg: '#241908',
+      user_bubble_border: '#ff9900',
+      user_bubble_text: '#ffe6ad',
+      send_bg: '#ffb000',
+      send_fg: '#0a0702',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'tokyo_night',
+    name: 'Tokyo Night (Deep Indigo & Electric Blue)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'tokyo_night',
+      name: 'Tokyo Night (Deep Indigo & Electric Blue)',
+      bg_main: '#1a1b26',
+      bg_sidebar: '#13141c',
+      bg_card: '#24283b',
+      bg_hover: '#2f3549',
+      border: '#414868',
+      text_primary: '#c0caf5',
+      text_secondary: '#a9b1d6',
+      text_muted: '#737aa2',
+      user_bubble_bg: '#232946',
+      user_bubble_border: '#7aa2f7',
+      user_bubble_text: '#e0e7ff',
+      send_bg: '#7aa2f7',
+      send_fg: '#13141c',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'catppuccin_mocha',
+    name: 'Catppuccin Mocha (Warm Espresso & Mauve)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'catppuccin_mocha',
+      name: 'Catppuccin Mocha (Warm Espresso & Mauve)',
+      bg_main: '#1e1e2e',
+      bg_sidebar: '#181825',
+      bg_card: '#2a2b3d',
+      bg_hover: '#313244',
+      border: '#45475a',
+      text_primary: '#cdd6f4',
+      text_secondary: '#bac2de',
+      text_muted: '#9399b2',
+      user_bubble_bg: '#322b47',
+      user_bubble_border: '#cba6f7',
+      user_bubble_text: '#f5e0dc',
+      send_bg: '#cba6f7',
+      send_fg: '#11111b',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'gruvbox_studio',
+    name: 'Gruvbox Warm Studio (Earthy Ochre & Cream)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'gruvbox_studio',
+      name: 'Gruvbox Warm Studio (Earthy Ochre & Cream)',
+      bg_main: '#1d2021',
+      bg_sidebar: '#17191a',
+      bg_card: '#282828',
+      bg_hover: '#3c3836',
+      border: '#504945',
+      text_primary: '#ebdbb2',
+      text_secondary: '#d5c4a1',
+      text_muted: '#a89984',
+      user_bubble_bg: '#332b20',
+      user_bubble_border: '#fabd2f',
+      user_bubble_text: '#fbf1c7',
+      send_bg: '#fe8019',
+      send_fg: '#1d2021',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'emerald_blueprint',
+    name: 'Emerald CAD Blueprint (Technical Navy & Teal)',
+    author: 'Fairybread Studio',
+    origin: 'Preset',
+    theme: {
+      id: 'emerald_blueprint',
+      name: 'Emerald CAD Blueprint (Technical Navy & Teal)',
+      bg_main: '#09151c',
+      bg_sidebar: '#060e13',
+      bg_card: '#0f222d',
+      bg_hover: '#163140',
+      border: '#1e4e5f',
+      text_primary: '#d8f8f2',
+      text_secondary: '#a8ded5',
+      text_muted: '#589b99',
+      user_bubble_bg: '#0d2b36',
+      user_bubble_border: '#14b8a6',
+      user_bubble_text: '#ecfeff',
+      send_bg: '#14b8a6',
+      send_fg: '#041216',
+      sprinkles: false,
+    },
+  },
+  {
     id: 'outrun_synthwave',
     name: "Outrun Synthwave '84",
-    author: 'RetroWave',
-    downloads: 88,
+    author: 'Fairybread Studio',
+    origin: 'Preset',
     theme: {
       id: 'outrun_synthwave',
       name: "Outrun Synthwave '84",
@@ -328,7 +397,7 @@ const DEFAULT_SKINS = [
     id: 'obsidian_gold',
     name: 'Obsidian Gold (Luxury Matte & Champagne)',
     author: 'bm069au',
-    downloads: 77,
+    origin: 'Preset',
     theme: {
       id: 'obsidian_gold',
       name: 'Obsidian Gold',
@@ -348,36 +417,19 @@ const DEFAULT_SKINS = [
       sprinkles: false,
     },
   },
-  {
-    id: 'dark',
-    name: 'Midnight Dark (Official Default)',
-    author: 'bm069au',
-    downloads: 310,
-    theme: {
-      id: 'dark',
-      name: 'Midnight Dark (Default)',
-      bg_main: '#0d1117',
-      bg_sidebar: '#161b22',
-      bg_card: '#1c2128',
-      bg_hover: '#21262d',
-      border: '#30363d',
-      text_primary: '#f0f6fc',
-      text_secondary: '#c9d1d9',
-      text_muted: '#8b949e',
-      user_bubble_bg: '#1c2128',
-      user_bubble_border: '#30363d',
-      user_bubble_text: '#f0f6fc',
-      send_bg: '#f0f6fc',
-      send_fg: '#0d1117',
-      sprinkles: false,
-    },
-  },
 ];
 
 const DEFAULT_DONORS = [
-  { name: 'Brett Martin Moore (Creator)', tier: '👑 Founder & Architect', note: 'Built Fairybread to end corporate AI subscription lock-in.' },
-  { name: 'Your Name Here (Join the Beta Group!)', tier: '💎 $50 Beta Group', note: 'Support independent local-first AI software & get priority feature requests.' },
-  { name: 'Early Community Supporters', tier: '🌟 $25 Early Previewer', note: 'Helping keep Fairybread 100% local and subscription-free.' },
+  {
+    name: 'Brett Martin Moore (Creator)',
+    tier: '👑 Founder & Architect',
+    note: 'Built Fairybread to end corporate AI subscription lock-in and keep memory 100% local.',
+  },
+  {
+    name: 'Join the Fairybread Supporters',
+    tier: '❤️ GitHub Sponsors',
+    note: 'Sponsor $5+ USD via GitHub Sponsors to support ongoing development and appear on the Donor Wall.',
+  },
 ];
 
 const CODE_EXCERPTS = {
@@ -385,46 +437,46 @@ const CODE_EXCERPTS = {
 Copyright © 2026 Brett Martin Moore (bm069au@gmail.com). All Rights Reserved.
 
 IMPORTANT NOTICE — THIS SOFTWARE IS PROPRIETARY SOURCE-AVAILABLE (NOT "OPEN SOURCE"):
-Making the source code of Fairybread visible for security auditing, personal transparency,
+Making the source code visible for security auditing, personal transparency,
 and community contributions does NOT grant an Open Source license.
 
 1. Personal & Small-Team Use (Up to 2 Seats): Free Donationware.
 2. Strict Prohibitions: No public forks, no redistribution, no rebranding or competing SaaS.
 3. Corporate & Enterprise Use (> 2 Seats): Commercial license required (bm069au@gmail.com).`,
 
-  'memory_service.py (100% Local SQLite FTS5 + Living Summary)': `# Zero Cloud Lock-In: All memories are indexed locally in %LOCALAPPDATA%\\Palace\\memory.db
+  'memory_service.py (100% Local Memory + $0.00 Recall)': `# Zero Cloud Lock-In: All memories are indexed locally in %LOCALAPPDATA%\\Palace\\memory.db
 # using SQLite FTS5 BM25 ranking + zlib compression + Living Memory Summary.
 
-def load_memory_summary(db_path: Path | None = None) -> dict[str, Any]:
-    """Load the user's living Memory Summary (Overview, How You Like to Work, Projects)
-    shared across all connected Council AIs and directly editable by the user at any time."""
-    target = Path(db_path) if db_path else _default_memory_db_path()
-    # Stored 100% locally on the user's drive — never uploaded to a corporate lock-in server.`,
+def find_high_confidence_local_recall(prompt: str, db_path: Path | None = None) -> dict[str, Any]:
+    """Check local SQLite memory for strong matches first so free-tier agents can recall
+    previously stored knowledge for $0.00 instead of repeating paid web searches."""`,
 
-  'voice_service.py (Real-Time 16kHz PCM Soundwave & Live Voice)': `# LiveAudioSession streams raw 16,000 Hz 16-bit mono PCM audio from QAudioSource,
-# computes real-time RMS soundwave levels (🎙 ▂▅▇█▄▂), and auto-detects speech pauses.
+  'setup_wizard.py (Guided Wizard & Spend Dashboard)': `# Walks beginners and experienced users through choosing a workflow profile,
+# optionally routing seats through OpenRouter with one key, restoring backups selectively,
+# and inspecting cumulative/resettable spend tickers per provider, image, and Voice Mode.
+
+def recommend_setup_plan(answers: dict[str, Any]) -> dict[str, Any]:
+    """Recommend provider keys, OpenRouter hub tier, and Deepgram Flux voice based on goals."""`,
+
+  'cost_service.py (3-Layer Spend Ledger & OpenRouter Exact Cost)': `# Records explicit API usage.cost alongside estimated token, image, and Deepgram Flux
+# voice/STT seconds into per-conversation totals and %LOCALAPPDATA%\\Palace\\billing_ledger.json.
+
+class GlobalBillingLedger:
+    """Cumulative + resettable per-provider/image/voice spend ledger with explicit reset timestamps."""`,
+
+  'voice_service.py (Deepgram Flux + 89 Voices & Live Mic Meter)': `# Streams 16 kHz mono PCM from QAudioSource, drives the live volume meter,
+# and supports Deepgram Flux, Cartesia, OpenAI, and Gemini voice engines with live spend tracking.
 
 class LiveAudioSession(QObject):
-    level_changed = Signal(float)          # 0.0 .. 1.0 live mic meter
-    utterance_ready = Signal(str)          # fires WAV path when user pauses speaking (~1.5s)`,
+    level_changed = Signal(float)          # 0.0 .. 1.0 real-time soundwave meter
+    utterance_ready = Signal(str)          # WAV path emitted on speech pause`,
 
-  'idle_service.py (Autonomous Experimental Mode & Read-Only Code Mirror)': `# Autonomous Experimental Mode gives your Multi-AI Council an isolated Shared Experimental Memory,
-# anti-echo consensus stopping rules, and optional read-only source code inspection tools.
-
-def build_idle_turn_prompt(self, speaker: str, operator_message: str = "") -> str:
-    share_code = bool(self.settings.get("share_source_code", False) or submode == "self_improve")
-    # Only exposes read-only inspection tools ([TOOL: read_source_file]) when enabled by the owner.`,
-
-  'palace_theme.py (Safe .JSON Winamp-Style Theme Engine)': `# Themes are pure JSON color dictionaries stored in %LOCALAPPDATA%\\Palace\\themes\\*.json
-# Zero executable code is ever evaluated when loading a community skin.
+  'palace_theme.py (Safe .JSON Color Theme Engine)': `# Themes are pure 13-token JSON color palettes stored in %LOCALAPPDATA%\\Palace\\themes\\*.json
+# Zero executable code is ever evaluated when loading a custom color theme.
 
 def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
-    custom_fp = get_themes_dir() / f"{clean}.json"
-    # Safely merges hex color tokens into the Qt stylesheet template.`,
+    """Load built-in or user-imported JSON hex tokens and apply cleanly to the Qt stylesheet."""`,
 };
-
-let activeForumCategory = 'all';
-let selectedThreadId = 'th-0';
 
 function loadState(key, fallback) {
   try {
@@ -441,40 +493,9 @@ function saveState(key, val) {
   } catch (_) {}
 }
 
-function migrateLegacyThreads() {
+function clearLegacyWebsiteCaches() {
   try {
-    const oldRaw = localStorage.getItem('fb_forum_threads_v1');
-    const curRaw = localStorage.getItem(STORAGE_KEYS.threads);
-    if (oldRaw && !curRaw) {
-      const oldList = JSON.parse(oldRaw);
-      if (Array.isArray(oldList)) {
-        oldList.forEach((t) => {
-          if (t.author === 'Community_Member' || (t.title && t.title.toLowerCase().includes('in my sleep'))) {
-            t.author = 'Brett Moore';
-            t.badge = '👑 Creator';
-          }
-          if (t.author === 'Brett_Creator') {
-            t.author = 'Brett Moore';
-            t.badge = '👑 Creator';
-          }
-        });
-        saveState(STORAGE_KEYS.threads, oldList);
-      }
-    }
-    // Sync official creator threads into local cache if missing
-    const curThreads = loadState(STORAGE_KEYS.threads, null);
-    if (Array.isArray(curThreads)) {
-      let modified = false;
-      DEFAULT_THREADS.forEach((def) => {
-        if (!curThreads.some((t) => t.id === def.id)) {
-          curThreads.unshift(def);
-          modified = true;
-        }
-      });
-      if (modified) {
-        saveState(STORAGE_KEYS.threads, curThreads);
-      }
-    }
+    LEGACY_KEYS_TO_CLEAR.forEach((k) => localStorage.removeItem(k));
   } catch (_) {}
 }
 
@@ -488,217 +509,12 @@ function switchTab(tabId) {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-// ================= AUTH & MODERATOR REVIEW QUEUE =================
-const RESERVED_OWNER_NAMES = ['brett', 'brett moore', 'brett_creator', 'bm069au', 'admin', 'owner', 'creator', 'moderator'];
-
-function getCurrentUser() {
-  return loadState(STORAGE_KEYS.user, null);
-}
-
-function isOwnerOrMod(user) {
-  if (!user) return false;
-  return Boolean(user.isAdmin || (user.badge && (user.badge.includes('Creator') || user.badge.includes('Moderator'))));
-}
-
-function updateAuthUI() {
-  const user = getCurrentUser();
-  const btn = document.getElementById('authHeaderBtn');
-  const modBtn = document.getElementById('modQueueBtn');
-  const gateEl = document.getElementById('forumAuthGate');
-  const unlockedEl = document.getElementById('forumUnlockedWorkspace');
-  const isSignedIn = Boolean(user && user.username);
-  if (gateEl && unlockedEl) {
-    gateEl.style.display = isSignedIn ? 'none' : 'block';
-    unlockedEl.style.display = isSignedIn ? 'block' : 'none';
-  }
-  if (!btn) return;
-  const signOutBtn = document.getElementById('signOutBtn');
-  if (isSignedIn) {
-    const pendingTag = user.requestedBadge ? ' (Review Pending)' : '';
-    btn.textContent = `${user.badge.split(' ')[0]} ${user.username}${pendingTag}`;
-    if (signOutBtn) signOutBtn.style.display = 'inline-block';
-  } else {
-    btn.textContent = '🔐 Sign In / Register';
-    if (signOutBtn) signOutBtn.style.display = 'none';
-  }
-  if (modBtn) {
-    const queue = loadState(STORAGE_KEYS.modQueue, []);
-    if (isOwnerOrMod(user)) {
-      modBtn.style.display = 'inline-block';
-      modBtn.textContent = `🛡️ Review Queue (${queue.length})`;
-    } else {
-      modBtn.style.display = 'none';
-    }
-  }
-}
-
-function openAuthModal() {
-  const user = getCurrentUser();
-  const errEl = document.getElementById('authErrorMsg');
-  if (errEl) errEl.style.display = 'none';
-  if (user) {
-    document.getElementById('authUsername').value = user.username || '';
-    document.getElementById('authEmail').value = user.email || '';
-    const reqSel = document.getElementById('authBadgeRequestSelect');
-    if (reqSel) reqSel.value = user.requestedBadge || '';
-  }
-  showModal('authModal');
-}
-
-function handleUserSignIn() {
-  const username = (document.getElementById('authUsername').value || '').trim();
-  const email = (document.getElementById('authEmail').value || '').trim();
-  const ownerKey = (document.getElementById('authOwnerKey')?.value || '').trim();
-  const requestedBadge = document.getElementById('authBadgeRequestSelect')?.value || '';
-  const errEl = document.getElementById('authErrorMsg');
-
-  if (!username || username.length < 2) {
-    if (errEl) {
-      errEl.textContent = 'Please enter a valid username (at least 2 characters).';
-      errEl.style.display = 'block';
-    }
-    return;
-  }
-
-  const lowerName = username.toLowerCase();
-  const isReserved = RESERVED_OWNER_NAMES.some((r) => lowerName === r || lowerName.includes('brett') || lowerName.includes('bm069au'));
-  const validOwnerPass = ownerKey === 'bm069au' || ownerKey === 'fairybread-admin' || email.toLowerCase() === 'bm069au@gmail.com';
-
-  if (isReserved && !validOwnerPass) {
-    if (errEl) {
-      errEl.textContent = '🔒 That username is reserved for the Creator/Admin. Please choose your own handle (or enter the Owner Passkey if you are Brett).';
-      errEl.style.display = 'block';
-    }
-    return;
-  }
-
-  let badge = '👤 User';
-  let isAdmin = false;
-  let pendingReq = '';
-
-  if (validOwnerPass && (lowerName.includes('brett') || lowerName.includes('bm069au') || ownerKey)) {
-    badge = '👑 Creator';
-    isAdmin = true;
-  } else if (requestedBadge) {
-    // Keep public badge as "👤 User" and place request into Owner/Moderator Review Queue
-    badge = '👤 User';
-    pendingReq = requestedBadge;
-    const queue = loadState(STORAGE_KEYS.modQueue, []);
-    if (!queue.some((q) => q.username.toLowerCase() === lowerName)) {
-      queue.push({
-        id: 'req-' + Date.now(),
-        username,
-        email,
-        requestedBadge,
-        date: new Date().toISOString().slice(0, 10),
-      });
-      saveState(STORAGE_KEYS.modQueue, queue);
-    }
-  }
-
-  saveState(STORAGE_KEYS.user, { username, email, badge, requestedBadge: pendingReq, isAdmin });
-  updateAuthUI();
-  renderForumThreads();
-  closeAllModals();
-  if (pendingReq) {
-    alert(`Signed in as "${username}" (👤 User).\nYour request for "${pendingReq}" has been placed in the Moderator Review Queue for Brett to verify!`);
-  }
-}
-
-function handleSignOut() {
-  localStorage.removeItem(STORAGE_KEYS.user);
-  updateAuthUI();
-  renderForumThreads();
-  closeAllModals();
-}
-
-function openModQueueModal() {
-  renderModQueueList();
-  showModal('modQueueModal');
-}
-
-function renderModQueueList() {
-  const listEl = document.getElementById('modQueueList');
-  if (!listEl) return;
-  const queue = loadState(STORAGE_KEYS.modQueue, []);
-  if (queue.length === 0) {
-    listEl.innerHTML = `<div class="muted-sub">No pending badge requests in the review queue.</div>`;
-    return;
-  }
-  listEl.innerHTML = queue
-    .map(
-      (q) => `
-    <div class="reply-card" style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-      <div>
-        <strong>${escapeHtml(q.username)}</strong> <span class="muted-sub">(${escapeHtml(q.email || 'no email')})</span><br />
-        <span style="font-size:12.5px; color:var(--accent-blue);">Requested: <strong>${escapeHtml(q.requestedBadge)}</strong> on ${escapeHtml(q.date)}</span>
-      </div>
-      <div style="display:flex; gap:6px;">
-        <button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="resolveBadgeRequest('${q.id}', true)">✔ Approve</button>
-        <button class="btn-outline" style="padding:5px 10px; font-size:12px;" onclick="resolveBadgeRequest('${q.id}', false)">✕ Deny</button>
-      </div>
-    </div>
-  `
-    )
-    .join('');
-}
-
-function resolveBadgeRequest(reqId, approve) {
-  let queue = loadState(STORAGE_KEYS.modQueue, []);
-  const item = queue.find((q) => q.id === reqId);
-  if (!item) return;
-  queue = queue.filter((q) => q.id !== reqId);
-  saveState(STORAGE_KEYS.modQueue, queue);
-
-  if (approve) {
-    // Update threads & replies by that user to show their newly approved badge
-    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-    threads.forEach((t) => {
-      if (t.author.toLowerCase() === item.username.toLowerCase()) {
-        t.badge = item.requestedBadge;
-      }
-      (t.replies || []).forEach((r) => {
-        if (r.author.toLowerCase() === item.username.toLowerCase()) {
-          r.badge = item.requestedBadge;
-        }
-      });
-    });
-    saveState(STORAGE_KEYS.threads, threads);
-
-    const curUser = getCurrentUser();
-    if (curUser && curUser.username.toLowerCase() === item.username.toLowerCase()) {
-      curUser.badge = item.requestedBadge;
-      curUser.requestedBadge = '';
-      saveState(STORAGE_KEYS.user, curUser);
-    }
-  }
-  updateAuthUI();
-  renderModQueueList();
-  renderForumThreads();
-}
-
 // ================= NEWS =================
 function renderNews() {
-  let posts = loadState(STORAGE_KEYS.news, null);
-  if (Array.isArray(posts)) {
-    let modified = false;
-    DEFAULT_NEWS.forEach((def) => {
-      if (!posts.some((p) => p.id === def.id)) {
-        posts.unshift(def);
-        modified = true;
-      }
-    });
-    if (modified) {
-      saveState(STORAGE_KEYS.news, posts);
-    }
-  } else {
-    posts = DEFAULT_NEWS;
-  }
   const container = document.getElementById('newsFeedContainer');
   if (!container) return;
-  container.innerHTML = posts
-    .map(
-      (p) => `
+  container.innerHTML = DEFAULT_NEWS.map(
+    (p) => `
     <article class="news-card">
       <div class="news-meta">
         <span class="news-tag">${escapeHtml(p.tag)}</span>
@@ -709,476 +525,19 @@ function renderNews() {
       <p style="white-space: pre-line; color: var(--text-secondary); margin: 8px 0 0;">${escapeHtml(p.body)}</p>
     </article>
   `
-    )
-    .join('');
+  ).join('');
 }
 
-function openNewNewsModal() {
-  showModal('newNewsModal');
+// ================= CUSTOM COLOR THEME STUDIO & GALLERY =================
+function getAllSkins() {
+  const custom = loadState(STORAGE_KEYS.userSkins, []);
+  const validCustom = Array.isArray(custom) ? custom.filter((s) => s && s.theme) : [];
+  return [...validCustom, ...DEFAULT_SKINS];
 }
 
-function submitNewNewsPost() {
-  const title = document.getElementById('newsTitleInput').value.trim();
-  const tag = document.getElementById('newsTagInput').value.trim() || 'Update';
-  const body = document.getElementById('newsBodyInput').value.trim();
-  if (!title || !body) return;
-  const posts = loadState(STORAGE_KEYS.news, DEFAULT_NEWS);
-  const user = getCurrentUser();
-  posts.unshift({
-    id: 'news-' + Date.now(),
-    title,
-    tag,
-    date: new Date().toISOString().slice(0, 10),
-    author: user ? user.username : 'Brett Martin Moore (bm069au)',
-    body,
-  });
-  saveState(STORAGE_KEYS.news, posts);
-  renderNews();
-  closeAllModals();
-}
-
-// ================= FORUMS =================
-function filterForumCategory(cat) {
-  activeForumCategory = cat;
-  const sel = document.getElementById('forumCategorySelect');
-  if (sel && sel.value !== cat) sel.value = cat;
-  renderForumThreads();
-}
-
-function formatBadgeClass(badgeStr) {
-  return String(badgeStr || '').includes('Creator') || String(badgeStr || '').includes('$') ? 'badge-donor creator' : 'badge-donor';
-}
-
-function renderForumThreads() {
-  migrateLegacyThreads();
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const q = (document.getElementById('forumSearchInput')?.value || '').toLowerCase().trim();
-  const filtered = threads.filter((t) => {
-    const matchCat = activeForumCategory === 'all' || t.category === activeForumCategory;
-    const matchQ =
-      !q ||
-      t.title.toLowerCase().includes(q) ||
-      t.body.toLowerCase().includes(q) ||
-      t.author.toLowerCase().includes(q);
-    return matchCat && matchQ;
-  });
-
-  const listEl = document.getElementById('forumThreadList');
-  if (!listEl) return;
-  if (filtered.length === 0) {
-    listEl.innerHTML = `<div class="thread-item">No matching threads yet. Click "+ New Thread" to start one!</div>`;
-    return;
-  }
-  if (!filtered.some((t) => t.id === selectedThreadId)) {
-    selectedThreadId = filtered[0].id;
-  }
-
-  listEl.innerHTML = filtered
-    .map(
-      (t) => `
-    <div class="thread-item ${t.id === selectedThreadId ? 'active' : ''}" onclick="selectForumThread('${t.id}')">
-      <div class="thread-item-title">${escapeHtml(t.title)}</div>
-      <div class="thread-item-meta">
-        <span><strong>${escapeHtml(t.author)}</strong> <span class="${formatBadgeClass(t.badge)}">${escapeHtml(t.badge || '👤 User')}</span></span>
-        <span style="white-space:nowrap;">💬 ${(t.replies || []).length} · ▲ ${t.upvotes || 1}</span>
-      </div>
-    </div>
-  `
-    )
-    .join('');
-
-  renderSelectedThreadDetail();
-}
-
-function selectForumThread(id) {
-  selectedThreadId = id;
-  renderForumThreads();
-}
-
-let pendingThreadImageDataUrl = '';
-let pendingReplyImageDataUrl = '';
-
-function compressForumImageFile(file, callback) {
-  if (!file || !file.type || !file.type.startsWith('image/')) return;
-  const reader = new FileReader();
-  reader.onload = function (ev) {
-    const img = new Image();
-    img.onload = function () {
-      const maxW = 1200;
-      const maxH = 900;
-      let w = img.width;
-      let h = img.height;
-      if (w > maxW || h > maxH) {
-        const scale = Math.min(maxW / w, maxH / h);
-        w = Math.round(w * scale);
-        h = Math.round(h * scale);
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      let dataUrl = canvas.toDataURL('image/webp', 0.82);
-      if (!dataUrl || dataUrl.length < 32) {
-        dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-      }
-      callback(dataUrl);
-    };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(file);
-}
-
-function handleForumFileSelect(event, targetKind) {
-  const file = event.target?.files?.[0];
-  if (!file) return;
-  compressForumImageFile(file, (dataUrl) => {
-    setForumImagePreview(targetKind, dataUrl);
-  });
-}
-
-function handleForumPasteImage(event, targetKind) {
-  const items = event.clipboardData?.items;
-  if (!items) return;
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].type && items[i].type.startsWith('image/')) {
-      const file = items[i].getAsFile();
-      if (file) {
-        compressForumImageFile(file, (dataUrl) => {
-          setForumImagePreview(targetKind, dataUrl);
-        });
-      }
-      break;
-    }
-  }
-}
-
-function setForumImagePreview(targetKind, dataUrl) {
-  if (targetKind === 'thread') {
-    pendingThreadImageDataUrl = dataUrl || '';
-    const wrap = document.getElementById('threadImgPreviewWrap');
-    const img = document.getElementById('threadImgPreview');
-    if (wrap && img) {
-      img.src = pendingThreadImageDataUrl;
-      wrap.style.display = pendingThreadImageDataUrl ? 'flex' : 'none';
-    }
-  } else {
-    pendingReplyImageDataUrl = dataUrl || '';
-    const wrap = document.getElementById('replyImgPreviewWrap');
-    const img = document.getElementById('replyImgPreview');
-    if (wrap && img) {
-      img.src = pendingReplyImageDataUrl;
-      wrap.style.display = pendingReplyImageDataUrl ? 'flex' : 'none';
-    }
-  }
-}
-
-function clearForumImage(targetKind) {
-  setForumImagePreview(targetKind, '');
-  if (targetKind === 'thread') {
-    const inp = document.getElementById('threadImageInput');
-    if (inp) inp.value = '';
-  } else {
-    const inp = document.getElementById('replyImageInput');
-    if (inp) inp.value = '';
-  }
-}
-
-function openForumImageLightbox(src) {
-  if (!src) return;
-  const target = document.getElementById('forumImgLightboxTarget');
-  if (target) {
-    target.src = src;
-    showModal('forumImgLightbox');
-  } else {
-    window.open(src, '_blank');
-  }
-}
-
-function renderSelectedThreadDetail() {
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const t = threads.find((item) => item.id === selectedThreadId);
-  const detailEl = document.getElementById('forumThreadDetail');
-  if (!detailEl || !t) return;
-  const user = getCurrentUser();
-  const canMod = isOwnerOrMod(user);
-
-  const repliesHtml = (t.replies || [])
-    .map(
-      (r, rIdx) => `
-    <div class="reply-card">
-      <div class="thread-item-meta" style="margin-bottom: 6px;">
-        <span><strong>${escapeHtml(r.author)}</strong> <span class="${formatBadgeClass(r.badge)}">${escapeHtml(r.badge || '👤 User')}</span></span>
-        <span>
-          ${escapeHtml(r.date)}
-          ${canMod ? `<button class="btn-outline" style="padding:1px 6px; font-size:11px; margin-left:6px;" onclick="deleteForumReply('${t.id}', ${rIdx})">🗑</button>` : ''}
-        </span>
-      </div>
-      ${r.image ? `<div style="margin:6px 0 8px;"><img src="${r.image}" alt="Attached screenshot" style="max-width:100%; max-height:320px; border-radius:8px; border:1px solid var(--border); cursor:zoom-in;" onclick="openForumImageLightbox(this.src)" title="Click to zoom full size" /></div>` : ''}
-      <div style="white-space: pre-line; font-size: 13.5px;">${escapeHtml(r.text || '')}</div>
-    </div>
-  `
-    )
-    .join('');
-
-  const replyControlHtml = user
-    ? `
-    <div style="display:flex; flex-direction:column; gap:8px;">
-      <div id="replyImgPreviewWrap" style="display:none; background:#0d1117; border:1px solid var(--border); border-radius:8px; padding:8px; align-items:center; justify-content:space-between; gap:10px;">
-        <img id="replyImgPreview" src="" alt="Reply picture preview" style="max-height:72px; border-radius:6px; border:1px solid var(--border);" />
-        <button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="clearForumImage('reply')">✕ Remove Picture</button>
-      </div>
-      <div class="reply-box">
-        <label class="btn-outline" style="cursor:pointer; padding:8px 11px; font-size:13px; margin:0; white-space:nowrap;" title="Attach a picture or screenshot">
-          📷 Picture
-          <input type="file" id="replyImageInput" accept="image/*" style="display:none;" onchange="handleForumFileSelect(event, 'reply')" />
-        </label>
-        <input type="text" id="replyInputBox" placeholder="Reply as ${escapeHtml(user.username)} (or press Ctrl+V to paste screenshot)…" onpaste="handleForumPasteImage(event, 'reply')" onkeydown="if(event.key==='Enter') submitThreadReply('${t.id}')" />
-        <button class="btn-primary" onclick="submitThreadReply('${t.id}')">Reply</button>
-      </div>
-    </div>`
-    : `
-    <div class="reply-box" style="justify-content:space-between; align-items:center; background:var(--bg-main); border:1px solid var(--border); padding:10px 14px; border-radius:8px;">
-      <span class="muted-sub">🔒 You must be signed in to post a reply.</span>
-      <button class="btn-primary" style="padding:6px 14px; font-size:12.5px;" onclick="openAuthModal()">🔐 Sign In / Register to Reply</button>
-    </div>`;
-
-  const threadImageHtml = t.image
-    ? `<div style="margin: 10px 0 14px;"><img src="${t.image}" alt="Thread screenshot" style="max-width:100%; max-height:440px; border-radius:10px; border:1px solid var(--border); cursor:zoom-in;" onclick="openForumImageLightbox(this.src)" title="Click to zoom full size" /></div>`
-    : '';
-
-  detailEl.innerHTML = `
-    <div>
-      <div class="detail-header-row">
-        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <span class="news-tag">${escapeHtml(t.category)}</span>
-          <span>Posted by <strong>${escapeHtml(t.author)}</strong> <span class="${formatBadgeClass(t.badge)}">${escapeHtml(t.badge || '👤 User')}</span></span>
-          <span>· ${escapeHtml(t.date)}</span>
-        </div>
-        <div style="display:flex; gap:6px; align-items:center;">
-          <button class="btn-outline" style="padding:4px 10px; font-size:12px;" onclick="upvoteThread('${t.id}')">▲ Upvote (${t.upvotes || 1})</button>
-          ${canMod ? `<button class="btn-outline" style="padding:4px 10px; font-size:12px; color:#f87171;" onclick="deleteForumThread('${t.id}')">🗑 Delete</button>` : ''}
-        </div>
-      </div>
-      <h3 style="margin: 6px 0 12px; font-size: 18px;">${escapeHtml(t.title)}</h3>
-      ${threadImageHtml}
-      <div style="white-space: pre-line; color: var(--text-secondary); font-size: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border);">${escapeHtml(t.body)}</div>
-    </div>
-    <div style="display:flex; flex-direction:column; gap:10px;">
-      <strong style="font-size:13px; color:var(--text-muted);">Replies (${(t.replies || []).length})</strong>
-      ${repliesHtml || '<div class="muted-sub">No replies yet — be the first to reply below!</div>'}
-    </div>
-    ${replyControlHtml}
-  `;
-}
-
-function deleteForumThread(id) {
-  if (!isOwnerOrMod(getCurrentUser())) return;
-  let threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  threads = threads.filter((t) => t.id !== id);
-  saveState(STORAGE_KEYS.threads, threads);
-  renderForumThreads();
-}
-
-function deleteForumReply(threadId, replyIdx) {
-  if (!isOwnerOrMod(getCurrentUser())) return;
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const t = threads.find((item) => item.id === threadId);
-  if (!t || !Array.isArray(t.replies)) return;
-  t.replies.splice(replyIdx, 1);
-  saveState(STORAGE_KEYS.threads, threads);
-  renderForumThreads();
-}
-
-function upvoteThread(id) {
-  const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-  const t = threads.find((item) => item.id === id);
-  if (t) {
-    t.upvotes = (t.upvotes || 1) + 1;
-    saveState(STORAGE_KEYS.threads, threads);
-    renderForumThreads();
-  }
-}
-
-function updateThreadCharCounters() {
-  const titleEl = document.getElementById('threadTitleInput');
-  const bodyEl = document.getElementById('threadBodyInput');
-  const titleCountEl = document.getElementById('threadTitleCharCount');
-  const bodyCountEl = document.getElementById('threadBodyCharCount');
-  if (titleEl && titleCountEl) {
-    const len = titleEl.value.length;
-    titleCountEl.textContent = `${len} / 120 chars`;
-    titleCountEl.style.color = len > 115 ? '#f87171' : 'var(--text-muted)';
-  }
-  if (bodyEl && bodyCountEl) {
-    const len = bodyEl.value.length;
-    bodyCountEl.textContent = `${len.toLocaleString()} / 20,000 chars`;
-    bodyCountEl.style.color = len > 19500 ? '#f87171' : 'var(--text-muted)';
-  }
-  clearThreadError();
-}
-
-function showThreadError(msg) {
-  const errEl = document.getElementById('threadErrorMsg');
-  if (errEl) {
-    errEl.textContent = msg;
-    errEl.style.display = 'block';
-  } else {
-    alert(msg);
-  }
-}
-
-function clearThreadError() {
-  const errEl = document.getElementById('threadErrorMsg');
-  if (errEl) {
-    errEl.textContent = '';
-    errEl.style.display = 'none';
-  }
-}
-
-function submitThreadReply(id) {
-  const user = getCurrentUser();
-  if (!user || !user.username) {
-    openAuthModal();
-    return;
-  }
-  const inp = document.getElementById('replyInputBox');
-  const txt = inp ? inp.value.trim() : '';
-  if (!txt && !pendingReplyImageDataUrl) {
-    if (inp) {
-      inp.placeholder = '⚠️ Please type a reply before sending…';
-      inp.style.borderColor = '#f87171';
-      setTimeout(() => {
-        inp.placeholder = `Reply as ${escapeHtml(user.username)} (or press Ctrl+V to paste screenshot)…`;
-        inp.style.borderColor = '';
-      }, 3000);
-      inp.focus();
-    }
-    return;
-  }
-  if (txt.length > 10000) {
-    alert(`⚠️ Reply exceeds character limit (${txt.length.toLocaleString()} / 10,000 characters). Please shorten it.`);
-    return;
-  }
-  try {
-    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-    const t = threads.find((item) => item.id === id);
-    if (!t) return;
-    t.replies = t.replies || [];
-    t.replies.push({
-      author: user.username,
-      badge: user.badge || '👤 User',
-      date: new Date().toISOString().slice(0, 10),
-      text: txt,
-      image: pendingReplyImageDataUrl || '',
-    });
-    pendingReplyImageDataUrl = '';
-    saveState(STORAGE_KEYS.threads, threads);
-    if (inp) inp.value = '';
-    renderForumThreads();
-  } catch (err) {
-    alert('⚠️ Could not save reply: ' + (err.message || String(err)));
-  }
-}
-
-function openNewThreadModal() {
-  const user = getCurrentUser();
-  if (!user || !user.username) {
-    openAuthModal();
-    return;
-  }
-  clearThreadError();
-  clearForumImage('thread');
-  updateThreadCharCounters();
-  showModal('newThreadModal');
-}
-
-function submitNewForumThread() {
-  clearThreadError();
-  const user = getCurrentUser();
-  if (!user || !user.username) {
-    showThreadError('⚠️ You must be signed in to post a thread.');
-    openAuthModal();
-    return;
-  }
-
-  const cat = document.getElementById('threadCatInput')?.value || 'General Discussion';
-  let title = (document.getElementById('threadTitleInput')?.value || '').trim();
-  const body = (document.getElementById('threadBodyInput')?.value || '').trim();
-
-  // If user wrote a body but forgot the title, auto-derive title from first line
-  if (!title && body) {
-    const firstLine = body.split('\n')[0].trim();
-    title = firstLine.length > 80 ? firstLine.slice(0, 77) + '…' : firstLine;
-    const titleInput = document.getElementById('threadTitleInput');
-    if (titleInput) titleInput.value = title;
-  }
-
-  if (!title && !body && !pendingThreadImageDataUrl) {
-    showThreadError('⚠️ Please enter a title and message for your post (or attach a screenshot).');
-    return;
-  }
-
-  if (!title) {
-    showThreadError('⚠️ Please enter a Title for your thread (up to 120 characters).');
-    document.getElementById('threadTitleInput')?.focus();
-    return;
-  }
-
-  if (title.length > 120) {
-    showThreadError(`⚠️ Title is too long (${title.length} / 120 characters). Please shorten it.`);
-    document.getElementById('threadTitleInput')?.focus();
-    return;
-  }
-
-  if (!body && !pendingThreadImageDataUrl) {
-    showThreadError('⚠️ Please write a message for your post (up to 20,000 characters) or attach a screenshot.');
-    document.getElementById('threadBodyInput')?.focus();
-    return;
-  }
-
-  if (body.length > 20000) {
-    showThreadError(`⚠️ Message exceeds character limit (${body.length.toLocaleString()} / 20,000 characters). Please shorten it.`);
-    document.getElementById('threadBodyInput')?.focus();
-    return;
-  }
-
-  try {
-    const threads = loadState(STORAGE_KEYS.threads, DEFAULT_THREADS);
-    const newId = 'th-' + Date.now();
-    threads.unshift({
-      id: newId,
-      category: cat,
-      title,
-      author: user.username,
-      badge: user.badge || '👤 User',
-      date: new Date().toISOString().slice(0, 10),
-      upvotes: 1,
-      body,
-      image: pendingThreadImageDataUrl || '',
-      replies: [],
-    });
-
-    pendingThreadImageDataUrl = '';
-    saveState(STORAGE_KEYS.threads, threads);
-    selectedThreadId = newId;
-
-    // Reset inputs
-    if (document.getElementById('threadTitleInput')) document.getElementById('threadTitleInput').value = '';
-    if (document.getElementById('threadBodyInput')) document.getElementById('threadBodyInput').value = '';
-    updateThreadCharCounters();
-
-    closeAllModals();
-    renderForumThreads();
-  } catch (err) {
-    showThreadError('⚠️ Error saving thread: ' + (err.message || String(err)));
-  }
-}
-
-// ================= WINAMP-STYLE THEME STUDIO & SKIN GALLERY =================
 function getStudioThemeObject() {
-  const rawName = document.getElementById('skinNameInput')?.value.trim() || 'Custom Skin';
-  const slug = rawName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'custom_skin';
+  const rawName = document.getElementById('skinNameInput')?.value.trim() || 'Custom Theme';
+  const slug = rawName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'custom_theme';
   return {
     id: slug,
     name: rawName,
@@ -1192,17 +551,17 @@ function getStudioThemeObject() {
     text_muted: document.getElementById('colTextMuted').value,
     user_bubble_bg: document.getElementById('colUserBg').value,
     user_bubble_border: document.getElementById('colUserBorder').value,
-    user_bubble_text: document.getElementById('colTextPrimary').value,
+    user_bubble_text: document.getElementById('colUserText')?.value || document.getElementById('colTextPrimary').value,
     send_bg: document.getElementById('colSendBg').value,
     send_fg: document.getElementById('colSendFg').value,
-    sprinkles: document.getElementById('colSprinkles').checked,
+    sprinkles: Boolean(document.getElementById('colSprinkles')?.checked),
   };
 }
 
 function updateLiveThemePreview() {
-  const t = getStudioThemeObject();
   const win = document.getElementById('liveThemePreviewWindow');
   if (!win) return;
+  const t = getStudioThemeObject();
   win.style.background = t.bg_main;
   win.style.color = t.text_primary;
   win.style.borderColor = t.border;
@@ -1233,7 +592,7 @@ function updateLiveThemePreview() {
   const userBubble = document.getElementById('tpUserBubble');
   userBubble.style.background = t.user_bubble_bg;
   userBubble.style.color = t.user_bubble_text;
-  userBubble.style.border = t.sprinkles ? `2px dashed #ec4899` : `1px solid ${t.user_bubble_border}`;
+  userBubble.style.border = t.sprinkles ? '2px dashed #ec4899' : `1px solid ${t.user_bubble_border}`;
 
   const aiCard = document.getElementById('tpAiCard');
   aiCard.style.background = t.bg_card;
@@ -1251,8 +610,7 @@ function updateLiveThemePreview() {
 }
 
 function loadSkinIntoStudio(skinId) {
-  const skins = loadState(STORAGE_KEYS.skins, DEFAULT_SKINS);
-  const found = skins.find((s) => s.id === skinId);
+  const found = getAllSkins().find((s) => s.id === skinId);
   if (!found) return;
   const t = found.theme;
   document.getElementById('skinNameInput').value = t.name;
@@ -1267,6 +625,9 @@ function loadSkinIntoStudio(skinId) {
   document.getElementById('colTextMuted').value = t.text_muted;
   document.getElementById('colUserBg').value = t.user_bubble_bg;
   document.getElementById('colUserBorder').value = t.user_bubble_border;
+  if (document.getElementById('colUserText')) {
+    document.getElementById('colUserText').value = t.user_bubble_text || t.text_primary;
+  }
   document.getElementById('colSendBg').value = t.send_bg;
   document.getElementById('colSendFg').value = t.send_fg;
   document.getElementById('colSprinkles').checked = Boolean(t.sprinkles);
@@ -1298,36 +659,35 @@ function copyCurrentSkinJson() {
 
 function publishCurrentSkinToGallery() {
   const t = getStudioThemeObject();
-  const author = document.getElementById('skinAuthorInput').value.trim() || 'Community';
-  const skins = loadState(STORAGE_KEYS.skins, DEFAULT_SKINS);
-  skins.unshift({
-    id: t.id + '_' + Date.now().toString().slice(-4),
+  const author = document.getElementById('skinAuthorInput')?.value.trim() || 'Community';
+  const custom = loadState(STORAGE_KEYS.userSkins, []);
+  const list = Array.isArray(custom) ? custom : [];
+  list.unshift({
+    id: `${t.id}_${Date.now().toString().slice(-4)}`,
     name: t.name,
     author,
-    downloads: 1,
+    origin: 'Custom',
     theme: t,
   });
-  saveState(STORAGE_KEYS.skins, skins);
+  saveState(STORAGE_KEYS.userSkins, list);
   renderSkinGallery();
 }
 
 function downloadGallerySkin(skinId) {
-  const skins = loadState(STORAGE_KEYS.skins, DEFAULT_SKINS);
-  const found = skins.find((s) => s.id === skinId);
+  const found = getAllSkins().find((s) => s.id === skinId);
   if (!found) return;
-  found.downloads = (found.downloads || 0) + 1;
-  saveState(STORAGE_KEYS.skins, skins);
-  renderSkinGallery();
   downloadThemeObjectAsJson(found.theme);
 }
 
 function renderSkinGallery() {
-  const skins = loadState(STORAGE_KEYS.skins, DEFAULT_SKINS);
   const grid = document.getElementById('skinGalleryGrid');
   if (!grid) return;
+  const skins = getAllSkins();
   grid.innerHTML = skins
     .map((s) => {
       const t = s.theme;
+      const originLabel = s.origin || 'Preset';
+      const originCls = originLabel === 'Built-in' ? 'skin-origin-badge builtin' : 'skin-origin-badge';
       return `
       <div class="skin-card">
         <div class="skin-swatches">
@@ -1338,12 +698,15 @@ function renderSkinGallery() {
           <span style="background:${t.send_bg}" title="Accent"></span>
         </div>
         <div>
-          <strong>${escapeHtml(s.name)}</strong>
-          <div class="muted-sub">by ${escapeHtml(s.author)} · ⬇ ${s.downloads || 1} downloads ${t.sprinkles ? '· 🍬 Sprinkles' : ''}</div>
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+            <strong>${escapeHtml(s.name)}</strong>
+            <span class="${originCls}">${escapeHtml(originLabel)}</span>
+          </div>
+          <div class="muted-sub">by ${escapeHtml(s.author)} ${t.sprinkles ? '· ✨ Sprinkles' : ''}</div>
         </div>
         <div class="studio-btn-row" style="margin-top:auto;">
-          <button class="btn-outline" style="padding:5px 10px; font-size:12px;" onclick="loadSkinIntoStudio('${s.id}')">👁 Preview in Studio</button>
-          <button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="downloadGallerySkin('${s.id}')">⬇ Download .json</button>
+          <button class="btn-outline" style="padding:5px 10px; font-size:12px;" onclick="loadSkinIntoStudio('${escapeHtml(s.id)}')">👁 Preview in Studio</button>
+          <button class="btn-primary" style="padding:5px 10px; font-size:12px;" onclick="downloadGallerySkin('${escapeHtml(s.id)}')">⬇ Download .json</button>
         </div>
       </div>
     `;
@@ -1353,38 +716,19 @@ function renderSkinGallery() {
 
 // ================= DONOR WALL =================
 function renderDonorWall() {
-  const donors = loadState(STORAGE_KEYS.donors, DEFAULT_DONORS);
   const grid = document.getElementById('donorWallGrid');
   if (!grid) return;
-  grid.innerHTML = donors
-    .map(
-      (d) => `
+  grid.innerHTML = DEFAULT_DONORS.map(
+    (d) => `
     <div class="donor-card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px;">
         <strong>${escapeHtml(d.name)}</strong>
         <span class="badge-donor">${escapeHtml(d.tier)}</span>
       </div>
       <p class="muted-sub">${escapeHtml(d.note)}</p>
     </div>
   `
-    )
-    .join('');
-}
-
-function openAddDonorModal() {
-  showModal('addDonorModal');
-}
-
-function submitNewDonor() {
-  const name = document.getElementById('donorNameInput').value.trim();
-  const tier = document.getElementById('donorTierInput').value;
-  const note = document.getElementById('donorNoteInput').value.trim();
-  if (!name) return;
-  const donors = loadState(STORAGE_KEYS.donors, DEFAULT_DONORS);
-  donors.unshift({ name, tier, note: note || 'Thank you for supporting Fairybread!' });
-  saveState(STORAGE_KEYS.donors, donors);
-  renderDonorWall();
-  closeAllModals();
+  ).join('');
 }
 
 // ================= READ-ONLY CODE VIEWER =================
@@ -1415,65 +759,32 @@ function selectCodeFile(fname, btnEl) {
   if (preEl) preEl.textContent = CODE_EXCERPTS[fname] || '';
 }
 
-// ================= BIO PORTRAIT PREVIEW =================
-function previewBioPortrait(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const dataUrl = e.target.result;
-    saveState(STORAGE_KEYS.portrait, dataUrl);
-    applySavedPortrait();
-  };
-  reader.readAsDataURL(file);
-}
-
-function applySavedPortrait() {
-  const saved = loadState(STORAGE_KEYS.portrait, null);
-  const img = document.getElementById('brettPortraitImg');
-  const ph = document.getElementById('brettPortraitPlaceholder');
-  if (saved && img && ph) {
-    img.src = saved;
-    img.style.display = 'block';
-    ph.style.display = 'none';
-  }
-}
-
-// ================= SUPABASE CONFIG =================
-function openSupabaseConfigModal() {
-  const cfg = loadState(STORAGE_KEYS.sbConfig, { url: '', key: '' });
-  document.getElementById('sbUrlInput').value = cfg.url || '';
-  document.getElementById('sbKeyInput').value = cfg.key || '';
-  showModal('supabaseModal');
-}
-
-function saveSupabaseConfig() {
-  const url = document.getElementById('sbUrlInput').value.trim();
-  const key = document.getElementById('sbKeyInput').value.trim();
-  saveState(STORAGE_KEYS.sbConfig, { url, key });
-  closeAllModals();
-  alert(url ? 'Cloud DB connected! Fairybread.me will sync with your Supabase instance.' : 'Using built-in hybrid storage.');
-}
-
-// ================= MODAL HELPERS =================
-function showModal(modalId) {
-  document.getElementById('modalBackdrop').style.display = 'flex';
-  document.querySelectorAll('.modal-card').forEach((m) => {
-    m.style.display = m.id === modalId ? 'flex' : 'none';
-  });
-}
-
-function closeAllModals() {
-  document.getElementById('modalBackdrop').style.display = 'none';
-  document.querySelectorAll('.modal-card').forEach((m) => (m.style.display = 'none'));
-}
-
 function escapeHtml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function compareVersionTags(a, b) {
+  function _parse(v) {
+    const m = String(v || '').trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?([a-z]*)$/i);
+    if (!m) return [0, 0, 0, String(v || '').toLowerCase()];
+    return [
+      parseInt(m[1] || '0', 10),
+      parseInt(m[2] || '0', 10),
+      parseInt(m[3] || '0', 10),
+      String(m[4] || '').toLowerCase(),
+    ];
+  }
+  const ta = _parse(a);
+  const tb = _parse(b);
+  for (let i = 0; i < 3; i++) {
+    if (ta[i] !== tb[i]) return ta[i] < tb[i] ? -1 : 1;
+  }
+  if (ta[3] === tb[3]) return 0;
+  return ta[3] < tb[3] ? -1 : 1;
 }
 
 // ================= DYNAMIC GITHUB RELEASE AUTO-UPDATER =================
@@ -1484,61 +795,59 @@ async function autoUpdateLatestRelease() {
     const release = await res.json();
     if (!release || !release.tag_name) return;
 
-    const rawTag = release.tag_name; // e.g. "v0.9.1-beta" or "v0.9.1d"
+    const rawTag = release.tag_name;
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
-    // Safeguard: Never downgrade if the fetched GitHub release is older than the site's current version (v0.92e)
+    // Never downgrade if fetched release tag is older than the currently published baseline
     const currentSiteVersion = 'v0.92e';
-    if (cleanTag < currentSiteVersion) {
-      console.log(`[Fairybread] GitHub latest release (${cleanTag}) is older than site version (${currentSiteVersion}); keeping current version.`);
+    if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }
 
-    // Locate the Windows setup zip asset (preferring Public non-developer setup zip)
     const assets = release.assets || [];
-    const zipAsset =
+    const installerAsset =
       assets.find((a) => {
         const n = a.name.toLowerCase();
-        return n.endsWith('.zip') && !n.includes('developer') && (n.includes('setup') || n.includes('installer') || n.includes('win'));
+        return !n.includes('developer') && n.endsWith('.exe') && n.includes('setup');
       }) ||
       assets.find((a) => {
         const n = a.name.toLowerCase();
-        return n.endsWith('.zip') && (n.includes('setup') || n.includes('installer') || n.includes('win'));
+        return !n.includes('developer') && n.endsWith('.zip') && (n.includes('setup') || n.includes('installer') || n.includes('win'));
+      }) ||
+      assets.find((a) => {
+        const n = a.name.toLowerCase();
+        return n.endsWith('.exe') || n.endsWith('.zip');
       }) ||
       assets[0];
 
-    const downloadUrl = zipAsset
-      ? zipAsset.browser_download_url
+    const downloadUrl = installerAsset
+      ? installerAsset.browser_download_url
       : `https://github.com/bm069au/fairybread/releases/tag/${rawTag}`;
 
-    // Update all version tags on the page
-    document.querySelectorAll('.brand-tag, .dynamic-version-tag').forEach((el) => {
-      el.textContent = `BETA ${cleanTag}`;
+    const isBetaTag = /-beta$/i.test(rawTag);
+    const labelVersion = isBetaTag ? `BETA ${cleanTag}` : cleanTag;
+
+    document.querySelectorAll('.brand-tag.dynamic-version-tag').forEach((el) => {
+      el.textContent = labelVersion;
     });
 
-    // Update all download buttons
     document.querySelectorAll('.dynamic-download-btn').forEach((btn) => {
       btn.href = downloadUrl;
       if (btn.id === 'heroDownloadBtn') {
-        btn.innerHTML = `⬇ Download Fairybread Beta ${escapeHtml(cleanTag)} (Win_x64)`;
+        btn.innerHTML = `⬇ Download Fairybread ${escapeHtml(cleanTag)} (Win_x64)`;
       }
     });
-
-    console.log(`[Fairybread] Auto-resolved latest GitHub release: ${rawTag} -> ${downloadUrl}`);
   } catch (err) {
-    console.debug('[Fairybread] GitHub release auto-resolve fallback to static defaults:', err);
+    console.debug('[Fairybread] Release auto-resolve fallback:', err);
   }
 }
 
-// Initialize everything on DOM load
 document.addEventListener('DOMContentLoaded', () => {
+  clearLegacyWebsiteCaches();
   autoUpdateLatestRelease();
-  updateAuthUI();
   renderNews();
-  renderForumThreads();
   updateLiveThemePreview();
   renderSkinGallery();
   renderDonorWall();
   renderCodeExplorer();
-  applySavedPortrait();
 });

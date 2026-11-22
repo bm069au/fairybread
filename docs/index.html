@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Fairybread.me — Democratic Multi-AI Council, 100% Local Shared Memory &amp; Experimental AI Lab</title>
-  <meta name="description" content="Replace ChatGPT Plus, Claude Pro, and Grok subscription lock-in with Fairybread: a multi-AI democratic council desktop app with 100% local Shared Memory, Live Voice Mode, 300-DPI Image Studio, and Autonomous Experimental Mode." />
+  <title>Fairybread.me — Multi-AI Desktop Workspace, 100% Local Memory Palace &amp; Live Cost Control</title>
+  <meta name="description" content="Replace $20-$80+/mo AI subscriptions with Fairybread: connect OpenRouter (300+ models on one key) or direct AI APIs, keep 100% local Shared Memory with $0.00 free recall, view Live Weather Radar Maps, talk with Deepgram Flux Voice, and track every cent live." />
   <link rel="icon" type="image/png" href="fairybread_icon.png" />
-  <link rel="stylesheet" href="styles.css?v=0.92e" />
+  <link rel="stylesheet" href="styles.css?v=0.93-web" />
 </head>
 <body>
   <!-- Top Sprinkles Accent Bar -->
@@ -16,7 +16,7 @@
   <header class="site-header">
     <div class="header-inner">
       <div class="brand" onclick="switchTab('home')">
-        <img src="fairybread_icon.png" alt="Fairybread Fairy Logo" class="brand-logo-img" />
+        <img src="fairybread_icon.png" alt="Fairybread Logo" class="brand-logo-img" />
         <div>
           <span class="brand-name">Fairybread<span class="brand-domain">.me</span></span>
           <span class="brand-tag dynamic-version-tag">BETA v0.92e</span>
@@ -27,11 +27,11 @@
         <button class="nav-btn active" data-tab="home" onclick="switchTab('home')">🏠 Home</button>
         <button class="nav-btn" data-tab="guide" onclick="switchTab('guide')">📖 Help &amp; Guide</button>
         <button class="nav-btn" data-tab="news" onclick="switchTab('news')">📰 News</button>
-        <button class="nav-btn" data-tab="themes" onclick="switchTab('themes')">🎨 Themes &amp; Skins</button>
+        <button class="nav-btn" data-tab="themes" onclick="switchTab('themes')">🎨 Color Themes</button>
         <button class="nav-btn" data-tab="donors" onclick="switchTab('donors')">🏆 Donors &amp; Donate</button>
         <button class="nav-btn" data-tab="code" onclick="switchTab('code')">🔍 View Code</button>
         <button class="nav-btn" data-tab="about" onclick="switchTab('about')">👤 About Brett</button>
-        <a class="nav-btn forum-link-btn" href="forum.html">💬 Community Forums →</a>
+        <a class="nav-btn forum-link-btn" href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">💬 Community Forums ↗</a>
       </nav>
 
       <div class="header-actions">
@@ -45,23 +45,23 @@
     <section id="tab-home" class="tab-section active">
       <div class="hero-card">
         <div class="hero-left">
-          <div class="pill-badge">✨ Proprietary Source-Available · Free up to 2 Seats · Zero Monthly Subscriptions</div>
-          <h1>Stop Paying Rival AI Subscriptions.<br /><span class="gradient-text">Own Your Own Multi-AI Council &amp; Memory.</span></h1>
+          <div class="pill-badge">✨ Free up to 2 Seats · OpenRouter 1-Key Hub · 100% Local Memory · Zero Lock-In</div>
+          <h1>Every Top AI in One Fast Windows App.<br /><span class="gradient-text">Zero Monthly Subscriptions. 100% Local Memory.</span></h1>
           <p class="hero-lead">
-            <strong>Fairybread</strong> replaces dedicated corporate workspaces like ChatGPT Plus, Claude Pro, and Grok with one high-speed Windows desktop platform that <strong>you</strong> control. Connect as many cloud or local AI providers as you want, pay only pennies for exact usage, and keep <strong>100% of your Shared Memory locally on your PC</strong>.
+            <strong>Fairybread</strong> replaces multiple $20–$30/month AI subscriptions with one native Windows workspace that <strong>you</strong> control. Pay pennies for exact token usage—or use free tiers and offline Ollama—connect <strong>300+ models via one OpenRouter key</strong> or bring direct keys, keep your entire <strong>Memory Palace on your own drive</strong>, and watch every cent live with zero hidden bills.
           </p>
           <div class="hero-cta-row">
             <a class="btn-primary-lg dynamic-download-btn" id="heroDownloadBtn" href="https://github.com/bm069au/fairybread/releases/latest/download/Fairybread_v0.92e_beta_Win_x64_Setup.zip">
               ⬇ Download Fairybread Beta v0.92e (Win_x64)
             </a>
             <button class="btn-secondary-lg" onclick="switchTab('donors')">❤️ Support the Creator (USD)</button>
-            <a class="btn-outline-lg" href="forum.html">💬 Visit Community Forums →</a>
+            <a class="btn-outline-lg" href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">💬 GitHub Forums (Read Free) ↗</a>
           </div>
           <div class="hero-meta">
-            <span>✔ Windows 10 / 11 Desktop</span>
-            <span>✔ Unlimited AI Providers (Cloud &amp; Local)</span>
-            <span>✔ Live Hands-Free Voice (<code>|||✨</code>)</span>
-            <span>✔ 300-DPI Print &amp; Social Studio</span>
+            <span>✔ Windows 10 / 11 (x64)</span>
+            <span>✔ Setup Wizard + Backup Restore</span>
+            <span>✔ Live Cost Tickers &amp; $0.00 Recall</span>
+            <span>✔ Deepgram Flux Voice + Radar Maps</span>
           </div>
         </div>
 
@@ -70,109 +70,155 @@
             <img src="fairybread_icon.png" alt="Fairybread Emblem" class="hero-fairy-img" />
             <div>
               <strong>🧚 Official Fairybread Desktop Workspace</strong>
-              <div class="muted-sub">Multi-AI Deliberation · Local SQLite Memory · Experimental Mode Lab</div>
+              <div class="muted-sub">Multi-AI Council · Local Memory Palace · Live Spend Tickers</div>
             </div>
           </div>
           <div class="app-mockup">
             <div class="mockup-titlebar">
               <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-              <span class="mockup-title">Fairybread — Democratic Multi-AI Council</span>
-              <span class="mockup-pill">🌙 Experimental: ON</span>
+              <span class="mockup-title">Fairybread — Multi-AI Council &amp; Memory Palace</span>
+              <span class="mockup-pill">💵 Live Spend</span>
             </div>
             <div class="mockup-body">
               <div class="mockup-chat-bubble ai-gemini">
-                <strong>◆ Gemini 2.5 Pro</strong> · <span>Round 1</span>
-                <p>Cross-referencing your local SQLite FTS5 Shared Memory: here is the architecture synthesis with zero cloud lock-in.</p>
+                <strong>◆ Gemini · Free-Agent Local Recall</strong> · <span>$0.000</span>
+                <p>Pulled directly from your local SQLite Memory Palace—no repeat search fee needed.</p>
               </div>
               <div class="mockup-chat-bubble ai-deepseek">
-                <strong>❖ DeepSeek R1</strong> · <span>Peer Review</span>
-                <p>Verified against live source code. Added an Audit Lottery for Shared Experimental Memory.</p>
+                <strong>❖ DeepSeek · OpenRouter Hub</strong> · <span>Multi-Turn Rapport</span>
+                <p>Checked RainViewer radar + 7-day Open-Meteo forecast and rendered your Live Weather Radar Map inline.</p>
               </div>
               <div class="mockup-chat-bubble ai-synth">
-                <strong>👑 Council Synthesis</strong> · <span>🔊 Speak</span>
-                <p>All active Council agents reached consensus in 1.8s. High-res 300-DPI asset rendered and indexed locally.</p>
+                <strong>👑 Unified Response</strong> · <span>🔊 Deepgram Flux</span>
+                <p>Concise, tailored to your preferences, and ready for instant Steer / Queue follow-ups mid-turn.</p>
               </div>
               <div class="mockup-bar">
-                <span>Agents: ◆ Gemini · ● OpenAI · ❖ DeepSeek · ⚡ Groq · ✦ Qwen · ◎ Cohere · ▲ Mistral · ◈ Cerebras</span>
-                <span class="voice-meter">🎙 ▂▅▇█▄▂ 64%</span>
+                <span>Agents: ◆ Gemini · ● OpenAI · ❖ DeepSeek · 🌐 OpenRouter · <span style="color:#e2b96b;">Groq · Cutoff</span></span>
+                <span class="voice-meter">Tokens: 1.4k · Conv: ~$0.002 · 💵 Voice: $0.004 · 🎙 ▂▅▇█▄▂</span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Feature Grid -->
-      <h2 class="section-heading">Everything You Do in ChatGPT &amp; Claude — Without the Lock-In</h2>
+      <!-- Why Switch Comparison Table -->
+      <h2 class="section-heading">Why Switch to Fairybread Instead of Corporate Web Chats?</h2>
+      <div class="compare-table-wrap">
+        <table class="compare-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>ChatGPT Plus / Claude Pro / Grok Plans ($20–$80+/mo)</th>
+              <th class="cmp-fb-col">🧚 Fairybread Desktop (Free up to 2 Seats)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Monthly Cost &amp; Hidden Surprises</td>
+              <td class="cmp-bad">✕ Fixed monthly fees per vendor whether you use them or not</td>
+              <td class="cmp-fb-col cmp-good">✔ Zero subscription fee; pay pennies per token or free tiers + 3-layer live spend tickers</td>
+            </tr>
+            <tr>
+              <td>Memory Ownership &amp; Lock-In</td>
+              <td class="cmp-bad">✕ Stored on vendor servers; lost or siloed if you leave</td>
+              <td class="cmp-fb-col cmp-good">✔ 100% local SQLite FTS5 Memory Palace + Living Summary you can edit and back up anytime</td>
+            </tr>
+            <tr>
+              <td>Multiple AIs / OpenRouter Hub</td>
+              <td class="cmp-bad">✕ Locked to one company; models cannot cross-check each other</td>
+              <td class="cmp-fb-col cmp-good">✔ One OpenRouter key unlocks 300+ models—or bring direct keys with priority failover</td>
+            </tr>
+            <tr>
+              <td>Repeat Searches &amp; Recall Fees</td>
+              <td class="cmp-bad">✕ Re-runs expensive web queries for things you already asked</td>
+              <td class="cmp-fb-col cmp-good">✔ Answers stored locally are recalled by free-tier agents for $0.00</td>
+            </tr>
+            <tr>
+              <td>Voice Experience</td>
+              <td class="cmp-bad">✕ Robotic defaults or separate paid voice tiers per app</td>
+              <td class="cmp-fb-col cmp-good">✔ Studio Deepgram Flux (89 English voices) + real-time voice cost ticker</td>
+            </tr>
+            <tr>
+              <td>Onboarding &amp; Backups</td>
+              <td class="cmp-bad">✕ Messy API setup or no portable encrypted archive</td>
+              <td class="cmp-fb-col cmp-good">✔ Guided Setup Wizard with profile matching &amp; selective AES-256 restore</td>
+            </tr>
+            <tr>
+              <td>Privacy &amp; Verification</td>
+              <td class="cmp-bad">✕ Closed cloud black box with opaque telemetry</td>
+              <td class="cmp-fb-col cmp-good">✔ Windows DPAPI encrypted keys, zero telemetry, inspectable code &amp; Ed25519 signatures</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Core Feature Grid (9 Selling Cards) -->
+      <h2 class="section-heading">What Makes Fairybread Genuinely Better</h2>
       <div class="feature-grid">
         <div class="feature-card">
+          <div class="feat-icon">🧭</div>
+          <h3>Guided Setup Wizard &amp; Selective Backup Restore</h3>
+          <p>Never guess which AI accounts you need. Answer quick questions—light social chat, university assignments, simple or heavy coding, or <strong>Everything</strong>—and get an exact step-by-step API checklist that opens each site and ticks items off as you paste keys. Restore saved keys, settings, or memories independently in one click.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">🌐</div>
+          <h3>All-in-One OpenRouter Hub — Or Direct Keys</h3>
+          <p>Tired of managing a dozen billing portals? Enter a single prepaid <strong>OpenRouter</strong> key (even with a strict dollar cap) to automatically fill Council seats across <strong>300+ frontier &amp; open models</strong>—leaving only optional Graphics and Deepgram Flux Voice. Direct keys always keep top priority.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">💵</div>
+          <h3>3-Layer Live Cost Transparency (Zero Surprises)</h3>
+          <p>See exact real-time spending everywhere: a cumulative &amp; resettable <strong>Per-Provider Ticker</strong>, per-render <strong>Image Cost Badges</strong>, and an ongoing live <strong>Voice Mode Ticker</strong> right in the workspace bar—so you always know what every conversation costs.</p>
+        </div>
+        <div class="feature-card">
           <div class="feat-icon">🏛️</div>
-          <h3>100% Local Shared Memory + Living Summary</h3>
-          <p>Every conversation automatically indexes into a local SQLite FTS5 + <code>zlib</code> database on your drive, plus a living, directly editable <strong>Memory Summary</strong> shared across all connected Council AIs. Switch or add providers anytime without losing your history.</p>
+          <h3>100% Local Shared Memory + $0.00 Free Recall</h3>
+          <p>Your history and editable <strong>Living Memory Summary</strong> are indexed locally on your PC in SQLite FTS5 + <code>zlib</code> across every connected AI. When an answer is already in your Memory Palace, a free-tier agent retrieves it for <strong>$0.00</strong> without burning paid search fees.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">🌦️</div>
+          <h3>Beyond Google Search + Live Weather Radar Maps</h3>
+          <p>Multi-AI research cross-checks sources instead of feeding you ad-cluttered links. Ask about the weather and Fairybread fetches Open-Meteo hourly &amp; 7-day forecasts and renders a <strong>live RainViewer radar map</strong> directly inside the chat bubble.</p>
         </div>
         <div class="feature-card">
           <div class="feat-icon">🎙️</div>
-          <h3>Hands-Free Live Voice Mode (<code>|||✨</code>)</h3>
-          <p>Click the circular soundwave button and talk naturally. A live volume meter (<code>🎙 ▂▅▇█▄▂</code>) detects when you pause speaking, dispatches your voice prompt to the entire Council, and reads the synthesized answer aloud.</p>
+          <h3>Personable Multi-Turn Voice &amp; Live Steer / Queue</h3>
+          <p>Fairybread learns your tone, supports multi-turn rapport and humor, keeps the composer live mid-reply with clean <strong>Steer / Queue</strong> controls, flags slow models honestly as amber <code>Cutoff</code> chips, and pairs <strong>Deepgram Flux + 89 English voices</strong> with native Windows <code>en-AU</code> spellcheck.</p>
         </div>
         <div class="feature-card">
-          <div class="feat-icon">🎨</div>
+          <div class="feat-icon">🖼️</div>
           <h3>Two-Stage 300-DPI Image &amp; Banner Studio</h3>
-          <p>Ask in plain English for YouTube banners, thumbnails, Facebook covers, 4K wallpapers, or <code>8×10 in</code> / <code>A4</code> 300-DPI print artwork. Supports fast 1-Pass rendering or full Council Prompt Brainstorming.</p>
+          <p>Generate YouTube banners (<code>2560×1440</code>), thumbnails, Facebook covers, 4K wallpapers, or <code>8×10 in</code> / <code>A4</code> 300-DPI print artwork in plain English—either fast 1-Pass or multi-AI prompt refinement, stamped with exact engine and render cost.</p>
+        </div>
+        <div class="feature-card">
+          <div class="feat-icon">🔄</div>
+          <h3>1-Click Updates, <code>Update only</code> &amp; Ed25519 Security</h3>
+          <p>When a new version releases, click the update bar notice directly inside Fairybread. The Windows x64 installer offers an <strong>Update only</strong> option that leaves your settings, themes, and memory untouched and hot-reboots seamlessly—backed by Ed25519 + SHA-256 verification and DPAPI key encryption.</p>
         </div>
         <div class="feature-card">
           <div class="feat-icon">🧪</div>
-          <h3>Autonomous Experimental Mode Lab</h3>
-          <p>Launch <strong>Experimental Mode</strong> from the <strong>Mode</strong> menu to give your AI Council their own Shared Experimental Memory, customizable ethics charter, and Agent Mail. <em>(Note: Live code self-modification is disabled in the Public Edition to prevent unverified forks and keep releases consistent—share proposed patches on the <a href="forum.html">Forum</a> or email bm069au@gmail.com.)</em></p>
-        </div>
-        <div class="feature-card">
-          <div class="feat-icon">📧</div>
-          <h3>Exhaustive Zero-Truncation Email Search</h3>
-          <p>Unlike standard AI connectors that silently stop after 20 emails, Fairybread enumerates 100% of matching messages across <code>[Gmail]/All Mail</code>, <code>INBOX</code>, <code>Sent</code>, and <code>Archive</code>, plus sends desktop &amp; email completion alerts.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feat-icon">🔗</div>
-          <h3>External Agent Bridge (MCP Server) &amp; Skins</h3>
-          <p>Connect Google Antigravity, Claude Desktop, or ChatGPT Desktop to your local Fairybread Council in one click—and customize your entire UI with downloadable Winamp-style <code>.json</code> community skins.</p>
+          <h3>Experimental Mode Lab, MCP Bridge &amp; Contributors</h3>
+          <p>Run autonomous multi-agent sessions with isolated Experimental Memory and Agent Mail, or connect Antigravity / Claude / ChatGPT via the built-in MCP server. Propose great features on the <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener" style="color:var(--accent-blue); font-weight:700;">GitHub Forum</a> to be credited in <strong>About → Community Contributors</strong>.</p>
         </div>
       </div>
 
       <!-- HOW IT WORKS (3 SIMPLE STEPS) -->
-      <h2 class="section-heading">⚡ How It Works — Up &amp; Running in 2 Minutes</h2>
+      <h2 class="section-heading">⚡ Up &amp; Running in 2 Minutes</h2>
       <div class="feature-grid">
         <div class="feature-card" style="border-color:#2b4c7e;">
-          <div class="pill-badge">STEP 1 · DOWNLOAD &amp; INSTALL</div>
-          <h3>1-Click Windows Setup</h3>
-          <p>Download the Beta installer ZIP above and run <code>Install_Fairybread_Beta.bat</code>. It installs cleanly on Windows 10/11 and places a Fairybread shortcut right on your Desktop—zero bloatware and zero monthly subscriptions.</p>
+          <div class="pill-badge">STEP 1 · CLEAN WINDOWS INSTALLER</div>
+          <h3>Download &amp; Install (Plus Future <code>Update only</code>)</h3>
+          <p>Download the Windows x64 installer above. It creates a clean install with Desktop/Start Menu shortcuts—and future updates let you choose <strong>Update only</strong> with instant hot-reboot so your configuration stays untouched.</p>
         </div>
         <div class="feature-card" style="border-color:#22c55e;">
-          <div class="pill-badge" style="color:#22c55e; border-color:#22c55e; background:#11281b;">STEP 2 · ATTACH YOUR OWN API KEYS</div>
-          <h3>Guided Setup Sends You to the Exact Sites</h3>
-          <p>Open <strong><code>Settings → AI Providers</code></strong>, pick the AIs you want to connect (Gemini, OpenAI, DeepSeek, Groq, Claude, Qwen, Mistral, Cohere, Cerebras, or free local Ollama), and click the built-in <strong><code>🔑 Get API Key ↗</code></strong> button—the app opens the exact provider key page for you and encrypts your keys locally via Windows DPAPI.</p>
+          <div class="pill-badge" style="color:#22c55e; border-color:#22c55e; background:#11281b;">STEP 2 · GUIDED SETUP WIZARD</div>
+          <h3>Pick a Usage Profile or OpenRouter 1-Key Hub</h3>
+          <p>Run the built-in <strong>Setup Wizard</strong> anytime: pick your usage style, follow the clickable tick-off API key list (or load a single OpenRouter key + optional Deepgram Flux Voice), or restore keys and memory from backup.</p>
         </div>
         <div class="feature-card" style="border-color:#a855f7;">
-          <div class="pill-badge" style="color:#c084fc; border-color:#a855f7; background:#231536;">STEP 3 · PAY PENNIES, NOT $80/MONTH</div>
-          <h3>A Fraction of Normal Subscription Costs</h3>
-          <p>Instead of paying $20–$30/month per AI company whether you use it or not, paying directly for API tokens typically costs a tiny fraction of a single subscription—while giving you <strong>unlimited connected AIs</strong> debating together and sharing <strong>100% local memory</strong> on your own PC.</p>
-        </div>
-      </div>
-
-      <!-- UPCOMING EXPERIMENT PACKS, THEMES & FAN ART -->
-      <h2 class="section-heading">🧪 Experiment Packs, Custom Themes &amp; Community Hub</h2>
-      <div class="feature-grid">
-        <div class="feature-card">
-          <div class="feat-icon">🏙️</div>
-          <h3>Experiment Packs (Virtual AI Towns &amp; Self-Improvement)</h3>
-          <p>Experimental Mode isn't just a chat room—we are building plug-and-play <strong>Experiment Packs</strong> so you can run <strong>Live Virtual AI Towns</strong>, <strong>Recursive Self-Improvement Labs</strong> (already running on our dev machines!), and multi-agent behavioral simulations at home.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feat-icon">💬</div>
-          <h3>Community Forums — Requests, Ideas &amp; Experiments</h3>
-          <p>Have a feature request, a new Experiment Pack idea, or an interesting multi-agent log to share? Head over to our <a href="forum.html" style="color:var(--accent-blue); font-weight:700;">Community Forums</a>—the best place to lodge requests, swap prompts, and talk directly with Brett.</p>
-        </div>
-        <div class="feature-card">
-          <div class="feat-icon">🖼️</div>
-          <h3>Winamp-Style Themes &amp; Community Fan Art</h3>
-          <p>Create and download custom <code>.json</code> skins in the <a href="#" onclick="switchTab('themes'); return false;" style="color:var(--accent-blue); font-weight:700;">Themes &amp; Skins Studio</a>, or share your 300-DPI artwork and Fairybread fan art in the Forums!</p>
+          <div class="pill-badge" style="color:#c084fc; border-color:#a855f7; background:#231536;">STEP 3 · FULL LOCAL &amp; SPEND CONTROL</div>
+          <h3>Talk, Research, Create &amp; Track Every Cent Live</h3>
+          <p>Watch live per-provider, per-image, and Voice Mode spend tickers in real time, recall local facts at <strong>$0.00</strong> via free-tier agents, and share feature ideas in the public <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener" style="color:#c084fc; font-weight:700;">GitHub Forums</a>.</p>
         </div>
       </div>
     </section>
@@ -182,59 +228,56 @@
       <div class="section-header-row">
         <div>
           <h2>📖 Fairybread User Guide &amp; Operating Instructions</h2>
-          <p class="muted-sub">This is the complete operating manual—also built directly into the desktop app (press <strong><code>F1</code></strong> or click <strong><code>Help → 📖 User Guide</code></strong> anytime).</p>
+          <p class="muted-sub">Always available offline inside the app via <strong><code>F1</code></strong> or <strong><code>Help → 📖 User Guide</code></strong>.</p>
         </div>
         <a class="btn-primary dynamic-download-btn" href="https://github.com/bm069au/fairybread/releases/latest/download/Fairybread_v0.92e_beta_Win_x64_Setup.zip">⬇ Download Fairybread Beta</a>
       </div>
 
       <div class="news-list">
         <article class="news-card">
-          <h3>1. Quick Start: Connecting Your API Keys in 60 Seconds</h3>
+          <h3>1. Guided Setup Wizard &amp; OpenRouter One-Key Hub</h3>
           <p style="color:var(--text-secondary);">
-            1. Launch Fairybread and click <strong><code>⚙ Settings &amp; AIs</code></strong> (bottom-left) or <strong><code>Settings → Fairybread Settings…</code></strong>.<br />
-            2. Select any provider in the <strong>AI Providers</strong> tab (e.g., <em>Gemini</em>, <em>OpenAI</em>, <em>DeepSeek</em>, <em>Groq</em>, <em>Qwen</em>, <em>Cohere</em>, <em>Mistral</em>, <em>Cerebras</em>, or <em>Ollama</em>).<br />
-            3. Need an API key? Click the built-in <strong><code>🔑 Get API Key ↗</code></strong> button to open that provider's exact API key page in your browser.<br />
-            4. Paste your key, tick <strong>Enable this AI provider</strong>, and click <strong><code>↻ Fetch Live Models</code></strong> to load the newest models automatically. Your key is encrypted locally on your PC using Windows DPAPI.
+            1. Open <strong><code>⚙ Settings → Launch Setup Wizard…</code></strong> (runs automatically on first launch and can be re-run anytime to simplify your keys).<br />
+            2. Choose your profile—<em>Light Chat &amp; Research</em>, <em>Assignments &amp; Writing</em>, <em>Simple / Heavy Coding</em>, or <em>Give Me Everything</em>.<br />
+            3. Want one prepaid billing balance for almost every AI model? Enable the <strong>OpenRouter Hub</strong>, enter a single key, and pick a preset tier (<em>Free / Balanced / Flagship</em>). Direct provider keys (Gemini, OpenAI, DeepSeek, Groq, Claude, etc.) always keep top priority whenever entered.<br />
+            4. Click each link in the tick-off checklist to create keys, paste them into the DPAPI-encrypted fields, and verify your readiness in seconds.
           </p>
         </article>
 
         <article class="news-card">
-          <h3>2. Toolbar Controls, Council Deliberation &amp; Live Voice Mode</h3>
+          <h3>2. Chat Controls, Steer / Queue, Weather Radar Maps &amp; Deepgram Flux Voice</h3>
           <p style="color:var(--text-secondary);">
-            • <strong><code>Choose AIs ▾</code>:</strong> Toggle which AI providers are active or pick a preset Squad.<br />
-            • <strong><code>Council</code> (Purple when ON):</strong> Runs 2-Round Peer Deliberation (agents answer in Round 1, critique and cross-examine each other in Round 2, and synthesize one best answer). Turn OFF for fast 1-round synthesis.<br />
-            • <strong><code>Tangent</code>:</strong> Ask a quick side question without including prior conversation history.<br />
-            • <strong><code>{} Code</code>:</strong> Grants read-only visibility into Fairybread's own source code.<br />
-            • <strong><code>🎤</code> (Dictate) &amp; <code>|||✨</code> (Hands-Free Live Voice Mode):</strong> Click <code>🎤</code> to dictate speech into the text box, or click <code>|||✨</code> for continuous hands-free voice chat with a live soundwave volume meter (<code>🎙 ▂▅▇█▄▂</code>) and spoken responses!<br />
-            • <strong><code>Memory</code> (Top-Right):</strong> Open your 100% local SQLite FTS5 Shared Memory and click <strong><code>📝 Memory Summary (View &amp; Edit)…</code></strong> to view or edit what all connected AIs remember about you and your projects.
+            • <strong><code>Steer / Queue</code> Composer:</strong> While agents are responding, type your next instruction and press <code>Enter</code> to either steer the active turn or queue it next.<br />
+            • <strong>Honest Status Chips:</strong> Slow providers timed out by quorum appear cleanly in amber as <code>Cutoff</code> or <code>Timeout</code> rather than misleading error labels.<br />
+            • <strong>Live Weather Radar Maps:</strong> Ask for local or global weather to see live RainViewer precipitation radar tiles layered over CartoDB Dark Matter alongside hourly and 7-day forecasts.<br />
+            • <strong>Hands-Free Voice (<code>|||✨</code>):</strong> Uses <strong>Deepgram Flux</strong> + <strong>89 English voices</strong> (or system/provider TTS) with live soundwave level metering and barge-in control.
           </p>
         </article>
 
         <article class="news-card">
-          <h3>3. High-Resolution Image, Banner &amp; 300-DPI Print Studio</h3>
+          <h3>3. 3-Layer Live Cost Tickers &amp; $0.00 Free-Agent Local Memory Recall</h3>
           <p style="color:var(--text-secondary);">
-            • <strong>Default 1-Pass Drawing Mode:</strong> Just ask in plain English: <em>"Draw a photorealistic ginger cat on a sunlit windowsill"</em> or <em>"Create a YouTube banner for a gaming channel"</em>.<br />
-            • <strong>Council-Assisted Prompt Brainstorming:</strong> Ask <em>"All agents work on the prompt and then only one of you execute the drawing: ..."</em> so all active AIs collaborate on the visual prompt before rendering.<br />
-            • <strong>Built-In Platform &amp; Print Presets:</strong> Automatically sizes and stamps 300-DPI metadata for <strong>YouTube banners</strong> (<code>2560×1440</code>), <strong>YouTube thumbnails</strong> (<code>1280×720</code>), <strong>Facebook covers</strong> (<code>1920×1080</code>), <strong>4K wallpapers</strong> (<code>3840×2160</code>), <strong>Phone stories</strong> (<code>1080×1920</code>), <strong>8×10 in prints</strong> (<code>2400×3000 @ 300 DPI</code>), and <strong>A4 prints</strong> (<code>2480×3508 @ 300 DPI</code>).
+            • <strong>Click the bottom spend bar</strong> anytime to open the <strong>Spend &amp; Billing Dashboard</strong> showing per-provider cumulative spend since your last top-up, a 1-click Reset ticker per provider, per-image cost badges, and live ongoing Voice Mode spending.<br />
+            • <strong>Memory Palace Fast-Recall ($0.00):</strong> High-confidence matches in your local SQLite FTS5 <code>memory.db</code> skip paid web searches and answer using free-tier agents for <strong>$0.00</strong> (include <em>"recheck with full council"</em> anytime to force a fresh web sweep).<br />
+            • <strong>Living Memory Summary:</strong> View or edit what all connected AIs remember about you and your projects in <strong>Shared Memory → View &amp; Edit Summary</strong>.
           </p>
         </article>
 
         <article class="news-card">
-          <h3>4. Autonomous Experimental Mode Lab &amp; Agent Mail</h3>
+          <h3>4. 300-DPI Graphics Studio, MCP Bridge &amp; Experimental Mode</h3>
           <p style="color:var(--text-secondary);">
-            • Open the <strong><code>Mode → 🧪 Experimental Mode</code></strong> menu to launch the autonomous multi-agent lab (the top-right badge shows <code>OFF</code>, <code>🔴 RUNNING</code>, or <code>⏸ STOPPED</code>).<br />
-            • In the Public Edition, agents converse in <strong><code>💬 Free Talk</code></strong>, store durable notes in <strong>Shared Experimental Memory</strong>, and message you via <strong>Agent Mail</strong>.<br />
-            • <strong>Why Live Code Self-Modification Is Disabled in Public Builds:</strong> Self-patching (<code>/autopatch</code> &amp; <code>[IDLE_PATCH]</code>) is hardwired OFF in non-Developer builds so public installations remain verified, consistent, and cannot bypass licensing or safety restrictions. Have an improvement idea or proposed patch? Post it in the <a href="forum.html">Fairybread Community Forum</a> or email <code>bm069au@gmail.com</code> for review.<br />
-            • Customize the session timer, token/USD spend caps, startup prompt, and ethics charter in <strong><code>Settings → Experimental Mode</code></strong>.
+            • <strong>Image &amp; Print Studio:</strong> Ask naturally for banners, thumbnails, cover graphics, or <code>8×10 in</code> / <code>A4</code> 300-DPI artwork. Stamped with exact provider cost.<br />
+            • <strong>Experimental Mode:</strong> Launch autonomous multi-agent sessions with isolated Experimental Memory and Agent Mail. In Public builds, core source code stays verified and immutable—share proposed ideas in the <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener" style="color:var(--accent-blue);">GitHub Community Forum</a> for credit under <strong>About → Community Contributors</strong>.<br />
+            • <strong>MCP Bridge:</strong> Connect Google Antigravity, Claude Desktop, or ChatGPT Desktop to drive Fairybread as a local worker council.
           </p>
         </article>
 
         <article class="news-card">
-          <h3>5. Custom Themes, System Tray &amp; AES-256 Encrypted Backups</h3>
+          <h3>5. Custom <code>.json</code> Color Themes, Selective AES-256 Backups &amp; 1-Click Updates</h3>
           <p style="color:var(--text-secondary);">
-            • <strong>Install Custom Skins:</strong> Download any <code>.json</code> skin from the <a href="#" onclick="switchTab('themes'); return false;" style="color:var(--accent-blue);">Themes &amp; Skins</a> tab and click <strong><code>View → 🎨 Theme → 📥 Import Custom Theme (.json)…</code></strong>.<br />
-            • <strong>Close to System Tray:</strong> Clicking the window <code>✕</code> button minimizes Fairybread to the Windows System Tray so background tasks keep running safely (right-click the tray icon to Expand or Exit).<br />
-            • <strong>Password-Locked Portable Backups:</strong> In <strong><code>Settings → Backup &amp; Restore</code></strong>, export a single AES-256-GCM encrypted <code>.zip</code> backup containing all your memories, sessions, themes, and API keys to move to a new PC in one click.
+            • <strong>Color Themes:</strong> Download any <code>.json</code> color palette from the <a href="#" onclick="switchTab('themes'); return false;" style="color:var(--accent-blue);">Color Themes</a> tab and load via <strong><code>View → 🎨 Theme → 📥 Import Custom Theme (.json)…</code></strong>.<br />
+            • <strong>Selective Backup &amp; Restore:</strong> Export an AES-256-GCM encrypted <code>.zip</code> archive—and restore <strong>API keys</strong>, <strong>settings</strong>, or <strong>memory</strong> together or separately from Settings or the Setup Wizard.<br />
+            • <strong>1-Click Updates &amp; Hot-Reboot:</strong> Notice a newer version banner in the top bar? Click download, choose <strong>Update only</strong> in the installer, and let Fairybread relaunch cleanly without touching your data.
           </p>
         </article>
       </div>
@@ -244,33 +287,33 @@
     <section id="tab-news" class="tab-section">
       <div class="section-header-row">
         <div>
-          <h2>📰 Fairybread News, Changelogs &amp; Experimental Council Devlog</h2>
-          <p class="muted-sub">Official release announcements, upcoming Experimental Mode add-ons, and breakthroughs from the autonomous AI Council.</p>
+          <h2>📰 Fairybread News, Changelogs &amp; Updates</h2>
+          <p class="muted-sub">Official release highlights, architecture notes, and roadmap dispatches.</p>
         </div>
-        <a class="btn-secondary" href="forum.html">💬 Discuss in the Forums →</a>
+        <a class="btn-secondary" href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">💬 Join Discussions on GitHub ↗</a>
       </div>
       <div id="newsFeedContainer" class="news-list"></div>
     </section>
 
-    <!-- ================= TAB: WINAMP-STYLE THEME STUDIO & GALLERY ================= -->
+    <!-- ================= TAB: CUSTOM COLOR THEME STUDIO & GALLERY ================= -->
     <section id="tab-themes" class="tab-section">
       <div class="section-header-row">
         <div>
-          <h2>🎨 Winamp-Style Theme Studio &amp; Community Skin Gallery</h2>
-          <p class="muted-sub">Design your own Fairybread desktop skin with live preview, download safe <code>.json</code> theme files (zero executable code), or share your skin in the Forums!</p>
+          <h2>🎨 Custom Color Theme Studio &amp; Preset Gallery</h2>
+          <p class="muted-sub">Design your own Fairybread palette with live preview, or download any of our 14 pure <code>.json</code> color themes (zero executable code—just structured color tokens, including a retro Winamp Classic 1999 tribute).</p>
         </div>
         <div class="how-to-install-pill">
-          💡 <strong>How to install in Fairybread:</strong> Click <code>View → 🎨 Theme → 📥 Import Custom Theme (.json)…</code> and select the downloaded file!
+          💡 <strong>How to install in Fairybread:</strong> Click <code>View → 🎨 Theme → 📥 Import Custom Theme (.json)…</code> and select your downloaded file!
         </div>
       </div>
 
       <!-- Interactive Theme Creator + Live Preview -->
       <div class="theme-studio-card">
         <div class="studio-controls">
-          <h3>🛠 Live Skin Creator</h3>
+          <h3>🛠 Live Theme Creator</h3>
           <div class="form-row-2">
-            <label>Skin Name
-              <input type="text" id="skinNameInput" value="Winamp Classic 1999" oninput="updateLiveThemePreview()" />
+            <label>Theme Name
+              <input type="text" id="skinNameInput" value="Winamp Classic 1999 (2.x LED)" oninput="updateLiveThemePreview()" />
             </label>
             <label>Author / Handle
               <input type="text" id="skinAuthorInput" value="bm069au" oninput="updateLiveThemePreview()" />
@@ -285,19 +328,21 @@
             <label>Primary Text <input type="color" id="colTextPrimary" value="#00ff41" oninput="updateLiveThemePreview()" /></label>
             <label>Secondary Text <input type="color" id="colTextSec" value="#b8e6b8" oninput="updateLiveThemePreview()" /></label>
             <label>Muted Labels <input type="color" id="colTextMuted" value="#6b9e6b" oninput="updateLiveThemePreview()" /></label>
-            <label>User Prompt Pill <input type="color" id="colUserBg" value="#1e2e1e" oninput="updateLiveThemePreview()" /></label>
-            <label>User Pill Border <input type="color" id="colUserBorder" value="#ffb000" oninput="updateLiveThemePreview()" /></label>
-            <label>Send Button Accent <input type="color" id="colSendBg" value="#ffb000" oninput="updateLiveThemePreview()" /></label>
+            <label>User Bubble BG <input type="color" id="colUserBg" value="#1e2e1e" oninput="updateLiveThemePreview()" /></label>
+            <label>User Bubble Border <input type="color" id="colUserBorder" value="#ffb000" oninput="updateLiveThemePreview()" /></label>
+            <label>User Bubble Text <input type="color" id="colUserText" value="#ffdf80" oninput="updateLiveThemePreview()" /></label>
+            <label>Send Button BG <input type="color" id="colSendBg" value="#ffb000" oninput="updateLiveThemePreview()" /></label>
             <label>Send Button Text <input type="color" id="colSendFg" value="#0a0d0a" oninput="updateLiveThemePreview()" /></label>
           </div>
           <label class="checkbox-label">
             <input type="checkbox" id="colSprinkles" onchange="updateLiveThemePreview()" />
-            🍬 Enable Fairybread 100s &amp; 1000s Sprinkles Border Effect
+            ✨ Enable Sprinkles Accent Styling on User Bubbles
           </label>
           <div class="studio-btn-row">
             <button class="btn-primary" onclick="downloadCurrentSkinJson()">⬇ Download .json Theme</button>
-            <button class="btn-secondary" onclick="publishCurrentSkinToGallery()">🚀 Add to Local Gallery</button>
+            <button class="btn-secondary" onclick="publishCurrentSkinToGallery()">🚀 Save to Local Studio</button>
             <button class="btn-outline" onclick="copyCurrentSkinJson()">📋 Copy JSON</button>
+            <a class="btn-outline" href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">💬 Share Your Theme on GitHub Forum ↗</a>
           </div>
         </div>
 
@@ -308,26 +353,26 @@
             <div class="tp-body">
               <div class="tp-sidebar" id="tpSidebar">
                 <div class="tp-new-btn" id="tpNewBtn">+ New Conversation</div>
-                <div class="tp-side-item">📁 Fairybread improvement</div>
-                <div class="tp-side-item active" id="tpActiveItem">Winamp skin test</div>
-                <div class="tp-side-item">Experimental Council</div>
+                <div class="tp-side-item">📁 Code Workbench</div>
+                <div class="tp-side-item active" id="tpActiveItem">Theme Live Test</div>
+                <div class="tp-side-item">Weather &amp; Research</div>
               </div>
               <div class="tp-main" id="tpMain">
                 <div class="tp-topbar" id="tpTopbar">
-                  <span id="tpBreadcrumb">Fairybread / Winamp skin test</span>
-                  <span class="tp-exp-pill">Experimental: OFF</span>
+                  <span id="tpBreadcrumb">Fairybread / Theme Live Test</span>
+                  <span class="tp-exp-pill">OpenRouter: Ready</span>
                 </div>
                 <div class="tp-chat">
                   <div class="tp-user-bubble" id="tpUserBubble">
-                    How does this custom theme look inside Fairybread?
+                    How does this custom JSON color theme look inside Fairybread?
                   </div>
                   <div class="tp-ai-card" id="tpAiCard">
-                    <strong>◆ Gemini · ❖ DeepSeek · ● OpenAI</strong>
-                    <p id="tpAiText">Crisp contrast, zero eye strain, and 100% safe JSON styling. Click "Download .json Theme" to use it right now!</p>
+                    <strong>◆ Gemini · ❖ DeepSeek · 🌐 OpenRouter</strong>
+                    <p id="tpAiText">Crisp contrast, zero eye strain, and 100% safe JSON color styling. Click "Download .json Theme" to load it into your desktop app!</p>
                   </div>
                 </div>
                 <div class="tp-composer" id="tpComposer">
-                  <span id="tpComposerPlaceholder">Ask anything, @ to mention, or drop files…</span>
+                  <span id="tpComposerPlaceholder">Ask anything, type mid-turn to Steer/Queue, or drop files…</span>
                   <button class="tp-send-btn" id="tpSendBtn">↑</button>
                 </div>
               </div>
@@ -336,7 +381,7 @@
         </div>
       </div>
 
-      <h3 class="section-subheading">🌟 Community &amp; Classic Skin Gallery (Click "Preview in Studio" or "Download .json")</h3>
+      <h3 class="section-subheading">🌟 Built-in &amp; Curated Preset Themes (14 Themes — Click "Preview in Studio" or "Download .json")</h3>
       <div id="skinGalleryGrid" class="skin-gallery-grid"></div>
     </section>
 
@@ -346,10 +391,10 @@
         <div class="donation-story">
           <h2>❤️ Support Fairybread &amp; Join the Donor Hall of Fame</h2>
           <p>
-            I built <strong>Fairybread</strong> to replace corporate AI lock-in with 100% local, private persistent memory and zero monthly fees—plus an autonomous <strong>Experimental Mode</strong> where you can run your own multi-AI experiments.
+            I built <strong>Fairybread</strong> to replace corporate AI lock-in with 100% local, private persistent memory, complete spend visibility, and zero monthly fees—plus an autonomous <strong>Experimental Mode</strong> lab.
           </p>
           <p>
-            In real life, I am a disabled man living on a disability pension, and I struggle to pay my everyday bills. Fairybread is <strong>free for personal use (up to 2 seats)</strong>, but if you enjoy using it and can spare a donation, <strong>it will genuinely help me pay my bills and keep building.</strong> My appreciation is enormous!
+            In real life, I live on a disability pension and cover my own development costs. Fairybread is <strong>free for personal use (up to 2 seats)</strong>, so if it saves you money or helps your workflow and you can spare a contribution, <strong>it genuinely helps me pay my bills and keep Fairybread independent and up to date.</strong>
           </p>
         </div>
 
@@ -357,38 +402,38 @@
           <div class="tier-card">
             <div class="tier-price">$5 <span>USD</span></div>
             <div class="tier-title">🌱 Supporter Badge</div>
-            <p>Listed on the Fairybread.me Donor Wall + Forum Supporter Badge.</p>
+            <p>Listed on the Fairybread.me Donor Wall + recognition on GitHub Sponsors.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=5" target="_blank" rel="noopener">Donate $5 USD ↗</a>
           </div>
           <div class="tier-card">
             <div class="tier-price">$10 <span>USD</span></div>
-            <div class="tier-title">📬 Fairybread Newsletter</div>
-            <p>Supporter Badge + The Fairybread Insider Newsletter &amp; Dev Updates.</p>
+            <div class="tier-title">📬 Insider Supporter</div>
+            <p>Supporter recognition + project dev updates &amp; release dispatches.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=10" target="_blank" rel="noopener">Donate $10 USD ↗</a>
           </div>
           <div class="tier-card featured">
             <div class="tier-ribbon">MOST POPULAR</div>
             <div class="tier-price">$25 <span>USD</span></div>
             <div class="tier-title">🌟 Early Previewer</div>
-            <p>Release Notes Credit + Early Theme/Add-On Previews + Newsletter.</p>
+            <p>Release Notes credit + early feature &amp; custom theme previews.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=25" target="_blank" rel="noopener">Donate $25 USD ↗</a>
           </div>
           <div class="tier-card">
             <div class="tier-price">$50 <span>USD</span></div>
-            <div class="tier-title">💎 Beta Test Group</div>
-            <p>Beta Test Group Access + Priority Feature/Code Requests + Gold Wall Badge.</p>
+            <div class="tier-title">💎 Beta Patron</div>
+            <p>Priority feature requests &amp; direct feedback on upcoming builds.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=50" target="_blank" rel="noopener">Donate $50 USD ↗</a>
           </div>
           <div class="tier-card vip">
             <div class="tier-price">$350 <span>USD</span></div>
-            <div class="tier-title">👑 1-on-1 VIP &amp; Custom Code</div>
-            <p>1 Hour 1-on-1 Setup Consulting + Custom Code Modifications + Top VIP Showcase.</p>
+            <div class="tier-title">👑 1-on-1 VIP &amp; Custom Setup</div>
+            <p>1 Hour 1-on-1 setup consulting + tailored configuration help + VIP Wall recognition.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au/sponsorships?frequency=one-time&amount=350" target="_blank" rel="noopener">Donate $350 USD ↗</a>
           </div>
           <div class="tier-card">
             <div class="tier-price">Custom <span>USD</span></div>
             <div class="tier-title">💝 Choose Any Amount</div>
-            <p>Every dollar goes directly toward keeping Fairybread independent and paying everyday bills.</p>
+            <p>Every contribution goes directly toward keeping Fairybread maintained and free from corporate lock-in.</p>
             <a class="btn-tier" href="https://github.com/sponsors/bm069au?frequency=one-time" target="_blank" rel="noopener">Custom USD Donation ↗</a>
           </div>
         </div>
@@ -404,8 +449,8 @@
 
       <div class="section-header-row" style="margin-top: 32px;">
         <div>
-          <h2>🏆 Donor Hall of Fame — Our Supporters</h2>
-          <p class="muted-sub">Thank you to everyone helping keep Fairybread independent and free from corporate lock-in!</p>
+          <h2>🏆 Supporters &amp; Contributors</h2>
+          <p class="muted-sub">Verified supporters helping keep Fairybread independent and actively maintained.</p>
         </div>
       </div>
       <div id="donorWallGrid" class="donor-wall-grid"></div>
@@ -418,7 +463,7 @@
           <strong>🔒 PROPRIETARY SOURCE-AVAILABLE CODE INSPECTOR (NOT OPEN SOURCE)</strong>
           <p>
             Copyright © 2026 Brett Martin Moore (<code>bm069au@gmail.com</code>). All Rights Reserved.
-            This code is visible so you can verify that Fairybread has <strong>zero spyware, zero telemetry, and 100% local memory</strong>, and so community contributors can help improve the official app.
+            This code is visible so you can verify that Fairybread has <strong>zero spyware, zero telemetry, DPAPI key protection, and 100% local memory</strong>, and so contributors can propose improvements.
             <strong>Public forking, redistribution, rebranding, or commercial use (&gt; 2 seats) without a written license is strictly prohibited.</strong>
           </p>
         </div>
@@ -448,6 +493,7 @@
             <div><strong>Creator:</strong> Brett Martin Moore</div>
             <div><strong>Location:</strong> Australia</div>
             <div><strong>GitHub:</strong> <a href="https://github.com/bm069au" target="_blank" rel="noopener">@bm069au</a></div>
+            <div><strong>Forum:</strong> <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">GitHub Discussions ↗</a></div>
             <div><strong>Contact:</strong> <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></div>
           </div>
         </div>
@@ -456,25 +502,25 @@
           <div class="pill-badge">Creator Biography</div>
           <h2>Meet Brett Martin Moore — Why I Built Fairybread</h2>
           <p>
-            I'm 60, neurodivergent (AuDHD), and I've spent my life thinking in <strong>systems, patterns, and pure logic</strong>. When I look at software, I immediately see where default corporate rules are fighting the user's actual workflow—and I build clean, structural bypasses rather than accepting arbitrary limitations.
+            I'm 60, neurodivergent (AuDHD), and I've spent my life thinking in <strong>systems, patterns, and pure logic</strong>. When software defaults fight the user's actual workflow, I build structural bypasses instead of accepting arbitrary limitations.
           </p>
           <p>
-            As AI became essential for coding, research, and creative work, I watched every major AI company lock users into separate <strong>$20–$30/month silos</strong>—where ChatGPT can't talk to Claude, DeepSeek can't cross-check Gemini, and if you cancel your subscription, your persistent memory is held hostage on their servers.
+            As AI became essential for coding, writing, and research, every vendor pushed separate <strong>$20–$30/month subscriptions</strong>—where ChatGPT can't talk to Claude, DeepSeek can't cross-check Gemini, hidden limits move overnight, and your entire conversation history lives on someone else's server.
           </p>
           <p>
-            So I engineered <strong>Fairybread</strong>:
+            So I engineered <strong>Fairybread</strong> to put power, memory, and billing control back in the user's hands:
           </p>
           <ul class="bio-list">
-            <li><strong>A True Multi-AI Council (No Hard Limits):</strong> Connect as many frontier cloud or local AI models as you want—deliberating, peer-reviewing, and synthesizing answers together in parallel.</li>
-            <li><strong>100% Local Shared Memory:</strong> Your conversations and living Memory Summary stay on your own hard drive in a fast SQLite FTS5 index—never locked inside one vendor's cloud.</li>
-            <li><strong>Autonomous Experimental Mode:</strong> A sandboxed multi-agent lab where AIs can collaborate on their own, share notes in Experimental Memory, and even inspect Fairybread's own code to suggest upgrades.</li>
+            <li><strong>Zero Lock-In &amp; Full Spend Control:</strong> Connect via one OpenRouter key or bring your own provider keys—with 3-layer live cost tickers (per provider, per picture, and ongoing live Voice Mode) so nothing is ever hidden.</li>
+            <li><strong>100% Local Memory Palace + $0.00 Recall:</strong> Your conversations and editable Living Memory Summary stay on your own drive in SQLite FTS5, and previously learned answers can be retrieved by free-tier agents for $0.00.</li>
+            <li><strong>Built for Real Humans:</strong> Natural conversational synthesis, guided Setup Wizard, selective AES-256 backup restore, live Weather Radar Maps, Deepgram Flux speech, and 1-click <code>Update only</code> updates.</li>
           </ul>
           <p>
-            In day-to-day life, I live on a disability pension and built Fairybread to give everyday people freedom from subscription lock-in. It's free for personal use (up to 2 seats), and every voluntary donation or corporate license goes directly toward helping me pay my bills and build the next generation of multi-agent tools.
+            If you spot something we missed or suggest an idea we adopt into Fairybread, post it on the <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener" style="color:var(--accent-blue); font-weight:700;">GitHub Community Forum</a>—accepted contributors are added to the <strong>Community Contributors</strong> credit list right inside the desktop app's <strong>About</strong> dialog!
           </p>
           <div class="hero-cta-row" style="margin-top:18px;">
             <button class="btn-primary" onclick="switchTab('donors')">❤️ Support Brett's Work</button>
-            <a class="btn-outline" href="forum.html">💬 Join the Community Forums →</a>
+            <a class="btn-outline" href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">💬 Join GitHub Forums ↗</a>
           </div>
         </div>
       </div>
@@ -488,7 +534,7 @@
         <span class="muted-sub">Copyright © 2026 Brett Martin Moore. All Rights Reserved. Proprietary Source-Available License (Free up to 2 seats; Corporate License required for &gt; 2 seats).</span>
       </div>
       <div class="footer-links">
-        <a href="forum.html">Community Forums</a>
+        <a href="https://github.com/bm069au/fairybread/discussions" target="_blank" rel="noopener">Community Forums</a>
         <a href="https://github.com/bm069au/fairybread/releases" target="_blank" rel="noopener">Releases</a>
         <a href="https://github.com/sponsors/bm069au" target="_blank" rel="noopener">Donate (USD)</a>
         <a href="mailto:bm069au@gmail.com">Corporate Licensing</a>
@@ -496,6 +542,6 @@
     </div>
   </footer>
 
-  <script src="app.js?v=0.92e"></script>
+  <script src="app.js?v=0.93-web"></script>
 </body>
 </html>
