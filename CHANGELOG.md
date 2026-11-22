@@ -1,3 +1,15 @@
+# Fairybread — Beta v0.92e (Win_x64) Changelog
+**Release Date:** 2026-11-22
+**Version:** `v0.92e_beta_Win_x64`
+
+## Summary of Changes in `v0.92e`
+1. **🗑️ Microsoft-Guidelines-Compliant Uninstaller & Windows Installer Upgrade (`uninstall_fairybread.py`, `install_fairybread_beta.py`, `fairybread_icon.ico`):**
+   - Replaced the old 4-line uninstaller stub with a complete standalone uninstaller ([uninstall_fairybread.py](uninstall_fairybread.py)) supporting interactive GUI confirmation (`UninstallString` via `pythonw.exe`) and non-interactive silent uninstall (`QuietUninstallString` with `--quiet`, `/S`, and optional `--purge-data`), plus automatic UAC elevation for `Program Files` / `HKLM` installs.
+   - Tracks installations via `install_manifest.json` so uninstall stops only processes running inside that exact install folder, removes all installed files + Desktop/Start Menu `.lnk` shortcuts + `HKCU`/`HKLM` (64-bit) Uninstall registry entries, removes only matching External Agent Bridge (MCP) links (without breaking sibling Fairybread installs), preserves user data (`%LOCALAPPDATA%\Palace`) by default with explicit opt-in purge, and uses a detached `%TEMP%` self-delete + `MoveFileExW` fallback to remove the folder cleanly with zero leftovers.
+   - Added multi-resolution `fairybread_icon.ico` (`16, 32, 48, 64, 128, 256 px`), full Windows *Settings → Apps* (`ARP`) registry metadata (`EstimatedSize`, `InstallDate`, `QuietUninstallString`, `URLInfoAbout`, `HelpLink`, `Comments`, `DisplayIcon` → `.ico`, `NoModify=1`, `NoRepair=1`), UAC elevation check in `install_fairybread_beta.py`, and scoped `QFrame` installer cards.
+
+---
+
 # Fairybread — Beta v0.92d (Win_x64) Changelog
 **Release Date:** 2026-11-22
 **Version:** `v0.92d_beta_Win_x64`

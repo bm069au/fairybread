@@ -1,7 +1,7 @@
-"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.92d).
+"""Version-Explicit Windows Beta Installer for Fairybread (Beta v0.92e).
 
 Complies with all strict installer rules:
-(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.92d (editable + Browse button)
+(a) Defaults to version-stamped folder: C:\\Program Files\\Fairybread - Beta v0.92e (editable + Browse button)
 (b) Protects non-Fairybread directories from accidental overwrites while supporting safe VLC-style upgrades on existing Fairybread folders
 (c) Always creates an automatic pre-upgrade ZIP backup BEFORE modifying any files or data
 (d) Preserves settings, API keys, chats, and Memory Palaces by default (even in custom non-Program Files folders) with explicit opt-in Clean Install
@@ -21,7 +21,7 @@ from typing import Any
 import webbrowser
 import zipfile
 
-APP_VERSION = "0.92d"
+APP_VERSION = "0.92e"
 VERSION_STAMPED_NAME = f"Fairybread - Beta v{APP_VERSION}"
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files") / VERSION_STAMPED_NAME
 UNINSTALL_REG_KEY = rf"Software\Microsoft\Windows\CurrentVersion\Uninstall\{VERSION_STAMPED_NAME}"
@@ -101,6 +101,22 @@ def is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def relaunch_as_admin() -> bool:
+    """Request UAC elevation to relaunch this installer with Administrator privileges."""
+    if os.name != "nt" or is_admin():
+        return False
+    params = " ".join(f'"{a}"' for a in [str(Path(__file__).resolve()), *sys.argv[1:]])
+    rc = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        sys.executable,
+        params,
+        str(Path(__file__).resolve().parent),
+        1,
+    )
+    return int(rc) > 32
 
 
 def get_payload_source_dir() -> Path:
@@ -195,24 +211,49 @@ def create_windows_shortcut(target_path: str, arguments: str, shortcut_path: Pat
     subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], check=False, capture_output=True)
 
 
-def register_uninstaller(install_dir: Path, uninstaller_cmd: str, icon_path: Path) -> None:
+def register_uninstaller(
+    install_dir: Path,
+    uninstaller_cmd: str,
+    quiet_uninstaller_cmd: str,
+    icon_path: Path,
+    estimated_size_kb: int,
+    *,
+    prefer_hklm: bool = False,
+) -> tuple[str, str]:
+    """Write Microsoft ARP (Settings -> Apps) Uninstall metadata and return (hive_name, reg_key)."""
     if os.name != "nt":
-        return
+        return "", UNINSTALL_REG_KEY
     import winreg
-    for root_hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+
+    hives = (
+        ((winreg.HKEY_LOCAL_MACHINE, "HKLM"), (winreg.HKEY_CURRENT_USER, "HKCU"))
+        if prefer_hklm
+        else ((winreg.HKEY_CURRENT_USER, "HKCU"), (winreg.HKEY_LOCAL_MACHINE, "HKLM"))
+    )
+    wow64_set = winreg.KEY_SET_VALUE | getattr(winreg, "KEY_WOW64_64KEY", 0)
+    install_date = datetime.now().strftime("%Y%m%d")
+    est_kb = max(1, int(estimated_size_kb or 1))
+    for root_hive, hive_name in hives:
         try:
-            with winreg.CreateKey(root_hive, UNINSTALL_REG_KEY) as key:
+            with winreg.CreateKeyEx(root_hive, UNINSTALL_REG_KEY, 0, wow64_set) as key:
                 winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, VERSION_STAMPED_NAME)
                 winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
                 winreg.SetValueEx(key, "Publisher", 0, winreg.REG_SZ, "Brett Martin Moore")
                 winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install_dir))
+                winreg.SetValueEx(key, "InstallDate", 0, winreg.REG_SZ, install_date)
+                winreg.SetValueEx(key, "EstimatedSize", 0, winreg.REG_DWORD, est_kb)
                 winreg.SetValueEx(key, "DisplayIcon", 0, winreg.REG_SZ, str(icon_path))
                 winreg.SetValueEx(key, "UninstallString", 0, winreg.REG_SZ, uninstaller_cmd)
+                winreg.SetValueEx(key, "QuietUninstallString", 0, winreg.REG_SZ, quiet_uninstaller_cmd)
+                winreg.SetValueEx(key, "URLInfoAbout", 0, winreg.REG_SZ, "https://fairybread.me")
+                winreg.SetValueEx(key, "HelpLink", 0, winreg.REG_SZ, "https://github.com/bm069au/fairybread")
+                winreg.SetValueEx(key, "Comments", 0, winreg.REG_SZ, "Democratic Multi-AI Council & Local Memory Palace")
                 winreg.SetValueEx(key, "NoModify", 0, winreg.REG_DWORD, 1)
                 winreg.SetValueEx(key, "NoRepair", 0, winreg.REG_DWORD, 1)
-            break
+            return hive_name, UNINSTALL_REG_KEY
         except PermissionError:
             continue
+    return "", UNINSTALL_REG_KEY
 
 
 def perform_installation_detailed(
@@ -301,34 +342,65 @@ def perform_installation_detailed(
             if dp.is_dir():
                 shutil.rmtree(dp, ignore_errors=True)
 
-    # Write uninstaller script
+    # Install full standalone uninstaller script
+    uninst_src = src_dir / "uninstall_fairybread.py"
+    if not uninst_src.is_file():
+        uninst_src = Path(__file__).resolve().parent / "uninstall_fairybread.py"
+    if not uninst_src.is_file():
+        raise FileNotFoundError(f"Missing uninstaller script: {uninst_src}")
     uninst_py = target / "uninstall_fairybread.py"
-    uninst_py.write_text(
-        f'import os, shutil, winreg\n'
-        f'from pathlib import Path\n'
-        f'p = Path(r"{target}")\n'
-        f'print("Uninstalling {VERSION_STAMPED_NAME} from", p)\n',
-        encoding="utf-8",
-    )
-    installed_files.append("uninstall_fairybread.py")
+    if uninst_src.resolve() != uninst_py.resolve():
+        shutil.copy2(uninst_src, uninst_py)
+    if "uninstall_fairybread.py" not in installed_files:
+        installed_files.append("uninstall_fairybread.py")
+
+    created_shortcuts: list[str] = []
+    reg_hive = ""
+    reg_key = UNINSTALL_REG_KEY
 
     if register_system_shortcuts:
         pythonw_exe = Path(sys.executable).with_name("pythonw.exe")
         launcher_exe = str(pythonw_exe if pythonw_exe.exists() else Path(sys.executable))
         gui_script = f'"{target / "palace_gui.py"}"'
-        icon_file = target / "fairybread_icon.png"
+        ico_candidate = target / "fairybread_icon.ico"
+        icon_file = ico_candidate if ico_candidate.is_file() else (target / "fairybread_icon.png")
 
         # Desktop shortcut
         desktop_dir = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Desktop"
         desktop_lnk = desktop_dir / f"{VERSION_STAMPED_NAME}.lnk"
         create_windows_shortcut(launcher_exe, gui_script, desktop_lnk, str(icon_file), str(target))
+        created_shortcuts.append(str(desktop_lnk))
 
         # Start Menu shortcut
         appdata_roam = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
         start_menu_lnk = appdata_roam / r"Microsoft\Windows\Start Menu\Programs" / f"{VERSION_STAMPED_NAME}.lnk"
         create_windows_shortcut(launcher_exe, gui_script, start_menu_lnk, str(icon_file), str(target))
+        created_shortcuts.append(str(start_menu_lnk))
 
-        register_uninstaller(target, f'"{sys.executable}" "{uninst_py}"', icon_file)
+        estimated_size_kb = max(1, sum(f.stat().st_size for f in target.rglob("*") if f.is_file()) // 1024)
+        reg_hive, reg_key = register_uninstaller(
+            target,
+            f'"{launcher_exe}" "{uninst_py}"',
+            f'"{launcher_exe}" "{uninst_py}" --quiet',
+            icon_file,
+            estimated_size_kb,
+            prefer_hklm=(is_program_files and is_admin()),
+        )
+
+    manifest_path = target / "install_manifest.json"
+    installed_files.append("install_manifest.json")
+    manifest_payload = {
+        "app_version": APP_VERSION,
+        "version_stamped_name": VERSION_STAMPED_NAME,
+        "install_dir": str(target),
+        "data_dir": str(eff_data),
+        "shortcuts": created_shortcuts,
+        "reg_hive": reg_hive,
+        "reg_key": reg_key,
+        "installed_at": datetime.now().isoformat(),
+        "installed_files": list(installed_files),
+    }
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2) + "\n", encoding="utf-8")
 
     return {
         "installed_files": installed_files,
@@ -336,6 +408,7 @@ def perform_installation_detailed(
         "upgraded_existing": bool(is_upgrade),
         "preserved_settings": bool(keep_existing_settings),
         "wiped_memory": actually_wiped_memory,
+        "manifest_path": str(manifest_path),
     }
 
 
@@ -416,8 +489,10 @@ def run_gui_installer() -> int:
 
     # 2. VLC-Style Fail-Safe Upgrade / Clean Install Options
     opts_frame = QFrame(dlg)
-    opts_frame.setStyleSheet("background:#131720; border:1px solid #262c3a; border-radius:8px; padding:10px;")
+    opts_frame.setObjectName("installOptsCard")
+    opts_frame.setStyleSheet("QFrame#installOptsCard { background:#131720; border:1px solid #262c3a; border-radius:8px; }")
     opts_lay = QVBoxLayout(opts_frame)
+    opts_lay.setContentsMargins(12, 10, 12, 10)
     opts_lay.setSpacing(6)
     opts_hdr = QLabel("<b>2. Existing Settings, API Keys &amp; Memory Palaces:</b>")
     opts_hdr.setTextFormat(Qt.TextFormat.RichText)
@@ -477,8 +552,10 @@ def run_gui_installer() -> int:
 
     # One-Click USD Donation & Corporate License Banner
     don_frame = QFrame(dlg)
-    don_frame.setStyleSheet("background:#161b22; border:1px solid #30363d; border-radius:8px; padding:10px;")
+    don_frame.setObjectName("installDonateCard")
+    don_frame.setStyleSheet("QFrame#installDonateCard { background:#161b22; border:1px solid #30363d; border-radius:8px; }")
     don_lay = QVBoxLayout(don_frame)
+    don_lay.setContentsMargins(12, 10, 12, 10)
     don_lbl = QLabel(
         "<b>❤️ A Personal Note from Brett (USD Donations &amp; Corporate Licensing):</b><br>"
         "<span style='color:#c9d1d9; font-size:12px;'>"
@@ -554,6 +631,21 @@ def run_gui_installer() -> int:
 
     def _run_install():
         target_p = Path(path_edit.text().strip())
+        if "program files" in str(target_p).lower() and not is_admin():
+            ans = QMessageBox.question(
+                dlg,
+                "Administrator Permission Required",
+                f"Installing into:\n{target_p}\nrequires Windows Administrator permission.\n\n"
+                "Restart Setup as Administrator now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans == QMessageBox.StandardButton.Yes and relaunch_as_admin():
+                dlg.reject()
+                return
+            if ans == QMessageBox.StandardButton.Yes:
+                QMessageBox.warning(dlg, "Elevation Cancelled", "Could not acquire Administrator permissions. Pick a user-writable folder or right-click and Run as Administrator.")
+            return
         keep_cfg = keep_data_chk.isChecked()
         wipe_mem = wipe_mem_chk.isChecked() and not keep_cfg
         if wipe_mem:

@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-22T01:55:00Z",
-  "latest_app_version": "0.92d",
-  "release_summary": "Beta v0.92d: Native Windows en-AU live red-underline spellcheck & right-click suggestions in Composer (with Settings -> General toggle), scoped Settings cards fixing Backup & Restore child label borders, full storage folder width & trimmed buttons (0 clipped), and +1px chat sidebar topic row spacing.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92d-beta/Fairybread_v0.92d_beta_Win_x64_Setup.zip",
+  "updated_at": "2026-11-22T02:56:00Z",
+  "latest_app_version": "0.92e",
+  "release_summary": "Beta v0.92e: Microsoft-guidelines-compliant Windows uninstaller (uninstall_fairybread.py + install_manifest.json) with interactive GUI & --quiet CLI, UAC elevation, multi-size fairybread_icon.ico, complete ARP registry metadata (EstimatedSize, QuietUninstallString, URLInfoAbout), optional data purge, scoped MCP bridge cleanup, and detached self-deletion.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.92e-beta/Fairybread_v0.92e_beta_Win_x64_Setup.zip",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "988844ddf15b0c7d4416c1b64a8233e56a0cbd641af3038090b4df94b009d7ba",
+  "installer_sha256": "267abc2d84ba6560fd40f379bbb008edbea19042e3534d5aba2457ca250c7a4c",
   "model_token_rates_per_1m": {
     "gemini-4-neon": [
       0.5,

@@ -3935,6 +3935,223 @@ class MemoryOptimizationSpacingAndFluxTests(unittest.TestCase):
         finally:
             chk.close()
 
+    def test_microsoft_compliant_installer_and_full_uninstaller(self):
+        from install_fairybread_beta import (
+            APP_VERSION,
+            VERSION_STAMPED_NAME,
+            perform_installation_detailed,
+            register_uninstaller,
+        )
+        import uninstall_fairybread
+
+        # 1. Valid multi-resolution ICO file present
+        ico_path = Path(r"E:\Visual_studio\Palace\fairybread_icon.ico")
+        if not ico_path.exists():
+            ico_path = Path(__file__).with_name("fairybread_icon.ico")
+        self.assertTrue(ico_path.is_file())
+        self.assertEqual(ico_path.read_bytes()[:4], b"\x00\x00\x01\x00")
+
+        # 2. Mocked winreg ARP registration verifies all Microsoft required/recommended fields
+        written_vals: dict[str, tuple[int, Any]] = {}
+
+        class _FakeRegKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def _fake_create_key_ex(_hive, _subkey, _res=0, _sam=0):
+            return _FakeRegKey()
+
+        def _fake_set_val(_key, name, _res, reg_type, val):
+            written_vals[name] = (reg_type, val)
+
+        import winreg
+
+        with patch.object(winreg, "CreateKeyEx", side_effect=_fake_create_key_ex), \
+             patch.object(winreg, "SetValueEx", side_effect=_fake_set_val):
+            hive_used, sub_key = register_uninstaller(
+                Path(r"C:\Program Files\Fairybread - Beta v0.92e"),
+                '"C:\\Python\\pythonw.exe" "C:\\Program Files\\Fairybread - Beta v0.92e\\uninstall_fairybread.py"',
+                '"C:\\Python\\pythonw.exe" "C:\\Program Files\\Fairybread - Beta v0.92e\\uninstall_fairybread.py" --quiet',
+                Path(r"C:\Program Files\Fairybread - Beta v0.92e\fairybread_icon.ico"),
+                4800,
+                prefer_hklm=True,
+            )
+        self.assertIn(hive_used, {"HKLM", "HKCU"})
+        self.assertIn("Fairybread", sub_key)
+        for req_name in (
+            "DisplayName",
+            "DisplayVersion",
+            "Publisher",
+            "InstallLocation",
+            "InstallDate",
+            "EstimatedSize",
+            "DisplayIcon",
+            "UninstallString",
+            "QuietUninstallString",
+            "URLInfoAbout",
+            "HelpLink",
+            "Comments",
+            "NoModify",
+            "NoRepair",
+        ):
+            self.assertIn(req_name, written_vals, msg=f"Missing ARP value: {req_name}")
+        self.assertEqual(written_vals["DisplayName"][1], VERSION_STAMPED_NAME)
+        self.assertEqual(written_vals["DisplayVersion"][1], APP_VERSION)
+        self.assertEqual(written_vals["NoModify"][1], 1)
+        self.assertEqual(written_vals["NoRepair"][1], 1)
+        self.assertGreater(written_vals["EstimatedSize"][1], 0)
+        self.assertTrue(str(written_vals["DisplayIcon"][1]).lower().endswith(".ico"))
+        self.assertIn("--quiet", str(written_vals["QuietUninstallString"][1]))
+
+        # 3. Full install + uninstall roundtrip (keep user data by default) + scoped MCP cleanup
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inst_dir = root / "AppA" / VERSION_STAMPED_NAME
+            data_dir = root / "AppDataA"
+            data_dir.mkdir(parents=True)
+            (data_dir / "memory.db").write_text("KEEP-DB", encoding="utf-8")
+            (data_dir / "palace_config.json").write_text('{"ui_settings": {}}', encoding="utf-8")
+
+            res = perform_installation_detailed(
+                inst_dir,
+                register_system_shortcuts=False,
+                allow_upgrade_existing=False,
+                keep_existing_settings=True,
+                data_dir=data_dir,
+            )
+            manifest_fp = Path(res["manifest_path"])
+            self.assertTrue(manifest_fp.is_file())
+            uninst_fp = inst_dir / "uninstall_fairybread.py"
+            self.assertTrue(uninst_fp.is_file())
+            self.assertGreater(uninst_fp.stat().st_size, 3000)
+
+            # Attach fake shortcuts to manifest + fake MCP configs (one matching inst_dir, one unrelated/other install)
+            desk_lnk = root / "Desktop" / f"{VERSION_STAMPED_NAME}.lnk"
+            start_lnk = root / "StartMenu" / f"{VERSION_STAMPED_NAME}.lnk"
+            desk_lnk.parent.mkdir(parents=True)
+            start_lnk.parent.mkdir(parents=True)
+            desk_lnk.write_bytes(b"lnk-desktop")
+            start_lnk.write_bytes(b"lnk-start")
+
+            m_data = json.loads(manifest_fp.read_text(encoding="utf-8"))
+            m_data["shortcuts"] = [str(desk_lnk), str(start_lnk)]
+            manifest_fp.write_text(json.dumps(m_data, indent=2), encoding="utf-8")
+
+            fake_home = root / "home"
+            fake_appdata = root / "roaming"
+            agy_cfg = fake_home / ".gemini" / "config" / "mcp_config.json"
+            agy_skill = fake_home / ".gemini" / "config" / "skills" / "fairybread-council" / "SKILL.md"
+            claude_cfg = fake_appdata / "Claude" / "claude_desktop_config.json"
+            codex_toml = fake_home / ".codex" / "config.toml"
+            grok_toml = fake_home / ".grok" / "config.toml"
+            for p in (agy_cfg, agy_skill, claude_cfg, codex_toml, grok_toml):
+                p.parent.mkdir(parents=True, exist_ok=True)
+
+            agy_cfg.write_text(
+                json.dumps({
+                    "mcpServers": {
+                        "fairybread": {"command": "python", "args": [str(inst_dir / "fairybread_mcp.py")]},
+                        "other_tool": {"command": "node", "args": ["other.js"]},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            agy_skill.write_text("# skill", encoding="utf-8")
+            # Claude points to ANOTHER Fairybread install -> must NOT be touched!
+            other_dir = root / "OtherVersion"
+            claude_cfg.write_text(
+                json.dumps({
+                    "mcpServers": {
+                        "fairybread": {"command": "python", "args": [str(other_dir / "fairybread_mcp.py")]},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            mcp_py_toml = str(inst_dir / "fairybread_mcp.py").replace("\\", "\\\\")
+            codex_toml.write_text(
+                f'[mcp_servers.fairybread]\ncommand = "python"\nargs = ["{mcp_py_toml}"]\n\n'
+                '[mcp_servers.keep_me]\ncommand = "echo"\nargs = ["hi"]\n',
+                encoding="utf-8",
+            )
+            other_toml_arg = str(other_dir / "fairybread_mcp.py").replace("\\", "\\\\")
+            grok_toml.write_text(
+                f'[mcp_servers.fairybread]\ncommand = "python"\nargs = ["{other_toml_arg}"]\n',
+                encoding="utf-8",
+            )
+
+            u1 = uninstall_fairybread.perform_uninstall(
+                inst_dir,
+                purge_user_data=False,
+                cleanup_mcp=True,
+                remove_registry=False,
+                stop_processes=False,
+                schedule_self_delete=False,
+                home_dir=fake_home,
+                appdata_dir=fake_appdata,
+            )
+            self.assertEqual(u1["errors"], [])
+            self.assertFalse(inst_dir.exists())
+            self.assertFalse(desk_lnk.exists())
+            self.assertFalse(start_lnk.exists())
+            self.assertTrue((data_dir / "memory.db").is_file())
+
+            # Matching MCP removed; unrelated + other-install MCP entries preserved!
+            agy_after = json.loads(agy_cfg.read_text(encoding="utf-8"))
+            self.assertNotIn("fairybread", agy_after["mcpServers"])
+            self.assertIn("other_tool", agy_after["mcpServers"])
+            self.assertFalse(agy_skill.exists())
+            claude_after = json.loads(claude_cfg.read_text(encoding="utf-8"))
+            self.assertIn("fairybread", claude_after["mcpServers"])
+            codex_after = codex_toml.read_text(encoding="utf-8")
+            self.assertNotIn("mcp_servers.fairybread", codex_after)
+            self.assertIn("mcp_servers.keep_me", codex_after)
+            self.assertIn("mcp_servers.fairybread", grok_toml.read_text(encoding="utf-8"))
+
+            # 4. Purge user data mode deletes both install_dir and data_dir, and refuses M:\ paths
+            inst_dir2 = root / "AppB" / VERSION_STAMPED_NAME
+            perform_installation_detailed(
+                inst_dir2,
+                register_system_shortcuts=False,
+                allow_upgrade_existing=False,
+                keep_existing_settings=True,
+                data_dir=data_dir,
+            )
+            u_m_guard = uninstall_fairybread.perform_uninstall(
+                inst_dir2,
+                purge_user_data=True,
+                cleanup_mcp=False,
+                remove_registry=False,
+                stop_processes=False,
+                schedule_self_delete=False,
+                data_dir_override=Path(r"M:\BACK_UP E DRIVE"),
+            )
+            self.assertTrue(any("M:" in e or "protected" in e.lower() for e in u_m_guard["errors"]))
+            self.assertTrue(data_dir.is_dir())
+
+            inst_dir3 = root / "AppC" / VERSION_STAMPED_NAME
+            perform_installation_detailed(
+                inst_dir3,
+                register_system_shortcuts=False,
+                allow_upgrade_existing=False,
+                keep_existing_settings=True,
+                data_dir=data_dir,
+            )
+            u2 = uninstall_fairybread.perform_uninstall(
+                inst_dir3,
+                purge_user_data=True,
+                cleanup_mcp=False,
+                remove_registry=False,
+                stop_processes=False,
+                schedule_self_delete=False,
+            )
+            self.assertEqual(u2["errors"], [])
+            self.assertTrue(u2["purged_user_data"])
+            self.assertFalse(inst_dir3.exists())
+            self.assertFalse(data_dir.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
