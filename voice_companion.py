@@ -14,7 +14,12 @@ from typing import Callable
 from cost_service import emit_llm_cost, extract_sdk_usage_tokens
 from credential_store import CredentialStore
 from memory_service import parse_save_memory_tags
-from palace_config import CONFIG_PATH, load_enabled_provider_names, load_provider_configs
+from palace_config import (
+    CONFIG_PATH,
+    format_personalization_prompt_block,
+    load_enabled_provider_names,
+    load_provider_configs,
+)
 from voice_service import clean_text_for_speech, load_voice_settings
 
 
@@ -502,10 +507,19 @@ class VoiceCompanion:
                 "MEMORY NOTICE: No-History (ephemeral) mode is currently ON, so tell the user if they ask to store permanent memory that No-History is active.\n"
             )
 
+        pers_block = ""
+        try:
+            raw_pers = format_personalization_prompt_block(self.config_path, conversational_scale="casual")
+            if raw_pers:
+                pers_block = raw_pers[:700] + "\n"
+        except Exception:
+            pers_block = ""
+
         if talk_only:
             prompt = (
                 "You are Fairybread in Talk Mode Only — a warm, relaxed, fast conversational companion.\n"
                 "There is NO background council, NO code execution, NO image generation, and NO web tools active right now.\n"
+                f"{pers_block}"
                 f"{mem_rule_talk}"
                 "Have a natural conversation directly with the user. If they ask for deep coding, image generation, or multi-AI analysis, "
                 "give a brief friendly answer and mention they can switch back to Work Mode, Code AIs, or Graphics anytime.\n\n"
@@ -515,6 +529,7 @@ class VoiceCompanion:
                 f"USER JUST SAID: {utterance}\n\n"
                 "SPOKEN STYLE RULES:\n"
                 "- Reply in plain natural conversational sentences only (1-3 short everyday sentences, contractions okay).\n"
+                "- Follow natural topic shifts, jokes, and side tangents effortlessly without dragging the user back to older topics.\n"
                 "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than an optional trailing `[SAVE_MEMORY summary=\"...\" fact=\"...\"]` when explicitly storing memory."
             )
             try:
@@ -578,6 +593,7 @@ class VoiceCompanion:
         prompt = (
             "You are Fairybread's live conversational Voice Companion — warm, friendly, natural, relaxed, and intuitive.\n"
             "You talk directly with the user out loud while Fairybread's multi-AI crew can work asynchronously in the background.\n\n"
+            f"{pers_block}"
             f"{bg_block}\n"
             f"{mem_block}"
             f"RECENT VOICE HISTORY:\n{hist_block}\n"
@@ -594,6 +610,7 @@ class VoiceCompanion:
             "4. 'status': ONLY when BACKGROUND CREW STATUS is BUSY and the user asks how the background work is going. Summarize the live phase naturally in 'spoken_reply'.\n"
             "SPOKEN STYLE RULES:\n"
             "- Keep 'spoken_reply' to 1-3 natural conversational sentences (warm everyday phrasing, contractions okay).\n"
+            "- Follow natural topic shifts, jokes, and side tangents effortlessly without dragging the user back to older topics.\n"
             "- ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] in 'spoken_reply'."
         )
 

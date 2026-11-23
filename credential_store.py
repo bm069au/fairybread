@@ -224,6 +224,37 @@ class CredentialStore:
         except PermissionError:
             return False
 
+    def list_providers(self) -> list[str]:
+        """Return sorted normalized provider names that currently have a decryptable non-empty key."""
+        if _IDLE_VAULT_LOCKED and threading.current_thread() is not threading.main_thread():
+            return []
+
+        target_path = self._resolve_readable_path()
+        try:
+            if not target_path.exists():
+                return []
+            data = json.loads(target_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+
+        providers = data.get("providers") if isinstance(data, dict) else None
+        if not isinstance(providers, dict):
+            return []
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw_name in providers.keys():
+            clean_name = str(raw_name or "").strip().lower()
+            if not clean_name or clean_name in seen:
+                continue
+            try:
+                if self.has_api_key(clean_name):
+                    seen.add(clean_name)
+                    out.append(clean_name)
+            except Exception:
+                continue
+        return sorted(out)
+
     def set_api_key(self, provider_name: str, api_key: str) -> None:
         normalized_name = provider_name.strip().lower()
         if not normalized_name:

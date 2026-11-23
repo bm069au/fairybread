@@ -220,8 +220,8 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#11281b",
         "key_url": "https://platform.openai.com/api-keys",
         "default_base_url": "https://api.openai.com/v1",
-        "default_model": "gpt-4o-mini",
-        "suggested_models": ["gpt-4o-mini", "gpt-4o", "o3-mini"],
+        "default_model": "gpt-5-mini",
+        "suggested_models": ["gpt-5-mini", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-4o-mini"],
         "billing_note": "Prepaid credit wallet (turn off auto-recharge for a strict spend cap).",
     },
     "anthropic": {
@@ -658,7 +658,7 @@ DEFAULT_OPENROUTER_HUB_SETTINGS: dict[str, Any] = {
     "enable_image_fallback": True,
     "enable_audio_fallback": True,
     "image_model_draft": "google/gemini-3.1-flash-image",
-    "image_model_high": "openai/gpt-5-image-mini",
+    "image_model_high": "openai/gpt-5.4-image-2",
     "audio_voice": "coral",
 }
 
@@ -878,6 +878,72 @@ def save_mission_ethics(text: str, config_path: Path = CONFIG_PATH) -> str:
     return load_mission_ethics(config_path)
 
 
+CONTEXT_DEPTH_CHOICES: list[tuple[str, str]] = [
+    ("standard", "Standard (12K chars / 8 turns)"),
+    ("extended", "Extended (36K chars / 18 turns)"),
+    ("deep", "Deep (64K chars / 32 turns)"),
+]
+
+CONTEXT_DEPTH_LIMITS: dict[str, tuple[int, int]] = {
+    "standard": (12000, 8),
+    "extended": (36000, 18),
+    "deep": (64000, 32),
+}
+
+OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
+    "gpt-5.6-sol": "openai/gpt-5.6-sol",
+    "gpt-5.6-luna": "openai/gpt-5.6-luna",
+    "gpt-5.5": "openai/gpt-5.5",
+    "gpt-5.4": "openai/gpt-5.4",
+    "gpt-5.4-mini": "openai/gpt-5.4-mini",
+    "gpt-5-mini": "openai/gpt-5-mini",
+    "gemini-4-carbon": "google/gemini-4-carbon",
+    "gemini-4-neon": "google/gemini-4-neon",
+    "deepseek-reasoner": "deepseek/deepseek-r1-0528",
+    "deepseek-chat": "deepseek/deepseek-chat",
+    "claude-3-7-sonnet-latest": "anthropic/claude-sonnet-5.5",
+    "claude-sonnet-5.5": "anthropic/claude-sonnet-5.5",
+}
+
+
+def resolve_profile_model_override(
+    provider_name: str,
+    model_override: str,
+    *,
+    is_openrouter: bool = False,
+) -> str:
+    """Translate a profile model override between direct API IDs and OpenRouter vendor-prefixed slugs."""
+    clean = str(model_override or "").strip()
+    if not clean:
+        return ""
+    p_low = str(provider_name or "").strip().lower()
+    if is_openrouter:
+        if "/" in clean:
+            return clean
+        mapped = OPENROUTER_MODEL_OVERRIDE_MAP.get(clean.lower())
+        if mapped:
+            return mapped
+        prefix_map = {
+            "openai": "openai",
+            "gemini": "google",
+            "deepseek": "deepseek",
+            "anthropic": "anthropic",
+            "claude": "anthropic",
+            "mistral": "mistralai",
+            "cohere": "cohere",
+            "xai": "x-ai",
+            "grok": "x-ai",
+        }
+        vendor = prefix_map.get(p_low)
+        return f"{vendor}/{clean}" if vendor else clean
+    if "/" in clean and p_low in {"openai", "gemini", "deepseek", "anthropic", "claude"}:
+        tail = clean.split("/", 1)[1]
+        if tail == "deepseek-r1-0528" and p_low == "deepseek":
+            return "deepseek-reasoner"
+        return tail
+    return clean
+
+
 DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
     "code": {
         "label": "💻 Code AIs",
@@ -885,13 +951,32 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "deliberate": True,
         "code_access": True,
         "max_ais": 0,
+        "context_depth": "standard",
+        "model_overrides": {},
     },
     "light_chat": {
-        "label": "💬 Light Chat (Cheap)",
-        "providers": ["groq", "qwen", "cohere"],
+        "label": "💬 Light Chat (Free / Fast)",
+        "providers": ["groq", "cohere", "cerebras", "qwen"],
         "deliberate": False,
         "code_access": False,
         "max_ais": 0,
+        "context_depth": "standard",
+        "model_overrides": {},
+    },
+    "deep_chat": {
+        "label": "🧠 Deeper Chat (Paid — Reasoning & Long)",
+        "providers": ["openai", "gemini", "deepseek", "anthropic", "claude"],
+        "deliberate": True,
+        "code_access": False,
+        "max_ais": 0,
+        "context_depth": "deep",
+        "model_overrides": {
+            "openai": "gpt-5.6-sol",
+            "gemini": "gemini-4-carbon",
+            "deepseek": "deepseek-reasoner",
+            "anthropic": "claude-3-7-sonnet-latest",
+            "claude": "anthropic/claude-sonnet-5.5",
+        },
     },
     "generalist": {
         "label": "🧠 Generalist",
@@ -899,6 +984,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "deliberate": True,
         "code_access": False,
         "max_ais": 0,
+        "context_depth": "standard",
+        "model_overrides": {},
     },
     "graphics": {
         "label": "🎨 Graphics & Vision (Pictures)",
@@ -906,6 +993,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "deliberate": False,
         "code_access": False,
         "max_ais": 0,
+        "context_depth": "standard",
+        "model_overrides": {},
     },
     "work_mode": {
         "label": "🛠 Work Mode",
@@ -913,15 +1002,51 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "deliberate": True,
         "code_access": True,
         "max_ais": 0,
+        "context_depth": "standard",
+        "model_overrides": {},
     },
 }
+
+
+def _copy_default_squads() -> dict[str, dict[str, Any]]:
+    return {
+        k: dict(
+            v,
+            providers=list(v.get("providers", [])),
+            model_overrides=dict(v.get("model_overrides", {})),
+        )
+        for k, v in DEFAULT_AI_SQUADS.items()
+    }
+
+
+def _normalize_squad_entry(slug: str, val: dict[str, Any]) -> dict[str, Any]:
+    depth = str(val.get("context_depth") or "standard").strip().lower()
+    if depth not in CONTEXT_DEPTH_LIMITS:
+        depth = "standard"
+    raw_ov = val.get("model_overrides")
+    overrides: dict[str, str] = {}
+    if isinstance(raw_ov, dict):
+        for mk, mv in raw_ov.items():
+            k_clean = str(mk).strip().lower()
+            v_clean = str(mv or "").strip()
+            if k_clean and v_clean:
+                overrides[k_clean] = v_clean
+    return {
+        "label": str(val.get("label") or slug).strip(),
+        "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
+        "deliberate": bool(val.get("deliberate", True)),
+        "code_access": bool(val.get("code_access", False)),
+        "max_ais": max(0, int(val.get("max_ais") or 0)),
+        "context_depth": depth,
+        "model_overrides": overrides,
+    }
 
 
 def load_ai_squads(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]:
     data = _read_raw_config(config_path)
     raw = data.get("ai_squads")
     if not isinstance(raw, dict) or not raw:
-        return {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+        return _copy_default_squads()
     out: dict[str, dict[str, Any]] = {}
     for k, val in raw.items():
         if not isinstance(val, dict):
@@ -929,19 +1054,34 @@ def load_ai_squads(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]
         slug = str(k).strip()
         if not slug:
             continue
-        out[slug] = {
-            "label": str(val.get("label") or slug).strip(),
-            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
-            "deliberate": bool(val.get("deliberate", True)),
-            "code_access": bool(val.get("code_access", False)),
-            "max_ais": max(0, int(val.get("max_ais") or 0)),
-        }
-    return out or {k: dict(v, providers=list(v.get("providers", []))) for k, v in DEFAULT_AI_SQUADS.items()}
+        out[slug] = _normalize_squad_entry(slug, val)
+    if not out:
+        return _copy_default_squads()
+    deleted_builtins = {
+        str(x).strip().lower()
+        for x in (data.get("deleted_builtin_squads") or [])
+        if str(x).strip()
+    } if isinstance(data.get("deleted_builtin_squads"), list) else set()
+    if "deep_chat" not in out and "deep_chat" not in deleted_builtins:
+        dc_entry = _normalize_squad_entry("deep_chat", DEFAULT_AI_SQUADS["deep_chat"])
+        ordered: dict[str, dict[str, Any]] = {}
+        inserted = False
+        for k, v in out.items():
+            ordered[k] = v
+            if k == "light_chat" and not inserted:
+                ordered["deep_chat"] = dc_entry
+                inserted = True
+        if not inserted:
+            ordered["deep_chat"] = dc_entry
+        out = ordered
+    return out
 
 
 def save_ai_squads(
     squads: dict[str, dict[str, Any]],
     config_path: Path = CONFIG_PATH,
+    *,
+    deleted_builtin_squads: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     data = _read_raw_config(config_path)
     cleaned: dict[str, dict[str, Any]] = {}
@@ -951,24 +1091,52 @@ def save_ai_squads(
         slug = str(k).strip()
         if not slug:
             continue
-        cleaned[slug] = {
-            "label": str(val.get("label") or slug).strip(),
-            "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
-            "deliberate": bool(val.get("deliberate", True)),
-            "code_access": bool(val.get("code_access", False)),
-            "max_ais": max(0, int(val.get("max_ais") or 0)),
+        cleaned[slug] = _normalize_squad_entry(slug, val)
+    data["ai_squads"] = cleaned or _copy_default_squads()
+    if deleted_builtin_squads is not None:
+        del_set = {
+            str(x).strip().lower()
+            for x in deleted_builtin_squads
+            if str(x).strip() and str(x).strip().lower() not in data["ai_squads"]
         }
-    data["ai_squads"] = cleaned or {k: dict(v) for k, v in DEFAULT_AI_SQUADS.items()}
+        data["deleted_builtin_squads"] = sorted(del_set)
+    elif isinstance(data.get("deleted_builtin_squads"), list):
+        data["deleted_builtin_squads"] = [
+            str(x).strip().lower()
+            for x in data["deleted_builtin_squads"]
+            if str(x).strip() and str(x).strip().lower() not in data["ai_squads"]
+        ]
     _write_raw_config(data, config_path)
     return load_ai_squads(config_path)
 
 
+PRIMARY_IMAGE_ENGINE_CHOICES: list[tuple[str, str]] = [
+    ("gpt-image-2.6-sunburst", "OpenAI GPT-Image 2.6 Sunburst (ChatGPT Flagship)"),
+    ("chatgpt-image-latest", "OpenAI ChatGPT Image Latest (Rolling Alias)"),
+    ("gemini-3-pro-image", "Google Gemini 3 Pro Image"),
+    ("gpt-image-2", "OpenAI GPT-Image 2 (Legacy)"),
+    ("openrouter:openai/gpt-5.4-image-2", "OpenRouter → OpenAI GPT-5.4 Image 2"),
+]
+
+DRAFT_IMAGE_ENGINE_CHOICES: list[tuple[str, str]] = [
+    ("gpt-image-2.6-flare", "OpenAI GPT-Image 2.6 Flare (Fast Drafts)"),
+    ("gemini-3.1-flash-image", "Google Gemini 3.1 Flash Image (Fast Drafts)"),
+    ("flux-1-schnell", "FLUX 1 Schnell (DeepInfra Fast)"),
+]
+
+GRAPHICS_PIPELINE_MODES: list[tuple[str, str]] = [
+    ("single_vision", "Single Vision Optimizer (Recommended — 1 vision AI + checklist, no council bloat)"),
+    ("direct", "Direct to Image Engine (Send prompt + images straight to model like ChatGPT)"),
+    ("prompt_duo", "2-AI Prompt Duo (Brainstorm 3 Drafts → Master)"),
+]
+
 DEFAULT_GRAPHICS_SETTINGS: dict[str, Any] = {
     "prompt_duo": ["gemini", "openai"],
     "prompt_duo_fallback": ["deepseek", "qwen", "cerebras", "groq"],
-    "primary_image_engine": "gemini-3-pro-image",
-    "draft_image_engine": "gemini-3.1-flash-image",
-    "fallback_image_engines": ["gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+    "primary_image_engine": "gpt-image-2.6-sunburst",
+    "draft_image_engine": "gpt-image-2.6-flare",
+    "fallback_image_engines": ["gemini-3-pro-image", "gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+    "pipeline_mode": "single_vision",
 }
 
 
@@ -977,12 +1145,16 @@ def load_graphics_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     raw = data.get("graphics_settings", {})
     if not isinstance(raw, dict):
         raw = {}
+    p_mode = str(raw.get("pipeline_mode") or DEFAULT_GRAPHICS_SETTINGS["pipeline_mode"]).strip().lower()
+    if p_mode not in {"single_vision", "direct", "prompt_duo"}:
+        p_mode = "single_vision"
     out = {
         "prompt_duo": [str(p).strip().lower() for p in (raw.get("prompt_duo") or DEFAULT_GRAPHICS_SETTINGS["prompt_duo"]) if str(p).strip()],
         "prompt_duo_fallback": [str(p).strip().lower() for p in (raw.get("prompt_duo_fallback") or DEFAULT_GRAPHICS_SETTINGS["prompt_duo_fallback"]) if str(p).strip()],
         "primary_image_engine": str(raw.get("primary_image_engine") or DEFAULT_GRAPHICS_SETTINGS["primary_image_engine"]).strip().lower(),
         "draft_image_engine": str(raw.get("draft_image_engine") or DEFAULT_GRAPHICS_SETTINGS["draft_image_engine"]).strip().lower(),
         "fallback_image_engines": [str(e).strip().lower() for e in (raw.get("fallback_image_engines") or DEFAULT_GRAPHICS_SETTINGS["fallback_image_engines"]) if str(e).strip()],
+        "pipeline_mode": p_mode,
     }
     if not out["prompt_duo"]:
         out["prompt_duo"] = list(DEFAULT_GRAPHICS_SETTINGS["prompt_duo"])
@@ -1007,6 +1179,10 @@ def save_graphics_settings(
     for k in ("primary_image_engine", "draft_image_engine"):
         if k in settings and str(settings[k] or "").strip():
             merged[k] = str(settings[k]).strip().lower()
+    if "pipeline_mode" in settings:
+        pm = str(settings.get("pipeline_mode") or "").strip().lower()
+        if pm in {"single_vision", "direct", "prompt_duo"}:
+            merged["pipeline_mode"] = pm
     data["graphics_settings"] = merged
     _write_raw_config(data, config_path)
     return load_graphics_settings(config_path)
@@ -1213,11 +1389,19 @@ def save_ui_settings(
     return load_ui_settings(config_path)
 
 
+HUMOR_LEVEL_CHOICES: list[tuple[str, str]] = [
+    ("none", "No Humor"),
+    ("minimal", "Minimal"),
+    ("average", "Average"),
+    ("high", "High Humor"),
+]
+
 DEFAULT_PERSONALIZATION_SETTINGS: dict[str, Any] = {
     "auto_evolve_profile": True,
     "base_style": "Friendly",           # "Friendly" | "Candid & Direct (No Flattery)" | "Technical & Concise" | "Casual & Witty" | "Professional"
     "warmth": "Default",                # "Less" | "Default" | "More"
     "enthusiasm": "Less",               # "Less" | "Default" | "More"
+    "humor": "average",                 # "none" | "minimal" | "average" | "high"
     "emoji": "Less",                    # "None" | "Less" | "Default" | "More"
     "visual_answers": "Default",        # "Less" | "Default" | "More"
     "headers_and_lists": "More",        # "Less" | "Default" | "More"
@@ -1226,6 +1410,49 @@ DEFAULT_PERSONALIZATION_SETTINGS: dict[str, Any] = {
     "reference_photo_face": "",
     "reference_photo_body": "",
 }
+
+
+def _normalize_humor_level(raw: Any) -> str:
+    low = str(raw or "").strip().lower()
+    if low in {"none", "no humor", "no humour", "off"}:
+        return "none"
+    if low in {"minimal", "low"}:
+        return "minimal"
+    if low in {"high", "high humor", "high humour"}:
+        return "high"
+    return "average"
+
+
+def format_humor_directive(humor_level: str) -> str:
+    """Return concrete behavioral humor calibration with situational safety overrides."""
+    lvl = _normalize_humor_level(humor_level)
+    if lvl == "none":
+        return (
+            "- Humor (No Humor): Strictly zero jokes, banter, wordplay, sarcasm, or playful asides. "
+            "Keep every reply completely straight, factual, and direct."
+        )
+    override = (
+        "- Situational Override: Automatically dial humor to zero during error/traceback debugging, "
+        "destructive file/code actions, legal/financial/safety questions, or requests for an exact command/factual answer."
+    )
+    if lvl == "minimal":
+        return (
+            "- Humor (Minimal): Stay straightforward and grounded by default; at most a rare subtle dry understatement "
+            "only when the user explicitly initiates a joke first.\n"
+            + override
+        )
+    if lvl == "high":
+        return (
+            "- Humor (High Humor): Lean into sharp, deadpan, playful, or lightly absurdist wit and real comedic timing "
+            "during conversation, brainstorming, and tangents. Commit to the bit naturally instead of writing a structured essay "
+            "explaining humor; never invent fake facts or use cheesy robotic puns.\n"
+            + override
+        )
+    return (
+        "- Humor (Average): Use natural dry wit and light conversational banter when the moment fits "
+        "(casual chat, tangents, creative riffs), with zero forced puns, corny sign-offs, or dad-joke padding.\n"
+        + override
+    )
 
 
 def load_personalization_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -1248,6 +1475,8 @@ def load_personalization_settings(config_path: Path = CONFIG_PATH) -> dict[str, 
     ):
         if isinstance(raw.get(k), str):
             merged[k] = raw[k].strip()
+    if "humor" in raw:
+        merged["humor"] = _normalize_humor_level(raw.get("humor"))
     if "auto_evolve_profile" in raw:
         merged["auto_evolve_profile"] = bool(raw["auto_evolve_profile"])
     return merged
@@ -1261,6 +1490,7 @@ def save_personalization_settings(
     current = load_personalization_settings(config_path)
     current.update(updates or {})
     current["auto_evolve_profile"] = bool(current.get("auto_evolve_profile", True))
+    current["humor"] = _normalize_humor_level(current.get("humor"))
     for k in (
         "base_style",
         "warmth",
@@ -1282,12 +1512,17 @@ def save_personalization_settings(
     return load_personalization_settings(config_path)
 
 
-def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
-    """Compile the user's Tone, Speech Grammar, Formatting, Custom Instructions, and Reference Photos."""
+def format_personalization_prompt_block(
+    config_path: Path = CONFIG_PATH,
+    *,
+    conversational_scale: str = "balanced",
+) -> str:
+    """Compile the user's Tone, Humor, Speech Grammar, Formatting, Custom Instructions, and Reference Photos."""
     p = load_personalization_settings(config_path)
     base_style = str(p.get("base_style", "Friendly") or "Friendly")
     warmth = str(p.get("warmth", "Default") or "Default")
     enthusiasm = str(p.get("enthusiasm", "Less") or "Less")
+    humor_lvl = _normalize_humor_level(p.get("humor", "average"))
 
     bs_l = base_style.lower()
     w_l = warmth.lower()
@@ -1296,13 +1531,25 @@ def format_personalization_prompt_block(config_path: Path = CONFIG_PATH) -> str:
     friendly_w = 0.90 if "friend" in bs_l else (0.45 if "cynic" in bs_l or "formal" in bs_l else 0.70)
     formal_w = 0.75 if ("formal" in bs_l or "profess" in bs_l) else 0.15
     concise_w = 0.75 if ("concise" in bs_l or "efficien" in bs_l or "less" in e_l) else 0.45
+    scale_clean = (conversational_scale or "balanced").strip().lower()
+    if scale_clean == "casual":
+        fmt_line = (
+            "- Formatting: Conversational prose only (1–4 natural sentences or a short punchy riff; "
+            "no Markdown headings, bullet walls, or formal memo templates)."
+        )
+    else:
+        fmt_line = (
+            f"- Formatting: Emoji={p.get('emoji', 'Less')} | Visual Answers={p.get('visual_answers', 'Default')} | "
+            f"Headers & Lists={p.get('headers_and_lists', 'More')}"
+        )
 
     lines = [
         "[USER PERSONALIZATION, TONE VECTOR & SPEECH STYLE]:",
-        f"- Base Style & Tone: {base_style} | Warmth: {warmth} | Enthusiasm: {enthusiasm}",
+        f"- Base Style & Tone: {base_style} | Warmth: {warmth} | Enthusiasm: {enthusiasm} | Humor: {humor_lvl}",
         f"- Tone Weights: {{warm: {warm_w:.2f}, friendly: {friendly_w:.2f}, direct: 0.85, concise: {concise_w:.2f}, formal: {formal_w:.2f}, flattery: 0.00}}",
-        f"- Formatting: Emoji={p.get('emoji', 'Less')} | Visual Answers={p.get('visual_answers', 'Default')} | Headers & Lists={p.get('headers_and_lists', 'More')}",
-        "- Friend & Speech Grammar Alignment: Talk naturally like a trusted friend and collaborator who remembers what we've worked on in Fairybread. Match the user's everyday phrasing, directness, and regional/casual speech grammar cleanly — warm and personal without flattery, canned reassurance, or preachy caveats.",
+        format_humor_directive(humor_lvl),
+        fmt_line,
+        "- Friend & Speech Grammar Alignment: Talk naturally like a trusted friend and collaborator who remembers what we've worked on in Fairybread. Match the user's everyday phrasing, directness, and casual speech grammar cleanly — warm and personal without flattery, canned reassurance, or preachy caveats.",
     ]
     gen_inst = (p.get("custom_instructions_general") or "").strip()
     if gen_inst:

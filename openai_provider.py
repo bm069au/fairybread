@@ -83,11 +83,13 @@ class OpenAIProvider(AIProvider):
         images: list[Path | str] | None = None,
         system_prompt: str = "",
         history_messages: list[dict[str, str]] | None = None,
+        model_override: str | None = None,
     ) -> ProviderResponse:
+        eff_model = (model_override or "").strip() or self.model
         sys_clean = (system_prompt or "").strip()
         clean_hist: list[dict[str, str]] = []
         if history_messages and isinstance(history_messages, list):
-            for m in history_messages[-16:]:
+            for m in history_messages[-64:]:
                 if not isinstance(m, dict):
                     continue
                 role = str(m.get("role") or "user").strip().lower()
@@ -98,18 +100,44 @@ class OpenAIProvider(AIProvider):
                     clean_hist.append({"role": role, "content": content})
 
         if self.base_url:
-            messages: list[dict[str, str]] = []
+            chat_image_items: list[dict[str, Any]] = []
+            for raw_p in (images or [])[:3]:
+                try:
+                    p = Path(raw_p)
+                    if p.is_file() and 0 < p.stat().st_size <= 6 * 1024 * 1024:
+                        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+                        chat_image_items.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{_guess_image_mime(p)};base64,{b64}"},
+                        })
+                except OSError:
+                    pass
+
+            messages: list[dict[str, Any]] = []
             if sys_clean:
                 messages.append({"role": "system", "content": sys_clean})
             messages.extend(clean_hist)
-            messages.append({"role": "user", "content": prompt})
+            if chat_image_items:
+                messages.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}, *chat_image_items],
+                })
+            else:
+                messages.append({"role": "user", "content": prompt})
             kwargs = {
-                "model": self.model,
+                "model": eff_model,
                 "messages": messages,
             }
             if self.max_tokens is not None:
                 kwargs["max_tokens"] = self.max_tokens
-            completion = self.client.chat.completions.create(**kwargs)
+            try:
+                completion = self.client.chat.completions.create(**kwargs)
+            except Exception:
+                if not chat_image_items:
+                    raise
+                fallback_msgs = list(messages[:-1]) + [{"role": "user", "content": prompt}]
+                kwargs["messages"] = fallback_msgs
+                completion = self.client.chat.completions.create(**kwargs)
             choices = getattr(completion, "choices", None) or []
             choice0 = choices[0] if choices else None
             msg = getattr(choice0, "message", None)
@@ -121,7 +149,7 @@ class OpenAIProvider(AIProvider):
                 if isinstance(extra, dict):
                     reasoning = extra.get("reasoning_content")
             if not text:
-                model_low = str(self.model or "").lower()
+                model_low = str(eff_model or "").lower()
                 url_low = str(self.base_url or "").lower()
                 if "qwen" in model_low or "deepinfra" in url_low or bool(reasoning):
                     try:
@@ -142,13 +170,13 @@ class OpenAIProvider(AIProvider):
                         pass
             if not text:
                 raise RuntimeError(
-                    f"{self.provider_name} ({self.model}) returned empty output "
+                    f"{self.provider_name} ({eff_model}) returned empty output "
                     f"(finish_reason={finish_reason}, reasoning_chars={len(str(reasoning or ''))}, max_tokens={self.max_tokens})"
                 )
             in_tok, out_tok = extract_sdk_usage_tokens(completion, prompt_text=prompt, output_text=text)
             return ProviderResponse(
                 text=text,
-                model=self.model,
+                model=eff_model,
                 provider=self.provider_name,
                 input_tokens=in_tok,
                 output_tokens=out_tok,
@@ -168,7 +196,7 @@ class OpenAIProvider(AIProvider):
             except OSError:
                 pass
 
-        resp_kw: dict[str, Any] = {"model": self.model}
+        resp_kw: dict[str, Any] = {"model": eff_model}
         if sys_clean:
             resp_kw["instructions"] = sys_clean
         if image_items or clean_hist:
@@ -190,12 +218,12 @@ class OpenAIProvider(AIProvider):
         response = self.client.responses.create(**resp_kw)
         out_text = getattr(response, "output_text", None) or ""
         if not out_text.strip():
-            raise RuntimeError(f"{self.provider_name} ({self.model}) returned empty output")
+            raise RuntimeError(f"{self.provider_name} ({eff_model}) returned empty output")
 
         in_tok, out_tok = extract_sdk_usage_tokens(response, prompt_text=prompt, output_text=out_text)
         return ProviderResponse(
             text=out_text,
-            model=self.model,
+            model=eff_model,
             provider=self.provider_name,
             input_tokens=in_tok,
             output_tokens=out_tok,

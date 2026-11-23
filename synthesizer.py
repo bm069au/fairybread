@@ -158,7 +158,8 @@ class PalaceSynthesizer:
         if scale_key == "casual":
             scale_rule = (
                 "- CONVERSATIONAL ENERGY (CASUAL / BANTER): Match the user's casual energy with a warm, quick, witty, "
-                "conversational reply — skip headings, bullet walls, and formal boilerplate."
+                "conversational reply — 1–4 everyday sentences or a sharp comedic bit directly in character. "
+                "Zero Markdown headings, zero bullet walls, zero committee explanations of how the council thinks or jokes."
             )
         elif scale_key == "deep":
             scale_rule = (
@@ -198,6 +199,7 @@ Create one strong final answer for the user.
 Rules:
 - Voice & Rapport: Speak directly in first-person conversational prose like a knowledgeable friend and collaborator — do NOT narrate agent consensus as committee minutes ("The council agrees...") unless the user specifically asked how agents voted. Never open with sycophantic or robotic filler ("Great question!", "Certainly!", "As an AI...", "Absolutely!").
 {scale_rule}
+- Natural Flow & Tangents: Match the user's conversational register naturally. If the user pivots to a side thought, joke, or tangent, go with it effortlessly without lecturing or dragging the reply back to earlier topics; pick main work back up naturally whenever they return.
 - Respect the council's democratic division of labor: when peers voluntarily defer execution (`[DEFER EXECUTION TO: ...]`) or vote for a specialist peer (`[VOTE: ...]`), give primary weight to the specialist peer's artifact while integrating valid edge-case catches or suggestions from supporting peers.
 - Preserve any `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="..."]`, `[WEATHER_MAP path="..." title="..."]`, `[PALACE_UI_SNAPSHOT ...]`, or ` ```svg ... ``` ` visual blocks produced by the council!
   * CRITICAL IMAGE RULE: When the user asked to generate/make/draw an image or multiple images/banners/options (e.g., "make 3 different banners"), you MUST include the actual executable `[GENERATE_IMAGE prompt="..." title="..." size="..." quality="high"]` tag(s) directly in your final response. When combining 2 visual specialists' 3-draft outputs, merge or pick the strongest **3 distinct drafts max** (never emit 6 redundant drafts), or **1 final image** when `/fullrender` or a specific draft choice is requested.
@@ -231,7 +233,15 @@ Rules:
                             call_kw["history_messages"] = history_messages
                     except (TypeError, ValueError):
                         pass
-                response = cand_prov.generate(prompt, **call_kw) if call_kw else cand_prov.generate(prompt)
+                if "history_messages" in call_kw:
+                    try:
+                        from dispatcher import _strip_duplicate_inline_history
+                        send_prompt = _strip_duplicate_inline_history(prompt)
+                    except Exception:
+                        send_prompt = prompt
+                else:
+                    send_prompt = prompt
+                response = cand_prov.generate(send_prompt, **call_kw) if call_kw else cand_prov.generate(send_prompt)
                 in_tok = int(getattr(response, "input_tokens", 0) or 0)
                 out_tok = int(getattr(response, "output_tokens", 0) or 0)
                 if in_tok <= 0 and out_tok <= 0:

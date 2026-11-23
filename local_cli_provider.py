@@ -27,6 +27,49 @@ def _grok_extra_paths(home_dir: Path | None = None) -> list[Path]:
     ]
 
 
+def _extra_cli_paths(
+    platform_key: str,
+    *,
+    home_dir: Path | None = None,
+    appdata_dir: Path | None = None,
+) -> list[Path]:
+    home = home_dir or Path.home()
+    if appdata_dir is not None:
+        appdata = appdata_dir
+    elif home_dir is not None:
+        appdata = home_dir / "AppData" / "Roaming"
+    else:
+        appdata = Path(os.environ.get("APPDATA", str(home / "AppData" / "Roaming")))
+
+    key = (platform_key or "").strip().lower()
+    if key == "grok":
+        return [
+            *_grok_extra_paths(home),
+            home / ".local" / "bin" / "grok.exe",
+            home / ".local" / "bin" / "grok",
+        ]
+    if key == "claude":
+        return [
+            home / ".local" / "bin" / "claude.exe",
+            home / ".local" / "bin" / "claude",
+            appdata / "npm" / "claude.cmd",
+            appdata / "npm" / "claude.exe",
+        ]
+    if key == "codex":
+        return [
+            appdata / "npm" / "codex.cmd",
+            appdata / "npm" / "codex.exe",
+            home / ".local" / "bin" / "codex.exe",
+        ]
+    if key == "antigravity":
+        return [
+            appdata / "npm" / "agy.cmd",
+            home / ".local" / "bin" / "agy.exe",
+            home / ".local" / "bin" / "agy.cmd",
+        ]
+    return []
+
+
 EXTERNAL_CLI_SPECS: dict[str, dict[str, Any]] = {
     "codex": {
         "provider_key": "codex_cli",
@@ -78,7 +121,12 @@ def get_mcp_depth() -> int:
         return 0
 
 
-def find_cli_binary(platform_key: str, *, home_dir: Path | None = None) -> str | None:
+def find_cli_binary(
+    platform_key: str,
+    *,
+    home_dir: Path | None = None,
+    appdata_dir: Path | None = None,
+) -> str | None:
     """Locate the local CLI executable (or SDK marker for Antigravity) if installed."""
     key = (platform_key or "").strip().lower()
     spec = EXTERNAL_CLI_SPECS.get(key)
@@ -91,7 +139,9 @@ def find_cli_binary(platform_key: str, *, home_dir: Path | None = None) -> str |
         if found:
             return found
 
-    extra_paths = _grok_extra_paths(home_dir) if key == "grok" else list(spec.get("default_extra_paths") or [])
+    extra_paths = _extra_cli_paths(key, home_dir=home_dir, appdata_dir=appdata_dir)
+    if not extra_paths:
+        extra_paths = list(spec.get("default_extra_paths") or [])
     for candidate in extra_paths:
         p = Path(candidate)
         if p.is_file():
@@ -145,7 +195,7 @@ def detect_external_platforms(
     out: dict[str, dict[str, Any]] = {}
     for pk, spec in EXTERNAL_CLI_SPECS.items():
         cfg_path, fmt = _platform_config_path(pk, home, appdata)
-        cli_path = find_cli_binary(pk, home_dir=home)
+        cli_path = find_cli_binary(pk, home_dir=home, appdata_dir=appdata)
         out[pk] = {
             "platform": pk,
             "provider_key": spec["provider_key"],

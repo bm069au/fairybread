@@ -24,6 +24,7 @@ from palace_config import (
     CONFIG_PATH,
     FAIRYBREAD_VERSION,
     PROVIDER_CATALOG,
+    get_appdata_root,
     get_palace_data_root,
     is_msix_packaged,
     load_ui_settings,

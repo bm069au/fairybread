@@ -431,12 +431,19 @@ class GuidedSetupWizardDialog(QDialog):
 
         self.pages_stack.addWidget(scroll)
 
-    def _choose_manual_setup(self):
-        self.open_manual_requested = True
+    def _mark_wizard_completed(self) -> None:
         try:
             save_ui_settings({"setup_wizard_completed": True}, config_path=self.config_path)
         except Exception:
             pass
+
+    def reject(self):
+        self._mark_wizard_completed()
+        super().reject()
+
+    def _choose_manual_setup(self):
+        self.open_manual_requested = True
+        self._mark_wizard_completed()
         self.accept()
 
     # ------------------------------------------------------------------ Page 1: Questionnaire
@@ -1006,11 +1013,15 @@ class GuidedSetupWizardDialog(QDialog):
 
         self.restore_done_btn = QPushButton("Done")
         self.restore_done_btn.setToolTip("Close Wizard and return to Fairybread")
-        self.restore_done_btn.clicked.connect(self.accept)
+        self.restore_done_btn.clicked.connect(self._finish_restore_page)
         nav.addWidget(self.restore_done_btn)
         lay.addLayout(nav)
 
         self.pages_stack.addWidget(scroll)
+
+    def _finish_restore_page(self):
+        self._mark_wizard_completed()
+        self.accept()
 
     def _sync_restore_pw_visibility(self):
         needs_pw = bool(
@@ -1217,9 +1228,13 @@ class SpendBillingDialog(QDialog):
         p_hdr.setTextFormat(Qt.TextFormat.RichText)
         p_lay.addWidget(p_hdr)
 
+        _non_billing_keys = {"email_connector"}
         stored_provs: list[str] = []
         try:
-            stored_provs = self.credential_store.list_providers()
+            stored_provs = [
+                p for p in self.credential_store.list_providers()
+                if str(p).strip().lower() not in _non_billing_keys
+            ]
         except Exception:
             stored_provs = []
 

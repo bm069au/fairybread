@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from array import array
 import base64
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 from ctypes import wintypes
@@ -14,6 +15,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -284,6 +286,10 @@ VOICE_STYLE_PRESETS: dict[str, tuple[str, str]] = {
     ),
 }
 
+VOICE_AVATAR_MODES = ("no_avatar", "windowed", "fullscreen")
+VOICE_AVATAR_SHAPES = ("neural_core", "tesseract", "astrolabe", "torus_knot", "swarm", "mandala")
+VOICE_AVATAR_PALETTES = ("tulsa_cyan", "jarvis_amber", "emerald_holo", "nebula_violet", "theme_accent", "auto_ai")
+
 DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "tts_engine": "auto",
     "tts_fallback_engine": "auto",
@@ -309,6 +315,11 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "auto_speak_responses": False,
     "voice_companion_enabled": True,
     "spoken_summary_for_background": True,
+    "voice_avatar_mode": "no_avatar",
+    "voice_avatar_shape": "neural_core",
+    "voice_avatar_palette": "tulsa_cyan",
+    "voice_avatar_always_on_top": True,
+    "voice_avatar_show_activity": True,
 }
 
 _WAVE_BAR_CHARS = "▁▂▃▄▅▆▇█"
@@ -338,6 +349,129 @@ _LAST_TTS_STATE: dict[str, Any] = {
 }
 _LIVE_VOLUME_PERCENT: int | None = None
 _LIVE_VOLUME_BY_PATH: dict[str, int] = {}
+
+_TTS_AUDIO_LOCK = threading.Lock()
+_TTS_AUDIO_FRAMES: deque[tuple[float, float, tuple[float, ...]]] = deque(maxlen=240)
+
+
+def _compute_pcm_rms_and_bands(samples_bytes: bytes, sample_rate: int = 24000) -> tuple[float, tuple[float, ...]]:
+    """Compute smoothed RMS energy (0..1) and 16 logarithmic FFT frequency bands (0..1) from mono int16 PCM."""
+    even_len = len(samples_bytes) - (len(samples_bytes) % 2)
+    if even_len < 4:
+        return 0.0, (0.0,) * 16
+    sr = max(8000, int(sample_rate or 24000))
+    raw_view = memoryview(samples_bytes)[:even_len]
+    try:
+        import numpy as np  # type: ignore
+
+        sig = np.frombuffer(raw_view, dtype="<i2").astype(np.float32) / 32768.0
+        n = sig.size
+        if n < 8:
+            return 0.0, (0.0,) * 16
+        rms = float(np.sqrt(np.mean(sig * sig)))
+        win = np.hanning(n).astype(np.float32)
+        spec = np.abs(np.fft.rfft(sig * win)) / max(1.0, float(n) * 0.5)
+        freqs = np.fft.rfftfreq(n, d=1.0 / float(sr))
+        f_hi = min(6500.0, float(sr) * 0.45)
+        edges = np.geomspace(80.0, max(160.0, f_hi), 17)
+        bands: list[float] = []
+        for idx in range(16):
+            lo_f = float(edges[idx])
+            hi_f = float(edges[idx + 1])
+            mask = (freqs >= lo_f) & (freqs < hi_f)
+            if np.any(mask):
+                energy = float(np.mean(spec[mask]))
+            else:
+                nearest = int(np.argmin(np.abs(freqs - (lo_f + hi_f) * 0.5)))
+                energy = float(spec[nearest])
+            norm = min(1.0, math.log1p(energy * 26.0) / 3.1)
+            bands.append(norm)
+        rms_norm = min(1.0, (rms * 3.4) ** 0.78) if rms > 1e-6 else 0.0
+        return rms_norm, tuple(bands)
+    except Exception:
+        vals = array("h")
+        vals.frombytes(bytes(raw_view))
+        if sys.byteorder != "little":
+            vals.byteswap()
+        n = len(vals)
+        if n == 0:
+            return 0.0, (0.0,) * 16
+        sum_sq = sum((v / 32768.0) ** 2 for v in vals)
+        rms = math.sqrt(sum_sq / n)
+        rms_norm = min(1.0, (rms * 3.4) ** 0.78) if rms > 1e-6 else 0.0
+        bands = tuple(min(1.0, rms_norm * (0.95 - 0.04 * i)) for i in range(16))
+        return rms_norm, bands
+
+
+def record_tts_pcm_telemetry(
+    pcm_bytes: bytes,
+    sample_rate: int = 24000,
+    delay_sec: float = 0.0,
+    *,
+    base_ts: float | None = None,
+) -> None:
+    """Slice played 16-bit mono PCM into ~21ms frames aligned to speaker hardware playback time."""
+    if not pcm_bytes or len(pcm_bytes) < 32:
+        return
+    sr = max(8000, int(sample_rate or 24000))
+    even_len = len(pcm_bytes) - (len(pcm_bytes) % 2)
+    if even_len < 32:
+        return
+    sub_samples = max(256, int(sr * 0.021))
+    sub_bytes = max(512, min(even_len, sub_samples * 2))
+    t0 = (float(base_ts) if base_ts is not None else time.monotonic()) + max(0.0, float(delay_sec))
+    sub_dur = float(sub_bytes) / float(max(1, sr * 2))
+    frames: list[tuple[float, float, tuple[float, ...]]] = []
+    pos = 0
+    sub_idx = 0
+    while pos + 16 <= even_len and sub_idx < 8:
+        chunk = pcm_bytes[pos : min(even_len, pos + sub_bytes)]
+        rms_val, bands = _compute_pcm_rms_and_bands(chunk, sr)
+        frames.append((t0 + sub_idx * sub_dur, rms_val, bands))
+        pos += sub_bytes
+        sub_idx += 1
+    if frames:
+        with _TTS_AUDIO_LOCK:
+            _TTS_AUDIO_FRAMES.extend(frames)
+
+
+def clear_tts_audio_telemetry() -> None:
+    """Clear queued TTS FFT telemetry frames (e.g., on stop or barge-in)."""
+    with _TTS_AUDIO_LOCK:
+        _TTS_AUDIO_FRAMES.clear()
+
+
+def get_tts_audio_telemetry(now_ts: float | None = None) -> dict[str, Any]:
+    """Return latest playback-aligned FFT spectrum and RMS amplitude for voice avatar animation."""
+    cur_ts = float(now_ts) if now_ts is not None else time.monotonic()
+    best_frame: tuple[float, float, tuple[float, ...]] | None = None
+    with _TTS_AUDIO_LOCK:
+        while _TTS_AUDIO_FRAMES and (cur_ts - _TTS_AUDIO_FRAMES[0][0]) > 0.35:
+            _TTS_AUDIO_FRAMES.popleft()
+        for fr in _TTS_AUDIO_FRAMES:
+            if fr[0] <= cur_ts:
+                best_frame = fr
+            else:
+                break
+        if best_frame is not None and (cur_ts - best_frame[0]) <= 0.22:
+            return {
+                "speaking": True,
+                "rms": float(best_frame[1]),
+                "bands": list(best_frame[2]),
+                "source": "pcm",
+            }
+
+    with _TTS_LOCK:
+        sapi_speaking = bool(_TTS_SPEAKING and _ACTIVE_TTS_PROC is not None)
+    if sapi_speaking:
+        t = cur_ts
+        env = max(0.0, 0.38 + 0.24 * math.sin(t * 9.5) + 0.14 * math.sin(t * 21.0))
+        bands = [
+            max(0.0, min(1.0, env * (0.88 - 0.03 * i + 0.16 * math.sin(t * (7.0 + i * 1.1)))))
+            for i in range(16)
+        ]
+        return {"speaking": True, "rms": min(1.0, env), "bands": bands, "source": "sapi5"}
+    return {"speaking": False, "rms": 0.0, "bands": [0.0] * 16, "source": "idle"}
 
 
 def get_last_tts_status() -> dict[str, Any]:
@@ -533,6 +667,16 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["voice_companion_enabled"] = bool(raw["voice_companion_enabled"])
     if "spoken_summary_for_background" in raw:
         merged["spoken_summary_for_background"] = bool(raw["spoken_summary_for_background"])
+    av_mode = str(raw.get("voice_avatar_mode") or DEFAULT_VOICE_SETTINGS["voice_avatar_mode"]).strip().lower()
+    merged["voice_avatar_mode"] = av_mode if av_mode in VOICE_AVATAR_MODES else "no_avatar"
+    av_shape = str(raw.get("voice_avatar_shape") or DEFAULT_VOICE_SETTINGS["voice_avatar_shape"]).strip().lower()
+    merged["voice_avatar_shape"] = av_shape if av_shape in VOICE_AVATAR_SHAPES else "neural_core"
+    av_pal = str(raw.get("voice_avatar_palette") or DEFAULT_VOICE_SETTINGS["voice_avatar_palette"]).strip().lower()
+    merged["voice_avatar_palette"] = av_pal if av_pal in VOICE_AVATAR_PALETTES else "tulsa_cyan"
+    if "voice_avatar_always_on_top" in raw:
+        merged["voice_avatar_always_on_top"] = bool(raw["voice_avatar_always_on_top"])
+    if "voice_avatar_show_activity" in raw:
+        merged["voice_avatar_show_activity"] = bool(raw["voice_avatar_show_activity"])
     return merged
 
 
@@ -588,6 +732,14 @@ def save_voice_settings(
     current["auto_speak_responses"] = bool(current.get("auto_speak_responses", False))
     current["voice_companion_enabled"] = bool(current.get("voice_companion_enabled", True))
     current["spoken_summary_for_background"] = bool(current.get("spoken_summary_for_background", True))
+    av_mode = str(current.get("voice_avatar_mode") or "no_avatar").strip().lower()
+    current["voice_avatar_mode"] = av_mode if av_mode in VOICE_AVATAR_MODES else "no_avatar"
+    av_shape = str(current.get("voice_avatar_shape") or "neural_core").strip().lower()
+    current["voice_avatar_shape"] = av_shape if av_shape in VOICE_AVATAR_SHAPES else "neural_core"
+    av_pal = str(current.get("voice_avatar_palette") or "tulsa_cyan").strip().lower()
+    current["voice_avatar_palette"] = av_pal if av_pal in VOICE_AVATAR_PALETTES else "tulsa_cyan"
+    current["voice_avatar_always_on_top"] = bool(current.get("voice_avatar_always_on_top", True))
+    current["voice_avatar_show_activity"] = bool(current.get("voice_avatar_show_activity", True))
 
     data["voice_settings"] = current
     _write_raw_config(data, config_path)
@@ -1720,6 +1872,12 @@ class _WaveOutStream:
                                 self._inflight.append((buf, hdr))
                                 total_written += len(payload)
                                 wrote_slice = True
+                                try:
+                                    slice_dur = len(payload) / float(max(1, self.sample_rate * 2))
+                                    delay_sec = max(0.0, (len(self._inflight) - 1) * slice_dur)
+                                    record_tts_pcm_telemetry(payload, self.sample_rate, delay_sec)
+                                except Exception:
+                                    pass
                                 break
                             _log_voice_diagnostic(f"waveOutWrite failed rc={rc_wr}")
                             try:
@@ -1755,6 +1913,7 @@ class _WaveOutStream:
             time.sleep(0.012)
 
     def stop(self) -> None:
+        clear_tts_audio_telemetry()
         with self._lock:
             if self._closed:
                 return
@@ -2340,6 +2499,7 @@ def synthesize_speech_pcm(
 def stop_speaking() -> None:
     """Immediately stop any active neural or system speech playback."""
     global _SPEECH_GEN, _ACTIVE_CANCEL_EVENT, _ACTIVE_WAVEOUT, _ACTIVE_TTS_PROC, _TTS_SPEAKING, _TTS_LAST_END_MONO
+    clear_tts_audio_telemetry()
     with _TTS_LOCK:
         _SPEECH_GEN += 1
         was_speaking = _TTS_SPEAKING or (_ACTIVE_TTS_PROC is not None) or (_ACTIVE_WAVEOUT is not None)

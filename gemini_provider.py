@@ -43,7 +43,9 @@ class GeminiProvider(AIProvider):
         images: list[Path | str] | None = None,
         system_prompt: str = "",
         history_messages: list[dict[str, str]] | None = None,
+        model_override: str | None = None,
     ) -> ProviderResponse:
+        eff_model = (model_override or "").strip() or self.model
         valid_parts: list[Any] = []
         for raw_p in (images or [])[:3]:
             try:
@@ -62,7 +64,7 @@ class GeminiProvider(AIProvider):
         hist_prefix = ""
         if history_messages and isinstance(history_messages, list):
             hist_lines = []
-            for m in history_messages[-12:]:
+            for m in history_messages[-64:]:
                 r = str(m.get("role") or "user").strip().capitalize()
                 c = str(m.get("content") or "").strip()
                 if c:
@@ -86,22 +88,22 @@ class GeminiProvider(AIProvider):
             )
             try:
                 resp = self.client.models.generate_content(
-                    model=self.model,
+                    model=eff_model,
                     contents=full_contents,
                     **cfg_kw,
                 )
             except TypeError:
                 resp = self.client.models.generate_content(
-                    model=self.model,
+                    model=eff_model,
                     contents=[*valid_parts, prompt],
                 )
             txt = getattr(resp, "text", None) or ""
             if not txt.strip():
-                raise RuntimeError(f"gemini ({self.model}) returned empty multimodal response")
+                raise RuntimeError(f"gemini ({eff_model}) returned empty multimodal response")
             in_tok, out_tok = extract_sdk_usage_tokens(resp, prompt_text=prompt, output_text=txt)
             return ProviderResponse(
                 text=txt,
-                model=self.model,
+                model=eff_model,
                 provider="gemini",
                 input_tokens=in_tok,
                 output_tokens=out_tok,
@@ -110,7 +112,7 @@ class GeminiProvider(AIProvider):
         if not sys_clean and not hist_prefix:
             try:
                 interaction = self.client.interactions.create(
-                    model=self.model,
+                    model=eff_model,
                     input=prompt
                 )
                 out_txt = getattr(interaction, "output_text", None) or ""
@@ -119,7 +121,7 @@ class GeminiProvider(AIProvider):
                 if not hasattr(self.client, "models"):
                     raise
                 resp = self.client.models.generate_content(
-                    model=self.model,
+                    model=eff_model,
                     contents=prompt,
                 )
                 out_txt = getattr(resp, "text", None) or ""
@@ -128,31 +130,31 @@ class GeminiProvider(AIProvider):
             if hasattr(self.client, "models"):
                 try:
                     resp = self.client.models.generate_content(
-                        model=self.model,
+                        model=eff_model,
                         contents=effective_prompt if "config" in cfg_kw else f"SYSTEM INSTRUCTIONS:\n{sys_clean}\n\n{effective_prompt}",
                         **cfg_kw,
                     )
                 except TypeError:
                     resp = self.client.models.generate_content(
-                        model=self.model,
+                        model=eff_model,
                         contents=f"{sys_clean}\n\n{effective_prompt}".strip(),
                     )
                 out_txt = getattr(resp, "text", None) or ""
                 usage_src = resp
             else:
                 interaction = self.client.interactions.create(
-                    model=self.model,
+                    model=eff_model,
                     input=f"{sys_clean}\n\n{effective_prompt}".strip() if sys_clean else effective_prompt,
                 )
                 out_txt = getattr(interaction, "output_text", None) or ""
                 usage_src = interaction
         if not out_txt.strip():
-            raise RuntimeError(f"gemini ({self.model}) returned empty output")
+            raise RuntimeError(f"gemini ({eff_model}) returned empty output")
 
         in_tok, out_tok = extract_sdk_usage_tokens(usage_src, prompt_text=prompt, output_text=out_txt)
         return ProviderResponse(
             text=out_txt,
-            model=self.model,
+            model=eff_model,
             provider="gemini",
             input_tokens=in_tok,
             output_tokens=out_tok,

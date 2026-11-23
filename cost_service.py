@@ -19,18 +19,24 @@ from palace_config import PROVIDER_TOKEN_RATES_PER_1M, get_appdata_root
 
 # Per-model approximate (input_usd_per_1m, output_usd_per_1m) rates
 MODEL_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
+    "gemini-4-carbon": (2.00, 10.00),
     "gemini-4-neon": (0.50, 3.00),
     "gemini-4-hydrogen": (0.15, 0.60),
     "gemini-2.5-pro": (1.25, 10.00),
     "gemini-2.5-flash-lite": (0.075, 0.30),
     "gemini-2.5-flash": (0.15, 0.60),
+    "gpt-5.6-sol": (1.50, 10.00),
+    "gpt-5.6-luna": (0.30, 2.00),
+    "gpt-5.5": (2.00, 12.00),
     "gpt-5.4": (2.50, 15.00),
+    "gpt-5.4-mini": (0.25, 2.00),
     "gpt-5.2": (1.75, 14.00),
     "gpt-5-mini": (0.25, 2.00),
     "gpt-5-nano": (0.05, 0.40),
     "gpt-5": (1.25, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
+    "claude-sonnet-5.5": (3.00, 15.00),
     "deepseek-reasoner": (0.55, 2.19),
     "deepseek-chat": (0.27, 1.10),
     "qwen/qwen3.8-27b": (0.15, 0.60),
@@ -75,10 +81,16 @@ STT_COST_PER_MINUTE_USD: dict[str, float] = {
 }
 
 IMAGE_COST_PER_RENDER_USD: dict[str, float] = {
+    "gpt-image-2.6-sunburst": 0.09,
+    "gpt-image-2.6-flare": 0.04,
+    "chatgpt-image-latest": 0.09,
+    "openai/gpt-5.4-image-2": 0.09,
+    "openai/gpt-5-image-mini": 0.04,
     "gemini-3-pro-image": 0.06,
     "gemini-3.1-flash-image": 0.03,
     "gpt-image-2": 0.08,
     "flux-1-dev": 0.025,
+    "flux-1-schnell": 0.003,
 }
 
 _LISTENER_LOCK = threading.RLock()

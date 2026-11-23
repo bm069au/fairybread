@@ -218,6 +218,7 @@ def write_pyinstaller_spec(
 
     hidden = [
         "setup_wizard",
+        "voice_visualizer",
         "cerebras.cloud.sdk",
         "PIL.Image",
         "PIL.ImageDraw",

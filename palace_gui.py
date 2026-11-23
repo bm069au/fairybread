@@ -16,7 +16,7 @@ from typing import Any
 import webbrowser
 
 from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QRect, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QCursor, QFont, QFontMetrics, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 try:
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
 except Exception:
@@ -52,12 +52,16 @@ from memory_service import MemoryService
 from palace_config import (
     COMMUNITY_CONTRIBUTORS,
     CONFIG_PATH,
+    CONTEXT_DEPTH_CHOICES,
     DEFAULT_AI_SQUADS,
+    DRAFT_IMAGE_ENGINE_CHOICES,
+    GRAPHICS_PIPELINE_MODES,
     IDLE_CREDIT_LIMIT_CHOICES,
     IDLE_DURATION_CHOICES,
     IDLE_TOKEN_LIMIT_CHOICES,
     IS_DEVELOPER_EDITION,
     OPENROUTER_PRESET_TIERS,
+    PRIMARY_IMAGE_ENGINE_CHOICES,
     PROVIDER_CATALOG,
     get_app_install_dir,
     get_appdata_root,
@@ -67,6 +71,7 @@ from palace_config import (
     is_msix_packaged,
     load_agent_defaults,
     load_ai_squads,
+    load_graphics_settings,
     load_idle_settings,
     load_mission_ethics,
     load_openrouter_hub_settings,
@@ -76,6 +81,7 @@ from palace_config import (
     load_ui_settings,
     save_agent_defaults,
     save_ai_squads,
+    save_graphics_settings,
     save_idle_settings,
     save_mission_ethics,
     save_openrouter_hub_settings,
@@ -137,6 +143,56 @@ def format_time_only(raw_iso: str | None) -> str:
         return dt.strftime("%I:%M %p").lstrip("0")
     except Exception:
         return str(raw_iso)[11:16]
+
+
+_NON_AI_CREDENTIAL_KEYS: frozenset[str] = frozenset({
+    "email_connector",
+    "cartesia",
+    "elevenlabs",
+    "deepgram",
+})
+
+
+def has_any_configured_ai_agents(
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> bool:
+    """Return True if at least one AI agent (API key, OpenRouter seat, local CLI council member, or enabled Ollama) is configured."""
+    creds = credential_store if credential_store is not None else CredentialStore()
+    try:
+        cfgs = load_provider_configs(config_path)
+    except Exception:
+        cfgs = {}
+    cfgs_lower = {str(k).strip().lower(): v for k, v in (cfgs or {}).items() if isinstance(v, dict)}
+
+    try:
+        from provider_loader import load_configured_providers
+        loaded = load_configured_providers(
+            creds,
+            provider_configs=cfgs,
+            config_path=config_path,
+            include_local_cli=True,
+        )
+        if bool(loaded):
+            return True
+    except Exception:
+        pass
+
+    try:
+        stored = [str(p).strip().lower() for p in creds.list_providers()]
+    except Exception:
+        stored = []
+    for pname in stored:
+        if pname in _NON_AI_CREDENTIAL_KEYS:
+            continue
+        if pname in PROVIDER_CATALOG or pname in cfgs_lower:
+            return True
+
+    ollama_cfg = cfgs_lower.get("ollama")
+    if isinstance(ollama_cfg, dict) and bool(ollama_cfg.get("enabled", False)):
+        return True
+
+    return False
 
 
 def _is_light_theme(t_dict: dict) -> bool:
@@ -1353,9 +1409,17 @@ class ManageAIsDialog(QDialog):
         self._bridge_appdata_dir = bridge_appdata_dir
         self._settings_mic_session = None
         self._voice_dlg_closed = False
+        self._init_complete = False
+        self._saved_any_change = False
+        self._autosave_dirty = False
+        self._screen_clamped_once = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(250)
+        self._autosave_timer.timeout.connect(self._flush_autosave)
         self.setWindowTitle('Fairybread Settings')
         self.resize(960, 720)
-        self.setMinimumSize(840, 620)
+        self.setMinimumSize(760, 460)
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 16)
@@ -1369,7 +1433,7 @@ class ManageAIsDialog(QDialog):
             self.nav_list.addItem(page_name)
         root_layout.addWidget(self.nav_list)
 
-        # Right content area + bottom buttons
+        # Right content area + bottom auto-save bar
         right_col = QVBoxLayout()
         self.pages = QStackedWidget()
         right_col.addWidget(self.pages, 1)
@@ -1386,18 +1450,21 @@ class ManageAIsDialog(QDialog):
         self._build_idle_mode_page()
         self._build_permissions_page()
         self._build_backup_restore_page()
+        self._wrap_pages_in_scroll_areas()
         self._polish_settings_forms_and_combos()
+        self._install_page_wheel_guards()
 
         buttons = QHBoxLayout()
+        self._autosave_status_label = QLabel('✓ Changes save automatically')
+        self._autosave_status_label.setStyleSheet('color: #90d7c1; font-size: 12px; font-weight: 600;')
+        buttons.addWidget(self._autosave_status_label)
         buttons.addStretch()
-        save_btn = QPushButton('Save Settings')
-        save_btn.setToolTip('Save all changes across all Settings tabs and close')
-        save_btn.clicked.connect(self.save_settings)
-        cancel_btn = QPushButton('Close')
-        cancel_btn.setToolTip('Close Settings window')
-        cancel_btn.clicked.connect(self.reject)
-        buttons.addWidget(save_btn)
-        buttons.addWidget(cancel_btn)
+        done_btn = QPushButton('Done')
+        done_btn.setDefault(True)
+        done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        done_btn.setToolTip('Close Settings (all changes are saved automatically)')
+        done_btn.clicked.connect(self.save_settings)
+        buttons.addWidget(done_btn)
         right_col.addLayout(buttons)
 
         root_layout.addLayout(right_col, 1)
@@ -1433,6 +1500,147 @@ class ManageAIsDialog(QDialog):
             else self.SETTINGS_PAGES.index('AI Providers')
         )
         self.nav_list.setCurrentRow(target_idx)
+        self._fit_to_available_screen()
+        self._wire_autosave_signals()
+        self._init_complete = True
+
+    def _wrap_pages_in_scroll_areas(self):
+        """Wrap non-scrolled Settings pages in QScrollArea so smaller displays can scroll cleanly."""
+        widgets = [self.pages.widget(i) for i in range(self.pages.count())]
+        for idx, pg in enumerate(widgets):
+            if pg is None or isinstance(pg, QScrollArea) or pg.findChild(QScrollArea) is not None:
+                continue
+            self.pages.removeWidget(pg)
+            sa = QScrollArea()
+            sa.setObjectName('settingsPageScroll')
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(QFrame.Shape.NoFrame)
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            sa.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+            pg.setMinimumWidth(0)
+            sa.setWidget(pg)
+            self.pages.insertWidget(idx, sa)
+
+    def _install_page_wheel_guards(self):
+        if getattr(self, '_wheel_guard', None) is None:
+            self._wheel_guard = _NoScrollWheelFilter(self)
+        for cls in (QComboBox, QSpinBox, QSlider):
+            for widget in self.pages.findChildren(cls):
+                try:
+                    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                    widget.removeEventFilter(self._wheel_guard)
+                    widget.installEventFilter(self._wheel_guard)
+                except Exception:
+                    pass
+
+    def _resolve_available_screen_geometry(self) -> QRect | None:
+        parent = self.parent()
+        scr = None
+        if parent is not None:
+            try:
+                if hasattr(parent, 'screen'):
+                    scr = parent.screen()
+                if scr is None and hasattr(parent, 'frameGeometry'):
+                    scr = QGuiApplication.screenAt(parent.frameGeometry().center())
+            except Exception:
+                scr = None
+        if scr is None:
+            try:
+                scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+            except Exception:
+                scr = None
+        return scr.availableGeometry() if scr is not None else None
+
+    def _fit_to_available_screen(self, avail_override: QRect | None = None, *, only_if_overflow: bool = False):
+        avail = avail_override if avail_override is not None else self._resolve_available_screen_geometry()
+        if avail is None or not avail.isValid():
+            return
+        frame_h = 46
+        frame_w = 24
+        max_h = max(460, avail.height() - frame_h)
+        max_w = max(760, avail.width() - frame_w)
+        keep_offscreen_w = (avail_override is None and os.environ.get('QT_QPA_PLATFORM') == 'offscreen')
+
+        if only_if_overflow:
+            cur_w, cur_h = self.width(), self.height()
+            new_h = min(cur_h, max_h) if cur_h > max_h else cur_h
+            if not keep_offscreen_w and avail.width() >= 900 and cur_w > max_w:
+                new_w = max_w
+            else:
+                new_w = cur_w
+            if (new_w, new_h) != (cur_w, cur_h):
+                self.resize(new_w, new_h)
+        else:
+            target_h = min(720, max_h)
+            target_w = 960 if keep_offscreen_w else min(960, max_w)
+            if target_h < self.minimumHeight() or target_w < self.minimumWidth():
+                self.setMinimumSize(min(760, target_w), min(460, target_h))
+            self.resize(target_w, target_h)
+
+        w_now, h_now = self.width(), self.height()
+        x = avail.left() + max(8, (avail.width() - w_now) // 2)
+        if not keep_offscreen_w or avail.width() >= w_now:
+            x = min(x, max(avail.left() + 8, avail.right() - w_now - 12))
+        y = avail.top() + max(6, (avail.height() - h_now - 38) // 2)
+        max_y = max(avail.top() + 6, avail.bottom() - h_now - 38)
+        y = min(y, max_y)
+        self.move(x, y)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not getattr(self, '_screen_clamped_once', False):
+            self._screen_clamped_once = True
+            self._fit_to_available_screen(only_if_overflow=True)
+
+    def _schedule_autosave(self, *_args):
+        if (
+            not getattr(self, '_init_complete', False)
+            or getattr(self, '_loading_provider_fields', False)
+            or getattr(self, '_loading_squad_ui', False)
+            or getattr(self, '_voice_dlg_closed', False)
+        ):
+            return
+        self._autosave_dirty = True
+        if hasattr(self, '_autosave_status_label'):
+            self._autosave_status_label.setText('● Saving…')
+        if hasattr(self, '_autosave_timer'):
+            self._autosave_timer.start()
+
+    def _flush_autosave(self):
+        tmr = getattr(self, '_autosave_timer', None)
+        if tmr is not None and tmr.isActive():
+            tmr.stop()
+        if getattr(self, '_autosave_dirty', False):
+            self._persist_all_settings(show_warnings=False)
+
+    def _wire_autosave_signals(self):
+        excluded = {
+            getattr(self, 'provider_combo', None),
+            getattr(self, 'mic_live_test_btn', None),
+            getattr(self, 'api_key_edit', None),
+            getattr(self, 'excl_path_input', None),
+        }
+        for chk in self.pages.findChildren(QCheckBox):
+            if chk not in excluded:
+                chk.toggled.connect(self._schedule_autosave)
+        for cb in self.pages.findChildren(QComboBox):
+            if cb not in excluded:
+                cb.currentIndexChanged.connect(self._schedule_autosave)
+        for sp in self.pages.findChildren(QSpinBox):
+            if sp not in excluded:
+                sp.valueChanged.connect(self._schedule_autosave)
+        for sl in self.pages.findChildren(QSlider):
+            if sl not in excluded:
+                sl.valueChanged.connect(self._schedule_autosave)
+        for le in self.pages.findChildren(QLineEdit):
+            if le in excluded or le.isReadOnly():
+                continue
+            le.textEdited.connect(self._schedule_autosave)
+            le.editingFinished.connect(self._schedule_autosave)
+        for te in self.pages.findChildren(QTextEdit):
+            if te in excluded or te.isReadOnly():
+                continue
+            te.textChanged.connect(self._schedule_autosave)
 
     def _flush_live_volume_save(self):
         tmr = getattr(self, '_vol_save_timer', None)
@@ -1463,11 +1671,15 @@ class ManageAIsDialog(QDialog):
             self.mic_live_test_btn.blockSignals(False)
 
     def reject(self):
+        if getattr(self, '_autosave_dirty', False):
+            self._flush_autosave()
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         super().reject()
 
     def closeEvent(self, event):
+        if getattr(self, '_autosave_dirty', False):
+            self._flush_autosave()
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         super().closeEvent(event)
@@ -1722,10 +1934,12 @@ class ManageAIsDialog(QDialog):
                 for rr in range(self.excl_table.rowCount()):
                     if self.excl_table.cellWidget(rr, 2) is btn:
                         self.excl_table.removeRow(rr)
+                        self._schedule_autosave()
                         break
 
             rm_btn.clicked.connect(_remove_this)
             self.excl_table.setCellWidget(row, 2, rm_btn)
+            self._schedule_autosave()
 
         self._add_exclusion_row = _add_exclusion_row
 
@@ -1929,6 +2143,65 @@ class ManageAIsDialog(QDialog):
         )
         p_lay.addWidget(self.ad_inline_status_check)
         lay.addWidget(perf_card)
+
+        # Card 3: Graphics & Image Generation (Primary, Draft & Pipeline Mode)
+        g_cfg = load_graphics_settings(self.config_path)
+        gfx_card = QFrame()
+        g_lay = QVBoxLayout(gfx_card)
+        _style_settings_card(gfx_card, 'agentDefaultsGraphicsCard', g_lay, pad_h=12, pad_v=12)
+        g_lay.setSpacing(8)
+        g_hdr = QLabel('<b>🎨 Graphics &amp; Image Generation</b>')
+        g_hdr.setTextFormat(Qt.TextFormat.RichText)
+        g_lay.addWidget(g_hdr)
+
+        form_g = QFormLayout()
+        self.ad_primary_img_combo = QComboBox()
+        self.ad_primary_img_combo.setToolTip(
+            'High-resolution image engine used for finished artwork, banners, and image edits'
+        )
+        for eng_id, eng_lbl in PRIMARY_IMAGE_ENGINE_CHOICES:
+            self.ad_primary_img_combo.addItem(eng_lbl, eng_id)
+        cur_prim_img = str(g_cfg.get('primary_image_engine') or 'gpt-image-2.6-sunburst').strip().lower()
+        p_img_idx = self.ad_primary_img_combo.findData(cur_prim_img)
+        if p_img_idx < 0 and cur_prim_img:
+            self.ad_primary_img_combo.addItem(f'Custom ({cur_prim_img})', cur_prim_img)
+            p_img_idx = self.ad_primary_img_combo.count() - 1
+        if p_img_idx >= 0:
+            self.ad_primary_img_combo.setCurrentIndex(p_img_idx)
+        form_g.addRow('Primary Image Engine:', self.ad_primary_img_combo)
+
+        self.ad_draft_img_combo = QComboBox()
+        self.ad_draft_img_combo.setToolTip(
+            'Fast, low-cost image engine used for multi-draft previews (before rendering full-res master)'
+        )
+        for eng_id, eng_lbl in DRAFT_IMAGE_ENGINE_CHOICES:
+            self.ad_draft_img_combo.addItem(eng_lbl, eng_id)
+        cur_draft_img = str(g_cfg.get('draft_image_engine') or 'gpt-image-2.6-flare').strip().lower()
+        d_img_idx = self.ad_draft_img_combo.findData(cur_draft_img)
+        if d_img_idx < 0 and cur_draft_img:
+            self.ad_draft_img_combo.addItem(f'Custom ({cur_draft_img})', cur_draft_img)
+            d_img_idx = self.ad_draft_img_combo.count() - 1
+        if d_img_idx >= 0:
+            self.ad_draft_img_combo.setCurrentIndex(d_img_idx)
+        form_g.addRow('Draft / Fast Image Engine:', self.ad_draft_img_combo)
+
+        self.ad_graphics_pipe_combo = QComboBox()
+        self.ad_graphics_pipe_combo.setToolTip(
+            'Controls how image requests flow: Direct straight to the image model, Single Vision Optimizer, or 2-AI Prompt Duo'
+        )
+        for pm_id, pm_lbl in GRAPHICS_PIPELINE_MODES:
+            self.ad_graphics_pipe_combo.addItem(pm_lbl, pm_id)
+        cur_pm = str(g_cfg.get('pipeline_mode') or 'single_vision').strip().lower()
+        pm_idx = self.ad_graphics_pipe_combo.findData(cur_pm)
+        if pm_idx >= 0:
+            self.ad_graphics_pipe_combo.setCurrentIndex(pm_idx)
+        form_g.addRow('Graphics Pipeline Mode:', self.ad_graphics_pipe_combo)
+        g_lay.addLayout(form_g)
+
+        self.ad_primary_img_combo.currentIndexChanged.connect(self._schedule_autosave)
+        self.ad_draft_img_combo.currentIndexChanged.connect(self._schedule_autosave)
+        self.ad_graphics_pipe_combo.currentIndexChanged.connect(self._schedule_autosave)
+        lay.addWidget(gfx_card)
 
         organic_hint = QLabel(
             '<span style="color:#8b949e; font-size:11.5px;">'
@@ -2694,6 +2967,11 @@ class ManageAIsDialog(QDialog):
                 'voice_companion_enabled': self.voice_companion_check.isChecked(),
                 'spoken_summary_for_background': self.spoken_summary_check.isChecked(),
                 'auto_speak_responses': self.auto_speak_check.isChecked(),
+                'voice_avatar_mode': str(self.voice_avatar_mode_combo.currentData() or 'no_avatar') if hasattr(self, 'voice_avatar_mode_combo') else 'no_avatar',
+                'voice_avatar_shape': str(self.voice_avatar_shape_combo.currentData() or 'neural_core') if hasattr(self, 'voice_avatar_shape_combo') else 'neural_core',
+                'voice_avatar_palette': str(self.voice_avatar_palette_combo.currentData() or 'tulsa_cyan') if hasattr(self, 'voice_avatar_palette_combo') else 'tulsa_cyan',
+                'voice_avatar_always_on_top': bool(self.voice_avatar_on_top_check.isChecked()) if hasattr(self, 'voice_avatar_on_top_check') else True,
+                'voice_avatar_show_activity': bool(self.voice_avatar_activity_check.isChecked()) if hasattr(self, 'voice_avatar_activity_check') else True,
             }
 
         self._collect_voice_payload = _collect_voice_payload
@@ -2923,6 +3201,72 @@ class ManageAIsDialog(QDialog):
             _guard_w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             _guard_w.installEventFilter(self._wheel_guard)
         lay.addWidget(mic_card)
+
+        # --- SECTION 4: OPTIONAL 3D GEOMETRIC VOICE AVATAR ---
+        from voice_visualizer import AVATAR_MODES, AVATAR_PALETTES, AVATAR_SHAPES
+
+        avatar_card = QFrame()
+        av_lay = QVBoxLayout(avatar_card)
+        _style_settings_card(avatar_card, 'voiceAvatarCard', av_lay, pad_h=10, pad_v=10)
+        av_lay.setSpacing(8)
+        av_hdr = QLabel('<b>◎ 4. Voice Avatar Visualizer (Optional)</b>')
+        av_hdr.setTextFormat(Qt.TextFormat.RichText)
+        av_lay.addWidget(av_hdr)
+        av_sub = QLabel(
+            'Optional glowing 3D geometric orb that pulses with AI speech in real time. '
+            'Defaults to Off (No Avatar). In Full Screen, move your cursor to the bottom edge for controls or press Esc to return to chat.'
+        )
+        av_sub.setObjectName('muted')
+        av_sub.setWordWrap(True)
+        av_lay.addWidget(av_sub)
+
+        av_form = QFormLayout()
+        self.voice_avatar_mode_combo = QComboBox()
+        self.voice_avatar_mode_combo.setToolTip('Choose whether Live Voice shows No Avatar (Off), a floating Windowed orb, or a Full Screen stage')
+        for mid, mlbl in AVATAR_MODES:
+            self.voice_avatar_mode_combo.addItem(mlbl, mid)
+        av_m_idx = self.voice_avatar_mode_combo.findData(str(v_cfg.get('voice_avatar_mode') or 'no_avatar'))
+        if av_m_idx >= 0:
+            self.voice_avatar_mode_combo.setCurrentIndex(av_m_idx)
+        av_form.addRow('Display Mode:', self.voice_avatar_mode_combo)
+
+        self.voice_avatar_shape_combo = QComboBox()
+        self.voice_avatar_shape_combo.setToolTip('Choose the 3D geometric hologram shape displayed while speaking and listening')
+        for sid, slbl in AVATAR_SHAPES:
+            self.voice_avatar_shape_combo.addItem(slbl, sid)
+        av_s_idx = self.voice_avatar_shape_combo.findData(str(v_cfg.get('voice_avatar_shape') or 'neural_core'))
+        if av_s_idx >= 0:
+            self.voice_avatar_shape_combo.setCurrentIndex(av_s_idx)
+        av_form.addRow('Geometric Shape:', self.voice_avatar_shape_combo)
+
+        self.voice_avatar_palette_combo = QComboBox()
+        self.voice_avatar_palette_combo.setToolTip('Choose fixed holo glow palette, match active app theme, or auto-tint to active AI')
+        for pid, plbl in AVATAR_PALETTES:
+            self.voice_avatar_palette_combo.addItem(plbl, pid)
+        av_p_idx = self.voice_avatar_palette_combo.findData(str(v_cfg.get('voice_avatar_palette') or 'tulsa_cyan'))
+        if av_p_idx >= 0:
+            self.voice_avatar_palette_combo.setCurrentIndex(av_p_idx)
+        av_form.addRow('Color Palette:', self.voice_avatar_palette_combo)
+        av_lay.addLayout(av_form)
+
+        self.voice_avatar_on_top_check = QCheckBox(
+            'Keep Windowed avatar floating on top of other windows',
+            checked=bool(v_cfg.get('voice_avatar_always_on_top', True)),
+        )
+        self.voice_avatar_on_top_check.setToolTip('Keeps the floating Windowed orb visible above other apps')
+        av_lay.addWidget(self.voice_avatar_on_top_check)
+
+        self.voice_avatar_activity_check = QCheckBox(
+            'Show subtle live captions && state strip on avatar stage',
+            checked=bool(v_cfg.get('voice_avatar_show_activity', True)),
+        )
+        self.voice_avatar_activity_check.setToolTip('Displays compact listening/speaking status and latest caption near the bottom bar')
+        av_lay.addWidget(self.voice_avatar_activity_check)
+
+        for _av_w in (self.voice_avatar_mode_combo, self.voice_avatar_shape_combo, self.voice_avatar_palette_combo):
+            _av_w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            _av_w.installEventFilter(self._wheel_guard)
+        lay.addWidget(avatar_card)
         lay.addStretch()
 
         scroll.setWidget(scroll_inner)
@@ -3402,6 +3746,16 @@ class ManageAIsDialog(QDialog):
         self._squads_data = load_ai_squads(self.config_path)
         self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
         self._loading_squad_ui = False
+        self._deleted_builtin_squads: set[str] = set()
+        try:
+            if self.config_path.exists():
+                _raw_sq_cfg = json.loads(self.config_path.read_text(encoding='utf-8'))
+                if isinstance(_raw_sq_cfg, dict) and isinstance(_raw_sq_cfg.get('deleted_builtin_squads'), list):
+                    self._deleted_builtin_squads = {
+                        str(x).strip().lower() for x in _raw_sq_cfg['deleted_builtin_squads'] if str(x).strip()
+                    }
+        except Exception:
+            self._deleted_builtin_squads = set()
 
         split_row = QHBoxLayout()
         split_row.setSpacing(14)
@@ -3442,6 +3796,21 @@ class ManageAIsDialog(QDialog):
         for n_cap in (1, 2, 3, 4, 5, 6, 8, 10, 12):
             self.squad_max_ais_combo.addItem(f'Max {n_cap} AI{"s" if n_cap > 1 else ""} per turn', n_cap)
         form.addRow('How Many AIs to Use:', self.squad_max_ais_combo)
+
+        self.squad_context_depth_combo = QComboBox()
+        self.squad_context_depth_combo.setToolTip(
+            'Controls how much conversation history is loaded for this Profile (Standard 12K, Extended 36K, or Deep 64K)'
+        )
+        for cd_slug, cd_lbl in CONTEXT_DEPTH_CHOICES:
+            self.squad_context_depth_combo.addItem(cd_lbl, cd_slug)
+        form.addRow('Context Depth:', self.squad_context_depth_combo)
+
+        self.squad_overrides_edit = QLineEdit()
+        self.squad_overrides_edit.setPlaceholderText('e.g. openai=gpt-5.6-sol, gemini=gemini-4-carbon, deepseek=deepseek-reasoner')
+        self.squad_overrides_edit.setToolTip(
+            'Optional per-profile model overrides (provider=model, comma-separated). Automatically translates for OpenRouter seats.'
+        )
+        form.addRow('Model Overrides:', self.squad_overrides_edit)
         right_lay.addLayout(form)
 
         self.squad_delib_check = QCheckBox('Enable 2-Round Council Deliberation (Peer Review ON)')
@@ -3470,6 +3839,29 @@ class ManageAIsDialog(QDialog):
         split_row.addWidget(right_card, 1)
         lay.addLayout(split_row, 1)
 
+        def _format_overrides(ov_map: dict[str, Any] | None) -> str:
+            if not isinstance(ov_map, dict):
+                return ''
+            parts = []
+            for k, v in ov_map.items():
+                ks = str(k).strip().lower()
+                vs = str(v or '').strip()
+                if ks and vs:
+                    parts.append(f'{ks}={vs}')
+            return ', '.join(parts)
+
+        def _parse_overrides(raw_txt: str) -> dict[str, str]:
+            out_ov: dict[str, str] = {}
+            for chunk in str(raw_txt or '').split(','):
+                if '=' not in chunk:
+                    continue
+                k_part, v_part = chunk.split('=', 1)
+                ks = k_part.strip().lower()
+                vs = v_part.strip()
+                if ks and vs:
+                    out_ov[ks] = vs
+            return out_ov
+
         def _save_current_squad_edits():
             if self._loading_squad_ui or not self._active_squad_key:
                 return
@@ -3477,12 +3869,16 @@ class ManageAIsDialog(QDialog):
                 return
             lbl = self.squad_label_edit.text().strip() or self._active_squad_key
             provs = [p for p, c in self.squad_provider_checks.items() if c.isChecked()]
+            depth_val = str(self.squad_context_depth_combo.currentData() or 'standard').strip().lower()
+            ov_val = _parse_overrides(self.squad_overrides_edit.text())
             self._squads_data[self._active_squad_key] = {
                 'label': lbl,
                 'providers': provs,
                 'deliberate': self.squad_delib_check.isChecked(),
                 'code_access': self.squad_code_check.isChecked(),
                 'max_ais': int(self.squad_max_ais_combo.currentData() or 0),
+                'context_depth': depth_val,
+                'model_overrides': ov_val,
             }
             cur_item = self.squad_list_widget.currentItem()
             if cur_item and str(cur_item.data(Qt.ItemDataRole.UserRole)) == self._active_squad_key:
@@ -3516,6 +3912,9 @@ class ManageAIsDialog(QDialog):
             self.squad_label_edit.setText(str(sq.get('label') or key))
             max_idx = self.squad_max_ais_combo.findData(int(sq.get('max_ais') or 0))
             self.squad_max_ais_combo.setCurrentIndex(max_idx if max_idx >= 0 else 0)
+            depth_idx = self.squad_context_depth_combo.findData(str(sq.get('context_depth') or 'standard').strip().lower())
+            self.squad_context_depth_combo.setCurrentIndex(depth_idx if depth_idx >= 0 else 0)
+            self.squad_overrides_edit.setText(_format_overrides(sq.get('model_overrides')))
             self.squad_delib_check.setChecked(bool(sq.get('deliberate', True)))
             self.squad_code_check.setChecked(bool(sq.get('code_access', False)))
             inc = set(sq.get('providers') or [])
@@ -3534,8 +3933,11 @@ class ManageAIsDialog(QDialog):
                 'deliberate': True,
                 'code_access': False,
                 'max_ais': 0,
+                'context_depth': 'standard',
+                'model_overrides': {},
             }
             _populate_squad_list(select_key=new_key)
+            self._schedule_autosave()
 
         def _del_selected_squad():
             if len(self._squads_data) <= 1:
@@ -3546,22 +3948,36 @@ class ManageAIsDialog(QDialog):
             k = str(cur.data(Qt.ItemDataRole.UserRole) or '')
             if k in self._squads_data:
                 self._loading_squad_ui = True
+                if k in DEFAULT_AI_SQUADS:
+                    self._deleted_builtin_squads.add(k)
                 del self._squads_data[k]
                 self._active_squad_key = next(iter(self._squads_data.keys()), '')
                 self._loading_squad_ui = False
                 _populate_squad_list(select_key=self._active_squad_key)
+                self._schedule_autosave()
 
         def _restore_default_squads():
             self._loading_squad_ui = True
-            self._squads_data = {k: dict(v, providers=list(v.get('providers', []))) for k, v in DEFAULT_AI_SQUADS.items()}
+            self._deleted_builtin_squads.clear()
+            self._squads_data = {
+                k: dict(
+                    v,
+                    providers=list(v.get('providers', [])),
+                    model_overrides=dict(v.get('model_overrides', {})),
+                )
+                for k, v in DEFAULT_AI_SQUADS.items()
+            }
             self._active_squad_key = next(iter(self._squads_data.keys()), 'code')
             self._loading_squad_ui = False
             _populate_squad_list(select_key=self._active_squad_key)
+            self._schedule_autosave()
 
         self._flush_squad_editor = _save_current_squad_edits
         self.squad_list_widget.currentItemChanged.connect(_on_squad_selected)
         self.squad_label_edit.textEdited.connect(lambda _t: _save_current_squad_edits())
         self.squad_max_ais_combo.currentIndexChanged.connect(lambda _i: _save_current_squad_edits())
+        self.squad_context_depth_combo.currentIndexChanged.connect(lambda _i: (_save_current_squad_edits(), self._schedule_autosave()))
+        self.squad_overrides_edit.textEdited.connect(lambda _t: (_save_current_squad_edits(), self._schedule_autosave()))
         self.squad_delib_check.toggled.connect(lambda _b: _save_current_squad_edits())
         self.squad_code_check.toggled.connect(lambda _b: _save_current_squad_edits())
         for chk in self.squad_provider_checks.values():
@@ -3655,6 +4071,7 @@ class ManageAIsDialog(QDialog):
             b_name = Path(self.ref_body_path).name if self.ref_body_path else 'Not set'
             self.ref_face_lbl.setText(f'<b>Reference photo (Face / Portrait):</b> <span style="color:#58a6ff;">{html.escape(f_name)}</span>')
             self.ref_body_lbl.setText(f'<b>Full-body reference photo:</b> <span style="color:#58a6ff;">{html.escape(b_name)}</span>')
+            self._schedule_autosave()
 
         def _pick_ref_photo(kind: str):
             p_str, _ = QFileDialog.getOpenFileName(
@@ -3711,6 +4128,18 @@ class ManageAIsDialog(QDialog):
         self.pers_visual_combo = _make_level_combo(str(p_cfg.get('visual_answers') or 'Default'))
         self.pers_headers_combo = _make_level_combo(str(p_cfg.get('headers_and_lists') or 'More'))
 
+        from palace_config import HUMOR_LEVEL_CHOICES
+        self.pers_humor_combo = QComboBox()
+        self.pers_humor_combo.setToolTip(
+            'Controls how much wit and banter AIs use across Chat and Talk Mode '
+            '(automatically dials down during error debugging and serious tasks)'
+        )
+        for h_slug, h_lbl in HUMOR_LEVEL_CHOICES:
+            self.pers_humor_combo.addItem(h_lbl, h_slug)
+        h_idx = self.pers_humor_combo.findData(str(p_cfg.get('humor') or 'average').strip().lower())
+        if h_idx >= 0:
+            self.pers_humor_combo.setCurrentIndex(h_idx)
+
         tone_grid.addWidget(QLabel('<b>Base style and tone:</b>'), 0, 0)
         tone_grid.addWidget(self.pers_base_style_combo, 0, 1)
         tone_grid.addWidget(QLabel('<b>Warmth:</b>'), 0, 2)
@@ -3725,6 +4154,9 @@ class ManageAIsDialog(QDialog):
         tone_grid.addWidget(self.pers_visual_combo, 2, 1)
         tone_grid.addWidget(QLabel('<b>Headers and lists:</b>'), 2, 2)
         tone_grid.addWidget(self.pers_headers_combo, 2, 3)
+
+        tone_grid.addWidget(QLabel('<b>Humor:</b>'), 3, 0)
+        tone_grid.addWidget(self.pers_humor_combo, 3, 1)
         lay.addWidget(tone_card)
 
         # 4. CUSTOM INSTRUCTIONS (General Chat + Coding / Work)
@@ -3997,9 +4429,15 @@ class ManageAIsDialog(QDialog):
         g_lay = QVBoxLayout(guide_card)
         _style_settings_card(guide_card, 'externalBridgeGuideCard', g_lay, pad_h=12, pad_v=12)
         g_lay.setSpacing(6)
+        guide_top = QHBoxLayout()
         guide_hdr = QLabel('<b>How External AI Links Work — Pick One Mode Per App</b>')
         guide_hdr.setTextFormat(Qt.TextFormat.RichText)
-        g_lay.addWidget(guide_hdr)
+        guide_top.addWidget(guide_hdr, 1)
+        self.rescan_bridge_clis_btn = QPushButton('🔄 Re-scan CLIs')
+        self.rescan_bridge_clis_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.rescan_bridge_clis_btn.setToolTip('Re-scan local PATH and standard user CLI folders (~/.local/bin, npm, ~/.grok/bin)')
+        guide_top.addWidget(self.rescan_bridge_clis_btn)
+        g_lay.addLayout(guide_top)
 
         self.bridge_guide_label = QLabel(
             '• <b>Foreman Mode (External AI drives Fairybread):</b> Stay inside ChatGPT Desktop, Antigravity, Grok, or Claude '
@@ -4125,14 +4563,23 @@ class ManageAIsDialog(QDialog):
             note_lbl.setStyleSheet('font-size: 11.5px; color: #8b949e;')
             c_lay.addWidget(note_lbl)
 
+            install_hint_txt = str(info.get('install_hint') or '').strip()
+            cli_hint_lbl = QLabel(f'<i>Council Member requires local CLI:</i> {html.escape(install_hint_txt)}')
+            cli_hint_lbl.setTextFormat(Qt.TextFormat.RichText)
+            cli_hint_lbl.setWordWrap(True)
+            cli_hint_lbl.setStyleSheet('font-size: 11.5px; color: #eab308;')
+            cli_hint_lbl.setVisible((not cli_avail) and bool(install_hint_txt))
+            c_lay.addWidget(cli_hint_lbl)
+
             self.bridge_platform_controls[pk] = {
                 'foreman': foreman_chk,
                 'council': council_chk,
                 'badge': badge_lbl,
                 'hint': note_lbl,
+                'cli_hint': cli_hint_lbl,
                 'info': info,
                 'cli_available': cli_avail,
-                'install_hint': str(info.get('install_hint') or ''),
+                'install_hint': install_hint_txt,
                 'title': meta['title'],
             }
 
@@ -4141,6 +4588,34 @@ class ManageAIsDialog(QDialog):
             self._sync_platform_interlock(pk)
 
             lay.addWidget(card)
+
+        def _rescan_clis():
+            fresh = detect_external_platforms(home_dir=home_override, appdata_dir=appdata_override)
+            ready_names: list[str] = []
+            for pk_item, f_info in fresh.items():
+                ctrl = self.bridge_platform_controls.get(pk_item)
+                if not ctrl:
+                    continue
+                ctrl['info'] = f_info
+                ctrl['cli_available'] = bool(f_info.get('cli_available'))
+                ctrl['install_hint'] = str(f_info.get('install_hint') or '').strip()
+                if ctrl['cli_available']:
+                    ready_names.append(str(ctrl.get('title') or pk_item))
+                ctrl['badge'].setText(
+                    _format_badge(
+                        pk_item,
+                        f_info,
+                        bool(f_info.get('mcp_linked')) or ctrl['foreman'].isChecked(),
+                    )
+                )
+                self._sync_platform_interlock(pk_item)
+            self.bridge_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+            if ready_names:
+                self.bridge_status_label.setText(f'✓ Re-scan complete — CLI ready for: {", ".join(ready_names)}.')
+            else:
+                self.bridge_status_label.setText('Re-scan complete — no external CLI executables detected yet.')
+
+        self.rescan_bridge_clis_btn.clicked.connect(_rescan_clis)
 
         # Card 3: Shared MCP Capabilities & Diagnostics
         cap_card = QFrame()
@@ -4230,6 +4705,9 @@ class ManageAIsDialog(QDialog):
         council_chk: QCheckBox = ctrl['council']
         cli_avail = bool(ctrl.get('cli_available', False))
         install_hint = str(ctrl.get('install_hint') or '')
+        cli_hint_lbl = ctrl.get('cli_hint')
+        if cli_hint_lbl is not None:
+            cli_hint_lbl.setVisible((not cli_avail) and bool(install_hint))
 
         if foreman_chk.isChecked():
             council_chk.blockSignals(True)
@@ -5087,122 +5565,193 @@ class ManageAIsDialog(QDialog):
         finally:
             self._loading_provider_fields = False
 
-    def save_settings(self):
+    def _persist_all_settings(self, *, show_warnings: bool = False) -> bool:
         name = self.provider_combo.currentText().strip().lower()
         if not name:
-            QMessageBox.warning(self, 'Missing Provider Name', 'Please enter a provider name.')
-            return
-        self._auto_save_current_provider()
-        if hasattr(self, '_flush_squad_editor') and callable(self._flush_squad_editor):
-            self._flush_squad_editor()
-        if hasattr(self, '_squads_data'):
-            save_ai_squads(self._squads_data, config_path=self.config_path)
-        if hasattr(self, 'pers_base_style_combo'):
-            save_personalization_settings(
-                {
-                    'auto_evolve_profile': bool(self.enable_shared_mem_check.isChecked()) if hasattr(self, 'enable_shared_mem_check') else True,
-                    'base_style': self.pers_base_style_combo.currentText(),
-                    'warmth': self.pers_warmth_combo.currentText(),
-                    'enthusiasm': self.pers_enthusiasm_combo.currentText(),
-                    'emoji': self.pers_emoji_combo.currentText(),
-                    'visual_answers': self.pers_visual_combo.currentText(),
-                    'headers_and_lists': self.pers_headers_combo.currentText(),
-                    'custom_instructions_general': self.pers_general_inst_edit.toPlainText().strip(),
-                    'custom_instructions_coding': self.pers_coding_inst_edit.toPlainText().strip(),
-                    'reference_photo_face': getattr(self, 'ref_face_path', ''),
-                    'reference_photo_body': getattr(self, 'ref_body_path', ''),
-                },
-                config_path=self.config_path,
-            )
-        self._save_email_and_notification_fields()
-        self._save_bridge_fields()
+            if show_warnings:
+                QMessageBox.warning(self, 'Missing Provider Name', 'Please enter a provider name.')
+                return False
+        else:
+            self._auto_save_current_provider()
+
+        try:
+            if hasattr(self, '_flush_squad_editor') and callable(self._flush_squad_editor):
+                self._flush_squad_editor()
+            if hasattr(self, '_squads_data'):
+                save_ai_squads(
+                    self._squads_data,
+                    config_path=self.config_path,
+                    deleted_builtin_squads=sorted(getattr(self, '_deleted_builtin_squads', set())),
+                )
+        except Exception:
+            if show_warnings:
+                raise
+
+        try:
+            if hasattr(self, 'pers_base_style_combo'):
+                save_personalization_settings(
+                    {
+                        'auto_evolve_profile': bool(self.enable_shared_mem_check.isChecked()) if hasattr(self, 'enable_shared_mem_check') else True,
+                        'base_style': self.pers_base_style_combo.currentText(),
+                        'warmth': self.pers_warmth_combo.currentText(),
+                        'enthusiasm': self.pers_enthusiasm_combo.currentText(),
+                        'humor': str(self.pers_humor_combo.currentData() or 'average') if hasattr(self, 'pers_humor_combo') else 'average',
+                        'emoji': self.pers_emoji_combo.currentText(),
+                        'visual_answers': self.pers_visual_combo.currentText(),
+                        'headers_and_lists': self.pers_headers_combo.currentText(),
+                        'custom_instructions_general': self.pers_general_inst_edit.toPlainText().strip(),
+                        'custom_instructions_coding': self.pers_coding_inst_edit.toPlainText().strip(),
+                        'reference_photo_face': getattr(self, 'ref_face_path', ''),
+                        'reference_photo_body': getattr(self, 'ref_body_path', ''),
+                    },
+                    config_path=self.config_path,
+                )
+        except Exception:
+            if show_warnings:
+                raise
+
+        try:
+            self._save_email_and_notification_fields()
+            self._save_bridge_fields()
+        except Exception:
+            if show_warnings:
+                raise
+
         from palace_config import parse_storage_mb_text
-        save_idle_settings(
-            {
-                'duration_minutes': int(self.idle_duration_combo.currentData()),
-                'max_tokens_limit': int(self.idle_token_limit_combo.currentData()),
-                'max_credit_usd': float(self.idle_credit_limit_combo.currentData()),
-                'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
-                'pause_when_joined': self.idle_pause_check.isChecked(),
-                'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
-                'allow_live_self_modify': bool(self.idle_live_patch_check.isChecked()) if hasattr(self, 'idle_live_patch_check') else False,
-                'source_mirror_dir': self.idle_mirror_dir_edit.text().strip() if hasattr(self, 'idle_mirror_dir_edit') else '',
-                'memory_access_mode': self.idle_memory_mode_combo.currentData(),
-                'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
-            },
-            config_path=self.config_path,
-        )
-        save_mission_ethics(
-            self.mission_ethics_edit.toPlainText(),
-            config_path=self.config_path,
-        )
-        ui_updates = {
-            'enter_to_send': bool(self.enter_mode_combo.currentData()),
-            'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else False,
-            'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
-            'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
-            'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
-            'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
-        }
-        if hasattr(self, 'normal_storage_edit'):
-            ui_updates['normal_max_storage_mb'] = parse_storage_mb_text(self.normal_storage_edit.text())
-        if hasattr(self, 'palace_data_dir_edit'):
-            chosen_dir = self.palace_data_dir_edit.text().strip()
-            default_appdata = str(get_appdata_root())
-            ui_updates['custom_data_dir'] = '' if chosen_dir == default_appdata else chosen_dir
-        if hasattr(self, 'experimental_data_dir_edit'):
-            chosen_exp = self.experimental_data_dir_edit.text().strip()
-            default_exp = str(get_appdata_root() / 'experimental_sandbox')
-            ui_updates['custom_experimental_dir'] = '' if chosen_exp == default_exp else chosen_exp
-        save_ui_settings(
-            ui_updates,
-            config_path=self.config_path,
-        )
-        if hasattr(self, 'tool_checks'):
-            save_tool_settings(
-                {k: chk.isChecked() for k, chk in self.tool_checks.items()},
-                config_path=self.config_path,
-            )
-        if hasattr(self, 'perm_mode_combo'):
-            save_access_permissions(
+        try:
+            save_idle_settings(
                 {
-                    'permission_mode': str(self.perm_mode_combo.currentData() or 'default'),
-                    'write_exclusions': self._collect_exclusions(),
-                    'allow_workspace_writes': bool(self.cap_workspace_writes_check.isChecked()) if hasattr(self, 'cap_workspace_writes_check') else True,
-                    'allow_shell_commands': bool(self.cap_shell_cmds_check.isChecked()) if hasattr(self, 'cap_shell_cmds_check') else True,
+                    'duration_minutes': int(self.idle_duration_combo.currentData()),
+                    'max_tokens_limit': int(self.idle_token_limit_combo.currentData()),
+                    'max_credit_usd': float(self.idle_credit_limit_combo.currentData()),
+                    'max_storage_mb': parse_storage_mb_text(self.idle_storage_edit.text()) if hasattr(self, 'idle_storage_edit') else 0,
+                    'pause_when_joined': self.idle_pause_check.isChecked(),
+                    'share_source_code': bool(self.idle_share_code_check.isChecked()) if hasattr(self, 'idle_share_code_check') else False,
+                    'allow_live_self_modify': bool(self.idle_live_patch_check.isChecked()) if hasattr(self, 'idle_live_patch_check') else False,
+                    'source_mirror_dir': self.idle_mirror_dir_edit.text().strip() if hasattr(self, 'idle_mirror_dir_edit') else '',
+                    'memory_access_mode': self.idle_memory_mode_combo.currentData(),
+                    'standing_instruction': self.idle_prompt_edit.toPlainText().strip(),
                 },
                 config_path=self.config_path,
             )
-        if hasattr(self, 'ad_web_search_combo'):
-            save_agent_defaults(
-                {
-                    'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
-                    'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
-                    'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
-                    'synthesizer_mode': str(self.ad_synth_combo.currentData() or 'auto_fast'),
-                    'smart_routing': bool(self.ad_smart_routing_check.isChecked()),
-                    'show_inline_status_messages': bool(self.ad_inline_status_check.isChecked()) if hasattr(self, 'ad_inline_status_check') else True,
-                    'provider_timeout_sec': int(self.ad_timeout_spin.value()),
-                    'straggler_grace_sec': int(self.ad_straggler_spin.value()),
-                },
+            save_mission_ethics(
+                self.mission_ethics_edit.toPlainText(),
                 config_path=self.config_path,
             )
-        if hasattr(self, '_collect_voice_payload'):
-            from voice_service import save_voice_settings
-            save_voice_settings(self._collect_voice_payload(), config_path=self.config_path)
-        elif hasattr(self, 'voice_name_combo'):
-            from voice_service import save_voice_settings
-            save_voice_settings(
-                {
-                    'voice_name': str(self.voice_name_combo.currentData() or self.voice_name_combo.currentText()),
-                    'microphone_device': self.mic_device_combo.currentText(),
-                    'mic_gain_percent': int(self.mic_gain_slider.value()) if hasattr(self, 'mic_gain_slider') else 150,
-                    'silence_timeout_ms': int(self.silence_timeout_slider.value()) if hasattr(self, 'silence_timeout_slider') else 1500,
-                    'volume_percent': int(self.voice_vol_slider.value()),
-                    'auto_speak_responses': self.auto_speak_check.isChecked(),
-                },
+        except Exception:
+            if show_warnings:
+                raise
+
+        try:
+            ui_updates = {
+                'enter_to_send': bool(self.enter_mode_combo.currentData()),
+                'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else False,
+                'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
+                'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
+                'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
+                'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
+            }
+            if hasattr(self, 'normal_storage_edit'):
+                ui_updates['normal_max_storage_mb'] = parse_storage_mb_text(self.normal_storage_edit.text())
+            if hasattr(self, 'palace_data_dir_edit'):
+                chosen_dir = self.palace_data_dir_edit.text().strip()
+                default_appdata = str(get_appdata_root())
+                if chosen_dir and not chosen_dir.upper().startswith('M:'):
+                    ui_updates['custom_data_dir'] = '' if chosen_dir == default_appdata else chosen_dir
+                elif show_warnings and chosen_dir.upper().startswith('M:'):
+                    raise ValueError('M: drive is strictly off-limits for Palace storage.')
+            if hasattr(self, 'experimental_data_dir_edit'):
+                chosen_exp = self.experimental_data_dir_edit.text().strip()
+                default_exp = str(get_appdata_root() / 'experimental_sandbox')
+                if chosen_exp and not chosen_exp.upper().startswith('M:'):
+                    ui_updates['custom_experimental_dir'] = '' if chosen_exp == default_exp else chosen_exp
+                elif show_warnings and chosen_exp.upper().startswith('M:'):
+                    raise ValueError('M: drive is strictly off-limits for Experimental Palace storage.')
+            save_ui_settings(
+                ui_updates,
                 config_path=self.config_path,
             )
+        except Exception:
+            if show_warnings:
+                raise
+
+        try:
+            if hasattr(self, 'tool_checks'):
+                save_tool_settings(
+                    {k: chk.isChecked() for k, chk in self.tool_checks.items()},
+                    config_path=self.config_path,
+                )
+            if hasattr(self, 'perm_mode_combo'):
+                save_access_permissions(
+                    {
+                        'permission_mode': str(self.perm_mode_combo.currentData() or 'default'),
+                        'write_exclusions': self._collect_exclusions(),
+                        'allow_workspace_writes': bool(self.cap_workspace_writes_check.isChecked()) if hasattr(self, 'cap_workspace_writes_check') else True,
+                        'allow_shell_commands': bool(self.cap_shell_cmds_check.isChecked()) if hasattr(self, 'cap_shell_cmds_check') else True,
+                    },
+                    config_path=self.config_path,
+                )
+            if hasattr(self, 'ad_web_search_combo'):
+                save_agent_defaults(
+                    {
+                        'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
+                        'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
+                        'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
+                        'synthesizer_mode': str(self.ad_synth_combo.currentData() or 'auto_fast'),
+                        'smart_routing': bool(self.ad_smart_routing_check.isChecked()),
+                        'show_inline_status_messages': bool(self.ad_inline_status_check.isChecked()) if hasattr(self, 'ad_inline_status_check') else True,
+                        'provider_timeout_sec': int(self.ad_timeout_spin.value()),
+                        'straggler_grace_sec': int(self.ad_straggler_spin.value()),
+                    },
+                    config_path=self.config_path,
+                )
+            if hasattr(self, 'ad_primary_img_combo'):
+                save_graphics_settings(
+                    {
+                        'primary_image_engine': str(self.ad_primary_img_combo.currentData() or 'gpt-image-2.6-sunburst'),
+                        'draft_image_engine': str(self.ad_draft_img_combo.currentData() or 'gpt-image-2.6-flare'),
+                        'pipeline_mode': str(self.ad_graphics_pipe_combo.currentData() or 'single_vision'),
+                    },
+                    config_path=self.config_path,
+                )
+            if hasattr(self, '_collect_voice_payload'):
+                from voice_service import save_voice_settings
+                save_voice_settings(self._collect_voice_payload(), config_path=self.config_path)
+            elif hasattr(self, 'voice_name_combo'):
+                from voice_service import save_voice_settings
+                save_voice_settings(
+                    {
+                        'voice_name': str(self.voice_name_combo.currentData() or self.voice_name_combo.currentText()),
+                        'microphone_device': self.mic_device_combo.currentText(),
+                        'mic_gain_percent': int(self.mic_gain_slider.value()) if hasattr(self, 'mic_gain_slider') else 150,
+                        'silence_timeout_ms': int(self.silence_timeout_slider.value()) if hasattr(self, 'silence_timeout_slider') else 1500,
+                        'volume_percent': int(self.voice_vol_slider.value()),
+                        'auto_speak_responses': self.auto_speak_check.isChecked(),
+                    },
+                    config_path=self.config_path,
+                )
+        except Exception:
+            if show_warnings:
+                raise
+
+        self._saved_any_change = True
+        self._autosave_dirty = False
+        if hasattr(self, '_autosave_status_label'):
+            self._autosave_status_label.setText('✓ Saved automatically')
+        parent = self.parent()
+        if parent is not None and hasattr(parent, '_apply_voice_avatar_settings'):
+            try:
+                parent._apply_voice_avatar_settings()
+            except Exception:
+                pass
+        return True
+
+    def save_settings(self):
+        tmr = getattr(self, '_autosave_timer', None)
+        if tmr is not None and tmr.isActive():
+            tmr.stop()
+        if not self._persist_all_settings(show_warnings=True):
+            return
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         self.accept()
@@ -5263,6 +5812,8 @@ class PalaceWindow(QMainWindow):
         self.current_profile = 'Multi-AI · Deliberate'
         self.current_squad_label = ''
         self.max_ais_per_turn = 0
+        self.active_model_overrides: dict[str, str] = {}
+        self.active_context_depth: str = 'standard'
         self.pending_status_text = ''
         self.pulse_step = 0
         self.demo = demo
@@ -5754,6 +6305,20 @@ class PalaceWindow(QMainWindow):
         )
         self.voice_cost_badge.hide()
         live_r2_lay.addWidget(self.voice_cost_badge)
+
+        self.voice_avatar_btn = QPushButton('◎ Avatar: Off ▾')
+        self.voice_avatar_btn.setObjectName('voiceAvatarBtn')
+        self.voice_avatar_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.voice_avatar_btn.setToolTip('Switch optional 3D Voice Avatar Visualizer mode, shape, or color palette')
+        self.voice_avatar_btn.setStyleSheet(
+            'QPushButton { background: #10212b; color: #7dd3fc; border: 1px solid #0ea5e9; '
+            'border-radius: 6px; padding: 3px 7px; font-size: 11px; font-weight: 600; } '
+            'QPushButton:hover { background: #163242; color: #ffffff; border-color: #38e8ff; }'
+        )
+        self.voice_avatar_btn.clicked.connect(self._show_voice_avatar_menu)
+        self._refresh_voice_avatar_btn_text()
+        self.voice_avatar_btn.hide()
+        live_r2_lay.addWidget(self.voice_avatar_btn)
 
         self.remove_button = QPushButton('✕ Remove file')
         self.remove_button.setObjectName('iconButton')
@@ -6530,11 +7095,7 @@ class PalaceWindow(QMainWindow):
         if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
             self._ensure_system_tray()
             QTimer.singleShot(1500, lambda: self.check_for_updates_and_catalog(manual=False))
-            try:
-                has_any_keys = len(CredentialStore().list_providers()) > 0
-            except Exception:
-                has_any_keys = False
-            if not demo and not bool(ui_cfg.get('setup_wizard_completed', False)) and not has_any_keys:
+            if self._should_auto_launch_setup_wizard(ui_cfg=ui_cfg, demo=demo):
                 QTimer.singleShot(600, self.open_setup_wizard)
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
 
@@ -6738,6 +7299,10 @@ class PalaceWindow(QMainWindow):
         self.theme_menu = view_menu.addMenu('🎨 Theme')
         self.theme_menu.setToolTipsVisible(True)
         self._rebuild_theme_menu()
+        self.voice_avatar_menu = view_menu.addMenu('◎ Voice Avatar')
+        self.voice_avatar_menu.setToolTipsVisible(True)
+        self.voice_avatar_menu.aboutToShow.connect(self._rebuild_voice_avatar_menu)
+        self._rebuild_voice_avatar_menu()
         view_menu.addSeparator()
         mem_sum_act = QAction('📝 Memory Summary (View && Edit)…', self)
         mem_sum_act.setToolTip('Inspect or edit your shared local Memory Summary profile')
@@ -7071,6 +7636,24 @@ class PalaceWindow(QMainWindow):
 
     def show_mission_ethics_dialog(self):
         self.open_manage_ais(initial_page='Idle Mode')
+
+    def _should_auto_launch_setup_wizard(
+        self,
+        ui_cfg: dict[str, Any] | None = None,
+        *,
+        demo: bool | None = None,
+        credential_store: CredentialStore | None = None,
+    ) -> bool:
+        eff_demo = self.demo if demo is None else bool(demo)
+        if eff_demo:
+            return False
+        cfg = ui_cfg if isinstance(ui_cfg, dict) else load_ui_settings(self.config_path)
+        if bool(cfg.get('setup_wizard_completed', False)):
+            return False
+        return not has_any_configured_ai_agents(
+            config_path=self.config_path,
+            credential_store=credential_store,
+        )
 
     def open_setup_wizard(self, initial_page: int = 0):
         from setup_wizard import GuidedSetupWizardDialog
@@ -7525,34 +8108,42 @@ class PalaceWindow(QMainWindow):
             default_delib = bool(sq_val.get('deliberate', True))
             default_code = bool(sq_val.get('code_access', False))
             max_cap = int(sq_val.get('max_ais') or 0)
+            sq_ov = dict(sq_val.get('model_overrides') or {})
+            sq_depth = str(sq_val.get('context_depth') or 'standard').strip().lower()
             avail_members = [m for m in members if m in all_names] or members
+            if 'anthropic' in avail_members and 'claude' in avail_members:
+                avail_members = [m for m in avail_members if m != 'claude']
             sub = menu.addMenu(f'{squad_title_menu}')
             sub.setToolTipsVisible(True)
             if menu_style:
                 sub.setStyleSheet(menu_style)
             joined_disp = ', '.join(_esc_amp(provider_display_name(m)) for m in avail_members)
             cap_note = f' [Max {max_cap}]' if max_cap > 0 else ''
-            all_act = QAction(f'All {squad_title_menu}{cap_note}: {joined_disp}', sub)
+            depth_note = ' [Deep 64K]' if sq_depth == 'deep' else (' [Extended]' if sq_depth == 'extended' else '')
+            all_act = QAction(f'All {squad_title_menu}{cap_note}{depth_note}: {joined_disp}', sub)
             all_act.triggered.connect(
-                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap:
-                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc)
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap, ov=sq_ov, cd=sq_depth:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc, model_overrides=ov, context_depth=cd)
             )
             sub.addAction(all_act)
             sub.addSeparator()
             for m in avail_members:
+                single_ov = {m: sq_ov[m]} if m in sq_ov else {}
                 single_act = QAction(
                     provider_qicon(m, checked=(prov_states.get(m) is True)),
                     f'Only {_esc_amp(provider_display_name(m))} ({squad_title_menu})',
                     sub,
                 )
                 single_act.triggered.connect(
-                    lambda _c=False, m_name=m, dc=default_code:
+                    lambda _c=False, m_name=m, dc=default_code, sov=single_ov, cd=sq_depth:
                     self._apply_squad_preset(
                         f'{provider_icon(m_name)} {provider_display_name(m_name)}',
                         [m_name],
                         deliberate=False,
                         palace_code=dc,
                         max_ais=1,
+                        model_overrides=sov,
+                        context_depth=cd,
                     )
                 )
                 sub.addAction(single_act)
@@ -7565,6 +8156,8 @@ class PalaceWindow(QMainWindow):
                 deliberate=True,
                 palace_code=bool(getattr(self, 'palace_code_btn', None) and self.palace_code_btn.isChecked()),
                 max_ais=0,
+                model_overrides={},
+                context_depth='standard',
             )
         )
         menu.addAction(all_en_act)
@@ -7624,6 +8217,9 @@ class PalaceWindow(QMainWindow):
             self.voice_tts_btn.show()
         if hasattr(self, 'voice_cost_badge'):
             self.voice_cost_badge.show()
+        if hasattr(self, 'voice_avatar_btn'):
+            self._refresh_voice_avatar_btn_text()
+            self.voice_avatar_btn.show()
         if hasattr(self, 'end_talk_btn'):
             self.end_talk_btn.show()
         self._refresh_bottom_cost_label()
@@ -7651,6 +8247,8 @@ class PalaceWindow(QMainWindow):
             self.end_talk_btn.hide()
         if hasattr(self, 'voice_cost_badge'):
             self.voice_cost_badge.hide()
+        if hasattr(self, 'voice_avatar_btn') and not (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
+            self.voice_avatar_btn.hide()
         if not (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
             if hasattr(self, 'voice_brain_btn'):
                 self.voice_brain_btn.hide()
@@ -7663,12 +8261,27 @@ class PalaceWindow(QMainWindow):
             self.status_label.setTextFormat(Qt.TextFormat.PlainText)
             self.status_label.setText('Talk Mode Only OFF · Normal AI squad active')
 
-    def _apply_squad_preset(self, label: str, active_list: list[str], deliberate: bool = True, palace_code: bool = False, max_ais: int = 0):
+    def _apply_squad_preset(
+        self,
+        label: str,
+        active_list: list[str],
+        deliberate: bool = True,
+        palace_code: bool = False,
+        max_ais: int = 0,
+        model_overrides: dict[str, str] | None = None,
+        context_depth: str = 'standard',
+    ):
         if getattr(self, '_talk_only_mode', False) or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
             self.stop_all_voice_modes(exit_talk_only=True)
         self._talk_only_mode = False
         self.current_squad_label = label
         self.max_ais_per_turn = max(0, int(max_ais or 0))
+        self.active_model_overrides = {
+            str(k).strip().lower(): str(v).strip()
+            for k, v in (model_overrides or {}).items()
+            if str(k).strip() and str(v or '').strip()
+        }
+        self.active_context_depth = str(context_depth or 'standard').strip().lower()
         if self.idle_switch_btn.isChecked():
             self.idle_switch_btn.setChecked(False)
         all_known = list(dict.fromkeys([*self.provider_states.keys(), *active_list]))
@@ -7701,8 +8314,16 @@ class PalaceWindow(QMainWindow):
         else:
             badges = f'{len(active_list)} AIs active'
         delib_txt = 'Deliberation: ON' if deliberate else 'Direct (1-Round): ON'
+        extra_bits: list[str] = []
+        if self.active_context_depth == 'deep':
+            extra_bits.append('Context: Deep 64K')
+        elif self.active_context_depth == 'extended':
+            extra_bits.append('Context: Extended 36K')
+        if self.active_model_overrides:
+            extra_bits.append('Reasoning/Profile Models Active')
+        extra_suffix = (' · ' + ' · '.join(extra_bits)) if extra_bits else ''
         self.status_label.setTextFormat(Qt.TextFormat.RichText)
-        self.status_label.setText(f'Squad: <b>{html.escape(label)}</b> · {badges} · {delib_txt}')
+        self.status_label.setText(f'Squad: <b>{html.escape(label)}</b> · {badges} · {delib_txt}{html.escape(extra_suffix)}')
 
     def _open_custom_ai_picker(self):
         dlg = CustomAIPickerDialog(
@@ -7718,6 +8339,8 @@ class PalaceWindow(QMainWindow):
             chosen = dlg.selected_providers()
             self.max_ais_per_turn = dlg.selected_max_ais()
             self.current_squad_label = '✋ Custom'
+            self.active_model_overrides = {}
+            self.active_context_depth = 'standard'
             for name, en in chosen.items():
                 self.provider_states[name] = en
                 try:
@@ -7751,6 +8374,8 @@ class PalaceWindow(QMainWindow):
             self.stop_all_voice_modes(exit_talk_only=True)
         self._talk_only_mode = False
         self.current_squad_label = ''
+        self.active_model_overrides = {}
+        self.active_context_depth = 'standard'
         self.provider_states[name] = enabled
         if name not in CLI_PROVIDER_TO_PLATFORM:
             try:
@@ -8052,6 +8677,8 @@ class PalaceWindow(QMainWindow):
                 f'(TTS: {getattr(ledger, "voice_tts_seconds", 0.0):.0f}s · {format_usd_compact(getattr(ledger, "voice_tts_cost_usd", 0.0))} | '
                 f'STT: {getattr(ledger, "voice_stt_seconds", 0.0):.0f}s · {format_usd_compact(getattr(ledger, "voice_stt_cost_usd", 0.0))})'
             )
+            if hasattr(self, '_sync_voice_avatar_status'):
+                self._sync_voice_avatar_status(cost_text=f'💵 {format_usd_compact(v_usd)}')
 
     @Slot(object)
     def _on_cost_event(self, event):
@@ -8815,6 +9442,22 @@ class PalaceWindow(QMainWindow):
             self._refresh_voice_bar_pills()
         if hasattr(self, '_sync_voice_footer_state'):
             self._sync_voice_footer_state()
+        if hasattr(self, '_apply_voice_avatar_settings'):
+            self._apply_voice_avatar_settings()
+            try:
+                from voice_service import load_voice_settings
+                av_mode = str(load_voice_settings(self.config_path).get('voice_avatar_mode') or 'no_avatar')
+                av_win = getattr(self, '_voice_avatar_window', None)
+                live_on = bool(
+                    getattr(self, '_talk_only_mode', False)
+                    or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+                )
+                if av_mode == 'no_avatar':
+                    self._close_voice_avatar_window()
+                elif live_on or (av_win is not None and av_win.isVisible()):
+                    self._set_voice_avatar_mode(av_mode, persist=False)
+            except Exception:
+                pass
         sess = getattr(self, '_active_voice_session', None)
         if sess is not None and getattr(sess, 'active', False) and getattr(sess, 'live_mode', False):
             # Re-bind active LiveAudioSession cleanly so mic device/gain changes take effect right away
@@ -8851,8 +9494,9 @@ class PalaceWindow(QMainWindow):
             initial_page=initial_page,
             idle_memory=self.idle_memory,
         )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            reset_res = getattr(dlg, '_restore_defaults_result', None)
+        res = dlg.exec()
+        reset_res = getattr(dlg, '_restore_defaults_result', None)
+        if res == QDialog.DialogCode.Accepted or getattr(dlg, '_saved_any_change', False) or (isinstance(reset_res, dict) and reset_res):
             if isinstance(reset_res, dict) and reset_res:
                 bak_p = reset_res.get('backup_path') or ''
                 note = f'↺ Default settings restored (Memory & API keys preserved). Snapshot: {bak_p}' if bak_p else '↺ Default settings restored (Memory & API keys preserved).'
@@ -9230,6 +9874,8 @@ class PalaceWindow(QMainWindow):
             self.chat.set_theme_colors(t_dict)
         if render_chat and getattr(self, 'chat_items', None):
             self._render_chat_items()
+        if hasattr(self, '_apply_voice_avatar_settings'):
+            self._apply_voice_avatar_settings()
 
     def reload_provider_bar(self):
         from fairybread_mcp import get_council_cli_platforms
@@ -10441,6 +11087,11 @@ class PalaceWindow(QMainWindow):
                 )
         self.voice_level_badge.show()
         self._sync_composer_live_bar_visibility()
+        self._sync_voice_avatar_status(
+            state='thinking' if self.worker is not None else 'listening',
+            mic_level=float(lvl) / 100.0,
+            speech_detected=speech_detected,
+        )
 
     def _sync_composer_live_bar_visibility(self):
         if not hasattr(self, 'composer_live_bar'):
@@ -10454,6 +11105,7 @@ class PalaceWindow(QMainWindow):
         r2_widgets = (
             getattr(self, 'voice_level_badge', None),
             getattr(self, 'voice_cost_badge', None),
+            getattr(self, 'voice_avatar_btn', None),
             getattr(self, 'remove_button', None),
         )
         r1_vis = any(w is not None and not w.isHidden() for w in r1_widgets)
@@ -10489,6 +11141,244 @@ class PalaceWindow(QMainWindow):
                 self.voice_level_badge.setText('🎙 ▁▁▁▁▁▁  0% · Listening')
             self.show_notice('🎙 Microphone unmuted — listening.')
         self._sync_composer_live_bar_visibility()
+        self._sync_voice_avatar_status(muted=muted, state='idle' if muted else 'listening')
+
+    def _refresh_voice_avatar_btn_text(self):
+        if not hasattr(self, 'voice_avatar_btn'):
+            return
+        try:
+            from voice_service import load_voice_settings
+            mode = str(load_voice_settings(self.config_path).get('voice_avatar_mode') or 'no_avatar')
+        except Exception:
+            mode = 'no_avatar'
+        short_map = {'no_avatar': 'Off', 'windowed': 'Win', 'fullscreen': 'Full'}
+        self.voice_avatar_btn.setText(f'◎ Avatar: {short_map.get(mode, "Off")} ▾')
+
+    def _populate_voice_avatar_menu(self, menu: QMenu):
+        from voice_service import load_voice_settings, save_voice_settings
+        from voice_visualizer import AVATAR_MODES, AVATAR_PALETTES, AVATAR_SHAPES
+
+        v_cfg = load_voice_settings(self.config_path)
+        cur_mode = str(v_cfg.get('voice_avatar_mode') or 'no_avatar')
+        cur_shape = str(v_cfg.get('voice_avatar_shape') or 'neural_core')
+        cur_pal = str(v_cfg.get('voice_avatar_palette') or 'tulsa_cyan')
+        on_top = bool(v_cfg.get('voice_avatar_always_on_top', True))
+
+        hdr = menu.addAction('◎ Voice Avatar Stage (Optional)')
+        hdr.setEnabled(False)
+        menu.addSeparator()
+
+        for mid, mlbl in AVATAR_MODES:
+            act = QAction(mlbl, menu)
+            act.setCheckable(True)
+            act.setChecked(cur_mode == mid)
+            act.triggered.connect(lambda _c=False, m=mid: self._set_voice_avatar_mode(m, persist=True))
+            menu.addAction(act)
+
+        menu.addSeparator()
+        s_sub = menu.addMenu('Geometric Shape')
+        s_sub.setToolTipsVisible(True)
+        for sid, slbl in AVATAR_SHAPES:
+            act = QAction(slbl, s_sub)
+            act.setCheckable(True)
+            act.setChecked(cur_shape == sid)
+            act.triggered.connect(
+                lambda _c=False, s=sid: (
+                    save_voice_settings({'voice_avatar_shape': s}, config_path=self.config_path),
+                    self._apply_voice_avatar_settings(),
+                )
+            )
+            s_sub.addAction(act)
+
+        p_sub = menu.addMenu('Color Palette')
+        p_sub.setToolTipsVisible(True)
+        for pid, plbl in AVATAR_PALETTES:
+            act = QAction(plbl, p_sub)
+            act.setCheckable(True)
+            act.setChecked(cur_pal == pid)
+            act.triggered.connect(
+                lambda _c=False, p=pid: (
+                    save_voice_settings({'voice_avatar_palette': p}, config_path=self.config_path),
+                    self._apply_voice_avatar_settings(),
+                )
+            )
+            p_sub.addAction(act)
+
+        top_act = QAction('Always on Top (Windowed)', menu)
+        top_act.setCheckable(True)
+        top_act.setChecked(on_top)
+        top_act.triggered.connect(
+            lambda checked=False: (
+                save_voice_settings({'voice_avatar_always_on_top': bool(checked)}, config_path=self.config_path),
+                self._apply_voice_avatar_settings(reapply_windowed=True),
+            )
+        )
+        menu.addAction(top_act)
+
+        menu.addSeparator()
+        cfg_act = QAction('⚙ Voice & Avatar Settings…', menu)
+        cfg_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
+        menu.addAction(cfg_act)
+
+    @Slot()
+    def _rebuild_voice_avatar_menu(self):
+        if not hasattr(self, 'voice_avatar_menu'):
+            return
+        self.voice_avatar_menu.clear()
+        self._populate_voice_avatar_menu(self.voice_avatar_menu)
+
+    @Slot()
+    def _show_voice_avatar_menu(self):
+        if not hasattr(self, 'voice_avatar_btn'):
+            return
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        menu.setStyleSheet(
+            'QMenu { background: #161922; color: #e6edf3; border: 1px solid #2b313e; padding: 6px; border-radius: 8px; } '
+            'QMenu::item { padding: 6px 14px; border-radius: 5px; font-size: 12.5px; } '
+            'QMenu::item:selected { background: #232938; }'
+        )
+        self._populate_voice_avatar_menu(menu)
+        pos = self.voice_avatar_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4))
+        if pos.y() < 40:
+            pos = self.voice_avatar_btn.mapToGlobal(QPoint(0, self.voice_avatar_btn.height() + 4))
+        menu.exec(pos)
+
+    def _ensure_voice_avatar_window(self):
+        win = getattr(self, '_voice_avatar_window', None)
+        if win is not None:
+            return win
+        from voice_visualizer import VoiceAvatarStageWindow
+        win = VoiceAvatarStageWindow(None)
+        win.mode_changed.connect(lambda m: self._set_voice_avatar_mode(m, persist=True))
+
+        def _on_stage_settings(updates: dict):
+            try:
+                from voice_service import save_voice_settings
+                save_voice_settings(updates or {}, config_path=self.config_path)
+                self._apply_voice_avatar_settings()
+            except Exception:
+                pass
+
+        def _on_stage_mute(muted: bool):
+            if hasattr(self, 'voice_mute_btn'):
+                self.voice_mute_btn.setChecked(bool(muted))
+            else:
+                self._toggle_voice_mute(bool(muted))
+
+        win.settings_changed.connect(_on_stage_settings)
+        win.mute_toggled.connect(_on_stage_mute)
+        win.stop_speaking_requested.connect(self._stop_avatar_speech_only)
+        win.end_talk_requested.connect(lambda: self.stop_all_voice_modes(notice='Talk Mode / Live Voice ended.'))
+        win.open_settings_requested.connect(lambda: (self._return_from_voice_avatar_to_chat(), self.open_manage_ais('Voice & Audio')))
+        win.return_to_chat_requested.connect(self._return_from_voice_avatar_to_chat)
+        self._voice_avatar_window = win
+        return win
+
+    def _stop_avatar_speech_only(self):
+        try:
+            from voice_service import stop_speaking
+            stop_speaking()
+        except Exception:
+            pass
+        self._sync_voice_avatar_status(state='listening')
+
+    def _apply_voice_avatar_settings(self, *, reapply_windowed: bool = False):
+        self._refresh_voice_avatar_btn_text()
+        win = getattr(self, '_voice_avatar_window', None)
+        if win is None:
+            return
+        try:
+            from voice_service import load_voice_settings
+            v_cfg = load_voice_settings(self.config_path)
+            t_dict = load_theme_dict(str(getattr(self, 'active_theme', 'dark') or 'dark'))
+            active_p = str(getattr(self, '_last_voice_brain_provider', '') or v_cfg.get('voice_llm_provider') or '').strip().lower()
+            if active_p == 'auto':
+                active_p = next((p for p, en in getattr(self, 'provider_states', {}).items() if en is True), '')
+            p_col = PROVIDER_CATALOG.get(active_p, {}).get('color', '') or provider_color(active_p) if active_p else ''
+            win.apply_settings(
+                shape_id=str(v_cfg.get('voice_avatar_shape') or 'neural_core'),
+                palette_id=str(v_cfg.get('voice_avatar_palette') or 'tulsa_cyan'),
+                theme_dict=t_dict,
+                provider_color_hex=p_col,
+                always_on_top=bool(v_cfg.get('voice_avatar_always_on_top', True)),
+                show_activity=bool(v_cfg.get('voice_avatar_show_activity', True)),
+            )
+            if reapply_windowed and win.isVisible() and win._stage_mode == 'windowed':
+                win.present_in_mode('windowed')
+        except Exception:
+            pass
+
+    def _set_voice_avatar_mode(self, mode: str, *, persist: bool = True):
+        clean_mode = (mode or 'no_avatar').strip().lower()
+        if clean_mode not in {'no_avatar', 'windowed', 'fullscreen'}:
+            clean_mode = 'no_avatar'
+        if persist:
+            try:
+                from voice_service import save_voice_settings
+                save_voice_settings({'voice_avatar_mode': clean_mode}, config_path=self.config_path)
+            except Exception:
+                pass
+        self._refresh_voice_avatar_btn_text()
+        if clean_mode == 'no_avatar':
+            self._close_voice_avatar_window()
+            return
+        win = self._ensure_voice_avatar_window()
+        self._apply_voice_avatar_settings()
+        win.present_in_mode(clean_mode)
+        muted_now = bool(hasattr(self, 'voice_mute_btn') and self.voice_mute_btn.isChecked())
+        live_now = bool(
+            getattr(self, '_talk_only_mode', False)
+            or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+        )
+        ledger = getattr(self, '_cost_ledger', None)
+        cost_txt = ''
+        if ledger is not None:
+            try:
+                from cost_service import format_usd_compact
+                v_usd = float(getattr(ledger, 'voice_tts_cost_usd', 0.0) or 0.0) + float(getattr(ledger, 'voice_stt_cost_usd', 0.0) or 0.0)
+                cost_txt = f'💵 {format_usd_compact(v_usd)}'
+            except Exception:
+                cost_txt = ''
+        win.set_voice_status(
+            state='idle' if muted_now else ('thinking' if self.worker is not None else ('listening' if live_now else 'idle')),
+            muted=muted_now,
+            cost_text=cost_txt or None,
+        )
+
+    def _maybe_open_voice_avatar_for_live_voice(self):
+        try:
+            from voice_service import load_voice_settings
+            mode = str(load_voice_settings(self.config_path).get('voice_avatar_mode') or 'no_avatar').strip().lower()
+        except Exception:
+            mode = 'no_avatar'
+        if mode in {'windowed', 'fullscreen'}:
+            self._set_voice_avatar_mode(mode, persist=False)
+
+    def _close_voice_avatar_window(self):
+        win = getattr(self, '_voice_avatar_window', None)
+        if win is not None:
+            try:
+                win.close_programmatically()
+            except Exception:
+                pass
+
+    def _return_from_voice_avatar_to_chat(self):
+        self._close_voice_avatar_window()
+        try:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
+
+    def _sync_voice_avatar_status(self, **kwargs):
+        win = getattr(self, '_voice_avatar_window', None)
+        if win is not None and win.isVisible():
+            try:
+                win.set_voice_status(**kwargs)
+            except Exception:
+                pass
 
     def stop_all_voice_modes(self, *, exit_talk_only: bool = True, notice: str = '') -> None:
         """Atomically stop all microphone capture, voice playback, and in-flight VoiceCompanion callbacks."""
@@ -10534,7 +11424,11 @@ class PalaceWindow(QMainWindow):
             self.voice_level_badge.hide()
         if hasattr(self, 'voice_cost_badge'):
             self.voice_cost_badge.hide()
+        if hasattr(self, 'voice_avatar_btn') and not (bool(getattr(self, '_talk_only_mode', False)) and (not exit_talk_only)):
+            self.voice_avatar_btn.hide()
         still_talk = bool(getattr(self, '_talk_only_mode', False)) and (not exit_talk_only)
+        if not still_talk:
+            self._close_voice_avatar_window()
         if not still_talk:
             if hasattr(self, 'voice_brain_btn'):
                 self.voice_brain_btn.hide()
@@ -10652,6 +11546,9 @@ class PalaceWindow(QMainWindow):
             if hasattr(self, 'voice_cost_badge'):
                 self.voice_cost_badge.show()
                 self._refresh_bottom_cost_label()
+            if hasattr(self, 'voice_avatar_btn'):
+                self._refresh_voice_avatar_btn_text()
+                self.voice_avatar_btn.show()
             if hasattr(self, 'voice_mute_btn'):
                 self.voice_mute_btn.blockSignals(True)
                 self.voice_mute_btn.setChecked(False)
@@ -10662,6 +11559,8 @@ class PalaceWindow(QMainWindow):
                 self.end_talk_btn.show()
             self._on_voice_level_update(0, '▁▁▁▁▁▁', False)
             self._sync_voice_footer_state()
+            self._maybe_open_voice_avatar_for_live_voice()
+            self._sync_voice_avatar_status(state='listening', muted=False)
             if is_loopback_audio_device(dev_desc):
                 self.show_notice(
                     f'⚠ Live Voice opened "{dev_desc}" (speaker loopback, NOT a mic!). Open Settings → Voice & Audio to pick System default.'
@@ -10801,6 +11700,12 @@ class PalaceWindow(QMainWindow):
             self._last_voice_brain_provider = valid_prov
             self._refresh_voice_bar_pills()
             self._sync_voice_footer_state()
+            self._apply_voice_avatar_settings()
+        self._sync_voice_avatar_status(
+            state='speaking' if speak_aloud else 'listening',
+            caption=spoken_reply[:135],
+            has_visual_reply=False,
+        )
 
         if append_user_msg:
             self.append_message('user', user_disp, render=False)
@@ -10904,6 +11809,7 @@ class PalaceWindow(QMainWindow):
             self.voice_level_badge.setText(
                 '⏳ Talk Mode listening…' if talk_only else ('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…')
             )
+        self._sync_voice_avatar_status(state='thinking', caption='Thinking…')
 
         recent_snip = self._recent_voice_context_snippet()
         mem_ctx, allow_mem_write = self._search_voice_memory_context(
@@ -12533,6 +13439,8 @@ class PalaceWindow(QMainWindow):
                 'steering_state': self.active_steering_state,
                 'on_phase_status': lambda ev: worker_box['w'].progress.emit(ev) if worker_box.get('w') is not None else None,
                 'project_name': self._current_project_name(),
+                'model_overrides': dict(getattr(self, 'active_model_overrides', {}) or {}),
+                'context_depth': str(getattr(self, 'active_context_depth', 'standard') or 'standard'),
             }
             sr_override = getattr(self, 'smart_routing_override', None)
             if sr_override is not None:
@@ -12700,6 +13608,13 @@ class PalaceWindow(QMainWindow):
             ap_sum = str(getattr(result, 'autopatch_reboot_summary', '') or '')
 
             ans_upper = str(result.final_answer or '').upper()
+            ans_lower = str(result.final_answer or '').lower()
+            has_vis = ('[GENERATE_IMAGE' in ans_upper) or ('[WEATHER_MAP' in ans_upper) or ('```svg' in ans_lower)
+            self._sync_voice_avatar_status(
+                state='listening' if (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()) else 'idle',
+                caption=str(result.final_answer or '')[:135],
+                has_visual_reply=has_vis,
+            )
             if '[ALL TASKS COMPLETED' in ans_upper:
                 status_badge = '<span style="color:#3fb950; font-weight:700;">✓ All background tasks completed successfully</span>'
             elif '[PAUSED' in ans_upper or 'WAITING FOR USER INPUT' in ans_upper:
@@ -13000,6 +13915,7 @@ class PalaceWindow(QMainWindow):
         ):
             # Stop live microphone & speech whenever hiding to tray so nothing keeps talking invisibly
             try:
+                self._close_voice_avatar_window()
                 self.stop_all_voice_modes(exit_talk_only=False)
             except Exception:
                 pass
@@ -13014,6 +13930,7 @@ class PalaceWindow(QMainWindow):
                 )
             return
         try:
+            self._close_voice_avatar_window()
             self.stop_all_voice_modes(exit_talk_only=True)
         except Exception:
             try:

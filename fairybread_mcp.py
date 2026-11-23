@@ -184,8 +184,9 @@ def cleanup_external_mcp_for_dir(
     home, appdata = _resolve_roots(home_dir, appdata_dir)
     cleaned: list[str] = []
 
+    ag_mcp_cfg, ag_skill_md = _antigravity_paths(home)
     for cfg_path, remove_skill in (
-        (_antigravity_mcp_path(home), True),
+        (ag_mcp_cfg, True),
         (_claude_config_path(appdata), False),
     ):
         if not cfg_path.is_file():
@@ -203,7 +204,7 @@ def cleanup_external_mcp_for_dir(
         cfg_path.write_text(json.dumps(loaded, indent=2) + "\n", encoding="utf-8")
         cleaned.append(str(cfg_path))
         if remove_skill:
-            skill_md = _antigravity_skill_path(home)
+            skill_md = ag_skill_md
             if skill_md.is_file():
                 try:
                     skill_md.unlink()

@@ -1,10 +1,29 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import inspect
+import re
 import time
 from typing import Any, Callable
 
 from provider_registry import ProviderRegistry
 from provider_result import ProviderResult
+
+
+_INLINE_SESSION_HISTORY_RE = re.compile(
+    r"(?:={2,}\s*RECENT SESSION HISTORY[^\n]*\n.*?\n={2,}\s*END SESSION HISTORY[^\n]*(?:\n+)?|"
+    r"RECENT SESSION HISTORY(?:\s*\([^)]*\))?:\n.*?(?=\n+(?:MEMORY CONTEXT:|SHARED MEMORY CONTEXT:|WORKSPACE / SOURCE CODE TOOL CONTEXT:|ORIGINAL USER QUESTION:|CURRENT USER QUESTION:|USER QUESTION:)))",
+    re.DOTALL,
+)
+
+
+def _strip_duplicate_inline_history(prompt: str) -> str:
+    """Remove duplicate inline history text when structured `history_messages` are passed natively."""
+    if not prompt or "RECENT SESSION HISTORY" not in prompt:
+        return prompt
+    return _INLINE_SESSION_HISTORY_RE.sub(
+        "CONVERSATION HISTORY: (Provided directly in structured conversation turns above.)\n",
+        prompt,
+        count=1,
+    )
 
 
 class ProviderDispatcher:
@@ -20,11 +39,12 @@ class ProviderDispatcher:
         *,
         system_prompt: str | None = None,
         history_messages: list[dict[str, str]] | None = None,
+        model_override: str | None = None,
     ) -> ProviderResult:
         try:
             provider = self.registry.get(name)
             call_kw: dict[str, Any] = {}
-            if images or system_prompt or history_messages:
+            if images or system_prompt or history_messages or model_override:
                 try:
                     sig = inspect.signature(provider.generate)
                     params = sig.parameters
@@ -39,8 +59,18 @@ class ProviderDispatcher:
                     call_kw["system_prompt"] = system_prompt
                 if history_messages and (has_varkw or "history_messages" in params):
                     call_kw["history_messages"] = history_messages
+                if model_override and (has_varkw or "model_override" in params):
+                    try:
+                        from palace_config import resolve_profile_model_override
+                        is_or = "openrouter.ai" in str(getattr(provider, "base_url", "") or "").lower()
+                        resolved_ov = resolve_profile_model_override(name, str(model_override), is_openrouter=is_or)
+                    except Exception:
+                        resolved_ov = str(model_override).strip()
+                    if resolved_ov:
+                        call_kw["model_override"] = resolved_ov
 
-            response = provider.generate(prompt, **call_kw) if call_kw else provider.generate(prompt)
+            eff_prompt = _strip_duplicate_inline_history(prompt) if "history_messages" in call_kw else prompt
+            response = provider.generate(eff_prompt, **call_kw) if call_kw else provider.generate(eff_prompt)
 
             return ProviderResult(
                 provider_name=name,
@@ -62,6 +92,7 @@ class ProviderDispatcher:
         images: list[Any] | None = None,
         system_prompt: str | None = None,
         history_messages: list[dict[str, str]] | None = None,
+        model_overrides: dict[str, str] | None = None,
         per_provider_timeout: float | None = None,
         straggler_grace_seconds: float | None = None,
         cancel_event: Any = None,
@@ -92,6 +123,7 @@ class ProviderDispatcher:
                     images,
                     system_prompt=system_prompt,
                     history_messages=history_messages,
+                    model_override=(model_overrides or {}).get(name),
                 ): name
                 for name in provider_names
             }

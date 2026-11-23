@@ -1018,8 +1018,12 @@ class WindowTests(unittest.TestCase):
         draw_palace = build_palace({'deepseek': d_ds, 'openai': d_oai, 'cohere': d_coh})
         draw_palace.memory_service = MemoryService(db_path=self.root / "memory.db")
 
-        # Direct draw: 2-provider Graphic Prompt Duo (openai + deepseek when gemini is absent), 1 pass, skipping cohere
-        direct_res = draw_palace.run('Draw me a brown dog on a black carpet in front of a fireplace', max_rounds=2)
+        # Direct draw under prompt_duo: 2-provider Graphic Prompt Duo (openai + deepseek when gemini is absent), 1 pass, skipping cohere
+        with patch(
+            'palace_config.load_graphics_settings',
+            return_value={'prompt_duo': ['gemini', 'openai'], 'prompt_duo_fallback': ['deepseek', 'qwen'], 'pipeline_mode': 'prompt_duo'},
+        ):
+            direct_res = draw_palace.run('Draw me a brown dog on a black carpet in front of a fireplace', max_rounds=2)
         self.assertEqual(set(direct_res.provider_results.keys()), {'openai', 'deepseek'})
         self.assertEqual(d_oai.calls, 1)
         self.assertEqual(d_coh.calls, 0)
@@ -1688,6 +1692,309 @@ class VoiceUpgradeTests(unittest.TestCase):
         self.assertFalse(ca['supported'])
         self.assertIn('sk_car_', ca['summary'])
         self.assertEqual(ca['billing_url'], 'https://play.cartesia.ai')
+
+    def test_win11_spinbox_css_non_overlapping_arrows_and_stepping(self):
+        from PySide6.QtWidgets import QApplication, QSpinBox, QStyle, QStyleFactory, QStyleOptionSpinBox
+        from palace_theme import build_theme_stylesheet
+
+        app = QApplication.instance() or QApplication([])
+        spin = QSpinBox()
+        spin.setRange(0, 60)
+        spin.setSuffix(' s (0 = off)')
+        spin.setValue(15)
+        spin.resize(400, 34)
+        spin.setStyleSheet(build_theme_stylesheet('matrix_crt'))
+        w11_style = QStyleFactory.create('windows11')
+        if w11_style is not None:
+            spin.setStyle(w11_style)
+        spin.ensurePolished()
+        opt = QStyleOptionSpinBox()
+        spin.initStyleOption(opt)
+        st = spin.style()
+        edit_r = st.subControlRect(QStyle.ComplexControl.CC_SpinBox, opt, QStyle.SubControl.SC_SpinBoxEditField, spin)
+        up_r = st.subControlRect(QStyle.ComplexControl.CC_SpinBox, opt, QStyle.SubControl.SC_SpinBoxUp, spin)
+        down_r = st.subControlRect(QStyle.ComplexControl.CC_SpinBox, opt, QStyle.SubControl.SC_SpinBoxDown, spin)
+
+        self.assertFalse(edit_r.intersects(up_r), msg=f'Edit {edit_r} overlaps Up {up_r}')
+        self.assertFalse(edit_r.intersects(down_r), msg=f'Edit {edit_r} overlaps Down {down_r}')
+        self.assertFalse(up_r.intersects(down_r), msg=f'Up {up_r} overlaps Down {down_r}')
+
+        for expected in range(16, 61):
+            spin.stepUp()
+            self.assertEqual(spin.value(), expected)
+        spin.stepUp()
+        self.assertEqual(spin.value(), 60)
+        for _ in range(60):
+            spin.stepDown()
+        self.assertEqual(spin.value(), 0)
+        spin.close()
+        app.processEvents()
+
+    def test_settings_dialog_scroll_viewport_clamp_and_autosave_on_close(self):
+        from PySide6.QtCore import QRect
+        from PySide6.QtWidgets import QApplication, QScrollArea
+        from palace_config import load_agent_defaults
+        from palace_gui import ManageAIsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+        from voice_service import load_voice_settings
+
+        app = QApplication.instance() or QApplication([])
+        cfg = self.root / 'palace_config.json'
+        dlg = ManageAIsDialog(config_path=cfg, initial_page='Agent Defaults')
+        self.assertEqual(dlg.pages.count(), 12)
+        for i in range(dlg.pages.count()):
+            pg = dlg.pages.widget(i)
+            has_scroll = isinstance(pg, QScrollArea) or (pg.findChild(QScrollArea) is not None)
+            self.assertTrue(has_scroll, msg=f'Settings page {i} lacks QScrollArea')
+
+        dlg._fit_to_available_screen(QRect(0, 0, 1366, 728))
+        app.processEvents()
+        self.assertLessEqual(dlg.height(), 728 - 40)
+        self.assertGreaterEqual(dlg.y(), 0)
+        self.assertLessEqual(dlg.y() + dlg.height(), 728)
+
+        dlg.ad_straggler_spin.setValue(25)
+        w_idx = dlg.voice_avatar_mode_combo.findData('windowed')
+        self.assertGreaterEqual(w_idx, 0)
+        dlg.voice_avatar_mode_combo.setCurrentIndex(w_idx)
+        # Close via reject (Esc / X) without pressing Save/Done — auto-save must flush changes
+        dlg.reject()
+        app.processEvents()
+
+        self.assertEqual(load_agent_defaults(cfg)['straggler_grace_sec'], 25)
+        self.assertEqual(load_voice_settings(cfg)['voice_avatar_mode'], 'windowed')
+
+        dlg2 = ManageAIsDialog(config_path=cfg, initial_page='Voice & Audio')
+        dlg2.show()
+        app.processEvents()
+        aud = audit_palace_window_geometry(dlg2)
+        self.assertEqual(aud['clipped_widget_count'], 0, msg=str(aud.get('clipped_widgets')))
+        dlg2.close()
+        app.processEvents()
+
+    def test_voice_tts_fft_telemetry_and_clear(self):
+        import math
+        import struct
+        from voice_service import clear_tts_audio_telemetry, get_tts_audio_telemetry, record_tts_pcm_telemetry
+
+        clear_tts_audio_telemetry()
+        sr = 24000
+        n_samples = sr // 4
+        samples = [
+            int(max(-32767, min(32767, (0.45 * math.sin(2.0 * math.pi * 440.0 * i / sr) + 0.35 * math.sin(2.0 * math.pi * 1200.0 * i / sr)) * 32000)))
+            for i in range(n_samples)
+        ]
+        pcm = struct.pack('<' + 'h' * n_samples, *samples)
+        record_tts_pcm_telemetry(pcm, sr, delay_sec=0.0)
+        telem = get_tts_audio_telemetry()
+        self.assertTrue(telem['speaking'])
+        self.assertGreater(telem['rms'], 0.1)
+        self.assertEqual(len(telem['bands']), 16)
+        self.assertGreater(max(telem['bands']), 0.2)
+
+        clear_tts_audio_telemetry()
+        telem_after = get_tts_audio_telemetry()
+        self.assertFalse(telem_after['speaking'])
+        self.assertEqual(telem_after['rms'], 0.0)
+
+    def test_voice_avatar_shapes_palettes_hotzone_and_window_integration(self):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QApplication
+        from dispatcher import ProviderDispatcher
+        from memory_service import MemoryService
+        from orchestrator import PalaceOrchestrator
+        from palace_gui import PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from provider_registry import ProviderRegistry
+        from session_store import SessionStore
+        from voice_service import load_voice_settings
+        from voice_visualizer import AVATAR_PALETTES, AVATAR_SHAPES, VoiceAvatarStageWindow
+
+        app = QApplication.instance() or QApplication([])
+        stage = VoiceAvatarStageWindow()
+        img = QImage(320, 240, QImage.Format.Format_ARGB32_Premultiplied)
+        for sid, _ in AVATAR_SHAPES:
+            for pid, _ in AVATAR_PALETTES:
+                for st_name in ('idle', 'listening', 'thinking', 'speaking'):
+                    stage.apply_settings(shape_id=sid, palette_id=pid, provider_color_hex='#58a6ff')
+                    if st_name == 'speaking':
+                        stage.canvas.step_simulation(0.016, telemetry={'speaking': True, 'rms': 0.58, 'bands': [0.48] * 16})
+                    elif st_name == 'listening':
+                        stage.canvas.set_interaction_state('listening', mic_level=0.52, muted=False)
+                        stage.canvas.step_simulation(0.016, telemetry={'speaking': False, 'rms': 0.0, 'bands': [0.0] * 16})
+                    else:
+                        stage.canvas.set_interaction_state(st_name, mic_level=0.0, muted=False)
+                        stage.canvas.step_simulation(0.016, telemetry={'speaking': False, 'rms': 0.0, 'bands': [0.0] * 16})
+                    img.fill(0)
+                    stage.canvas.resize(320, 240)
+                    painter = QPainter(img)
+                    stage.canvas.render_frame(painter, state_override=st_name)
+                    painter.end()
+                    raw = bytes(img.constBits())
+                    # Non-black glowing center / geometry must have varied channel luminance
+                    self.assertGreater(max(raw), 35, msg=f'Blank frame for {sid}/{pid}/{st_name}')
+
+        stage.present_in_mode('fullscreen')
+        app.processEvents()
+        self.assertFalse(stage._dock_revealed)
+        self.assertGreaterEqual(stage._dock_frame.y(), stage.height())
+        stage.handle_pointer_position(QPoint(stage.width() // 2, stage.height() - 8))
+        self.assertTrue(stage._dock_revealed)
+        stage.hide_dock(animate=False)
+        self.assertFalse(stage._dock_revealed)
+        self.assertGreaterEqual(stage._dock_frame.y(), stage.height())
+
+        stage.present_in_mode('windowed')
+        app.processEvents()
+        for w, h in ((580, 440), (360, 320)):
+            stage.resize(w, h)
+            stage._sync_dock_compact_buttons()
+            stage._layout_overlays()
+            app.processEvents()
+            aud = audit_palace_window_geometry(stage)
+            self.assertEqual(aud['clipped_widget_count'], 0, msg=f'{w}x{h}: {aud.get("clipped_widgets")}')
+        stage.close_programmatically()
+        stage.close()
+
+        cfg = self.root / 'win_cfg.json'
+        sess_dir = self.root / 'win_sess'
+        mem = MemoryService(db_path=self.root / 'win_mem.db')
+        win = PalaceWindow(
+            store=SessionStore(sess_dir),
+            palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+            provider_states={'gemini': True, 'openai': True},
+            config_path=cfg,
+        )
+        win._memory_db_path = lambda: self.root / 'win_mem.db'
+        try:
+            self.assertEqual(load_voice_settings(cfg)['voice_avatar_mode'], 'no_avatar')
+            win._maybe_open_voice_avatar_for_live_voice()
+            self.assertIsNone(getattr(win, '_voice_avatar_window', None))
+
+            win._set_voice_avatar_mode('windowed', persist=True)
+            app.processEvents()
+            self.assertEqual(load_voice_settings(cfg)['voice_avatar_mode'], 'windowed')
+            self.assertIn('Win', win.voice_avatar_btn.text())
+            self.assertTrue(win._voice_avatar_window.isVisible())
+
+            win._set_voice_avatar_mode('fullscreen', persist=True)
+            app.processEvents()
+            self.assertEqual(load_voice_settings(cfg)['voice_avatar_mode'], 'fullscreen')
+            self.assertIn('Full', win.voice_avatar_btn.text())
+            self.assertTrue(win._voice_avatar_window.isFullScreen())
+
+            win._set_voice_avatar_mode('no_avatar', persist=True)
+            app.processEvents()
+            self.assertEqual(load_voice_settings(cfg)['voice_avatar_mode'], 'no_avatar')
+            self.assertIn('Off', win.voice_avatar_btn.text())
+            self.assertFalse(win._voice_avatar_window.isVisible())
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+    def test_setup_wizard_auto_launch_only_when_no_ai_agents_and_dismiss_persists(self):
+        from credential_store import CredentialStore
+        from dispatcher import ProviderDispatcher
+        from orchestrator import PalaceOrchestrator
+        from palace_config import load_ui_settings, save_provider_config, save_ui_settings
+        from palace_gui import ManageAIsDialog, has_any_configured_ai_agents
+        from palace_ouroboros import audit_palace_window_geometry
+        from provider_registry import ProviderRegistry
+        from setup_wizard import GuidedSetupWizardDialog
+
+        app = QApplication.instance() or QApplication([])
+        cfg = self.root / 'wiz_startup_cfg.json'
+        cred_path = self.root / 'wiz_startup_creds.json'
+        cred = CredentialStore(path=cred_path)
+
+        # 1. Fresh config + only non-AI voice/email keys => 0 AI agents => wizard should auto-launch
+        cred.set_api_key('cartesia', 'cartesia-voice-only-key')
+        cred.set_api_key('email_connector', 'smtp-only-secret')
+        self.assertEqual(cred.list_providers(), ['cartesia', 'email_connector'])
+        self.assertFalse(has_any_configured_ai_agents(config_path=cfg, credential_store=cred))
+
+        mem = MemoryService(db_path=self.root / 'wiz_mem.db')
+        win = PalaceWindow(
+            store=SessionStore(self.root / 'wiz_sess'),
+            palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+            provider_states={},
+            config_path=cfg,
+        )
+        win._memory_db_path = lambda: self.root / 'wiz_mem.db'
+        try:
+            self.assertTrue(
+                win._should_auto_launch_setup_wizard(ui_cfg={'setup_wizard_completed': False}, demo=False, credential_store=cred)
+            )
+            self.assertFalse(
+                win._should_auto_launch_setup_wizard(ui_cfg={'setup_wizard_completed': False}, demo=True, credential_store=cred)
+            )
+
+            # 2. Enabling key-free local Ollama suppresses wizard auto-launch
+            save_provider_config('ollama', enabled=True, model='llama3.2', config_path=cfg)
+            self.assertTrue(has_any_configured_ai_agents(config_path=cfg, credential_store=cred))
+            self.assertFalse(
+                win._should_auto_launch_setup_wizard(ui_cfg={'setup_wizard_completed': False}, demo=False, credential_store=cred)
+            )
+
+            # 3. Disable Ollama, add a real AI key -> still suppresses auto-launch even if setup_wizard_completed is False
+            save_provider_config('ollama', enabled=False, config_path=cfg)
+            self.assertFalse(has_any_configured_ai_agents(config_path=cfg, credential_store=cred))
+            cred.set_api_key('openai', 'sk-test-openai-key-123456')
+            self.assertIn('openai', cred.list_providers())
+            self.assertTrue(has_any_configured_ai_agents(config_path=cfg, credential_store=cred))
+            self.assertFalse(
+                win._should_auto_launch_setup_wizard(ui_cfg={'setup_wizard_completed': False}, demo=False, credential_store=cred)
+            )
+
+            # 4. Dismissing Setup Wizard (Close / Skip for Now) persists setup_wizard_completed = True
+            cred.set_api_key('openai', '')
+            self.assertNotIn('openai', cred.list_providers())
+            self.assertFalse(has_any_configured_ai_agents(config_path=cfg, credential_store=cred))
+            save_ui_settings({'setup_wizard_completed': False}, config_path=cfg)
+
+            wiz = GuidedSetupWizardDialog(win, config_path=cfg, credential_store=cred, initial_page=0)
+            wiz.reject()
+            wiz.deleteLater()
+            app.processEvents()
+            self.assertTrue(load_ui_settings(cfg)['setup_wizard_completed'])
+            self.assertFalse(
+                win._should_auto_launch_setup_wizard(ui_cfg=load_ui_settings(cfg), demo=False, credential_store=cred)
+            )
+
+            # 5. External Agent Bridge card shows inline CLI hint + Re-scan CLIs without clipping
+            tmp_home = self.root / 'bridge_home'
+            tmp_app = self.root / 'bridge_app'
+            (tmp_home / '.local' / 'bin').mkdir(parents=True)
+            (tmp_home / '.local' / 'bin' / 'claude.exe').write_bytes(b'exe')
+            dlg = ManageAIsDialog(
+                win,
+                config_path=cfg,
+                initial_page='External Agent Bridge (MCP)',
+                bridge_home_dir=tmp_home,
+                bridge_appdata_dir=tmp_app,
+            )
+            try:
+                dlg.resize(900, 650)
+                dlg.show()
+                app.processEvents()
+                aud = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud['clipped_widget_count'], 0, msg=str(aud.get('clipped_widgets')))
+                self.assertTrue(dlg.bridge_platform_controls['claude']['cli_available'])
+                self.assertFalse(dlg.bridge_platform_controls['claude']['cli_hint'].isVisible())
+                self.assertFalse(dlg.bridge_platform_controls['grok']['cli_available'])
+                self.assertTrue(dlg.bridge_platform_controls['grok']['cli_hint'].isVisible())
+                dlg.rescan_bridge_clis_btn.click()
+                app.processEvents()
+                self.assertIn('Re-scan complete', dlg.bridge_status_label.text())
+            finally:
+                dlg.close()
+                dlg.deleteLater()
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
 
 
 if __name__ == '__main__':

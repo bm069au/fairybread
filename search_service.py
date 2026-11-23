@@ -160,10 +160,22 @@ def detect_organic_turn_intents(text: str) -> dict[str, Any]:
     }
 
 
+_NON_PATCH_ACTION_RE = re.compile(
+    r"\b(?:"
+    r"draw|paint|sketch|render|full\s*render|illustrat\w*|generate\s+(?:an?\s+)?image|"
+    r"image|picture|photo|photograph|banner|wallpaper|weather|forecast|joke|humou?r|"
+    r"search\s+(?:the\s+web|online|google)|write\s+(?:a|the)\s+(?:prompt|paragraph|essay|story)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
 def is_terse_patch_confirmation(text: str) -> bool:
-    """Return True if the user message starts with or is a concise confirmation synonym (Apply, Proceed, Go, Do it, etc.)."""
+    """Return True if the user message is a short confirmation synonym (Apply, Proceed, Go, Yes, OK) without non-patch action verbs."""
     clean = (text or "").strip()
-    if not clean:
+    if not clean or len(clean) > 64:
+        return False
+    if _NON_PATCH_ACTION_RE.search(clean):
         return False
     return bool(_TERSE_CONFIRM_RE.search(clean))
 
@@ -380,11 +392,103 @@ _WMO_WEATHER_CODES: dict[int, str] = {
 }
 
 _WEATHER_STOPWORDS = {
-    "what", "whats", "is", "the", "current", "currently", "live", "today", "tonight", "now",
-    "weather", "forecast", "for", "and", "in", "at", "of", "near", "around", "area", "code",
-    "postcode", "post", "zip", "suburb", "city", "town", "please", "tell", "me", "give",
-    "next", "days", "day", "week", "outlook", "temperature", "temp", "like", "how",
+    "what", "whats", "what's", "is", "are", "the", "a", "an", "current", "currently", "live",
+    "today", "tonight", "now", "tomorrow", "weekend", "weather", "forecast", "forecasts",
+    "for", "and", "in", "at", "of", "near", "around", "area", "code", "postcode", "post",
+    "zip", "suburb", "city", "town", "please", "tell", "me", "give", "show", "check", "get",
+    "fetch", "display", "pull", "look", "looking", "see", "find", "know", "bring", "send",
+    "want", "need", "can", "you", "could", "would", "will", "does", "should", "going",
+    "outside", "there", "here", "right", "latest", "local", "this", "that", "with", "from",
+    "about", "have", "has", "been", "coming", "next", "days", "day", "week", "outlook",
+    "temperature", "temp", "temps", "like", "how", "radar", "map", "maps", "rain", "raining",
+    "wind", "windy", "humidity", "hourly", "conditions", "condition", "report", "update",
+    "morning", "afternoon", "evening", "night", "storm", "storms", "sunny", "cloudy", "cold",
+    "hot", "warm", "cool", "degree", "degrees", "celsius", "fahrenheit", "chance", "precip",
+    "precipitation", "sunrise", "sunset", "time", "hey", "hi", "hello", "its", "it's",
+    "over", "across", "out", "my", "our", "your", "any", "some", "just", "also", "still",
+    "expected", "expecting", "supposed",
 }
+
+_WEATHER_PLACE_PREP_RE = re.compile(
+    r"\b(?:for|in|at|near|around|of)\s+([A-Za-z][A-Za-z'\-]*(?:\s+[A-Za-z][A-Za-z'\-]*){0,3})",
+    re.IGNORECASE,
+)
+
+
+def _extract_weather_place_candidates(raw: str) -> list[str]:
+    """Extract clean place-name candidates, preferring preposition-anchored spans (e.g. 'for Port Adelaide')."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    candidate_names: list[str] = []
+    seen_lower: set[str] = set()
+    covered_tokens: set[str] = set()
+
+    for m in _WEATHER_PLACE_PREP_RE.finditer(text):
+        span_words = m.group(1).split()
+        collected: list[str] = []
+        started = False
+        for tok in span_words:
+            low = tok.lower()
+            if low in _WEATHER_STOPWORDS:
+                if not started:
+                    continue
+                break
+            started = True
+            collected.append(tok)
+        phrase = " ".join(collected).strip()
+        if len(phrase) >= 3 and phrase.lower() not in seen_lower:
+            seen_lower.add(phrase.lower())
+            candidate_names.append(phrase)
+            for tok in collected:
+                covered_tokens.add(tok.lower())
+
+    words = re.findall(r"[A-Za-z][A-Za-z'\-]+", text)
+    for w in words:
+        low = w.lower()
+        if low in _WEATHER_STOPWORDS or len(w) < 3 or low in covered_tokens or low in seen_lower:
+            continue
+        seen_lower.add(low)
+        candidate_names.append(w)
+
+    return candidate_names[:3]
+
+
+def _pick_best_geocoding_result(cname: str, results: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Reject phonetic geocoder mismatches (like 'show' -> 'Shut') and rank valid matches."""
+    q_norm = re.sub(r"[^a-z0-9]+", " ", (cname or "").lower()).strip()
+    q_tokens = q_norm.split()
+    if not q_norm or not isinstance(results, list):
+        return None
+    best_item: dict[str, Any] | None = None
+    best_key = (0, -1)
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        r_name = re.sub(r"[^a-z0-9]+", " ", str(r.get("name") or "").lower()).strip()
+        if not r_name:
+            continue
+        r_tokens = r_name.split()
+        if r_name == q_norm:
+            score = 3
+        elif (
+            (len(q_norm) >= 4 and (r_name.startswith(q_norm) or q_norm.startswith(r_name)))
+            or (q_tokens and all(tok in r_tokens for tok in q_tokens))
+        ):
+            score = 2
+        else:
+            score = 0
+        if score <= 0:
+            continue
+        try:
+            pop = int(r.get("population") or 0)
+        except (TypeError, ValueError):
+            pop = 0
+        rank_key = (score, pop)
+        if rank_key > best_key:
+            best_key = rank_key
+            best_item = r
+    return best_item
 
 
 def _deg_to_compass(deg: float | int | None) -> str:
@@ -436,25 +540,20 @@ def fetch_live_weather_bundle(question: str, *, timeout: float = 5.0) -> dict[st
             except Exception:
                 pass
 
-    # 2. Extract candidate place tokens / TitleCase multi-word names
-    candidate_names: list[str] = []
-    words = re.findall(r"[A-Za-z][A-Za-z'\-]+", raw)
-    filtered = [w for w in words if w.lower() not in _WEATHER_STOPWORDS and len(w) >= 3]
-    for w in filtered[:3]:
-        if w.lower() not in {c.lower() for c in candidate_names}:
-            candidate_names.append(w)
+    # 2. Extract candidate place phrases / tokens (preposition-anchored first, mismatch-guarded)
+    candidate_names = _extract_weather_place_candidates(raw)
 
-    for cname in candidate_names[:2]:
+    for cname in candidate_names[:3]:
         try:
             gurl = "https://geocoding-api.open-meteo.com/v1/search?" + urllib_parse.urlencode(
-                {"name": cname, "count": 2, "language": "en", "format": "json"}
+                {"name": cname, "count": 5, "language": "en", "format": "json"}
             )
             req = urllib_request.Request(gurl, headers={"User-Agent": "FairybreadWeather/1.0"})
             with urllib_request.urlopen(req, timeout=timeout) as resp:
                 gdata = json.loads(resp.read().decode("utf-8"))
             res = (gdata.get("results") or [])
-            if res:
-                top = res[0]
+            top = _pick_best_geocoding_result(cname, res)
+            if top is not None:
                 lbl_parts = [str(top.get("name") or cname)]
                 if top.get("admin1"):
                     lbl_parts.append(str(top["admin1"]))
@@ -579,6 +678,79 @@ def _lat_lon_to_tile_xy(lat: float, lon: float, zoom: int) -> tuple[float, float
     return xtile, ytile
 
 
+_BITMAP_FONT_5X7: dict[str, tuple[str, ...]] = {
+    " ": (".....", ".....", ".....", ".....", ".....", ".....", "....."),
+    "A": (".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "B": ("####.", "#...#", "#...#", "####.", "#...#", "#...#", "####."),
+    "C": (".####", "#....", "#....", "#....", "#....", "#....", ".####"),
+    "D": ("####.", "#...#", "#...#", "#...#", "#...#", "#...#", "####."),
+    "E": ("#####", "#....", "#....", "####.", "#....", "#....", "#####"),
+    "F": ("#####", "#....", "#....", "####.", "#....", "#....", "#...."),
+    "G": (".####", "#....", "#....", "#..##", "#...#", "#...#", ".###."),
+    "H": ("#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"),
+    "I": (".###.", "..#..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "J": ("..###", "...#.", "...#.", "...#.", "#..#.", "#..#.", ".##.."),
+    "K": ("#...#", "#..#.", "#.#..", "##...", "#.#..", "#..#.", "#...#"),
+    "L": ("#....", "#....", "#....", "#....", "#....", "#....", "#####"),
+    "M": ("#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", "#...#"),
+    "N": ("#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"),
+    "O": (".###.", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "P": ("####.", "#...#", "#...#", "####.", "#....", "#....", "#...."),
+    "Q": (".###.", "#...#", "#...#", "#...#", "#.#.#", "#..#.", ".##.#"),
+    "R": ("####.", "#...#", "#...#", "####.", "#.#..", "#..#.", "#...#"),
+    "S": (".####", "#....", "#....", ".###.", "....#", "....#", "####."),
+    "T": ("#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "U": ("#...#", "#...#", "#...#", "#...#", "#...#", "#...#", ".###."),
+    "V": ("#...#", "#...#", "#...#", "#...#", ".#.#.", ".#.#.", "..#.."),
+    "W": ("#...#", "#...#", "#...#", "#...#", "#.#.#", "##.##", "#...#"),
+    "X": ("#...#", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#...#"),
+    "Y": ("#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."),
+    "Z": ("#####", "....#", "...#.", "..#..", ".#...", "#....", "#####"),
+    "0": (".###.", "#..##", "#.#.#", "#.#.#", "##..#", "#...#", ".###."),
+    "1": ("..#..", ".##..", "..#..", "..#..", "..#..", "..#..", ".###."),
+    "2": (".###.", "#...#", "....#", "..##.", ".#...", "#....", "#####"),
+    "3": ("####.", "....#", "....#", ".###.", "....#", "....#", "####."),
+    "4": ("#...#", "#...#", "#...#", "#####", "....#", "....#", "....#"),
+    "5": ("#####", "#....", "#....", "####.", "....#", "....#", "####."),
+    "6": (".###.", "#....", "####.", "#...#", "#...#", "#...#", ".###."),
+    "7": ("#####", "....#", "...#.", "..#..", ".#...", ".#...", ".#..."),
+    "8": (".###.", "#...#", "#...#", ".###.", "#...#", "#...#", ".###."),
+    "9": (".###.", "#...#", "#...#", ".####", "....#", "...#.", ".##.."),
+    ".": (".....", ".....", ".....", ".....", ".....", ".##..", ".##.."),
+    ",": (".....", ".....", ".....", ".....", ".....", "..#..", ".#..."),
+    ":": (".....", ".##..", ".##..", ".....", ".##..", ".##..", "....."),
+    "/": ("....#", "...#.", "...#.", "..#..", ".#...", ".#...", "#...."),
+    "-": (".....", ".....", ".....", ".###.", ".....", ".....", "....."),
+    "%": ("##..#", "##.#.", "...#.", "..#..", ".#...", ".#.##", "#..##"),
+    "(": ("...#.", "..#..", ".#...", ".#...", ".#...", "..#..", "...#."),
+    ")": (".#...", "..#..", "...#.", "...#.", "...#.", "..#..", ".#..."),
+    "|": ("..#..", "..#..", "..#..", "..#..", "..#..", "..#..", "..#.."),
+    "'": ("..#..", "..#..", ".#...", ".....", ".....", ".....", "....."),
+    "°": (".##..", "#..#.", ".##..", ".....", ".....", ".....", "....."),
+    "·": (".....", ".....", ".....", "..#..", ".....", ".....", "....."),
+    "?": (".###.", "#...#", "....#", "..##.", "..#..", ".....", "..#.."),
+    "+": (".....", "..#..", "..#..", "#####", "..#..", "..#..", "....."),
+}
+
+
+def _draw_qimage_bitmap_text(painter: Any, x: int, y: int, text: str, color: Any, scale: int = 1) -> None:
+    """Thread-safe pure-pixel HUD text renderer via QPainter.fillRect (no QFont / no QGuiApplication required)."""
+    s = max(1, int(scale))
+    cur_x = int(x)
+    clean = (text or "").replace("—", "-").replace("–", "-")
+    for raw_ch in clean:
+        ch = raw_ch.upper()
+        glyph = _BITMAP_FONT_5X7.get(ch)
+        if glyph is None:
+            cur_x += 6 * s
+            continue
+        for ry, row in enumerate(glyph):
+            for cx_px, pixel in enumerate(row):
+                if pixel == "#":
+                    painter.fillRect(cur_x + cx_px * s, int(y) + ry * s, s, s, color)
+        cur_x += 6 * s
+
+
 def render_live_weather_map_png(
     location: dict[str, Any],
     weather_data: dict[str, Any] | None = None,
@@ -595,8 +767,7 @@ def render_live_weather_map_png(
     except Exception:
         use_pil = False
         try:
-            from PySide6.QtCore import QRect
-            from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+            from PySide6.QtGui import QColor, QImage, QPainter, QPen
         except Exception:
             return None
 
@@ -726,30 +897,61 @@ def render_live_weather_map_png(
     base_loaded = 0
     radar_loaded = 0
 
+    tile_jobs = [
+        (row_i, col_i, cx + dx, cy + dy)
+        for row_i, dy in enumerate(dy_list)
+        for col_i, dx in enumerate(dx_list)
+    ]
+    base_tiles: dict[tuple[int, int], bytes] = {}
+    radar_tiles: dict[tuple[int, int], bytes] = {}
+    with ThreadPoolExecutor(max_workers=6) as _tile_pool:
+        base_futs = {
+            _tile_pool.submit(_fetch_base_bytes, gx, gy): (row_i, col_i)
+            for row_i, col_i, gx, gy in tile_jobs
+        }
+        radar_futs = (
+            {
+                _tile_pool.submit(_fetch_radar_bytes, gx, gy): (row_i, col_i)
+                for row_i, col_i, gx, gy in tile_jobs
+            }
+            if radar_path
+            else {}
+        )
+        for fut in as_completed(base_futs):
+            rc = base_futs[fut]
+            try:
+                base_tiles[rc] = fut.result() or b""
+            except Exception:
+                base_tiles[rc] = b""
+        for fut in as_completed(radar_futs):
+            rc = radar_futs[fut]
+            try:
+                radar_tiles[rc] = fut.result() or b""
+            except Exception:
+                radar_tiles[rc] = b""
+
     if use_pil:
         canvas = Image.new("RGBA", (768, 512), (13, 17, 23, 255))
-        for row_i, dy in enumerate(dy_list):
-            for col_i, dx in enumerate(dx_list):
-                gx, gy = cx + dx, cy + dy
-                px, py = col_i * 256, row_i * 256
-                raw_b = _fetch_base_bytes(gx, gy)
-                if raw_b:
-                    try:
-                        base_im = Image.open(io.BytesIO(raw_b)).convert("RGBA")
-                        canvas.alpha_composite(base_im, (px, py))
-                        base_loaded += 1
-                    except Exception:
-                        pass
-                raw_r = _fetch_radar_bytes(gx, gy)
-                if raw_r:
-                    try:
-                        im = Image.open(io.BytesIO(raw_r)).convert("RGBA")
-                        r, g, b, a = im.split()
-                        a = a.point(lambda v: int(v * 0.72))
-                        canvas.alpha_composite(Image.merge("RGBA", (r, g, b, a)), (px, py))
-                        radar_loaded += 1
-                    except Exception:
-                        pass
+        for row_i, col_i, _gx, _gy in tile_jobs:
+            px, py = col_i * 256, row_i * 256
+            raw_b = base_tiles.get((row_i, col_i), b"")
+            if raw_b:
+                try:
+                    base_im = Image.open(io.BytesIO(raw_b)).convert("RGBA")
+                    canvas.alpha_composite(base_im, (px, py))
+                    base_loaded += 1
+                except Exception:
+                    pass
+            raw_r = radar_tiles.get((row_i, col_i), b"")
+            if raw_r:
+                try:
+                    im = Image.open(io.BytesIO(raw_r)).convert("RGBA")
+                    r, g, b, a = im.split()
+                    a = a.point(lambda v: int(v * 0.72))
+                    canvas.alpha_composite(Image.merge("RGBA", (r, g, b, a)), (px, py))
+                    radar_loaded += 1
+                except Exception:
+                    pass
         if base_loaded == 0 and radar_loaded == 0:
             return None
         draw = ImageDraw.Draw(canvas, "RGBA")
@@ -767,28 +969,36 @@ def render_live_weather_map_png(
         draw.text((140, 492), attr_txt[:104], fill=(139, 148, 158, 255))
         canvas.save(str(out_fp), format="PNG")
     else:
+        can_use_qfont = False
+        try:
+            from PySide6.QtCore import QRect, QThread
+            from PySide6.QtGui import QFont, QGuiApplication
+            _app = QGuiApplication.instance()
+            if _app is not None and QThread.currentThread() == _app.thread():
+                can_use_qfont = True
+        except Exception:
+            can_use_qfont = False
+
         qcanvas = QImage(768, 512, QImage.Format.Format_ARGB32_Premultiplied)
         qcanvas.fill(QColor(13, 17, 23, 255))
         painter = QPainter(qcanvas)
         try:
-            for row_i, dy in enumerate(dy_list):
-                for col_i, dx in enumerate(dx_list):
-                    gx, gy = cx + dx, cy + dy
-                    px, py = col_i * 256, row_i * 256
-                    raw_b = _fetch_base_bytes(gx, gy)
-                    if raw_b:
-                        qim = QImage.fromData(raw_b)
-                        if not qim.isNull():
-                            painter.setOpacity(1.0)
-                            painter.drawImage(px, py, qim)
-                            base_loaded += 1
-                    raw_r = _fetch_radar_bytes(gx, gy)
-                    if raw_r:
-                        qrad = QImage.fromData(raw_r)
-                        if not qrad.isNull():
-                            painter.setOpacity(0.72)
-                            painter.drawImage(px, py, qrad)
-                            radar_loaded += 1
+            for row_i, col_i, _gx, _gy in tile_jobs:
+                px, py = col_i * 256, row_i * 256
+                raw_b = base_tiles.get((row_i, col_i), b"")
+                if raw_b:
+                    qim = QImage.fromData(raw_b)
+                    if not qim.isNull():
+                        painter.setOpacity(1.0)
+                        painter.drawImage(px, py, qim)
+                        base_loaded += 1
+                raw_r = radar_tiles.get((row_i, col_i), b"")
+                if raw_r:
+                    qrad = QImage.fromData(raw_r)
+                    if not qrad.isNull():
+                        painter.setOpacity(0.72)
+                        painter.drawImage(px, py, qrad)
+                        radar_loaded += 1
             if base_loaded == 0 and radar_loaded == 0:
                 return None
             painter.setOpacity(1.0)
@@ -801,17 +1011,25 @@ def render_live_weather_map_png(
             painter.setPen(QPen(QColor(59, 130, 246, 220), 1))
             painter.setBrush(QColor(13, 17, 23, 215))
             painter.drawRoundedRect(bx, by, lbl_w, 18, 4.0, 4.0)
-            painter.setFont(QFont("Segoe UI", 8))
-            painter.setPen(QColor(240, 246, 252, 255))
-            painter.drawText(QRect(bx + 6, by + 1, lbl_w - 8, 16), 0x81, short_lbl)
             painter.fillRect(0, 0, 768, 30, QColor(13, 17, 23, 225))
-            painter.drawText(QRect(10, 4, 748, 22), 0x81, top_txt[:118])
             painter.fillRect(0, 484, 768, 28, QColor(13, 17, 23, 225))
-            painter.setPen(QColor(139, 148, 158, 255))
-            painter.drawText(QRect(10, 488, 36, 20), 0x81, "Rain:")
             for i, lc in enumerate(legend_cols):
                 painter.fillRect(48 + i * 16, 494, 13, 8, QColor(*lc, 235))
-            painter.drawText(QRect(140, 488, 620, 20), 0x81, attr_txt[:104])
+            fg_light = QColor(240, 246, 252, 255)
+            fg_muted = QColor(139, 148, 158, 255)
+            if can_use_qfont:
+                painter.setFont(QFont("Segoe UI", 8))
+                painter.setPen(fg_light)
+                painter.drawText(QRect(bx + 6, by + 1, lbl_w - 8, 16), 0x81, short_lbl)
+                painter.drawText(QRect(10, 4, 748, 22), 0x81, top_txt[:118])
+                painter.setPen(fg_muted)
+                painter.drawText(QRect(10, 488, 36, 20), 0x81, "Rain:")
+                painter.drawText(QRect(140, 488, 620, 20), 0x81, attr_txt[:104])
+            else:
+                _draw_qimage_bitmap_text(painter, bx + 6, by + 6, short_lbl, fg_light, scale=1)
+                _draw_qimage_bitmap_text(painter, 10, 11, top_txt[:118], fg_light, scale=1)
+                _draw_qimage_bitmap_text(painter, 10, 495, "Rain:", fg_muted, scale=1)
+                _draw_qimage_bitmap_text(painter, 140, 495, attr_txt[:102], fg_muted, scale=1)
         finally:
             painter.end()
         if not qcanvas.save(str(out_fp), "PNG"):

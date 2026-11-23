@@ -14,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib import error as urllib_error
 from urllib import request as urllib_request
 from uuid import uuid4
 
@@ -31,7 +32,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 
-from credential_store import CredentialStore
+from credential_store import CredentialStore, redact_secrets
 from palace_config import PROVIDER_CATALOG, get_experimental_data_root, get_resource_path
 
 NEUTRAL_GREY = "#6e7681"
@@ -791,6 +792,76 @@ def extract_reference_image_paths(text: str, max_images: int = 2) -> list[Path]:
     return list(reversed(found))
 
 
+def extract_rendered_image_paths_from_text(
+    text: str,
+    *,
+    preferred_draft_num: int | None = None,
+    max_images: int = 2,
+) -> list[Path]:
+    """Resolve previously rendered PNG file paths from [GENERATE_IMAGE ...] tags in prior session text."""
+    if not text or "[GENERATE_IMAGE" not in text.upper():
+        return []
+    try:
+        scannable = _strip_code_spans_for_tag_scan(text)
+    except Exception:
+        scannable = text
+    entries: list[tuple[str, Path]] = []
+    for m in _GENERATE_IMAGE_TAG_PATTERN.finditer(scannable):
+        attrs = _parse_generate_image_attrs(m.group(1))
+        img_prompt = (attrs.get("prompt") or "").strip()
+        if not img_prompt:
+            continue
+        img_title = (attrs.get("title") or img_prompt[:40]).strip()
+        img_size = (attrs.get("size") or attrs.get("preset") or "").strip()
+        img_quality = (attrs.get("quality") or "high").strip().lower()
+        img_model = (attrs.get("model") or "").strip()
+        target_w, target_h, _ = resolve_target_image_size(img_size, img_prompt)
+        is_low = img_quality in {"low", "draft", "fast", "standard", "medium"}
+        base_key = f"{img_prompt}|{target_w}x{target_h}|{'std' if is_low else 'hd'}"
+        cand = _lookup_recent_render(base_key)
+        if cand is None or not cand.is_file():
+            cand = generate_ai_image_to_png(
+                img_prompt,
+                title=img_title,
+                size=img_size,
+                quality=img_quality,
+                model=img_model,
+                allow_network=False,
+            )
+        if cand is not None and cand.is_file():
+            entries.append((img_title, cand))
+
+    if not entries:
+        return []
+
+    ordered: list[Path] = []
+    if preferred_draft_num is not None and preferred_draft_num >= 1:
+        pat = re.compile(rf"\b(?:draft|option|concept)\s*#?\s*{int(preferred_draft_num)}\b", re.IGNORECASE)
+        for ttl, p_obj in entries:
+            if pat.search(ttl):
+                ordered.append(p_obj)
+                break
+        if not ordered and int(preferred_draft_num) <= len(entries):
+            ordered.append(entries[int(preferred_draft_num) - 1][1])
+
+    for _ttl, p_obj in reversed(entries):
+        ordered.append(p_obj)
+
+    out: list[Path] = []
+    seen: set[str] = set()
+    for p_obj in ordered:
+        try:
+            key = str(p_obj.resolve())
+        except OSError:
+            key = str(p_obj)
+        if key not in seen:
+            seen.add(key)
+            out.append(p_obj)
+            if len(out) >= max_images:
+                break
+    return out
+
+
 def _encode_multipart_form(
     fields: dict[str, str],
     files: list[tuple[str, str, str, bytes]],
@@ -945,6 +1016,21 @@ def generate_ai_image_to_png(
             return "image/webp"
         return "image/png"
 
+    def _format_image_http_error(exc: Exception) -> str:
+        if isinstance(exc, urllib_error.HTTPError):
+            detail = ""
+            try:
+                raw_err = exc.read(4096)
+                if raw_err:
+                    detail = re.sub(r"\s+", " ", raw_err.decode("utf-8", errors="replace")).strip()[:240]
+            except Exception:
+                detail = ""
+            base = f"HTTP {getattr(exc, 'code', '')}: {getattr(exc, 'reason', exc)}".strip()
+            msg = f"{base} — {detail}" if detail else base
+        else:
+            msg = str(exc)
+        return redact_secrets(msg)
+
     def _try_gemini_image(gem_model: str) -> tuple[Path | None, bool]:
         if not gem_key:
             attempted_errors.append(f"{gem_model}: missing gemini API key")
@@ -990,27 +1076,38 @@ def generate_ai_image_to_png(
                                 return out_path, used_ref
             attempted_errors.append(f"{gem_model}: response contained no image bytes")
         except Exception as exc:
-            attempted_errors.append(f"{gem_model}: {exc}")
+            attempted_errors.append(f"{gem_model}: {_format_image_http_error(exc)}")
         return None, False
 
-    def _try_openai_gpt_image_2() -> tuple[Path | None, bool]:
+    def _try_openai_image(openai_model: str = "gpt-image-2.6-sunburst") -> tuple[Path | None, bool]:
+        m_id = (openai_model or "").strip().lower()
+        if m_id in {"", "openai", "chatgpt"}:
+            m_id = "gpt-image-2.6-sunburst"
         if not openai_key:
-            attempted_errors.append("gpt-image-2: missing openai API key")
+            attempted_errors.append(f"{m_id}: missing openai API key")
             return None, False
         oai_q = "low" if q_norm in {"low", "draft", "fast"} else ("medium" if q_norm in {"medium", "standard"} else "high")
+        is_v26 = "2.6" in m_id
         if valid_refs:
             try:
-                rp0 = valid_refs[0]
-                body_bytes, ctype = _encode_multipart_form(
-                    {
-                        "model": "gpt-image-2",
-                        "prompt": clean_prompt,
-                        "n": "1",
-                        "size": gpt_img_size,
-                        "quality": oai_q,
-                    },
-                    [("image", rp0.name, _mime_for(rp0), rp0.read_bytes())],
-                )
+                edit_fields: dict[str, str] = {
+                    "model": m_id,
+                    "prompt": clean_prompt,
+                    "n": "1",
+                    "size": gpt_img_size,
+                    "quality": oai_q,
+                }
+                if is_v26:
+                    edit_fields["complexity"] = "low" if is_low_quality else "high"
+                if len(valid_refs) == 1:
+                    rp0 = valid_refs[0]
+                    file_tuples = [("image", rp0.name, _mime_for(rp0), rp0.read_bytes())]
+                else:
+                    file_tuples = [
+                        ("image[]", rp.name, _mime_for(rp), rp.read_bytes())
+                        for rp in valid_refs[:2]
+                    ]
+                body_bytes, ctype = _encode_multipart_form(edit_fields, file_tuples)
                 req_ed = urllib_request.Request(
                     "https://api.openai.com/v1/images/edits",
                     data=body_bytes,
@@ -1029,15 +1126,18 @@ def generate_ai_image_to_png(
                         if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
                             return out_path, True
             except Exception as exc:
-                attempted_errors.append(f"gpt-image-2(edits): {exc}")
+                attempted_errors.append(f"{m_id}(edits): {_format_image_http_error(exc)}")
         try:
-            payload = json.dumps({
-                "model": "gpt-image-2",
+            gen_payload: dict[str, Any] = {
+                "model": m_id,
                 "prompt": clean_prompt,
                 "n": 1,
                 "size": gpt_img_size,
                 "quality": oai_q,
-            }).encode("utf-8")
+            }
+            if is_v26:
+                gen_payload["complexity"] = "low" if is_low_quality else "high"
+            payload = json.dumps(gen_payload).encode("utf-8")
             req = urllib_request.Request(
                 "https://api.openai.com/v1/images/generations",
                 data=payload,
@@ -1055,9 +1155,9 @@ def generate_ai_image_to_png(
                     raw_bytes = base64.b64decode(b64_data)
                     if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
                         return out_path, False
-            attempted_errors.append("gpt-image-2: empty image payload")
+            attempted_errors.append(f"{m_id}: empty image payload")
         except Exception as exc:
-            attempted_errors.append(f"gpt-image-2: {exc}")
+            attempted_errors.append(f"{m_id}: {_format_image_http_error(exc)}")
         return None, False
 
     def _try_deepinfra_flux(flux_eng: str) -> tuple[Path | None, bool]:
@@ -1095,7 +1195,7 @@ def generate_ai_image_to_png(
                         return out_path, False
             attempted_errors.append(f"{flux_model}: empty images list")
         except Exception as exc:
-            attempted_errors.append(f"{flux_eng}: {exc}")
+            attempted_errors.append(f"{flux_eng}: {_format_image_http_error(exc)}")
         return None, False
 
     def _try_openrouter_image(or_model: str) -> tuple[Path | None, bool]:
@@ -1105,12 +1205,12 @@ def generate_ai_image_to_png(
             return None, False
         clean_or_m = str(or_model or "").strip()
         if clean_or_m == "openrouter":
-            clean_or_m = "google/gemini-3.1-flash-image" if is_low_quality else "openai/gpt-5-image-mini"
+            clean_or_m = "google/gemini-3.1-flash-image" if is_low_quality else "openai/gpt-5.4-image-2"
         elif "/" not in clean_or_m:
             if "pro" in clean_or_m:
                 clean_or_m = "google/gemini-3-pro-image"
-            elif "gpt-image" in clean_or_m or "openai" in clean_or_m:
-                clean_or_m = "openai/gpt-5-image-mini" if is_low_quality else "openai/gpt-5-image"
+            elif "gpt-image" in clean_or_m or "openai" in clean_or_m or "chatgpt" in clean_or_m:
+                clean_or_m = "openai/gpt-5-image-mini" if is_low_quality else "openai/gpt-5.4-image-2"
             else:
                 clean_or_m = f"google/{clean_or_m}" if clean_or_m.startswith("gemini") else "google/gemini-3.1-flash-image"
         try:
@@ -1174,7 +1274,7 @@ def generate_ai_image_to_png(
                     return out_path, used_ref
             attempted_errors.append(f"openrouter({clean_or_m}): empty images response")
         except Exception as exc:
-            attempted_errors.append(f"openrouter({clean_or_m}): {exc}")
+            attempted_errors.append(f"openrouter({clean_or_m}): {_format_image_http_error(exc)}")
         return None, False
 
     try:
@@ -1182,17 +1282,17 @@ def generate_ai_image_to_png(
         g_cfg = load_graphics_settings()
     except Exception:
         g_cfg = {
-            "primary_image_engine": "gemini-3-pro-image",
-            "draft_image_engine": "gemini-3.1-flash-image",
-            "fallback_image_engines": ["gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
+            "primary_image_engine": "gpt-image-2.6-sunburst",
+            "draft_image_engine": "gpt-image-2.6-flare",
+            "fallback_image_engines": ["gemini-3-pro-image", "gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
         }
 
     prim = (primary_engine or "").strip().lower()
     if not prim:
         if is_low_quality or "flash" in req_model:
-            prim = str(g_cfg.get("draft_image_engine") or "gemini-3.1-flash-image").strip().lower()
+            prim = str(g_cfg.get("draft_image_engine") or "gpt-image-2.6-flare").strip().lower()
         else:
-            prim = str(g_cfg.get("primary_image_engine") or "gemini-3-pro-image").strip().lower()
+            prim = str(g_cfg.get("primary_image_engine") or "gpt-image-2.6-sunburst").strip().lower()
 
     raw_chain: list[str] = []
     if req_model:
@@ -1203,7 +1303,15 @@ def generate_ai_image_to_png(
         raw_chain.extend(str(e).strip().lower() for e in fallback_engines if str(e).strip())
     else:
         raw_chain.extend(str(e).strip().lower() for e in (g_cfg.get("fallback_image_engines") or []) if str(e).strip())
-        for default_eng in ("gemini-3.1-flash-image", "gemini-3-pro-image", "gpt-image-2", "flux-1-dev", "openrouter"):
+        for default_eng in (
+            "gpt-image-2.6-sunburst",
+            "gpt-image-2.6-flare",
+            "gemini-3-pro-image",
+            "gemini-3.1-flash-image",
+            "gpt-image-2",
+            "flux-1-dev",
+            "openrouter",
+        ):
             raw_chain.append(default_eng)
 
     engine_chain: list[str] = []
@@ -1212,6 +1320,10 @@ def generate_ai_image_to_png(
             engine_chain.append(e)
 
     def _run_engine(eng: str) -> tuple[Path | None, bool, str]:
+        if eng.startswith("openrouter:"):
+            spec = eng.split(":", 1)[1].strip()
+            p, ref = _try_openrouter_image(spec)
+            return p, ref, (f"openrouter:{spec}" if spec else "openrouter:image")
         if eng.startswith("openrouter") or "/" in eng:
             p, ref = _try_openrouter_image(eng)
             return p, ref, (f"openrouter:{eng}" if "/" in eng else "openrouter:image")
@@ -1222,19 +1334,33 @@ def generate_ai_image_to_png(
                 if p is not None:
                     return p, ref, f"openrouter:{eng}"
             return p, ref, eng
-        if "gpt-image" in eng or eng.startswith("openai"):
-            p, ref = _try_openai_gpt_image_2()
+        if eng == "chatgpt-image-latest" or "gpt-image" in eng or eng.startswith("openai"):
+            m_eff = "gpt-image-2.6-sunburst" if eng in {"openai", "chatgpt"} else eng
+            p, ref = _try_openai_image(m_eff)
             if p is None and not openai_key and cs.get_api_key("openrouter"):
-                p, ref = _try_openrouter_image(eng)
+                or_slug = "openai/gpt-5-image-mini" if is_low_quality else "openai/gpt-5.4-image-2"
+                p, ref = _try_openrouter_image(or_slug)
                 if p is not None:
-                    return p, ref, "openrouter:openai/gpt-5-image-mini"
-            return p, ref, "gpt-image-2"
+                    return p, ref, f"openrouter:{or_slug}"
+            return p, ref, m_eff
         if "flux" in eng:
             p, ref = _try_deepinfra_flux(eng)
             b_lbl = "FLUX-1-schnell" if ("schnell" in eng or (is_low_quality and "dev" not in eng)) else "FLUX-1-dev"
             return p, ref, b_lbl
         p, ref = _try_gemini_image(eng)
         return p, ref, eng
+
+    def _log_image_errors(outcome_tag: str) -> None:
+        if not attempted_errors:
+            return
+        try:
+            from datetime import datetime
+            log_fp = get_generated_images_dir().parent / "image_diagnostics.log"
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with log_fp.open("a", encoding="utf-8") as lf:
+                lf.write(f"[{stamp}] {outcome_tag} | {'; '.join(attempted_errors)}\n")
+        except Exception:
+            pass
 
     for idx, eng in enumerate(engine_chain):
         err_start = len(attempted_errors)
@@ -1249,6 +1375,7 @@ def generate_ai_image_to_png(
         if res_path is not None:
             billed_eng = badge_label
             if idx > 0:
+                _log_image_errors(f"fallback->{badge_label}")
                 badge_label += " (fallback)"
             if used_ref:
                 badge_label += " +ref"
@@ -1262,6 +1389,7 @@ def generate_ai_image_to_png(
             _record_recent_render(base_key, out_path)
             return res_path
 
+    _log_image_errors("all-engines-failed")
     return None
 
 
@@ -2047,7 +2175,13 @@ QTextBrowser#chatView {{ background: {bg_main}; color: {txt}; border: none; padd
 QFrame#composerCard {{ background: {bg_card}; border: 1px solid {border}; border-radius: 12px; }}
 QTextEdit#composerInput {{ background: transparent; border: none; color: {txt}; font-size: 13px; padding: 2px; }}
 QListWidget#attachmentList {{ background: {bg_side}; border: 1px solid {border}; border-radius: 6px; padding: 4px; }}
-QLineEdit, QComboBox, QSpinBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 8px; color: {txt}; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
+QLineEdit, QComboBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 8px; color: {txt}; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
+QSpinBox {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 28px 5px 8px; color: {txt}; min-height: 22px; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
+QSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 22px; border-left: 1px solid {border}; border-bottom: 1px solid {border}; border-top-right-radius: 5px; background: {bg_hover}; }}
+QSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 22px; border-left: 1px solid {border}; border-bottom-right-radius: 5px; background: {bg_hover}; }}
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background: {border}; }}
+QSpinBox::up-arrow {{ width: 0px; height: 0px; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid {txt}; }}
+QSpinBox::down-arrow {{ width: 0px; height: 0px; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid {txt}; }}
 QComboBox QAbstractItemView {{ background: {bg_card}; color: {txt}; border: 1px solid {border}; selection-background-color: #1f4b8e; selection-color: #ffffff; padding: 4px; outline: none; }}
 QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 4px 10px; }}
 QPushButton {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 10px; color: {txt_sec}; }}

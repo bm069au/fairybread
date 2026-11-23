@@ -200,10 +200,14 @@ class PipelineAndAutopatchTests(unittest.TestCase):
         self.assertEqual(len(res.peer_rounds), 0)
         mock_prewarm.assert_called_once()
 
-        # Also verify direct draw uses ONLY the 2 specialists (gemini + openai)
+        # Also verify direct draw uses ONLY the 2 specialists (gemini + openai) when pipeline_mode='prompt_duo'
         for k in calls_by_provider:
             calls_by_provider[k] = 0
-        with patch("palace_theme.prewarm_generated_images"):
+        with patch("palace_theme.prewarm_generated_images"), \
+             patch(
+                 "palace_config.load_graphics_settings",
+                 return_value={"prompt_duo": ["gemini", "openai"], "prompt_duo_fallback": ["deepseek", "qwen"], "pipeline_mode": "prompt_duo"},
+             ):
             orch.run("draw me a fairy", include_context=False, max_rounds=2)
         dispatched_direct = [k for k, v in calls_by_provider.items() if v > 0]
         self.assertEqual(set(dispatched_direct), {"gemini", "openai"})
@@ -2028,7 +2032,11 @@ class GraphicsPromptOptimizationTests(unittest.TestCase):
                 fallback_providers={},
             )
             orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=synth, context_service=_StaticCtx())
-            with patch("palace_theme.prewarm_generated_images") as mock_prewarm:
+            with patch("palace_theme.prewarm_generated_images") as mock_prewarm, \
+                 patch(
+                     "palace_config.load_graphics_settings",
+                     return_value={"prompt_duo": ["gemini", "openai"], "prompt_duo_fallback": ["deepseek", "qwen"], "pipeline_mode": "prompt_duo"},
+                 ):
                 res = orch.run(
                     q,
                     provider_names=["gemini", "openai", "deepseek", "groq", "qwen", "cohere", "mistral", "cerebras"],
@@ -4755,6 +4763,1005 @@ class V093ReleaseFeaturesTests(unittest.TestCase):
         self.assertIn("1. Update only (Recommended", iss)
         self.assertIn("/UPDATEONLY", iss)
         self.assertIn("ShouldAutoRelaunchUpdateOnly", iss)
+
+
+class TangentHumorAndWeatherFixTests(unittest.TestCase):
+    def test_negated_drawing_request_and_no_stale_image_carryover(self):
+        self.assertEqual(
+            classify_drawing_request("Please do not try and draw the picture. Just write a prompt for me."),
+            "none",
+        )
+        self.assertEqual(
+            classify_drawing_request("don't render it, just give me the prompt"),
+            "none",
+        )
+        self.assertNotEqual(classify_drawing_request("draw a red poppy with an ant"), "none")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            img_fp = root / "poppy.png"
+            img_fp.write_bytes(_make_sample_png_bytes())
+
+            class _PriorImageCtx:
+                session_id = "negated_draw_test"
+
+                def load_recent(self, max_chars: int = 12000):
+                    return (
+                        "USER: draw a red poppy with an ant\n\n"
+                        f'ASSISTANT: [GENERATE_IMAGE path="{img_fp}" prompt="red poppy" title="Poppy"]'
+                    )
+
+                def append_exchange(self, *args, **kwargs):
+                    return ("u", "a")
+
+            captured_dispatch: list[dict[str, object]] = []
+            reg = ProviderRegistry()
+            reg.register("openai", _StubProvider("openai", lambda _p: "Here is a clean text prompt for the poppy."))
+            disp = ProviderDispatcher(reg)
+            orig_dispatch = disp.dispatch
+
+            def _spy_dispatch(*args, **kwargs):
+                captured_dispatch.append({"attached_images": kwargs.get("attached_images"), "kwargs": kwargs})
+                return orig_dispatch(*args, **kwargs)
+
+            disp.dispatch = _spy_dispatch  # type: ignore[method-assign]
+            orch = PalaceOrchestrator(_FakeMemory(), disp, synthesizer=None, context_service=_PriorImageCtx())
+            res = orch.run(
+                "Please do not try and draw the picture. Just write a prompt for me.",
+                provider_names=["openai"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=1,
+            )
+            self.assertIn("prompt", (res.final_answer or "").lower())
+            self.assertTrue(captured_dispatch)
+            for call in captured_dispatch:
+                self.assertFalse(call["attached_images"])
+
+    def test_autopatch_terse_confirm_blocks_dark_patch_and_proceed_draw(self):
+        self.assertFalse(is_terse_patch_confirmation("proceed and draw it"))
+        self.assertFalse(is_terse_patch_confirmation("yes, write a prompt for the poppy"))
+        self.assertTrue(is_terse_patch_confirmation("Apply. (just in case I confused you)."))
+        self.assertTrue(is_terse_patch_confirmation("Proceed"))
+
+        class _DarkPatchCtx:
+            session_id = "dark_patch_ctx"
+
+            def load_recent(self, max_chars: int = 12000):
+                return (
+                    "USER: Describe the poppy petals\n\n"
+                    "ASSISTANT: Notice the dark patch at the base of the red poppy cup where the ant rests."
+                )
+
+            def append_exchange(self, *args, **kwargs):
+                return ("u", "a")
+
+        reg = ProviderRegistry()
+        prov = _StubProvider("openai", lambda _p: "Sure thing, ready whenever you are.")
+        reg.register("openai", prov)
+        orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=None, context_service=_DarkPatchCtx())
+        with patch("idle_service.execute_live_autopatches_in_text", side_effect=AssertionError("Autopatch must not fire on 'dark patch'!")):
+            res = orch.run(
+                "yes",
+                provider_names=["openai"],
+                include_context=True,
+                save_to_context=False,
+                max_rounds=1,
+            )
+        self.assertTrue(prov.calls)
+        self.assertNotIn("AUTOPATCH", prov.calls[0].upper())
+        self.assertEqual(res.final_answer, "Sure thing, ready whenever you are.")
+
+    def test_soft_topic_shift_tangent_demotes_old_context_and_keeps_thread(self):
+        from orchestrator import detect_topic_shift
+
+        prior_snippet = 'USER:\ndraw a red poppy with an ant\n\nASSISTANT:\n[GENERATE_IMAGE prompt="red poppy"]'
+        self.assertTrue(detect_topic_shift("I need to go buy milk from the shops, quick detour", prior_snippet))
+        self.assertFalse(detect_topic_shift("add a second moon to the poppy", prior_snippet))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            img_fp = root / "poppy_tangent.png"
+            img_fp.write_bytes(_make_sample_png_bytes())
+            sess_path = root / "thread_session.jsonl"
+            ctx = ContextService(sess_path)
+            orig_sid = ctx.session_id
+            ctx.append_exchange(
+                "draw a red poppy with an ant",
+                f'[GENERATE_IMAGE path="{img_fp}" prompt="red poppy" title="Red Poppy"]',
+            )
+
+            captured_attached: list[object] = []
+            reg = ProviderRegistry()
+            prov = _StubProvider("openai", lambda _p: "Grab full cream milk while you're out — watch out for the bakery aisle.")
+            reg.register("openai", prov)
+            disp = ProviderDispatcher(reg)
+            orig_dispatch = disp.dispatch
+
+            def _spy_dispatch(*args, **kwargs):
+                captured_attached.append(kwargs.get("attached_images"))
+                return orig_dispatch(*args, **kwargs)
+
+            disp.dispatch = _spy_dispatch  # type: ignore[method-assign]
+            orch = PalaceOrchestrator(_FakeMemory(), disp, synthesizer=None, context_service=ctx)
+            res = orch.run(
+                "I need to go buy milk from the shops, quick detour",
+                provider_names=["openai"],
+                include_context=True,
+                save_to_context=True,
+                max_rounds=1,
+            )
+            self.assertTrue(prov.calls)
+            self.assertIn("[EARLIER IN THIS CONVERSATION — BACKGROUND ONLY", prov.calls[0])
+            self.assertTrue(all(not x for x in captured_attached))
+            self.assertEqual(ctx.session_id, orig_sid)
+            records = [json.loads(line) for line in sess_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertEqual([r["role"] for r in records], ["user", "assistant", "user", "assistant"])
+            self.assertIn("milk", (res.final_answer or "").lower())
+
+    def test_casual_banter_fast_path_works_with_gui_provider_names_and_no_history_duplication(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg_path = root / "palace_config.json"
+            provs = {
+                "openai": _StubProvider("openai", lambda _p: "Haha, any time mate."),
+                "cohere": _StubProvider("cohere", lambda _p: "Cohere should be skipped on 1-AI casual banter."),
+            }
+            reg = ProviderRegistry()
+            for k, v in provs.items():
+                reg.register(k, v)
+            synth = PalaceSynthesizer(
+                "openai",
+                _StubProvider("openai_synth", lambda _p: "Synth should not run"),
+                fallback_providers={},
+            )
+            orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=synth, context_service=None)
+            with patch("palace_config.load_agent_defaults", return_value={"smart_routing": True, "synthesizer_mode": "auto_fast", "provider_timeout_sec": 30, "straggler_grace_sec": 0}), \
+                 patch("palace_config.CONFIG_PATH", cfg_path):
+                orch.run(
+                    "haha nice one, thanks mate!",
+                    provider_names=["openai", "cohere"],
+                    include_context=False,
+                    save_to_context=False,
+                    max_rounds=2,
+                )
+            self.assertEqual(len(provs["openai"].calls), 1)
+            self.assertEqual(len(provs["cohere"].calls), 0)
+            self.assertNotIn("=== COUNCIL ROSTER", provs["openai"].calls[0])
+
+        # Dispatcher + Synthesizer strip duplicate inline RECENT SESSION HISTORY only when history_messages is supported & passed
+        class _HistoryAwareProv(AIProvider):
+            name = "openai"
+
+            def __init__(self):
+                self.prompts: list[str] = []
+                self.histories: list[object] = []
+
+            def generate(self, prompt: str, history_messages=None) -> ProviderResponse:
+                self.prompts.append(prompt)
+                self.histories.append(history_messages)
+                return ProviderResponse(text="Clean single-history reply", provider="openai", model="gpt-test")
+
+        class _LegacyProv(AIProvider):
+            name = "cohere"
+
+            def __init__(self):
+                self.prompts: list[str] = []
+
+            def generate(self, prompt: str) -> ProviderResponse:
+                self.prompts.append(prompt)
+                return ProviderResponse(text="Legacy inline-history reply", provider="cohere", model="cohere-test")
+
+        h_prov = _HistoryAwareProv()
+        l_prov = _LegacyProv()
+        reg2 = ProviderRegistry()
+        reg2.register("openai", h_prov)
+        reg2.register("cohere", l_prov)
+        disp2 = ProviderDispatcher(reg2)
+        inline_prompt = (
+            "=== RECENT SESSION HISTORY (CONVERSATION MEMORY) ===\n"
+            "USER: Remember the red poppy\n\n"
+            "ASSISTANT: Got it.\n"
+            "=== END SESSION HISTORY ===\n\n"
+            "CURRENT USER QUESTION:\nWhat colour was the flower?"
+        )
+        hist_msgs = [{"role": "user", "content": "Remember the red poppy"}, {"role": "assistant", "content": "Got it."}]
+        disp2.dispatch(
+            inline_prompt,
+            provider_names=["openai", "cohere"],
+            history_messages=hist_msgs,
+        )
+        self.assertEqual(len(h_prov.prompts), 1)
+        self.assertNotIn("RECENT SESSION HISTORY", h_prov.prompts[0])
+        self.assertNotIn("Remember the red poppy", h_prov.prompts[0])
+        self.assertIn("What colour was the flower?", h_prov.prompts[0])
+        self.assertEqual(h_prov.histories[0], hist_msgs)
+        self.assertEqual(len(l_prov.prompts), 1)
+        self.assertIn("USER: Remember the red poppy", l_prov.prompts[0])
+
+        synth_prov = _HistoryAwareProv()
+        synth2 = PalaceSynthesizer("openai", synth_prov, fallback_providers={})
+        synth_res = synth2.synthesize(
+            "What colour was the flower?",
+            {
+                "cohere": ProviderResult(provider_name="cohere", response=ProviderResponse(text="It was red.", provider="cohere")),
+                "gemini": ProviderResult(provider_name="gemini", response=ProviderResponse(text="Bright red petals with a black centre.", provider="gemini")),
+            },
+            session_context="USER: Remember the red poppy\n\nASSISTANT: Got it.",
+            history_messages=hist_msgs,
+        )
+        self.assertTrue(synth_res.succeeded)
+        self.assertEqual(len(synth_prov.prompts), 1)
+        self.assertNotIn("RECENT SESSION HISTORY", synth_prov.prompts[0])
+        self.assertNotIn("Remember the red poppy", synth_prov.prompts[0])
+        self.assertEqual(synth_prov.histories[0], hist_msgs)
+
+    def test_humor_setting_roundtrip_voice_companion_and_settings_dialog(self):
+        from palace_config import (
+            HUMOR_LEVEL_CHOICES,
+            format_personalization_prompt_block,
+            load_personalization_settings,
+            save_personalization_settings,
+        )
+        from palace_gui import ManageAIsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+        from voice_companion import VoiceCompanion
+
+        self.assertEqual([slug for slug, _lbl in HUMOR_LEVEL_CHOICES], ["none", "minimal", "average", "high"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            temp_cfg = root / "palace_config.json"
+
+            save_personalization_settings({"humor": "none"}, config_path=temp_cfg)
+            self.assertEqual(load_personalization_settings(temp_cfg)["humor"], "none")
+            none_blk = format_personalization_prompt_block(temp_cfg, conversational_scale="casual")
+            self.assertIn("Strictly zero jokes", none_blk)
+            self.assertIn("Conversational prose only", none_blk)
+
+            save_personalization_settings({"humor": "high"}, config_path=temp_cfg)
+            self.assertEqual(load_personalization_settings(temp_cfg)["humor"], "high")
+            high_blk = format_personalization_prompt_block(temp_cfg, conversational_scale="casual")
+            self.assertIn("Humor (High Humor)", high_blk)
+
+            # VoiceCompanion injects humor & tangent rules for both talk_only=True and talk_only=False
+            vc_prompts: list[str] = []
+
+            def _fake_vc_llm(p: str) -> str:
+                vc_prompts.append(p)
+                if "JSON" in p and "spoken_reply" in p:
+                    return json.dumps({"action": "chat", "spoken_reply": "Coffee first, code second."})
+                return "Coffee first, code second."
+
+            vc = VoiceCompanion(config_path=temp_cfg, llm_callable=_fake_vc_llm)
+            vc.respond("Wait, before that, did I leave the kettle on?", talk_only=True)
+            vc.respond("Anyway, back to coffee — flat white or long black?", talk_only=False)
+            self.assertEqual(len(vc_prompts), 2)
+            for p_txt in vc_prompts:
+                self.assertIn("Humor (High Humor)", p_txt)
+                self.assertIn("side tangents", p_txt)
+
+            # Reset to average, then verify ManageAIsDialog selects 'high', audits unclipped, and auto-saves on reject()
+            save_personalization_settings({"humor": "average"}, config_path=temp_cfg)
+            app = QApplication.instance() or QApplication([])
+            dlg = ManageAIsDialog(config_path=temp_cfg, initial_page="Memory & Personalization")
+            try:
+                h_idx = dlg.pers_humor_combo.findData("high")
+                self.assertGreaterEqual(h_idx, 0)
+                dlg.pers_humor_combo.setCurrentIndex(h_idx)
+                dlg.show()
+                app.processEvents()
+                aud = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud["clipped_widget_count"], 0, msg=str(aud.get("clipped_widgets")))
+                dlg.reject()
+                app.processEvents()
+            finally:
+                dlg.deleteLater()
+            self.assertEqual(load_personalization_settings(temp_cfg)["humor"], "high")
+
+    def test_weather_place_extraction_ignores_show_and_rejects_fuzzy_mismatch(self):
+        import urllib.request
+        from search_service import (
+            _extract_weather_place_candidates,
+            _pick_best_geocoding_result,
+            fetch_live_weather_bundle,
+        )
+
+        self.assertEqual(_extract_weather_place_candidates("show me the current weather for Adelaide"), ["Adelaide"])
+        self.assertEqual(
+            _extract_weather_place_candidates("what's the weather in Port Adelaide tomorrow?"),
+            ["Port Adelaide"],
+        )
+        self.assertIsNone(_pick_best_geocoding_result("show", [{"name": "Shut", "country_code": "IR"}]))
+
+        class _FakeHTTPResp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, *_n):
+                return self._body
+
+        def _fake_urlopen(req, timeout=5.0):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "geocoding-api.open-meteo.com" in url:
+                if "name=show" in url.lower():
+                    return _FakeHTTPResp(json.dumps({
+                        "results": [{"name": "Shut", "admin1": "West Azerbaijan Province", "country_code": "IR", "latitude": 39.2192, "longitude": 44.77}]
+                    }).encode("utf-8"))
+                return _FakeHTTPResp(json.dumps({
+                    "results": [{"name": "Adelaide", "admin1": "South Australia", "country_code": "AU", "latitude": -34.92866, "longitude": 138.59863, "population": 1387290}]
+                }).encode("utf-8"))
+            if "api.open-meteo.com/v1/forecast" in url:
+                return _FakeHTTPResp(json.dumps({
+                    "timezone": "Australia/Adelaide",
+                    "current": {
+                        "time": "2026-11-22T21:45",
+                        "temperature_2m": 18.1,
+                        "apparent_temperature": 16.6,
+                        "relative_humidity_2m": 73,
+                        "weather_code": 0,
+                        "wind_speed_10m": 17.7,
+                        "wind_direction_10m": 225,
+                        "wind_gusts_10m": 24.0,
+                        "precipitation": 0.0,
+                    },
+                    "hourly": {"time": ["2026-11-22T22:00"], "temperature_2m": [17.8], "precipitation_probability": [0]},
+                    "daily": {
+                        "time": ["2026-11-22", "2026-11-23", "2026-11-24"],
+                        "weather_code": [0, 51, 3],
+                        "temperature_2m_max": [29.5, 18.5, 19.4],
+                        "temperature_2m_min": [17.4, 14.2, 11.4],
+                        "precipitation_probability_max": [49, 63, 0],
+                        "precipitation_sum": [4.0, 1.4, 0.0],
+                        "uv_index_max": [8.5, 6.0, 7.0],
+                    },
+                }).encode("utf-8"))
+            raise AssertionError(f"Unexpected URL in mock: {url}")
+
+        with patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+            bundle = fetch_live_weather_bundle("show me the current weather for Adelaide")
+        self.assertIsNotNone(bundle.get("primary_location"))
+        self.assertEqual(bundle["primary_location"]["label"], "Adelaide, South Australia, AU")
+        self.assertNotIn("Shut", bundle.get("text", ""))
+
+    def test_weather_map_render_threadsafe_without_pil_on_worker_thread(self):
+        import sys
+        import threading
+        import urllib.request
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QColor
+        from search_service import render_live_weather_map_png
+
+        def _make_tile(r: int, g: int, b: int, a: int) -> bytes:
+            im = QImage(256, 256, QImage.Format.Format_ARGB32)
+            im.fill(QColor(r, g, b, a))
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            im.save(buf, "PNG")
+            return bytes(buf.data())
+
+        tile_bytes = _make_tile(20, 30, 44, 255)
+        radar_bytes = _make_tile(56, 189, 248, 120)
+
+        class _FakeResp:
+            def __init__(self, data: bytes):
+                self._data = data
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self, *_n):
+                return self._data
+
+        def _fake_urlopen(req, timeout=5.0):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if "weather-maps.json" in url:
+                return _FakeResp(json.dumps({
+                    "host": "https://tilecache.rainviewer.com",
+                    "radar": {"past": [{"path": "/v2/radar/1700000000", "time": 1700000000}]},
+                }).encode("utf-8"))
+            if "rainviewer" in url:
+                return _FakeResp(radar_bytes)
+            return _FakeResp(tile_bytes)
+
+        result_holder: dict[str, object] = {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None, "PIL.ImageDraw": None}), \
+                 patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen):
+                def _worker():
+                    try:
+                        result_holder["png"] = render_live_weather_map_png(
+                            {"label": "Adelaide, South Australia, AU", "lat": -34.92866, "lon": 138.59863},
+                            weather_data={
+                                "current": {
+                                    "temperature_2m": 18.1,
+                                    "apparent_temperature": 16.6,
+                                    "wind_speed_10m": 17.7,
+                                    "relative_humidity_2m": 73,
+                                    "weather_code": 0,
+                                },
+                                "daily": {"uv_index_max": [8.5]},
+                            },
+                            out_dir=root / "out",
+                            cache_dir=root / "cache",
+                        )
+                    except Exception as exc:
+                        result_holder["exc"] = exc
+
+                t = threading.Thread(target=_worker)
+                t.start()
+                t.join(15.0)
+            self.assertFalse(t.is_alive())
+            self.assertNotIn("exc", result_holder)
+            png_p = result_holder.get("png")
+            self.assertIsNotNone(png_p)
+            self.assertTrue(Path(png_p).is_file())
+            out_img = QImage(str(png_p))
+            self.assertEqual((out_img.width(), out_img.height()), (768, 512))
+
+
+class GraphicsOpenAIAndDeepChatProfileTests(unittest.TestCase):
+    def test_deep_chat_auto_merge_openrouter_translation_and_threadsafe_overrides(self):
+        from palace_config import (
+            load_ai_squads,
+            resolve_profile_model_override,
+            save_ai_squads,
+        )
+
+        self.assertEqual(
+            resolve_profile_model_override("openai", "gpt-5.6-sol", is_openrouter=True),
+            "openai/gpt-5.6-sol",
+        )
+        self.assertEqual(
+            resolve_profile_model_override("gemini", "gemini-4-carbon", is_openrouter=True),
+            "google/gemini-4-carbon",
+        )
+        self.assertEqual(
+            resolve_profile_model_override("deepseek", "deepseek-reasoner", is_openrouter=True),
+            "deepseek/deepseek-r1-0528",
+        )
+        self.assertEqual(
+            resolve_profile_model_override("claude", "claude-3-7-sonnet-latest", is_openrouter=True),
+            "anthropic/claude-sonnet-5.5",
+        )
+        self.assertEqual(
+            resolve_profile_model_override("openai", "openai/gpt-5.6-sol", is_openrouter=False),
+            "gpt-5.6-sol",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            # Legacy saved ai_squads without deep_chat -> auto-merges deep_chat cleanly after light_chat
+            cfg.write_text(
+                json.dumps({
+                    "ai_squads": {
+                        "light_chat": {
+                            "label": "💬 Light Chat (Free / Fast)",
+                            "providers": ["groq", "cohere"],
+                            "deliberate": False,
+                            "code_access": False,
+                            "max_ais": 0,
+                        },
+                        "code": {
+                            "label": "💻 Code AIs",
+                            "providers": ["deepseek"],
+                            "deliberate": True,
+                            "code_access": True,
+                            "max_ais": 0,
+                        },
+                    }
+                }),
+                encoding="utf-8",
+            )
+            squads = load_ai_squads(cfg)
+            self.assertEqual(list(squads.keys()), ["light_chat", "deep_chat", "code"])
+            self.assertEqual(squads["deep_chat"]["context_depth"], "deep")
+            self.assertEqual(squads["deep_chat"]["model_overrides"]["openai"], "gpt-5.6-sol")
+            self.assertEqual(squads["deep_chat"]["model_overrides"]["gemini"], "gemini-4-carbon")
+            self.assertEqual(squads["deep_chat"]["model_overrides"]["deepseek"], "deepseek-reasoner")
+            self.assertIn("claude", squads["deep_chat"]["model_overrides"])
+
+            # Deleted built-in stays deleted across reloads
+            del squads["deep_chat"]
+            save_ai_squads(squads, cfg, deleted_builtin_squads=["deep_chat"])
+            self.assertNotIn("deep_chat", load_ai_squads(cfg))
+
+        # Thread-safe per-call model_override + context_depth='deep' (64K / 32 turns)
+        captured_oai: list[dict[str, object]] = []
+        captured_or: list[dict[str, object]] = []
+        captured_gem: list[dict[str, object]] = []
+
+        oai_prov = OpenAIProvider(api_key="sk-test", model="gpt-5-mini")
+        oai_prov.client = SimpleNamespace(
+            responses=SimpleNamespace(
+                create=lambda **kw: (
+                    captured_oai.append(kw),
+                    SimpleNamespace(output_text="Deep OpenAI Sol reply", usage=SimpleNamespace(input_tokens=10, output_tokens=5)),
+                )[1]
+            )
+        )
+        or_prov = OpenAIProvider(
+            api_key="sk-or",
+            model="deepseek/deepseek-chat",
+            base_url="https://openrouter.ai/api/v1",
+            provider_name="deepseek",
+        )
+        or_prov.client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **kw: (
+                        captured_or.append(kw),
+                        SimpleNamespace(
+                            choices=[SimpleNamespace(message=SimpleNamespace(content="DeepSeek R1 OpenRouter reply", reasoning_content=""), finish_reason="stop")],
+                            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+                        ),
+                    )[1]
+                )
+            )
+        )
+        gem_prov = GeminiProvider(api_key="AIza-test", model="gemini-4-neon")
+        gem_prov.client = SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=lambda **kw: (
+                    captured_gem.append(kw),
+                    SimpleNamespace(text="Deep Gemini Carbon reply", usage_metadata=SimpleNamespace(prompt_token_count=10, candidates_token_count=5)),
+                )[1]
+            )
+        )
+
+        reg = ProviderRegistry()
+        reg.register("openai", oai_prov)
+        reg.register("deepseek", or_prov)
+        reg.register("gemini", gem_prov)
+        seen_max_chars: list[int] = []
+
+        class _DepthCtx:
+            session_id = "deep_chat_test"
+
+            def load_recent(self, max_chars: int = 12000):
+                seen_max_chars.append(max_chars)
+                turns = [f"USER: Question {i}\n\nASSISTANT: Answer {i}" for i in range(25)]
+                return "\n\n".join(turns)
+
+            def append_exchange(self, *args, **kwargs):
+                return ("q", "a")
+
+        orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=None, context_service=_DepthCtx())
+        res = orch.run(
+            "Let's think deeply about system architecture across this long conversation",
+            provider_names=["openai", "deepseek", "gemini"],
+            include_context=True,
+            save_to_context=False,
+            max_rounds=1,
+            model_overrides={"openai": "gpt-5.6-sol", "deepseek": "deepseek-reasoner", "gemini": "gemini-4-carbon"},
+            context_depth="deep",
+        )
+        self.assertEqual(seen_max_chars, [64000])
+        self.assertEqual(captured_oai[0]["model"], "gpt-5.6-sol")
+        self.assertEqual(captured_or[0]["model"], "deepseek/deepseek-r1-0528")
+        self.assertEqual(captured_gem[0]["model"], "gemini-4-carbon")
+        # 25 exchanges = 50 historical messages + current user turn -> verify deep >16 messages preserved!
+        self.assertGreater(len(captured_oai[0]["input"]), 30)
+        self.assertEqual(res.provider_results["openai"].response.model, "gpt-5.6-sol")
+        self.assertEqual(res.provider_results["gemini"].response.model, "gemini-4-carbon")
+        # Base provider models remain unmutated!
+        self.assertEqual(oai_prov.model, "gpt-5-mini")
+        self.assertEqual(or_prov.model, "deepseek/deepseek-chat")
+        self.assertEqual(gem_prov.model, "gemini-4-neon")
+
+    def test_openai_image_26_sunburst_flare_complexity_and_multi_ref_edits(self):
+        import urllib.request
+
+        sample_out = _make_sample_png_bytes(64, 64, 0xFF2288CC)
+        seen_requests: list[dict[str, object]] = []
+
+        class _FakeResp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def _fake_urlopen(req, timeout=115):
+            raw_data = req.data or b""
+            seen_requests.append({"url": req.full_url, "data": raw_data})
+            return _FakeResp(json.dumps({"data": [{"b64_json": base64.b64encode(sample_out).decode("ascii")}]}).encode("utf-8"))
+
+        class _OpenAIOnlyCreds:
+            def get_api_key(self, name):
+                return "sk-oai-test" if name == "openai" else None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gen_dir = root / "generated_images"
+            gen_dir.mkdir()
+            ref1 = root / "prev_banner.png"
+            ref2 = root / "fairy_icon.png"
+            ref1.write_bytes(_make_sample_png_bytes(32, 32, 0xFF112233))
+            ref2.write_bytes(_make_sample_png_bytes(32, 32, 0xFFFF66AA))
+
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme.CredentialStore", return_value=_OpenAIOnlyCreds()), \
+                 patch("palace_theme.urllib_request.urlopen", side_effect=_fake_urlopen):
+                out_sun = generate_ai_image_to_png(
+                    "Keep kitchen workshop, move tiny fairy onto table rim",
+                    title="SunburstEdit",
+                    size="1024x1024",
+                    quality="high",
+                    allow_network=True,
+                    primary_engine="gpt-image-2.6-sunburst",
+                    fallback_engines=["gpt-image-2"],
+                    reference_image_paths=[ref1, ref2],
+                )
+            self.assertIsNotNone(out_sun)
+            self.assertTrue(out_sun.is_file())
+            self.assertIn("gpt-image-2.6-sunburst", get_image_engine_badge(out_sun))
+            self.assertIn("+ref", get_image_engine_badge(out_sun))
+            self.assertEqual(len(seen_requests), 1)
+            self.assertIn("/v1/images/edits", str(seen_requests[0]["url"]))
+            body_bytes = seen_requests[0]["data"]
+            self.assertIn(b'name="model"\r\n\r\ngpt-image-2.6-sunburst', body_bytes)
+            self.assertIn(b'name="complexity"\r\n\r\nhigh', body_bytes)
+            self.assertNotIn(b"input_fidelity", body_bytes)
+            self.assertEqual(body_bytes.count(b'name="image[]"'), 2)
+
+            # Flare draft generation (no refs -> /v1/images/generations with complexity=low)
+            seen_requests.clear()
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme.CredentialStore", return_value=_OpenAIOnlyCreds()), \
+                 patch("palace_theme.urllib_request.urlopen", side_effect=_fake_urlopen):
+                out_fl = generate_ai_image_to_png(
+                    "Sunny kitchen table draft concept",
+                    title="FlareDraft",
+                    size="640x360",
+                    quality="low",
+                    allow_network=True,
+                    primary_engine="gpt-image-2.6-flare",
+                )
+            self.assertIsNotNone(out_fl)
+            self.assertIn("/v1/images/generations", str(seen_requests[0]["url"]))
+            gen_json = json.loads(seen_requests[0]["data"].decode("utf-8"))
+            self.assertEqual(gen_json["model"], "gpt-image-2.6-flare")
+            self.assertEqual(gen_json["complexity"], "low")
+            self.assertNotIn("input_fidelity", gen_json)
+            self.assertIn("gpt-image-2.6-flare", get_image_engine_badge(out_fl))
+
+            # Missing OpenAI key fails over immediately without sleeping
+            class _GeminiOnlyCreds:
+                def get_api_key(self, name):
+                    return "gem-key" if name == "gemini" else None
+
+            def _gem_open(req, timeout=75):
+                return _FakeResp(json.dumps({
+                    "candidates": [{"content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": base64.b64encode(sample_out).decode("ascii")}}]}}]
+                }).encode("utf-8"))
+
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme.CredentialStore", return_value=_GeminiOnlyCreds()), \
+                 patch("palace_theme.urllib_request.urlopen", side_effect=_gem_open), \
+                 patch("palace_theme.time.sleep", side_effect=AssertionError("Must not sleep on missing API key!")):
+                out_fb = generate_ai_image_to_png(
+                    "Instant missing-key failover render test",
+                    title="MissingKeyFailover",
+                    size="256x256",
+                    quality="high",
+                    allow_network=True,
+                    primary_engine="gpt-image-2.6-sunburst",
+                    fallback_engines=["gemini-3-pro-image"],
+                    primary_retry_delay_sec=2.0,
+                )
+            self.assertIsNotNone(out_fb)
+            self.assertIn("fallback", get_image_engine_badge(out_fb))
+            self.assertTrue((root / "image_diagnostics.log").is_file())
+
+    def test_pixel_anchored_prior_render_and_visual_critique_routing(self):
+        from palace_theme import extract_rendered_image_paths_from_text
+
+        self.assertEqual(classify_drawing_request("make this python function smaller"), "none")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gen_dir = root / "generated_images"
+            up_dir = root / "uploads"
+            gen_dir.mkdir()
+            up_dir.mkdir()
+            orig_png = root / "fairy_icon.png"
+            orig_png.write_bytes(_make_sample_png_bytes(32, 32, 0xFFFF77AA))
+
+            with patch("attachment_service.get_uploaded_files_dir", return_value=up_dir):
+                att = extract_attachment(orig_png)
+
+            with patch("palace_theme.get_generated_images_dir", return_value=gen_dir), \
+                 patch("palace_theme._RECENT_RENDER_MAP", {}):
+                # Cache a previously rendered banner via network-less local write
+                rendered_png = gen_dir / "Banner_1640x856_seed.png"
+                rendered_png.write_bytes(_make_sample_png_bytes(64, 64, 0xFF446688))
+                from palace_theme import _record_recent_render
+                _record_recent_render("Warm fairy banner|1640x856|hd", rendered_png)
+
+                prior_ctx = (
+                    f"USER: make banner\n[ATTACHED_FILE_META kind=\"image\" name=\"{att.stored_path.name}\" stored=\"{att.stored_path.name}\"]\n\n"
+                    "ASSISTANT: [GENERATE_IMAGE prompt=\"Warm fairy banner\" title=\"Banner\" size=\"1640x856\" quality=\"high\"]"
+                )
+                resolved_prev = extract_rendered_image_paths_from_text(prior_ctx)
+                self.assertEqual(len(resolved_prev), 1)
+                self.assertEqual(resolved_prev[0].resolve(), rendered_png.resolve())
+
+                class _Ctx:
+                    session_id = "critique_route_test"
+
+                    def load_recent(self, max_chars: int = 12000):
+                        return prior_ctx
+
+                    def append_exchange(self, *args, **kwargs):
+                        return ("q", "a")
+
+                reg = ProviderRegistry()
+                calls: dict[str, list[str]] = {}
+                for pname in ("gemini", "openai", "deepseek", "mistral", "groq"):
+                    def _mk(n=pname):
+                        def _fn(p: str) -> str:
+                            calls.setdefault(n, []).append(p)
+                            return '[GENERATE_IMAGE prompt="Edited warm banner with teacup fairy on table rim" title="Banner Fixed" size="1640x856" quality="high"]'
+                        return _fn
+                    reg.register(pname, _StubProvider(pname, _mk()))
+                disp = ProviderDispatcher(reg)
+                dispatched_imgs: list[object] = []
+                orig_disp = disp.dispatch
+
+                def _spy_disp(*args, **kwargs):
+                    dispatched_imgs.append(kwargs.get("images"))
+                    return orig_disp(*args, **kwargs)
+
+                disp.dispatch = _spy_disp  # type: ignore[method-assign]
+                orch = PalaceOrchestrator(_FakeMemory(), disp, synthesizer=None, context_service=_Ctx())
+
+                with patch("attachment_service.get_uploaded_files_dir", return_value=up_dir), \
+                     patch("palace_theme.prewarm_generated_images") as mock_prewarm, \
+                     patch("palace_config.load_graphics_settings", return_value={"prompt_duo": ["gemini", "openai"], "prompt_duo_fallback": ["deepseek"], "pipeline_mode": "single_vision"}):
+                    res = orch.run(
+                        "She's disproportionate to the chair and she's not really sitting on the chair properly. Clean up her image and have her smaller, and sitting on the table",
+                        provider_names=["gemini", "openai", "deepseek", "mistral", "groq"],
+                        include_context=True,
+                        save_to_context=False,
+                        max_rounds=2,
+                    )
+
+                self.assertEqual(set(res.provider_results.keys()), {"gemini"})
+                self.assertFalse(calls.get("mistral"))
+                self.assertFalse(calls.get("groq"))
+                self.assertFalse(calls.get("deepseek"))
+                self.assertIn("PIXEL-ANCHORED EDIT MODE", calls["gemini"][0])
+                self.assertEqual(len(dispatched_imgs[0]), 2)
+                self.assertEqual(Path(dispatched_imgs[0][0]).resolve(), rendered_png.resolve())
+                self.assertEqual(Path(dispatched_imgs[0][1]).resolve(), att.stored_path.resolve())
+                mock_prewarm.assert_called_once()
+                passed_refs = mock_prewarm.call_args.kwargs.get("reference_image_paths")
+                self.assertEqual(len(passed_refs), 2)
+
+    def test_graphics_pipeline_modes_direct_and_single_vision(self):
+        reg = ProviderRegistry()
+        gem = _StubProvider("gemini", lambda _p: '[GENERATE_IMAGE prompt="Adelaide jetty at dusk" title="Jetty" size="1024x1024" quality="high"]')
+        oai = _StubProvider("openai", lambda _p: '[GENERATE_IMAGE prompt="Adelaide jetty dusk 2" title="Jetty2" size="1024x1024" quality="high"]')
+        ds = _StubProvider("deepseek", lambda _p: "DeepSeek text reply")
+        reg.register("gemini", gem)
+        reg.register("openai", oai)
+        reg.register("deepseek", ds)
+
+        orch = PalaceOrchestrator(_FakeMemory(), ProviderDispatcher(reg), synthesizer=None)
+
+        # 1) Direct mode bypasses ALL text LLMs and goes straight to prewarm_generated_images
+        with patch("palace_theme.prewarm_generated_images") as mock_pw, \
+             patch("palace_config.load_graphics_settings", return_value={"prompt_duo": ["gemini", "openai"], "prompt_duo_fallback": ["deepseek"], "pipeline_mode": "direct"}):
+            res_d = orch.run(
+                "draw a sunset over Adelaide jetty",
+                provider_names=["gemini", "openai", "deepseek"],
+                include_context=False,
+                save_to_context=False,
+            )
+        self.assertEqual(len(gem.calls) + len(oai.calls) + len(ds.calls), 0)
+        self.assertIsNotNone(res_d.synthesis)
+        self.assertEqual(res_d.synthesis.provider_name, "direct_image")
+        self.assertIn("[GENERATE_IMAGE", res_d.final_answer or "")
+        self.assertIn("sunset over Adelaide jetty", res_d.final_answer or "")
+        mock_pw.assert_called_once()
+
+        # 2) Single Vision Optimizer mode routes to 1 vision specialist only
+        with patch("palace_theme.prewarm_generated_images") as mock_pw2, \
+             patch("palace_config.load_graphics_settings", return_value={"prompt_duo": ["gemini", "openai"], "prompt_duo_fallback": ["deepseek"], "pipeline_mode": "single_vision"}):
+            orch.run(
+                "draw a sunset over Adelaide jetty",
+                provider_names=["gemini", "openai", "deepseek"],
+                include_context=False,
+                save_to_context=False,
+                max_rounds=2,
+            )
+        self.assertEqual(len(gem.calls), 1)
+        self.assertEqual(len(oai.calls), 0)
+        self.assertEqual(len(ds.calls), 0)
+        mock_pw2.assert_called_once()
+
+    def test_settings_graphics_card_profiles_overrides_and_zero_clipping(self):
+        from palace_config import PROVIDER_CATALOG, load_ai_squads
+        from palace_gui import ManageAIsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+
+        self.assertEqual(PROVIDER_CATALOG["openai"]["default_model"], "gpt-5-mini")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "palace_config.json"
+            app = QApplication.instance() or QApplication([])
+            dlg = ManageAIsDialog(config_path=cfg, initial_page="Agent Defaults")
+            try:
+                self.assertEqual(dlg.pages.count(), 12)
+                p_idx = dlg.ad_primary_img_combo.findData("chatgpt-image-latest")
+                d_idx = dlg.ad_draft_img_combo.findData("gemini-3.1-flash-image")
+                pm_idx = dlg.ad_graphics_pipe_combo.findData("direct")
+                self.assertGreaterEqual(p_idx, 0)
+                self.assertGreaterEqual(d_idx, 0)
+                self.assertGreaterEqual(pm_idx, 0)
+                dlg.ad_primary_img_combo.setCurrentIndex(p_idx)
+                dlg.ad_draft_img_combo.setCurrentIndex(d_idx)
+                dlg.ad_graphics_pipe_combo.setCurrentIndex(pm_idx)
+
+                dlg.show()
+                app.processEvents()
+                aud_ad = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud_ad["clipped_widget_count"], 0, msg=str(aud_ad.get("clipped_widgets")))
+
+                prof_row = dlg.SETTINGS_PAGES.index("Profiles")
+                dlg.nav_list.setCurrentRow(prof_row)
+                app.processEvents()
+
+                # Select deep_chat in squad list
+                deep_row = -1
+                for r in range(dlg.squad_list_widget.count()):
+                    if dlg.squad_list_widget.item(r).data(256) == "deep_chat":  # Qt.ItemDataRole.UserRole == 256
+                        deep_row = r
+                        break
+                self.assertGreaterEqual(deep_row, 0)
+                dlg.squad_list_widget.setCurrentRow(deep_row)
+                app.processEvents()
+
+                cd_idx = dlg.squad_context_depth_combo.findData("extended")
+                self.assertGreaterEqual(cd_idx, 0)
+                dlg.squad_context_depth_combo.setCurrentIndex(cd_idx)
+                dlg.squad_overrides_edit.setText("openai=gpt-5.6-sol, gemini=gemini-4-neon")
+                dlg.squad_overrides_edit.textEdited.emit(dlg.squad_overrides_edit.text())
+                app.processEvents()
+
+                aud_prof = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud_prof["clipped_widget_count"], 0, msg=str(aud_prof.get("clipped_widgets")))
+
+                dlg.reject()
+                app.processEvents()
+            finally:
+                dlg.deleteLater()
+
+            saved_g = load_graphics_settings(cfg)
+            self.assertEqual(saved_g["primary_image_engine"], "chatgpt-image-latest")
+            self.assertEqual(saved_g["draft_image_engine"], "gemini-3.1-flash-image")
+            self.assertEqual(saved_g["pipeline_mode"], "direct")
+
+            saved_sq = load_ai_squads(cfg)
+            self.assertEqual(saved_sq["deep_chat"]["context_depth"], "extended")
+            self.assertEqual(
+                saved_sq["deep_chat"]["model_overrides"],
+                {"openai": "gpt-5.6-sol", "gemini": "gemini-4-neon"},
+            )
+
+    def test_audit_fixes_catalog_sync_mcp_cleanup_openrouter_vision_and_cli_paths(self):
+        from types import SimpleNamespace
+        import catalog_sync
+        import cost_service
+        import fairybread_mcp
+        import local_cli_provider
+        from openai_provider import OpenAIProvider
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # 1. catalog_sync.fetch_openrouter_live_catalog(cache_path=None) must resolve get_appdata_root cleanly
+            class _FakeResp:
+                def __init__(self, payload: bytes):
+                    self._payload = payload
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+                def read(self, *_a):
+                    return self._payload
+
+            with (
+                patch.object(catalog_sync, "get_appdata_root", return_value=root),
+                patch.object(
+                    catalog_sync.urllib_request,
+                    "urlopen",
+                    return_value=_FakeResp(json.dumps({"data": [{"id": "openai/gpt-5.6-sol"}]}).encode("utf-8")),
+                ),
+            ):
+                models = catalog_sync.fetch_openrouter_live_catalog(cache_path=None)
+            self.assertEqual(len(models), 1)
+            self.assertEqual(models[0]["id"], "openai/gpt-5.6-sol")
+            self.assertTrue((root / "openrouter_models_cache.json").is_file())
+
+            # 2. fairybread_mcp.cleanup_external_mcp_for_dir must cleanly remove Antigravity MCP + SKILL.md
+            fake_home = root / "home"
+            fake_app = root / "app"
+            inst_dir = root / "InstallV93"
+            inst_dir.mkdir(parents=True)
+            ag_mcp = fake_home / ".gemini" / "config" / "mcp_config.json"
+            ag_skill = fake_home / ".gemini" / "config" / "skills" / "fairybread-council" / "SKILL.md"
+            ag_mcp.parent.mkdir(parents=True, exist_ok=True)
+            ag_skill.parent.mkdir(parents=True, exist_ok=True)
+            ag_mcp.write_text(
+                json.dumps({
+                    "mcpServers": {
+                        "fairybread": {"command": "python", "args": [str(inst_dir / "fairybread_mcp.py")]},
+                        "keep": {"command": "node", "args": ["keep.js"]},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            ag_skill.write_text("# skill", encoding="utf-8")
+            cleaned = fairybread_mcp.cleanup_external_mcp_for_dir(
+                inst_dir, home_dir=fake_home, appdata_dir=fake_app
+            )
+            self.assertIn(str(ag_mcp), cleaned)
+            self.assertIn(str(ag_skill), cleaned)
+            self.assertNotIn("fairybread", json.loads(ag_mcp.read_text(encoding="utf-8"))["mcpServers"])
+            self.assertIn("keep", json.loads(ag_mcp.read_text(encoding="utf-8"))["mcpServers"])
+            self.assertFalse(ag_skill.exists())
+
+            # 3. OpenAIProvider OpenRouter/Chat-Completions sends image_url blocks & retries text-only on rejection
+            ref_png = root / "ref.png"
+            ref_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+            sent_batches = []
+
+            def _fake_chat_create(**kw):
+                sent_batches.append(kw["messages"])
+                if len(sent_batches) == 1:
+                    raise RuntimeError("This text-only endpoint does not support image_url")
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="Fallback text answer"), finish_reason="stop")],
+                    usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+                )
+
+            prov = OpenAIProvider(api_key="sk-or-test", model="openai/gpt-5.6-sol", base_url="https://openrouter.ai/api/v1", provider_name="openrouter")
+            prov.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=_fake_chat_create)))
+            resp = prov.generate("Describe attachment", images=[ref_png])
+            self.assertEqual(resp.text, "Fallback text answer")
+            self.assertEqual(len(sent_batches), 2)
+            self.assertIsInstance(sent_batches[0][-1]["content"], list)
+            self.assertEqual(sent_batches[0][-1]["content"][1]["type"], "image_url")
+            self.assertIsInstance(sent_batches[1][-1]["content"], str)
+
+            # 4. find_cli_binary detects ~/.local/bin/claude.exe & IMAGE_COST includes flux-1-schnell + mini
+            cli_home = root / "cli_home"
+            (cli_home / ".local" / "bin").mkdir(parents=True)
+            claude_exe = cli_home / ".local" / "bin" / "claude.exe"
+            claude_exe.write_bytes(b"exe")
+            with patch.object(local_cli_provider.shutil, "which", return_value=None):
+                self.assertEqual(local_cli_provider.find_cli_binary("claude", home_dir=cli_home), str(claude_exe))
+            self.assertIn("flux-1-schnell", cost_service.IMAGE_COST_PER_RENDER_USD)
+            self.assertIn("openai/gpt-5-image-mini", cost_service.IMAGE_COST_PER_RENDER_USD)
 
 
 if __name__ == "__main__":
