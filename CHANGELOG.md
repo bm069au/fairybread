@@ -1,3 +1,27 @@
+# Fairybread — v0.94 (Win_x64) Changelog
+**Release Date:** 2026-11-23
+**Version:** `0.94` (`0.94.0.0`)
+
+## Summary of Changes in `v0.94`
+1. **🎨 OpenAI Flagship Graphics & Pixel-Anchored Editing (`palace_config.py`, `cost_service.py`, `openai_provider.py`, `gemini_provider.py`, `orchestrator.py`, `palace_theme.py`, `palace_gui.py`):**
+   - Defaults image generation to OpenAI **`gpt-image-2.6-sunburst`** (flagship) and **`gpt-image-2.6-flare`** (fast drafts), with **`chatgpt-image-latest`**, **`openrouter:openai/gpt-5.4-image-2`**, Google **`gemini-3-pro-image`** / **`gemini-3.1-flash-image`**, and FLUX fallbacks, selectable in **Settings → ⚡ Agent Defaults**.
+   - Adds 3 configurable pipeline modes (`single_vision`, `direct`, `prompt_duo`), pixel-anchored prior-render & multi-reference `image[]` editing, visual critique follow-up routing, OpenRouter Chat Completions `image_url` support with plain-text fallback retry, secret-redacted HTTP error bodies in `image_diagnostics.log`, and updated render costs (`flux-1-schnell`, `openai/gpt-5-image-mini`).
+2. **🧠 Two Chat Profiles (`Light Chat (Free / Fast)` vs. `Deeper Chat (Paid — Reasoning & Long)`) (`palace_config.py`, `dispatcher.py`, `orchestrator.py`, `palace_gui.py`):**
+   - Adds configurable `context_depth` (`standard` 12K / `deep` 36K / `extended` 64K) and per-profile `model_overrides` with automatic Direct API ↔ OpenRouter slug translation (`resolve_profile_model_override()`).
+3. **◎ Optional 3-Mode 3D Audio-Reactive Voice Avatar (`voice_visualizer.py`, `voice_service.py`, `palace_gui.py`, `build_release.py`):**
+   - Adds **Off / Windowed / Full Screen Stage** geometric hologram visualizer (`6` shapes, palette presets, real-time TTS FFT audio telemetry, autohide dock, and tray/close cleanup).
+4. **⚙ Scrollable Auto-Save Settings & Windows 11 SpinBox Fix (`palace_theme.py`, `palace_gui.py`):**
+   - Fixes overlapping up/down arrows on `QSpinBox` under Windows 11 and makes Settings pages scroll smoothly with viewport-clamped auto-save.
+5. **💬 Natural Tangents, Humor Calibration & Deduplication (`palace_config.py`, `search_service.py`, `dispatcher.py`, `synthesizer.py`, `orchestrator.py`, `voice_companion.py`, `palace_gui.py`):**
+   - Adds configurable **Humor** calibration (`No Humor` / `Minimal` / `Average` / `High Humor`) across Chat and Talk Mode, negated draw-intent guard, scoped autopatch confirmation, 1-AI casual banter fast-path, and inline history deduplication.
+6. **🌦️ Weather Radar Map Geocoding & Headless Bitmap HUD Fixes (`search_service.py`):**
+   - Expands `_WEATHER_STOPWORDS`, anchors place candidates on prepositions, rejects phonetic geocoding mismatches, fetches radar tiles across 6 concurrent workers, and adds a thread-safe 5×7 bitmap HUD fallback when Pillow/`QFont` is unavailable.
+7. **🧭 Setup Wizard First-Run Fix, External CLI Path Detection & Audit Fixes (`credential_store.py`, `setup_wizard.py`, `palace_gui.py`, `local_cli_provider.py`, `catalog_sync.py`, `fairybread_mcp.py`):**
+   - Implements missing `CredentialStore.list_providers()`, restricts Setup Wizard auto-launch to fresh installs with zero configured AI agents (`has_any_configured_ai_agents()`), persists dismissal via `setup_wizard_completed`, and excludes non-billing `email_connector` from Spend & Billing.
+   - Detects CLIs in `%USERPROFILE%\.local\bin` and `%APPDATA%\npm` (plus inline install hints and **🔄 Re-scan CLIs** button), and fixes missing imports/path unpacking in `catalog_sync.fetch_openrouter_live_catalog()` and `fairybread_mcp.cleanup_external_mcp_for_dir()`.
+
+---
+
 # Fairybread — v0.93 (Win_x64) Changelog
 **Release Date:** 2026-11-22
 **Version:** `0.93` (`0.93.0.0`)

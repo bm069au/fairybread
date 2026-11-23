@@ -1323,7 +1323,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.93')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.94')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())

@@ -4174,8 +4174,8 @@ class V092fConformanceWeatherAndIntegrityTests(unittest.TestCase):
         import catalog_sync
 
         self.assertEqual(version_to_windows_4part("0.92f"), "0.92.6.0")
-        self.assertEqual(version_to_windows_4part("0.93"), "0.93.0.0")
-        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.93.0.0")
+        self.assertEqual(version_to_windows_4part("0.94"), "0.94.0.0")
+        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.94.0.0")
         self.assertEqual(version_to_windows_4part("0.9.1a"), "0.9.1.1")
         self.assertFalse(DEFAULT_UI_SETTINGS["close_to_tray"])
         self.assertTrue((Path(__file__).with_name("PRIVACY.md")).is_file())
@@ -4758,8 +4758,8 @@ class V093ReleaseFeaturesTests(unittest.TestCase):
 
     def test_7_installer_iss_v093_and_update_only(self):
         iss = (Path(__file__).with_name("fairybread_setup.iss")).read_text(encoding="utf-8")
-        self.assertIn('AppDispVer "0.93"', iss)
-        self.assertIn('AppWinVer "0.93.0.0"', iss)
+        self.assertIn('AppDispVer "0.94"', iss)
+        self.assertIn('AppWinVer "0.94.0.0"', iss)
         self.assertIn("1. Update only (Recommended", iss)
         self.assertIn("/UPDATEONLY", iss)
         self.assertIn("ShouldAutoRelaunchUpdateOnly", iss)

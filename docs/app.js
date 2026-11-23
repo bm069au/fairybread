@@ -21,6 +21,20 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v094-release',
+    title: 'Fairybread v0.94: OpenAI Flagship Graphics, Deeper Chat Profiles, 3D Voice Avatar & Setup Wizard Fix',
+    tag: 'Release v0.94',
+    date: '2026-11-23',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.94 (Win_x64) is live on GitHub Releases and ready for 1-click Update Only installation:
+
+• OpenAI Flagship Graphics & Pixel-Anchored Edits: Defaults image rendering to gpt-image-2.6-sunburst (flagship) and gpt-image-2.6-flare (fast drafts) with configurable Primary/Draft engines, Single Vision Optimizer / Direct / 2-AI Prompt Duo pipeline modes, and automatic prior-render + reference photo editing.
+• Light Chat vs. Deeper Chat Profiles: Switch between zero-cost Light Chat and Deeper Chat (Paid — Reasoning & Long) with expanded context depth (12K / 36K / 64K) and automatic Direct <-> OpenRouter model translation plus OpenRouter vision image support.
+• Optional 3D Audio-Reactive Voice Avatar: Off / Windowed / Full Screen Stage holographic avatar animated by live FFT speech telemetry.
+• Natural Tangents, Humor Calibration & Weather Radar Fixes: Tune humor from No Humor to High Humor, keep casual side banter snappy, and get accurate radar map geocoding with a thread-safe HUD fallback.
+• Setup Wizard & External Bridge Polish: Setup Wizard auto-launches only once on fresh installs with zero AI agents configured (while always accessible in Settings), and External Agent Bridge auto-detects local CLIs cleanly with a Re-scan CLIs button.`,
+  },
+  {
     id: 'news-v093-overview',
     title: 'Inside Current Fairybread: Guided Setup Wizard, OpenRouter Hub, Live Cost Tickers, Weather Radar & $0.00 Recall',
     tag: 'Platform Update',
@@ -799,7 +813,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.93';
+    const currentSiteVersion = 'v0.94';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

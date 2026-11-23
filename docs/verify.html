@@ -18,14 +18,14 @@
 </style>
 </head>
 <body>
-  <h1>🛡 Verify Your Fairybread Download (v0.93)</h1>
+  <h1>🛡 Verify Your Fairybread Download (v0.94)</h1>
   <p class="muted">100% local verification in your browser using Web Crypto SHA-256 — nothing is uploaded anywhere.</p>
   <div id="dropZone" class="drop">
     <strong>Drop your downloaded <code>.exe</code> or <code>.msix</code> here</strong><br><br>
     <input type="file" id="fileInput">
   </div>
   <div id="result"></div>
-  <h3>Official v0.93 Release SHA-256 Hashes</h3>
+  <h3>Official v0.94 Release SHA-256 Hashes</h3>
   <p class="muted">Ed25519 Public Key: <code>eQdJg8kz/l271ID/hC7u8dhEO2+OuJV9UTGSq3QHqW8=</code></p>
   <table>
     <thead><tr><th>File</th><th>Official SHA-256</th></tr></thead>
@@ -34,19 +34,19 @@
 <script>
 const OFFICIAL = [
   {
-    "name": "Fairybread_v0.93_Win_x64_Setup.exe",
-    "sha256": "439801df35d691141573e55af13ba0cb7a50d6932b90edf0f78e09ede5679f43",
-    "size": 94535077
+    "name": "Fairybread_v0.94_Win_x64_Setup.exe",
+    "sha256": "2d7bda75d6006ee2d3f43a5dc30e060aff2d21a3b0f24ece96b7ccb6348d81be",
+    "size": 94730448
   },
   {
-    "name": "Fairybread_v0.93_Win_x64_StoreUpload.msix",
-    "sha256": "07863d9b49d1dfb51654782cd8f93dbd75f0af0ebe552ca4e1e8b72a621f71d2",
-    "size": 121703069
+    "name": "Fairybread_v0.94_Win_x64_StoreUpload.msix",
+    "sha256": "69ea232f7ac0438f7bcc3cb493619d458450fa924dab19487d58ec7ca7951e79",
+    "size": 121870010
   },
   {
-    "name": "Fairybread_Developer_v0.93_Win_x64_Setup.exe",
-    "sha256": "4af0a8e0b341f6cca43b7ec7110ad7cb0df88febb51393166702f68cecd33c8f",
-    "size": 95328671
+    "name": "Fairybread_Developer_v0.94_Win_x64_Setup.exe",
+    "sha256": "5ebd9517abc7ccb379aed73d9d836358bdc6406b8e0e44fb72a75dde0cb698a5",
+    "size": 95561709
   }
 ];
 const tbody = document.getElementById('hashTable');
@@ -65,7 +65,7 @@ async function checkFile(file) {
   if (match) {
     res.innerHTML = `<div class="ok"><strong>✓ VERIFIED OFFICIAL FAIRYBREAD RELEASE</strong><br>Matches <code>${match.name}</code><br>SHA-256: <code>${hex}</code></div>`;
   } else {
-    res.innerHTML = `<div class="bad"><strong>⚠ UNRECOGNIZED OR MODIFIED FILE</strong><br>Your file's SHA-256 did not match any official v0.93 build.<br>Computed SHA-256: <code>${hex}</code></div>`;
+    res.innerHTML = `<div class="bad"><strong>⚠ UNRECOGNIZED OR MODIFIED FILE</strong><br>Your file's SHA-256 did not match any official v0.94 build.<br>Computed SHA-256: <code>${hex}</code></div>`;
   }
 }
 const dz = document.getElementById('dropZone');
