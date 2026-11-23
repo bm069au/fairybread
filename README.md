@@ -2,7 +2,8 @@
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
-👉 **Download the Windows x64 Installer:** [**Fairybread_v0.93_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/tag/v0.93)  
+👉 **Download the Windows x64 Installer (Latest — v0.93):** [**Fairybread_v0.93_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/latest)  
+👉 **Website & Release Notes:** [**fairybread.me**](https://fairybread.me) · [**Releases**](https://github.com/bm069au/fairybread/releases)  
 👉 **Full Operating & Drawing Instructions:** See [USER_GUIDE.md](USER_GUIDE.md) (or press **`F1`** / **`Help → 📖 User Guide & Drawing Instructions…`** inside the app).
 
 ---
@@ -46,26 +47,28 @@ I made Fairybread **Source-Available Donationware** under the [Fairybread Dual L
 
 ---
 
-## Key Technical Highlights
+## Key Technical Highlights (`v0.93+`)
 
-- **Live Voice Mode (`|||✨`) & Microphone Dictation (`🎤`) for All Council AIs:**
-  - **Hands-Free Live Voice Mode (`|||✨`):** Click the circular Live Voice Soundwave button once and speak naturally. A real-time soundwave volume meter (`🎙 ▂▅▇█▄▂ 48%`) confirms Fairybread hears you, automatically sends your spoken prompt to all active Council AIs when you pause (~1.5s), and reads the synthesized response back to you aloud.
-  - **Dictate to Text Box (`🎤`) & Per-Card `🔊 Speak`:** Click `🎤` to dictate into the prompt box before sending, or click **`🔊 Speak`** on any reply card in chat to hear that response read aloud. Configure your microphone, live green level test bar, mic boost (`50–300%`), and speaker volume in **`Settings → 🎙️ Voice & Audio`**.
-- **Drag-and-Drop Sidebar Conversations & Project Folders:**
-  - Drag any conversation up or down on the left sidebar to reorder it, or drag and drop a conversation directly onto any **Project folder** (or back onto `Conversations`) to organize your workspace on the fly.
-- **Two-Stage High-Resolution Image Pipeline & Multi-Image Comparison:**
-  - **Default 1-Pass Drawing Mode:** Ask *"Draw me a brown dog on a black carpet in front of a fireplace"* or *"Make 3 different banners and let me choose"* and Fairybread renders high-resolution artwork via **`gemini-3-pro-image`** (*Nano Banana Pro*) → **`gemini-3.1-flash-image`** (*Nano Banana 2*) → **`gpt-image-2`**.
-  - **Council-Assisted Prompt Brainstorming Mode:** Ask *"All agents work on the prompt and then only one of you execute the drawing: ..."* to have the entire council collaborate before rendering.
-  - **One-Click Image Actions:** Every generated image includes **`🔍 View Full Size · 💾 Download / Save As… · 📂 Show in Folder · 🗑 Delete`** links plus a right-click context menu.
-- **Smart Default Size (`1024×1024`) + Social, Wallpaper & 300-DPI Print Presets:**
-  - Automatically understands plain-English requests for **YouTube banners** (`2560×1440`), **YouTube thumbnails** (`1280×720`), **Facebook page covers** (`1920×1080`), **Facebook PC banners** (`820×312`), **Facebook group covers** (`1640×856`), **desktop/4K/phone wallpapers**, and **300-DPI print sizes** (`8×10 in`, `A4`, or any `"WxHin"` / `"WxH"` dimensions).
-- **16-Worker Parallel Council Deliberation, Live Model Discovery & Automatic Failover:**
-  - Dispatches all active council AIs simultaneously, streams live per-agent status chips (`Responded` / `Working`), includes a **`↻ Fetch Live Models`** button in **`Settings → AI Providers`** to query live provider model catalogs, and automatically fails over (e.g., Cerebras `gpt-oss-120b` → `qwen-3.8-27b`).
-- **Live Turn Control (`■ Stop`, `Steer / Queue ▾`), 3-Tier Search Depth, System Tray & Mouseover Hints:**
-  - Interrupt any active turn cleanly (`Esc`), inject a live mid-turn steering note or queue your next command from the **`Steer / Queue ▾`** dropdown, minimize to the Windows System Tray on close (`✕`), and hover over any button for a quick explanation.
-- **Universal External Agent Bridge (MCP Server + Skill Installer):**
-  - One-click registration in **`Settings → 🔗 External Agent Bridge (MCP)`** exposes Fairybread's Council and SQLite FTS5 Shared Memory to **Antigravity**, **Claude Desktop / Claude Code**, and **ChatGPT Desktop**.
+- **Guided Setup & Selective Backup Restore Wizard:**
+  - Automatically launches once on fresh installs (only when zero AI agents are configured) and can be re-opened anytime via **`Settings → 🧭 Guided Setup & Restore Wizard…`**. Walks you through a plain-English needs questionnaire, builds a clickable tick-off API key checklist, or selectively restores Memories, Settings, and Encrypted API Keys from backup.
+- **All-in-One Hybrid OpenRouter Hub & 3-Layer Live Cost Tickers:**
+  - Connect direct provider keys (priority by default) and/or enter one **OpenRouter** key to auto-fill unconfigured seats (`free` / `balanced` / `flagship` tiers). Track active-session, cumulative, per-image, voice TTS/STT, and resettable per-provider payment cycles in **`💵 Spend & Billing Tickers…`**.
+- **Two Chat Profiles (`Light Chat (Free / Fast)` vs. `Deeper Chat (Paid — Reasoning & Long)`):**
+  - Choose zero-cost/fast banter models or switch to deep-reasoning models with expanded **`context_depth`** (`12K` / `36K` / `64K`) and per-profile model overrides that automatically translate between Direct API IDs and OpenRouter slugs.
+- **Next-Gen High-Resolution Image & Pixel-Anchored Editing Pipeline:**
+  - Configurable primary/draft image engines defaulting to OpenAI **`gpt-image-2.6-sunburst`** (flagship) & **`gpt-image-2.6-flare`** (fast drafts), with **`chatgpt-image-latest`**, Google **`gemini-3-pro-image`** / **`gemini-3.1-flash-image`**, **`openrouter:openai/gpt-5.4-image-2`**, and FLUX fallbacks.
+  - Supports **Single Vision Optimizer** (default), **Direct to Image Engine**, and **2-AI Prompt Duo** modes; **pixel-anchored follow-up edits** (`image[]` multi-ref); 300-DPI social/wallpaper/print presets; and **`🔍 View Full Size · 💾 Download / Save As… · 📂 Show in Folder · 🗑 Delete`**.
+- **Live Voice Mode (`|||✨`), Dictation (`🎤`) & Optional 3D Audio-Reactive Voice Avatar:**
+  - Supports **Deepgram Flux** (89 English voices), **Cartesia Sonic**, **ElevenLabs**, **OpenAI/Gemini TTS**, live mic boost (`50–300%`) & green level meter, and an optional **Off / Windowed / Full Screen** 3D geometric **Voice Avatar** animated via live FFT audio telemetry.
+- **Live Weather Radar Maps, Native Windows Spellcheck, Soft Tangents & Humor Calibration:**
+  - Inline RainViewer (`z=7`) + CartoDB Dark Matter radar maps with 7-day Open-Meteo forecasts, zero-dependency Windows spellcheck (`en-AU`), natural conversational flow (`No Humor` → `High Humor`), and `$0.00` free-agent local memory recall.
+- **16-Worker Parallel Council, Live Turn Control (`■ Stop`, `Steer / Queue ▾`) & 3-Tier Web Search:**
+  - Dispatches active AIs in parallel with width-balanced status chips (`Responded` / `Cutoff` / `Limited`), live turn interruption (`Esc`) or mid-turn **`Steer / Queue ▾`**, and 1/3/5-angle sharded web search (`/search`, `/msearch`, `/deepsearch`).
+- **Universal Bidirectional External Agent Bridge (MCP & Local CLIs):**
+  - In **`Settings → 🔗 External Agent Bridge (MCP)`**, toggle **Foreman Mode** (external app drives Fairybread over MCP) or **Council Member Mode** (local CLI joins Fairybread's Council) across **ChatGPT Desktop / Codex CLI**, **Google Antigravity**, **Grok**, and **Claude Desktop / Claude Code CLI**, with automatic CLI path detection and **🔄 Re-scan CLIs**.
 - **Exhaustive Multi-Folder Email Connector & Completion Notifications:**
-  - Zero-truncation IMAP scanning across all mailbox folders (`[Gmail]/All Mail`, `INBOX`, `Archive`, `Sent`) plus desktop toast and email completion alerts.
-- **Durable SQLite FTS5 Shared Memory (`zlib` Compressed), Living Memory Summary, Drive Space Sliders & AES-256 Password-Locked Backups:**
-  - Editable **Memory summary** (`Overview`, `How You Like to Work`, `Software Projects` + `Ask or update` bar), phase-aware Hot/Cold retrieval, SHA-256 deduplicated + `zlib`-compressed memory blobs, **`100 MB` → `Unlimited`** storage sliders, one-click **`🚚 Move Fairybread Data Here`** to relocate your memory to another drive, and **AES-256-GCM password-locked ZIP backups** (`PBKDF2-HMAC-SHA256`, 600,000 iterations) that transfer your encrypted API keys safely to a new PC.
+  - Zero-truncation IMAP scanning across all mailbox folders (`[Gmail]/All Mail`, `INBOX`, `Archive`, `Sent`) plus Windows toast and email completion alerts.
+- **Durable SQLite FTS5 + Vector Shared Memory, Living Memory Summary, Drive Mover & AES-256 Backups:**
+  - Hybrid FTS5 + 128-d cosine search, editable **Memory summary** (`Overview`, `How You Like to Work`, `Software & Creative Projects`), `100 MB` → `Unlimited` storage sliders, one-click **`🚚 Move Fairybread Data Here`**, and **AES-256-GCM password-locked ZIP backups** (`PBKDF2-HMAC-SHA256`, 600,000 iterations).
+- **1-Click `Update only` Hot-Reboot Installer & Verification:**
+  - 64-bit Windows installer defaulting to **Update only** (preserves settings/memory cleanly), backed by Ed25519 + SHA-256 verification (`SHA256SUMS.txt.sig` & [`verify.html`](https://fairybread.me/verify.html)).

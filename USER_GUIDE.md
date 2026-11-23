@@ -8,32 +8,20 @@ Fairybread is a democratic multi-AI council desktop workspace where multiple fro
 
 ## 1. High-Resolution Image & Graphic Generation
 
-Fairybread uses a two-stage **"Prompt Architect → High-Resolution Image Renderer"** pipeline—similar to how the native ChatGPT app works, but upgraded to route across your strongest visual engines.
+Fairybread pairs a smart **"Visual Optimizer / Direct Pipeline"** with configurable high-resolution image renderers and automatic pixel-anchored editing. Configure your preferred engines anytime under **`Settings → ⚡ Agent Defaults → Graphics & Image Engine`**.
 
-### The Two Drawing Modes
+### Configurable Image Engines & Pipeline Modes
 
-#### Mode A: Default 1-Pass Drawing Mode (Automatic & Fast)
-Whenever you ask for an image, photo, or graphic normally, Fairybread automatically uses **1-Pass Direct Drawing Mode**:
-- **What you type:**
-  - `"Draw me a brown dog on a black carpet in front of a fireplace"`
-  - `"Render a photorealistic ginger tabby cat sitting near a sunlit window with curtains in the background"`
-  - `"Create a YouTube banner for a retro gaming channel"`
-- **How it works under the hood:**
-  1. Only **one** top Prompt Architect (`DeepSeek`, `OpenAI`, or `Gemini`) runs in a single fast pass—you won't wait for 6 agents to chime in or generate competing variations.
-  2. The Prompt Architect expands your short request into a detailed photographic or artistic specification (lighting physics, lens depth-of-field, textures, background elements, and composition).
-  3. That single specification is rendered at maximum quality by the high-resolution image engine (`gemini-3-pro-image` *Nano Banana Pro* → `gemini-3.1-flash-image` *Nano Banana 2* → OpenAI `gpt-image-2`).
+- **Default Flagship Primary Engine:** OpenAI **`gpt-image-2.6-sunburst`** (also selectable: **`chatgpt-image-latest`**, Google **`gemini-3-pro-image`**, legacy **`gpt-image-2`**, or **`openrouter:openai/gpt-5.4-image-2`**).
+- **Default Fast Draft Engine:** OpenAI **`gpt-image-2.6-flare`** (also selectable: Google **`gemini-3.1-flash-image`** or **`flux-1-schnell`**), with automatic cross-provider fallbacks and detailed diagnostic logging (`image_diagnostics.log`).
 
-#### Mode B: Council-Assisted Prompt Brainstorming Mode (On Demand)
-When you are working on a complex or tricky visual scene and want **all active council agents** to help design the prompt before a single image is rendered, simply ask the council to help in your prompt:
-- **Trigger phrases you can use:**
-  - `"All agents work on the prompt and then only one of you execute the drawing: ..."`
-  - `"All agents help with the prompt for a hyperrealistic ..."`
-  - `"Council brainstorm the prompt for ..."`
-  - `"Everyone work on the prompt and render one image of ..."`
-- **How it works under the hood:**
-  1. All active council AIs deliberate on the scene's lighting, anatomy, perspective, and fine details.
-  2. Individual agent deliberation bubbles never execute duplicate images.
-  3. The **Synthesizer** merges the council's best visual details into **one** master `[GENERATE_IMAGE ...]` tag and renders **one** final high-resolution image.
+#### The Three Pipeline Modes (`Settings → ⚡ Agent Defaults`)
+1. **Single Vision Optimizer (Recommended Default):** One vision-capable AI expands or refines your visual request cleanly (no multi-AI council bloat) and dispatches the `[GENERATE_IMAGE ...]` render directly—emitting a single high-resolution master for explicit edits/refinements or 3 smaller draft concepts when you ask to explore variations.
+2. **Direct to Image Engine:** Sends your prompt and any attached reference photos straight to the image model without an intermediate text-LLM round.
+3. **2-AI Prompt Duo / Council Brainstorming Mode:** Two visual specialists (or the full council when you ask *"All agents work on the prompt..."* or switch to the Graphics duo) collaborate before rendering.
+
+#### Pixel-Anchored Editing & Reference Photos
+- Ask to adjust an image you just generated (*"Keep the dog the same, just change the carpet to dark blue"*) and Fairybread automatically threads the **prior rendered PNG** plus any attached/profile subject reference photo directly into the image edit endpoint (`image[]` multi-ref for OpenAI / `inlineData` for Gemini / multimodal for OpenRouter) so the scene stays visually anchored instead of starting from scratch.
 
 ---
 
@@ -41,7 +29,7 @@ When you are working on a complex or tricky visual scene and want **all active c
 
 ### Default Size & Quality
 - **Default Quality:** Always set to the **highest possible fidelity (`quality="high"`)**.
-  - To request a faster draft render (`~8.5 seconds` via `gemini-3.1-flash-image`), simply mention `"fast"`, `"draft"`, or `"low quality"` in your prompt.
+  - To request a faster draft render (via your configured **Draft Engine**, e.g. `gpt-image-2.6-flare` or `gemini-3.1-flash-image`), simply mention `"fast"`, `"draft"`, or `"low quality"` in your prompt.
 - **Default Size:** **`1024×1024` Square HD** unless you ask for a specific shape, platform banner, wallpaper, or print size.
 
 ### Plain-English Platform, Wallpaper & Print Sizes
@@ -83,7 +71,7 @@ The Prompt Architect and image engines natively understand photographic and arti
 ## 3. Composer Toolbar, Council Modes & Mouseover Hints
 
 Hover your mouse over **any button, icon, or chip** in Fairybread to see a plain-English tooltip explaining what it does:
-- **`Choose AIs (N)`:** Pick which AI providers are active, or choose a quick preset squad (**Code AIs**, **Light Chat**, **Generalist**, **Graphics & Vision**, **Work Mode**).
+- **`Choose AIs (N)`:** Pick which AI providers are active, or choose a quick preset profile (**Code AIs**, **Light Chat (Free / Fast)**, **Deeper Chat (Paid — Reasoning & Long)**, **Generalist**, **Graphics & Vision**, **Work Mode**). Each profile supports custom `context_depth` (`12K` / `36K` / `64K`) and per-provider model overrides under **`Settings → 🎛 Profiles & AI Squads`**.
 - **`Council` Toggle (Purple when ON):**
   - **ON (2-Round Peer Deliberation):** Agents answer in Round 1, inspect and critique each other's responses in Round 2 (replying `[PASS]` if a peer already nailed it), and the Synthesizer combines the best insights into one final answer.
   - **OFF (1-Round Fast Synthesis):** Agents answer in one parallel wave and synthesize immediately.
@@ -133,20 +121,11 @@ Once configured, simply ask in plain English (or use Gmail search operators):
 
 ---
 
-## 6. External Agent Bridge — Connecting Antigravity, Claude, or ChatGPT (`Settings → 🔗 External Agent Bridge`)
+## 6. External Agent Bridge — Connecting Antigravity, Claude, ChatGPT or Grok (`Settings → 🔗 External Agent Bridge (MCP)`)
 
-You can allow external coding/desktop agents (**Google Antigravity**, **Anthropic Claude Desktop / Claude Code**, **OpenAI ChatGPT Desktop / Codex CLI**, or **Cursor / Windsurf**) to call your local Fairybread installation as a tool via **MCP (Model Context Protocol)**:
-
-1. Open **`Settings → 🔗 External Agent Bridge (Antigravity / Claude / ChatGPT)…`**.
-2. Choose which capabilities external agents may invoke:
-   - `fairybread_ask_council` — Consult your Multi-AI Fairybread council and return the democratic synthesis.
-   - `fairybread_generate_image` — Render 300-DPI images, YouTube/Facebook banners, or wallpapers.
-   - `fairybread_search_email` — Run an exhaustive zero-truncation email search.
-   - `fairybread_search_memory` — Query your Shared Memory.
-3. Click the one-click installer button for your platform:
-   - **`🔗 Connect Google Antigravity`** — Installs the `fairybread-council` skill into `~/.gemini/config/skills/fairybread-council/SKILL.md`.
-   - **`🔗 Connect Claude Desktop / Claude Code`** — Automatically registers the `fairybread` MCP server in `%APPDATA%\Claude\claude_desktop_config.json`.
-   - **`📋 Copy MCP Config (ChatGPT Desktop / Cursor)`** — Copies the JSON-RPC MCP server configuration to your clipboard.
+Each external platform supports two mutually interlocked modes inside **`Settings → 🔗 External Agent Bridge (MCP)`**:
+- **Foreman Mode (Drives Fairybread via MCP):** Flip **Foreman Mode** ON to write Fairybread's local stdio MCP config (`~/.codex/config.toml`, `~/.gemini/config/mcp_config.json` + `SKILL.md`, `~/.grok/config.toml`, or `%APPDATA%\Claude\claude_desktop_config.json`) so **ChatGPT Desktop**, **Google Antigravity**, **Grok**, or **Claude Desktop** can invoke `fairybread_ask_council`, `fairybread_generate_image`, `fairybread_search_email`, and `fairybread_search_memory` natively.
+- **Council Member Mode (Joins Fairybread's Council via Local CLI):** If that platform's CLI executable (`codex`, `agy`, `grok`, or `claude`) is installed locally and signed in, flip **Council Member** ON to bring your subscription straight into Fairybread's council. Use **🔄 Re-scan CLIs** anytime after installing a CLI (`%USERPROFILE%\.local\bin`, `%APPDATA%\npm`, `~/.grok/bin`, or `PATH`).
 
 ---
 
@@ -246,11 +225,11 @@ While a turn is running, the composer input box and **`{} Code`** toggle remain 
 3. **Reading Individual Replies Aloud (`🔊 Speak`):**
    - Click **`🔊 Speak`** at the bottom-right of any reply card in chat to hear that response read aloud.
 
-### Testing Your Microphone & Speaker (`Settings → 🎙️ Voice & Audio`)
-Open **`Settings → 🎙️ Voice & Audio (Microphone & Speaker)…`** to:
-- Select your **Microphone Device** and click **`🎤 Start Live Mic Level Test`** to watch the live green level bar (`0–100%`) move as you speak.
-- Click **`🧪 Record 3s & Test Transcription`** to record a 3-second test phrase and verify end-to-end transcription on screen.
-- Adjust **Microphone Gain / Boost (`50%–300%`)** so quiet microphones pick up clearly, and adjust **Speaker Voice** and **Speaker Volume (`0%–100%`)**.
+### Testing Your Microphone, Voices & 3D Voice Avatar (`Settings → 🎙️ Voice & Audio`)
+Open **`Settings → 🎙️ Voice & Audio…`** to:
+- Choose from **Deepgram Flux** (89 English voices), **Cartesia Sonic**, **ElevenLabs**, **OpenAI**, or **Gemini** TTS engines and adjust **Voice Character** + **Expressivity**.
+- Optionally enable the **3D Voice Avatar** (**Off / Windowed / Full Screen Stage**) with 6 geometric shapes and real-time FFT audio reactivity (`View → ◎ Voice Avatar`).
+- Select your **Microphone Device**, watch the live green level bar (`0–100%`), test 3s end-to-end transcription, and adjust **Microphone Gain / Boost (`50%–300%`)** and **Speaker Volume (`0%–100%`)**.
 
 ---
 
