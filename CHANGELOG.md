@@ -16,6 +16,9 @@
    - Eliminates Voice Mode barge-in lock inversion, fixes instant live 3D Avatar shape/palette switching, wires `{ } Code` local Python source lookup into both `Talk Only` and Live Voice Mode, adds persistent TLS pools + `950 ms` silence cutoff + low-latency reasoning for snappy voice replies, ensures all configured AIs stay active after every run & on `+ New Conversation`, and enforces native Windows `[ □ ] [ ✕ ]` / `Esc` / `Cancel` compliance across all dialogs.
 6. **📎 Unlimited Multi-Batch Attachments, Clean Daylight Contrast, First-Ask Drawing & OpenAI Retirement Failover (`attachment_service.py`, `openai_provider.py`, `gemini_provider.py`, `orchestrator.py`, `palace_theme.py`, `palace_gui.py`):**
    - Removes per-turn attachment count caps, improves Clean Daylight theme readability, rescues `[GENERATE_IMAGE]` tags for reliable first-ask image rendering, removes false autopatch notices, and adds automatic OpenAI model retirement failover (`gpt-5` / `o3` → `gpt-6.2-sol` / `gpt-6-luna` / `gpt-6.2-astra`).
+7. **🎯 Exclusive Solo-AI Menu Selector & Full Mistral via OpenRouter (`palace_gui.py`, `palace_config.py`, `provider_loader.py`, `cost_service.py`):**
+   - Separates `Choose AIs ▾` / `Council` menu selection into structured sections (`Profiles & AI Squads`, `Multi-AI Selection`, `Solo AI`) where clicking an individual AI selects **only** that 1 AI in `Direct` (1-round) mode and updates the pill immediately, while keeping the bottom `Agents:` bar chips as quick individual on/off switches.
+   - Upgrades OpenRouter presets and routed Mistral seats from narrow `Codestral` to **full general-purpose Mistral** (`mistralai/mistral-medium-3.1` on Balanced, `mistralai/mistral-large-2411` on Flagship, `mistralai/mistral-small-3.1-24b-instruct:free` on Free), while reserving `Codestral` (`mistralai/codestral-2508`) as an automatic override for `💻 Code AIs`.
 
 ---
 

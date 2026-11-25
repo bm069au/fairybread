@@ -127,12 +127,42 @@ def load_configured_providers(
             from palace_config import (
                 CONFIG_PATH,
                 OPENROUTER_PRESET_TIERS,
+                PROVIDER_CATALOG,
                 load_openrouter_hub_settings,
+                resolve_profile_model_override,
             )
 
             eff_cfg_path = config_path if config_path is not None else CONFIG_PATH
             hub = load_openrouter_hub_settings(eff_cfg_path)
             tier_map = OPENROUTER_PRESET_TIERS.get(hub.get("tier", "balanced"), OPENROUTER_PRESET_TIERS["balanced"])
+
+            def _resolve_openrouter_seat_model(
+                seat_name: str,
+                pcfg: dict[str, Any] | None,
+                tier_entry: dict[str, Any] | None,
+            ) -> str:
+                cfg_dict = pcfg if isinstance(pcfg, dict) else {}
+                explicit_or = str(cfg_dict.get("openrouter_model") or "").strip()
+                if explicit_or:
+                    return resolve_profile_model_override(seat_name, explicit_or, is_openrouter=True)
+                raw_model = str(cfg_dict.get("model") or "").strip()
+                tier_model = str((tier_entry or {}).get("model") or "").strip()
+                cat_default = str(PROVIDER_CATALOG.get(seat_name, {}).get("default_model") or "").strip()
+                # When a seat (such as Mistral, whose direct free default is 'codestral-latest') is routed via
+                # OpenRouter without a custom OpenRouter slug, upgrade untouched direct-API defaults to the
+                # OpenRouter tier preset (e.g. full Mistral Medium 3.1 / Mistral Large).
+                if not raw_model or (
+                    "/" not in raw_model
+                    and tier_model
+                    and raw_model.lower() == cat_default.lower()
+                ):
+                    if tier_model:
+                        return tier_model
+                if raw_model:
+                    return resolve_profile_model_override(seat_name, raw_model, is_openrouter=True)
+                if tier_model:
+                    return tier_model
+                return f"{seat_name}/auto" if "/" not in seat_name else seat_name
 
             # 1) Explicit per-seat use_openrouter overrides
             for pname, pcfg in configs_lower.items():
@@ -140,9 +170,7 @@ def load_configured_providers(
                     continue
                 if pcfg.get("use_openrouter") and pcfg.get("enabled", True):
                     tier_entry = tier_map.get(pname, {})
-                    or_model = str(pcfg.get("openrouter_model") or pcfg.get("model") or tier_entry.get("model") or "").strip()
-                    if not or_model:
-                        or_model = f"{pname}/auto" if "/" not in pname else pname
+                    or_model = _resolve_openrouter_seat_model(pname, pcfg, tier_entry)
                     providers[pname] = OpenAIProvider(
                         api_key=openrouter_key,
                         model=or_model,
@@ -158,11 +186,7 @@ def load_configured_providers(
                     pcfg = configs_lower.get(seat_name)
                     if isinstance(pcfg, dict) and pcfg.get("enabled") is False:
                         continue
-                    or_model = (
-                        str(pcfg.get("openrouter_model") or pcfg.get("model") or "").strip()
-                        if isinstance(pcfg, dict)
-                        else ""
-                    ) or str(meta.get("model") or "").strip()
+                    or_model = _resolve_openrouter_seat_model(seat_name, pcfg, meta)
                     if or_model:
                         providers[seat_name] = OpenAIProvider(
                             api_key=openrouter_key,

@@ -2510,6 +2510,89 @@ class VoiceUpgradeTests(unittest.TestCase):
             win.close()
             app.processEvents()
 
+    def test_solo_ai_menu_selector_vs_bottom_bar_toggle_and_openrouter_full_mistral(self):
+        from PySide6.QtWidgets import QApplication, QMenu
+        app = QApplication.instance() or QApplication([])
+        from credential_store import CredentialStore
+        from openai_provider import OpenAIProvider
+        from palace_config import (
+            OPENROUTER_PRESET_TIERS,
+            load_provider_configs,
+            resolve_profile_model_override,
+            save_openrouter_hub_settings,
+            save_provider_config,
+        )
+        from provider_loader import load_configured_providers
+
+        # 1. Verify OpenRouter tiers & routing provide full Mistral (not narrow Codestral) by default
+        self.assertEqual(OPENROUTER_PRESET_TIERS['balanced']['mistral']['model'], 'mistralai/mistral-medium-3.1')
+        self.assertEqual(OPENROUTER_PRESET_TIERS['flagship']['mistral']['model'], 'mistralai/mistral-large-2411')
+        self.assertEqual(resolve_profile_model_override('mistral', 'codestral-latest', is_openrouter=True), 'mistralai/codestral-2508')
+        self.assertEqual(resolve_profile_model_override('mistral', 'mistral-large-latest', is_openrouter=True), 'mistralai/mistral-large-2411')
+
+        cfg = self.root / 'or_mistral_cfg.json'
+        cred = CredentialStore(self.root / 'or_mistral_creds.json')
+        cred.set_api_key('openrouter', 'sk-or-test-mistral-full')
+        cred.set_api_key('mistral', 'direct-mistral-key')
+        save_openrouter_hub_settings({'auto_fill_seats': True, 'tier': 'balanced'}, config_path=cfg)
+        # Even if direct default 'codestral-latest' was saved in config, routing via OpenRouter upgrades to full Mistral
+        save_provider_config('mistral', enabled=True, model='codestral-latest', use_openrouter=True, config_path=cfg)
+        save_provider_config('openai', enabled=True, model='gpt-6.2-sol', use_openrouter=True, config_path=cfg)
+        save_provider_config('gemini', enabled=True, model='gemini-4-neon', use_openrouter=True, config_path=cfg)
+
+        loaded = load_configured_providers(cred, load_provider_configs(cfg), config_path=cfg, include_local_cli=False)
+        self.assertIn('mistral', loaded)
+        self.assertIsInstance(loaded['mistral'], OpenAIProvider)
+        self.assertEqual(loaded['mistral'].base_url, 'https://openrouter.ai/api/v1')
+        self.assertEqual(loaded['mistral'].model, 'mistralai/mistral-medium-3.1')
+
+        save_openrouter_hub_settings({'auto_fill_seats': True, 'tier': 'flagship'}, config_path=cfg)
+        loaded_flagship = load_configured_providers(cred, load_provider_configs(cfg), config_path=cfg, include_local_cli=False)
+        self.assertEqual(loaded_flagship['mistral'].model, 'mistralai/mistral-large-2411')
+
+        # 2. Verify menu individual AI rows select ONLY that 1 AI, whereas bottom Agents: bar chips toggle on/off
+        mem = MemoryService(self.root / 'solo_mem.db')
+        win = PalaceWindow(
+            store=SessionStore(self.root / 'solo_sess'),
+            palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+            provider_states={'gemini': True, 'openai': True, 'mistral': True},
+            config_path=cfg,
+        )
+        try:
+            self.assertIn('(3)', win.ai_pill_button.text())
+            menu = QMenu(win)
+            win._populate_profiles_and_ais_menu(menu)
+            openai_acts = [a for a in menu.actions() if 'OpenAI' in a.text() and a.isEnabled() and a.menu() is None]
+            self.assertEqual(len(openai_acts), 1)
+            openai_acts[0].trigger()
+            app.processEvents()
+
+            # Exclusive Solo-AI selection from menu: ONLY OpenAI remains active, Direct 1-round mode on
+            self.assertEqual(win.provider_states, {'gemini': False, 'openai': True, 'mistral': False})
+            self.assertEqual(win.max_ais_per_turn, 1)
+            self.assertFalse(win.peer_rounds_toggle.isChecked())
+            self.assertIn('OpenAI', win.ai_pill_button.text())
+            self.assertNotIn('(3)', win.ai_pill_button.text())
+
+            # Clicking OpenAI AGAIN in the menu keeps OpenAI selected (does NOT turn it off!)
+            menu2 = QMenu(win)
+            win._populate_profiles_and_ais_menu(menu2)
+            openai_acts2 = [a for a in menu2.actions() if 'OpenAI' in a.text() and a.isEnabled() and a.menu() is None]
+            openai_acts2[0].trigger()
+            app.processEvents()
+            self.assertEqual(win.provider_states, {'gemini': False, 'openai': True, 'mistral': False})
+
+            # Bottom Agents: bar chip click continues to act as an individual on/off switch
+            win._on_top_provider_badge_clicked('mistral')
+            app.processEvents()
+            self.assertEqual(win.provider_states, {'gemini': False, 'openai': True, 'mistral': True})
+            self.assertEqual(win.max_ais_per_turn, 0)
+            self.assertIn('(2)', win.ai_pill_button.text())
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -287,8 +287,21 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "key_url": "https://console.mistral.ai/api-keys/",
         "default_base_url": "",
         "default_model": "codestral-latest",
-        "suggested_models": ["codestral-latest", "pixtral-large-2502", "mistral-large-latest", "mistral-small-latest"],
-        "billing_note": "Free Experiment tier available on La Plateforme, or prepaid/pay-as-you-go.",
+        "suggested_models": [
+            "codestral-latest",
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "pixtral-large-2502",
+            "mistral-small-latest",
+        ],
+        "openrouter_suggested_models": [
+            "mistralai/mistral-medium-3.1",
+            "mistralai/mistral-large-2411",
+            "mistralai/mistral-small-3.1-24b-instruct",
+            "mistralai/pixtral-large-2502",
+            "mistralai/codestral-2508",
+        ],
+        "billing_note": "Free Experiment tier available on La Plateforme, or full Mistral (Medium 3.1 / Large) included via OpenRouter.",
     },
     "openrouter": {
         "display_name": "OpenRouter (All Models)",
@@ -304,6 +317,8 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
             "openai/gpt-6.2-astra-pro",
             "openai/gpt-6.2-astra",
             "google/gemini-4-neon",
+            "mistralai/mistral-large-2411",
+            "mistralai/mistral-medium-3.1",
             "mistralai/pixtral-large-2502",
             "radixark/daisyrose-27b",
             "thinkingmachines/inkling-2-mini",
@@ -311,7 +326,7 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
             "deepseek/deepseek-r1",
             "google/gemini-2.5-pro",
         ],
-        "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models with one key.",
+        "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models (including full Mistral) with one key.",
     },
     "deepinfra": {
         "display_name": "DeepInfra",
@@ -823,7 +838,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
         "openai": {"model": "openai/gpt-oss-120b:free", "label": "GPT-OSS 120B (Free)"},
         "deepseek": {"model": "deepseek/deepseek-chat-v3-0324:free", "label": "DeepSeek Chat (Free)"},
         "qwen": {"model": "qwen/qwen3-32b:free", "label": "Qwen 3 32B (Free)"},
-        "mistral": {"model": "mistralai/mistral-nemo:free", "label": "Mistral Nemo (Free)"},
+        "mistral": {"model": "mistralai/mistral-small-3.1-24b-instruct:free", "label": "Mistral Small 3.1 24B (Free)"},
     },
     "balanced": {
         "claude": {"model": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5 (Warm & High-EQ)"},
@@ -831,7 +846,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
         "openai": {"model": "~openai/gpt-sol-latest", "label": "GPT-Sol Latest (~alias)"},
         "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
         "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
-        "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
+        "mistral": {"model": "mistralai/mistral-medium-3.1", "label": "Mistral Medium 3.1 (Full Mistral)"},
         "groq": {"model": "openai/gpt-oss-120b:nitro", "label": "GPT-OSS 120B (Nitro Fast)"},
         "cohere": {"model": "cohere/command-a", "label": "Cohere Command A"},
     },
@@ -841,7 +856,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
         "openai": {"model": "openai/gpt-6.2-astra", "label": "GPT-6.2 Astra"},
         "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
         "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
-        "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
+        "mistral": {"model": "mistralai/mistral-large-2411", "label": "Mistral Large (Full Flagship)"},
         "grok": {"model": "x-ai/grok-4", "label": "Grok 4"},
         "cohere": {"model": "cohere/command-a", "label": "Cohere Command A"},
     },
@@ -1094,6 +1109,12 @@ OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
     "gpt-6.1-terra": "openai/gpt-6.1-terra",
     "gpt-6-luna": "openai/gpt-6-luna",
     "gpt-sol-latest": "~openai/gpt-sol-latest",
+    "mistral-large-latest": "mistralai/mistral-large-2411",
+    "mistral-large": "mistralai/mistral-large-2411",
+    "mistral-medium-latest": "mistralai/mistral-medium-3.1",
+    "mistral-medium-3": "mistralai/mistral-medium-3.1",
+    "mistral-small-latest": "mistralai/mistral-small-3.1-24b-instruct",
+    "codestral-latest": "mistralai/codestral-2508",
     "pixtral-large-2502": "mistralai/pixtral-large-2502",
     "daisyrose-27b": "radixark/daisyrose-27b",
     "inkling-2-mini": "thinkingmachines/inkling-2-mini",
@@ -1148,12 +1169,22 @@ def resolve_profile_model_override(
         vendor = prefix_map.get(p_low)
         return f"{vendor}/{clean}" if vendor else clean
     bare = clean[1:] if clean.startswith("~") else clean
-    if "/" in bare and p_low in {"openai", "gemini", "deepseek", "anthropic", "claude"}:
+    if "/" in bare and p_low in {"openai", "gemini", "deepseek", "anthropic", "claude", "mistral"}:
         tail = bare.split("/", 1)[1]
         if tail == "deepseek-r1-0528" and p_low == "deepseek":
             return "deepseek-reasoner"
         if tail == "gpt-sol-latest" and p_low == "openai":
             return "gpt-6.2-sol"
+        if p_low == "mistral":
+            tail_clean = tail.split(":", 1)[0]
+            if tail_clean.startswith("mistral-large"):
+                return "mistral-large-latest"
+            if tail_clean.startswith("mistral-medium"):
+                return "mistral-medium-latest"
+            if tail_clean.startswith("mistral-small"):
+                return "mistral-small-latest"
+            if tail_clean.startswith("codestral"):
+                return "codestral-latest"
         return tail
     return bare
 
@@ -1166,7 +1197,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": True,
         "max_ais": 0,
         "context_depth": "standard",
-        "model_overrides": {},
+        "model_overrides": {
+            "mistral": "codestral-latest",
+        },
     },
     "light_chat": {
         "label": "💬 Light Chat (Free / Fast)",
@@ -1179,7 +1212,7 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
     },
     "deep_chat": {
         "label": "🧠 Deeper Chat (Paid — Reasoning & Long)",
-        "providers": ["openai", "gemini", "deepseek", "anthropic", "claude"],
+        "providers": ["openai", "gemini", "deepseek", "mistral", "anthropic", "claude"],
         "deliberate": True,
         "code_access": False,
         "max_ais": 0,
@@ -1188,6 +1221,7 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
             "openai": "gpt-6.2-sol",
             "gemini": "gemini-4-carbon",
             "deepseek": "deepseek-reasoner",
+            "mistral": "mistral-large-latest",
             "anthropic": "claude-3-7-sonnet-latest",
             "claude": "anthropic/claude-sonnet-5.5",
         },

@@ -5616,7 +5616,7 @@ class ManageAIsDialog(QDialog):
 
         self.use_openrouter_check = QCheckBox('Route selected provider via OpenRouter')
         self.use_openrouter_check.setToolTip('Force the AI seat currently selected in Option 1 above to route through OpenRouter even if a direct key exists')
-        self.use_openrouter_check.toggled.connect(self._auto_save_current_provider)
+        self.use_openrouter_check.toggled.connect(self._on_use_openrouter_toggled)
         hub_lay.addWidget(self.use_openrouter_check)
 
         def _save_or_hub(*_args):
@@ -7485,6 +7485,41 @@ class ManageAIsDialog(QDialog):
             if hasattr(self, 'auto_save_status_label'):
                 self.auto_save_status_label.setText(f'✓ Loaded {len(models)} live models from {clean.capitalize()} API')
 
+    def _on_use_openrouter_toggled(self, checked: bool):
+        if getattr(self, '_loading_provider_fields', False):
+            return
+        clean = (getattr(self, '_active_provider_slug', '') or self.provider_combo.currentText()).strip().lower()
+        cat = PROVIDER_CATALOG.get(clean, {})
+        sugg = list(cat.get('suggested_models', []))
+        or_sugg = list(cat.get('openrouter_suggested_models', []))
+        tier_key = str(self.or_tier_combo.currentData() or 'balanced') if hasattr(self, 'or_tier_combo') else 'balanced'
+        tier_entry = OPENROUTER_PRESET_TIERS.get(tier_key, OPENROUTER_PRESET_TIERS['balanced']).get(clean, {})
+        tier_model = str(tier_entry.get('model') or '').strip()
+        cur_model = self.model_edit.text().strip()
+        cat_default = str(cat.get('default_model') or '').strip()
+        if checked:
+            if not cur_model or ('/' not in cur_model and cur_model.lower() == cat_default.lower() and tier_model):
+                cur_model = tier_model
+            elif '/' not in cur_model:
+                from palace_config import resolve_profile_model_override
+                cur_model = resolve_profile_model_override(clean, cur_model, is_openrouter=True) or cur_model
+            merged_choices = list(dict.fromkeys([m for m in ([cur_model, tier_model] + or_sugg + sugg) if m]))
+        else:
+            if '/' in cur_model:
+                from palace_config import resolve_profile_model_override
+                cur_model = resolve_profile_model_override(clean, cur_model, is_openrouter=False) or (cat_default or cur_model)
+            merged_choices = list(dict.fromkeys([m for m in ([cur_model] + sugg + or_sugg) if m]))
+        if hasattr(self, 'model_combo'):
+            self._loading_provider_fields = True
+            try:
+                self.model_combo.clear()
+                for m in merged_choices:
+                    self.model_combo.addItem(m)
+                self.model_combo.setCurrentText(cur_model)
+            finally:
+                self._loading_provider_fields = False
+        self._auto_save_current_provider()
+
     def _load_selected_provider(self, name: str):
         clean = name.strip().lower()
         self._loading_provider_fields = True
@@ -7497,6 +7532,7 @@ class ManageAIsDialog(QDialog):
             disp = cat.get('display_name', clean.capitalize())
             billing = cat.get('billing_note', 'Custom OpenAI-compatible provider.')
             sugg = list(cat.get('suggested_models', []))
+            or_sugg = list(cat.get('openrouter_suggested_models', []))
             sugg_txt = ', '.join(sugg[:3])
             info_txt = f'{disp} — {billing}' + (f'  (Models: {sugg_txt})' if sugg_txt else '')
             if hasattr(self, 'provider_billing_label'):
@@ -7512,18 +7548,27 @@ class ManageAIsDialog(QDialog):
 
             default_en = bool(cfg.get('enabled', has_key))
             self.enabled_check.setChecked(default_en)
+            use_or_active = False
             if hasattr(self, 'use_openrouter_check'):
                 show_or = clean not in {'openrouter', 'ollama'}
+                use_or_active = bool(cfg.get('use_openrouter', False)) if show_or else False
                 self.use_openrouter_check.setVisible(show_or)
-                self.use_openrouter_check.setChecked(bool(cfg.get('use_openrouter', False)) if show_or else False)
+                self.use_openrouter_check.setChecked(use_or_active)
 
             saved_model = str(cfg.get('model') or cat.get('default_model') or '').strip()
             if clean == 'cerebras' and saved_model.lower() in {'llama3.1-8b', 'llama-3.1-8b', 'llama-3.3-70b'}:
                 saved_model = 'gpt-oss-120b'
+            tier_key = str(self.or_tier_combo.currentData() or 'balanced') if hasattr(self, 'or_tier_combo') else 'balanced'
+            tier_model = str(
+                OPENROUTER_PRESET_TIERS.get(tier_key, OPENROUTER_PRESET_TIERS['balanced']).get(clean, {}).get('model') or ''
+            ).strip()
+            if use_or_active and tier_model and saved_model.lower() == str(cat.get('default_model') or '').strip().lower() and '/' not in saved_model:
+                saved_model = tier_model
 
             if hasattr(self, 'model_combo'):
                 self.model_combo.clear()
-                all_choices = list(dict.fromkeys([m for m in ([saved_model] + sugg) if m]))
+                pool = ([saved_model, tier_model] + or_sugg + sugg) if use_or_active else ([saved_model] + sugg + or_sugg)
+                all_choices = list(dict.fromkeys([m for m in pool if m]))
                 for m in all_choices:
                     self.model_combo.addItem(m)
                 self.model_combo.setCurrentText(saved_model)
@@ -10357,6 +10402,9 @@ class PalaceWindow(QMainWindow):
         voice_menu.addAction(cust_v_act)
 
         menu.addSeparator()
+        squads_hdr = QAction('Profiles && AI Squads', menu)
+        squads_hdr.setEnabled(False)
+        menu.addAction(squads_hdr)
 
         squad_dict = load_ai_squads(self.config_path)
         for _sq_key, sq_val in squad_dict.items():
@@ -10388,7 +10436,7 @@ class PalaceWindow(QMainWindow):
             for m in avail_members:
                 single_ov = {m: sq_ov[m]} if m in sq_ov else {}
                 single_act = QAction(
-                    provider_qicon(m, checked=(prov_states.get(m) is True)),
+                    provider_qicon(m, checked=None),
                     f'Only {_esc_amp(provider_display_name(m))} ({squad_title_menu})',
                     sub,
                 )
@@ -10406,7 +10454,17 @@ class PalaceWindow(QMainWindow):
                 )
                 sub.addAction(single_act)
 
+        menu.addSeparator()
+        council_hdr = QAction('Multi-AI Selection', menu)
+        council_hdr.setEnabled(False)
+        menu.addAction(council_hdr)
+
+        active_names_now = [n for n in all_names if prov_states.get(n) is True]
+        all_selected_now = (not talk_active) and len(all_names) > 1 and len(active_names_now) == len(all_names)
+
         all_en_act = QAction('🌐  All Configured AIs', menu)
+        all_en_act.setCheckable(True)
+        all_en_act.setChecked(all_selected_now)
         all_en_act.triggered.connect(
             lambda: self._apply_squad_preset(
                 '🌐 All AIs',
@@ -10425,13 +10483,21 @@ class PalaceWindow(QMainWindow):
         menu.addAction(custom_act)
 
         menu.addSeparator()
+        solo_hdr = QAction('Solo AI — Click to Select Only That AI', menu)
+        solo_hdr.setEnabled(False)
+        menu.addAction(solo_hdr)
+
+        live_reg = self.registry.all() if hasattr(self, 'registry') and self.registry is not None else {}
         for name in all_names:
-            is_active = (prov_states.get(name) is True)
-            disp = _esc_amp(provider_display_name(name))
-            model_hint = _esc_amp(configs.get(name, {}).get('model', ''))
+            is_solo_selected = (not talk_active) and len(active_names_now) == 1 and active_names_now[0] == name
+            disp = _esc_amp(provider_display_name(name, config_path=self.config_path))
+            live_prov = live_reg.get(name)
+            raw_model_hint = str(getattr(live_prov, 'model', '') or configs.get(name, {}).get('model', '') or '').strip()
+            model_hint = _esc_amp(raw_model_hint)
             label_txt = f'  {disp}  ({model_hint})' if model_hint else f'  {disp}'
-            act = QAction(provider_qicon(name, checked=is_active), label_txt, menu)
-            act.triggered.connect(lambda _checked=False, n=name, cur=is_active: self._toggle_provider_quick(n, not cur))
+            act = QAction(provider_qicon(name, checked=True if is_solo_selected else None), label_txt, menu)
+            act.setToolTip(f'Talk strictly to {provider_display_name(name, config_path=self.config_path)} (unselects other AIs; use bottom Agents bar to toggle multiple)')
+            act.triggered.connect(lambda _checked=False, n=name: self._select_single_provider(n))
             menu.addAction(act)
 
         menu.addSeparator()
@@ -10694,12 +10760,57 @@ class PalaceWindow(QMainWindow):
             return
         self._toggle_provider_quick(name, not cur_active)
 
+    def _select_single_provider(self, name: str):
+        """Exclusive Solo-AI selector for menus: activates ONLY `name` and unselects all other AIs."""
+        from local_cli_provider import CLI_PROVIDER_TO_PLATFORM
+        if getattr(self, '_talk_only_mode', False) or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
+            self.stop_all_voice_modes(exit_talk_only=True)
+        self._talk_only_mode = False
+        self.current_squad_label = ''
+        self.max_ais_per_turn = 1
+        self.active_model_overrides = {}
+        self.active_context_depth = 'standard'
+        if self.idle_switch_btn.isChecked():
+            self.idle_switch_btn.setChecked(False)
+
+        configs = load_provider_configs(self.config_path) if self.config_path.exists() else {}
+        all_known = list(dict.fromkeys([*self.provider_states.keys(), *configs.keys(), name]))
+        for prov in all_known:
+            en = (prov == name)
+            self.provider_states[prov] = en
+            if prov not in CLI_PROVIDER_TO_PLATFORM:
+                try:
+                    if self.config_path.exists():
+                        set_provider_enabled(prov, en, config_path=self.config_path)
+                except Exception:
+                    pass
+            if prov not in self.provider_labels:
+                label = QPushButton(self.agent_chips_host if hasattr(self, 'agent_chips_host') else None)
+                label.setFlat(True)
+                label.setCursor(Qt.CursorShape.PointingHandCursor)
+                label.clicked.connect(lambda checked=False, n=prov: self._on_top_provider_badge_clicked(n))
+                self.provider_labels[prov] = label
+            self.set_provider_status(
+                prov,
+                'Enabled' if en else 'Inactive',
+                provider_color(prov) if en else '#6e7681',
+                '' if en else 'Inactive in Solo AI selection (click badge below to add)'
+            )
+        if hasattr(self, 'peer_rounds_toggle'):
+            self.peer_rounds_toggle.setChecked(False)
+        self._relayout_agent_bar()
+        self._update_ai_pill_text()
+        self.status_label.setTextFormat(Qt.TextFormat.RichText)
+        self.status_label.setText(f'Solo AI: {format_ai_badge_html(name)} · Direct (1-Round)')
+
     def _toggle_provider_quick(self, name: str, enabled: bool):
         from local_cli_provider import CLI_PROVIDER_TO_PLATFORM
         if getattr(self, '_talk_only_mode', False):
             self.stop_all_voice_modes(exit_talk_only=True)
         self._talk_only_mode = False
         self.current_squad_label = ''
+        if enabled and sum(1 for k, v in self.provider_states.items() if v is True or k == name) > 1 and self.max_ais_per_turn == 1:
+            self.max_ais_per_turn = 0
         self.active_model_overrides = {}
         self.active_context_depth = 'standard'
         self.provider_states[name] = enabled

@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-25T11:55:00Z",
+  "updated_at": "2026-11-26T00:00:00Z",
   "latest_app_version": "0.95",
-  "release_summary": "v0.95 Beta: LibreOffice-Style 7-Tab Menu Bar & Expandable Options Tree, 4 New Themes (Deep Ocean Abyss, Royal Amethyst, Velvet Rose, Sakura Silk) + 90%-Washed-Out Wallpaper Engine, Low-Latency Voice Mode with Live 3D Avatar Switching & { } Code Inspection, Single Auto-Saving Living User Profile, Response Timing Presets, and Unlimited Multi-Batch Attachments.",
+  "release_summary": "v0.95 Beta: LibreOffice-Style 7-Tab Menu Bar & Expandable Options Tree, Exclusive Solo-AI Menu Selector, Full Mistral via OpenRouter, 4 New Themes (Deep Ocean Abyss, Royal Amethyst, Velvet Rose, Sakura Silk) + 90%-Washed-Out Wallpaper Engine, Low-Latency Voice Mode with Live 3D Avatar Switching & { } Code Inspection, Single Auto-Saving Living User Profile, Response Timing Presets, and Unlimited Multi-Batch Attachments.",
   "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95/Fairybread_v0.95_Win_x64_Setup.exe",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "6c5362a60c4dbe7f5cf211c8e68fb5c3ead7012dde5a64f1e0799f034f5e584e",
+  "installer_sha256": "e32e8a18253f27d30551b24c3af0a76e422f3491cfd3f82196fb9e1766822e91",
   "model_token_rates_per_1m": {
     "gemini-4-carbon": [
       2.0,
@@ -94,6 +94,34 @@
     "qwen/": [
       0.15,
       0.6
+    ],
+    "mistral-large-2411": [
+      2.0,
+      6.0
+    ],
+    "mistral-large-latest": [
+      2.0,
+      6.0
+    ],
+    "mistral-medium-3.1": [
+      0.4,
+      2.0
+    ],
+    "mistral-medium-latest": [
+      0.4,
+      2.0
+    ],
+    "mistral-small-3.1": [
+      0.1,
+      0.3
+    ],
+    "mistral-small-latest": [
+      0.1,
+      0.3
+    ],
+    "codestral-2508": [
+      0.3,
+      0.9
     ],
     "codestral-latest": [
       0.3,
@@ -214,21 +242,25 @@
       "suggested_models": [
         "codestral-latest",
         "mistral-large-latest",
+        "mistral-medium-latest",
+        "pixtral-large-2502",
         "mistral-small-latest"
       ],
       "key_url": "https://console.mistral.ai/api-keys/",
-      "billing_note": "Free Experiment tier available on La Plateforme, or prepaid/pay-as-you-go."
+      "billing_note": "Free Experiment tier available on La Plateforme, or full Mistral (Medium 3.1 / Large) included via OpenRouter."
     },
     "openrouter": {
       "default_model": "qwen/qwen3-32b",
       "suggested_models": [
         "qwen/qwen3-32b",
+        "mistralai/mistral-large-2411",
+        "mistralai/mistral-medium-3.1",
         "anthropic/claude-3.7-sonnet",
         "deepseek/deepseek-r1",
         "google/gemini-2.5-pro"
       ],
       "key_url": "https://openrouter.ai/settings/keys",
-      "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models with one key."
+      "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models (including full Mistral) with one key."
     },
     "deepinfra": {
       "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
