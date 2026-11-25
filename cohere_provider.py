@@ -9,7 +9,7 @@ class CohereProvider(AIProvider):
         self,
         api_key: str,
         model: str = "command-a-03-2025",
-        timeout: float = 45.0,
+        timeout: float = 180.0,
     ):
         self.client = cohere.ClientV2(
             api_key=api_key,

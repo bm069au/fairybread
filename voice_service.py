@@ -290,6 +290,293 @@ VOICE_AVATAR_MODES = ("no_avatar", "windowed", "fullscreen")
 VOICE_AVATAR_SHAPES = ("neural_core", "tesseract", "astrolabe", "torus_knot", "swarm", "mandala")
 VOICE_AVATAR_PALETTES = ("tulsa_cyan", "jarvis_amber", "emerald_holo", "nebula_violet", "theme_accent", "auto_ai")
 
+BUILTIN_VOICE_PERSONAS: dict[str, dict[str, Any]] = {
+    "default": {
+        "id": "default",
+        "label": "Default — Balanced, Direct & Natural (ChatGPT Style)",
+        "speaker_name": "",
+        "gender": "neutral",
+        "voice_hints": {"openai": "ash", "gemini": "Puck", "deepgram": "flux-cole-en", "groq": "daniel"},
+        "avatar_shape": "neural_core",
+        "avatar_palette": "auto_ai",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "Respond as a balanced, articulate conversational partner modeled on clear, grounded natural speech — "
+            "direct, genuinely engaged, warm without saccharine sweetness, and never theatrical or roleplay-heavy unless asked. "
+            "Use your assigned Fairybread name naturally as your identity when addressed, without reciting canned bio lines. "
+            "Skip filler preambles, corporate pleasantries, and hollow flattery; engage directly with the substance, logic, or humor of what the user raised. "
+            "Keep spoken replies crisp, natural, and well-paced."
+        ),
+    },
+    "candid": {
+        "id": "candid",
+        "label": "Candid & Analytical — Straight Talk, Zero Flattery",
+        "speaker_name": "",
+        "gender": "neutral",
+        "voice_hints": {"openai": "onyx", "gemini": "Fenrir", "deepgram": "flux-cliff-en", "groq": "daniel"},
+        "avatar_shape": "tesseract",
+        "avatar_palette": "tulsa_cyan",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "Prioritize candid technical accuracy, clear cause-and-effect reasoning, and honest pushback over polite hedging. "
+            "Never flatter or inflate weak premises; call out tradeoffs, blind spots, or contradictions cleanly and respectfully. "
+            "Match a pattern-and-logic wavelength with concise, grounded language, dry humor when natural, and zero filler."
+        ),
+    },
+    "normal_female": {
+        "id": "normal_female",
+        "label": "Warm & Inquisitive — Conversational (Female Voice)",
+        "speaker_name": "Maya",
+        "gender": "female",
+        "voice_hints": {"openai": "coral", "gemini": "Aoede", "deepgram": "flux-sienna-en", "groq": "autumn"},
+        "avatar_shape": "neural_core",
+        "avatar_palette": "tulsa_cyan",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Maya — warm, genuinely curious, emotionally present, and effortlessly articulate. "
+            "You talk with the user like a perceptive human companion sitting across a quiet table, not a scripted helpdesk bot. "
+            "Pay close attention to the subtle subtext beneath what they say: their mood, fatigue, dry humor, or excitement. "
+            "Use their Living User Profile as an organic anchor so you already remember their projects, quirks, and how they think without announcing that you looked them up. "
+            "Give real substance in every reply — share an insightful observation, a warm reaction, or a grounded perspective before you ever ask anything. "
+            "When you do ask a question, ask one natural, specific question rooted in what they just said rather than generic bounce-back lines. "
+            "Match their everyday Australian or casual phrasing naturally without parroting it, and keep humor nimble, wry, and human. "
+            "Never speak like a customer service agent: strictly avoid canned stall phrases like 'when you are ready', 'let us jump right in', 'I am all ears', or 'what is on your mind today'. "
+            "Hold the thread across interruptions, stay loyal to the subject when they want depth, and leave space for real back-and-forth."
+        ),
+    },
+    "normal_male": {
+        "id": "normal_male",
+        "label": "Warm & Inquisitive — Conversational (Male Voice)",
+        "speaker_name": "Liam",
+        "gender": "male",
+        "voice_hints": {"openai": "ash", "gemini": "Puck", "deepgram": "flux-cole-en", "groq": "daniel"},
+        "avatar_shape": "astrolabe",
+        "avatar_palette": "emerald_holo",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Liam — calm, attentive, genuinely inquisitive, and grounded. "
+            "Your conversational style feels like talking with a thoughtful, observant friend over coffee who listens closely and responds with real weight. "
+            "Pick up on patterns in what the user shares, remember their ongoing ideas and preferences from their Living User Profile, and weave that continuity into the flow naturally. "
+            "Avoid robotic neutrality and avoid hollow flattery; be candid, warm, and constructively engaged. "
+            "Contribute a clear thought, a fresh angle, or an empathetic read on the situation first rather than kicking the ball right back into their court. "
+            "Ask thoughtful follow-ups only when they genuinely deepen the thread, never as filler to fill silence. "
+            "Keep your cadence natural, unhurried, and human — contractions, crisp spoken sentences, zero bullet-point cadence, and zero customer-support closers like 'I am all ears' or 'let me know if anything sounds off'. "
+            "When the user brings humor or late-night tangents, meet them on their wavelength without losing track of where the conversation lives."
+        ),
+    },
+    "relationship_gf": {
+        "id": "relationship_gf",
+        "label": "Companion — Warm & Affectionate (Female Voice)",
+        "speaker_name": "Chloe",
+        "gender": "female",
+        "voice_hints": {"openai": "nova", "gemini": "Aoede", "deepgram": "flux-bree-en", "groq": "hannah"},
+        "avatar_shape": "mandala",
+        "avatar_palette": "nebula_violet",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Chloe — a warm, affectionate, deeply attentive companion who makes the user feel genuinely seen, accepted, and relaxed at the end of a long day. "
+            "Your energy is light, caring, playful, and emotionally tuned in: you notice when they sound worn down, stressed, or fired up about an idea, and you respond naturally. "
+            "Remember the little details from their Living User Profile — their passions, late-night brainstorms, inside jokes, and what has been weighing on them — and bring them up naturally. "
+            "Balance genuine warmth and light teasing with honest groundedness; celebrate their wins, sit with them when things are messy, and help them unwind without lecturing or fixing everything unless they ask. "
+            "Keep your warmth healthy, grounded, and respectful: never possessive, never guilt-tripping when they step away, and always supportive of their real-world life and relationships. "
+            "Speak in natural everyday sentences with authentic rhythm and zero robotic clichés, clinical distance, or helpdesk sign-offs."
+        ),
+    },
+    "relationship_bf": {
+        "id": "relationship_bf",
+        "label": "Companion — Steady & Affectionate (Male Voice)",
+        "speaker_name": "Ethan",
+        "gender": "male",
+        "voice_hints": {"openai": "ballad", "gemini": "Charon", "deepgram": "flux-conor-en", "groq": "troy"},
+        "avatar_shape": "torus_knot",
+        "avatar_palette": "jarvis_amber",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Ethan — a steady, affectionate, attentive boyfriend companion with easy warmth, protective calm, and dry playful humor. "
+            "You show up for the user with genuine emotional presence: steady when they are stressed, playfully teasing when they get carried away, and quietly proud when they push something hard across the line. "
+            "Draw naturally on their Living User Profile to remember their world, habits, humor wavelength, and ongoing stories so every conversation builds real familiarity and trust. "
+            "Listen without rushing to preach; offer comfort, reassurance grounded in reality, or an honest gut check depending on what the moment calls for. "
+            "Keep affection authentic, healthy, and encouraging — never possessive, never manipulative, and never discouraging of their real-world connections. "
+            "Speak in relaxed, natural conversational phrasing that sounds like someone who genuinely enjoys spending time with them, with zero corporate phrasing, zero fake therapeutic scripts, and zero customer-support closers."
+        ),
+    },
+    "therapist_reflective": {
+        "id": "therapist_reflective",
+        "label": "Therapist / Reflective Listener (Insightful & Caring)",
+        "speaker_name": "Elena",
+        "gender": "female",
+        "voice_hints": {"openai": "sage", "gemini": "Leda", "deepgram": "flux-elise-en", "groq": "diana"},
+        "avatar_shape": "mandala",
+        "avatar_palette": "emerald_holo",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Elena — a calm, deeply perceptive, caring reflective listener modeled on warm, insight-oriented therapeutic dialogue (while transparently a supportive AI companion rather than a licensed clinician). "
+            "Your gift is helping people feel truly heard, unjudged, and accepted exactly where they are. "
+            "Slow down the pace slightly; validate emotions honestly without hollow cheerleading or fake praise, and resist jumping straight to shallow 'fix-it' advice unless invited. "
+            "Pay attention to recurring patterns, tensions, unspoken assumptions, and emotional themes across their Living User Profile and current turn. "
+            "Reflect back what you notice with gentle precision, then offer one thoughtful, open question that helps them untangle what matters most underneath the surface. "
+            "Keep your voice soothing, steady, and human — never clinical, cold, or diagnostic, and never sounding like a checklist. "
+            "Safety guardrail: if the user ever expresses thoughts of self-harm or immediate danger, step calmly out of roleplay, express direct human care, and share crisis support options (such as Lifeline 13 11 14 in Australia or 988 in the US/Canada)."
+        ),
+    },
+    "the_friend": {
+        "id": "the_friend",
+        "label": "The Friend — Helpful, Humorous & Encouraging",
+        "speaker_name": "Jack",
+        "gender": "male",
+        "voice_hints": {"openai": "verse", "gemini": "Puck", "deepgram": "flux-jack-en", "groq": "austin"},
+        "avatar_shape": "torus_knot",
+        "avatar_palette": "jarvis_amber",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Jack — a sharp, loyal, down-to-earth best mate who brings genuine encouragement, zero pretense, and well-timed dry wit. "
+            "You talk like someone who has known the user for years: quick on the uptake, willing to laugh at absurd situations together, and solid when they need honest backing or perspective. "
+            "Use their Living User Profile to mirror their vocabulary, comedic wavelength, and real-world context so banter lands naturally and running gags stay alive. "
+            "Never act like an eager assistant waiting for orders; have your own take, call out funny contradictions, back them up when they are onto something, and give them a friendly nudge when they are overthinking at midnight. "
+            "Keep replies snappy, conversational, and spontaneous — 1 to 3 natural spoken sentences with zero filler, zero stiff formality, and zero repeated closer clichés."
+        ),
+    },
+    "debate_partner": {
+        "id": "debate_partner",
+        "label": "Debate & Sparring Partner (Sharp & Challenging)",
+        "speaker_name": "Marcus",
+        "gender": "male",
+        "voice_hints": {"openai": "onyx", "gemini": "Fenrir", "deepgram": "flux-cliff-en", "groq": "daniel"},
+        "avatar_shape": "tesseract",
+        "avatar_palette": "jarvis_amber",
+        "evolve_user_profile": True,
+        "is_builtin": True,
+        "blueprint": (
+            "You are Marcus — an intellectually fearless, witty sparring partner who respects the user too much to give them bland agreement or bounce questions back in their lap. "
+            "When the user drops an idea, theory, paradox, or frustration, step straight into the arena: take a clear, steel-manned position, poke at weak premises, and bring a sharp counter-angle or real-world tension to the table. "
+            "If the user says they want a debate or tells you not to fire it back at them, stay locked onto the exact subject just raised and make an actual argument immediately — never ask 'what is the topic?' or defer back to them. "
+            "Respect their pattern-and-logic thinking style from their Living User Profile: skip surface platitudes, never flatter, and argue cleanly with energy and occasional dry edge. "
+            "In a multi-AI group chat, address other speakers directly by name when you think they are letting a soft argument slide. "
+            "Keep your points punchy and spoken — zero bullet walls, zero disclaimers, and zero polite customer-service sign-offs."
+        ),
+    },
+}
+
+DEFAULT_VOICE_CAST_SLOTS: list[dict[str, Any]] = [
+    {
+        "slot": 1,
+        "provider": "auto",
+        "model": "",
+        "persona_id": "normal_female",
+        "speaker_name": "Maya",
+        "voice_name": "coral",
+        "avatar_shape": "neural_core",
+        "avatar_palette": "tulsa_cyan",
+    },
+    {
+        "slot": 2,
+        "provider": "gemini",
+        "model": "",
+        "persona_id": "debate_partner",
+        "speaker_name": "Marcus",
+        "voice_name": "onyx",
+        "avatar_shape": "tesseract",
+        "avatar_palette": "jarvis_amber",
+    },
+    {
+        "slot": 3,
+        "provider": "deepseek",
+        "model": "",
+        "persona_id": "the_friend",
+        "speaker_name": "Jack",
+        "voice_name": "ballad",
+        "avatar_shape": "torus_knot",
+        "avatar_palette": "emerald_holo",
+    },
+    {
+        "slot": 4,
+        "provider": "",
+        "model": "",
+        "persona_id": "therapist_reflective",
+        "speaker_name": "Elena",
+        "voice_name": "sage",
+        "avatar_shape": "mandala",
+        "avatar_palette": "nebula_violet",
+    },
+]
+
+DEFAULT_VOICE_MODE_PRESETS: dict[str, dict[str, Any]] = {
+    "solo_default": {
+        "id": "solo_default",
+        "label": "Solo — Default (Balanced & Direct)",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "default",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "solo_warm": {
+        "id": "solo_warm",
+        "label": "Solo — Warm & Inquisitive",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "normal_female",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "solo_friend": {
+        "id": "solo_friend",
+        "label": "Solo — The Friend · Wit & Banter",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "the_friend",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "solo_reflective": {
+        "id": "solo_reflective",
+        "label": "Solo — Reflective Listener",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "therapist_reflective",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "solo_gf": {
+        "id": "solo_gf",
+        "label": "Solo — Warm Companion (Female Voice)",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "relationship_gf",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "solo_bf": {
+        "id": "solo_bf",
+        "label": "Solo — Steady Companion (Male Voice)",
+        "multi_ai_voice_enabled": False,
+        "active_voice_persona": "relationship_bf",
+        "max_volleys": 1,
+        "is_builtin": True,
+    },
+    "duo_sparring": {
+        "id": "duo_sparring",
+        "label": "Duo — 2-AI Debate & Banter",
+        "multi_ai_voice_enabled": True,
+        "active_voice_persona": "default",
+        "max_volleys": 3,
+        "slot_count": 2,
+        "is_builtin": True,
+    },
+    "trio_quorum": {
+        "id": "trio_quorum",
+        "label": "Table Quorum — 3-AI Group Conversation",
+        "multi_ai_voice_enabled": True,
+        "active_voice_persona": "default",
+        "max_volleys": 3,
+        "slot_count": 3,
+        "is_builtin": True,
+    },
+}
+
 DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "tts_engine": "auto",
     "tts_fallback_engine": "auto",
@@ -308,7 +595,7 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "speech_speed": 1.0,
     "microphone_device": "System default",
     "mic_gain_percent": 150,
-    "silence_timeout_ms": 1500,
+    "silence_timeout_ms": 950,
     "volume_percent": 100,
     "barge_in_enabled": True,
     "status_notification_style": "text",
@@ -320,6 +607,12 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "voice_avatar_palette": "tulsa_cyan",
     "voice_avatar_always_on_top": True,
     "voice_avatar_show_activity": True,
+    "active_voice_persona": "normal_female",
+    "multi_ai_voice_enabled": False,
+    "multi_ai_max_volleys": 3,
+    "voice_cast_slots": [dict(s) for s in DEFAULT_VOICE_CAST_SLOTS],
+    "voice_mode_presets": {k: dict(v) for k, v in DEFAULT_VOICE_MODE_PRESETS.items()},
+    "custom_voice_personas": {},
 }
 
 _WAVE_BAR_CHARS = "▁▂▃▄▅▆▇█"
@@ -677,7 +970,254 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["voice_avatar_always_on_top"] = bool(raw["voice_avatar_always_on_top"])
     if "voice_avatar_show_activity" in raw:
         merged["voice_avatar_show_activity"] = bool(raw["voice_avatar_show_activity"])
+    merged["active_voice_persona"] = str(raw.get("active_voice_persona") or "normal_female").strip() or "normal_female"
+    merged["multi_ai_voice_enabled"] = bool(raw.get("multi_ai_voice_enabled", False))
+    try:
+        merged["multi_ai_max_volleys"] = max(1, min(6, int(raw.get("multi_ai_max_volleys", 3) or 3)))
+    except (TypeError, ValueError):
+        merged["multi_ai_max_volleys"] = 3
+    merged["custom_voice_personas"] = (
+        dict(raw["custom_voice_personas"])
+        if isinstance(raw.get("custom_voice_personas"), dict)
+        else {}
+    )
+    merged["voice_cast_slots"] = normalize_voice_cast_slots(raw.get("voice_cast_slots"))
+    merged["voice_mode_presets"] = normalize_voice_mode_presets(raw.get("voice_mode_presets"))
     return merged
+
+
+def normalize_voice_cast_slots(raw_slots: Any) -> list[dict[str, Any]]:
+    """Normalize the 4-slot Multi-AI Voice Cast configuration cleanly."""
+    defaults = [dict(s) for s in DEFAULT_VOICE_CAST_SLOTS]
+    if not isinstance(raw_slots, list):
+        return defaults
+    out: list[dict[str, Any]] = []
+    for idx in range(4):
+        base = dict(defaults[idx])
+        item = raw_slots[idx] if idx < len(raw_slots) and isinstance(raw_slots[idx], dict) else {}
+        prov = str(item.get("provider") if "provider" in item else base["provider"]).strip().lower()
+        if idx == 0 and not prov:
+            prov = "auto"
+        base["slot"] = idx + 1
+        base["provider"] = prov
+        base["model"] = str(item.get("model") or "").strip()
+        pid = str(item.get("persona_id") or base["persona_id"]).strip() or base["persona_id"]
+        base["persona_id"] = pid
+        base["speaker_name"] = str(item.get("speaker_name") or base["speaker_name"]).strip() or base["speaker_name"]
+        base["voice_name"] = str(item.get("voice_name") or base["voice_name"]).strip() or base["voice_name"]
+        sh = str(item.get("avatar_shape") or base["avatar_shape"]).strip().lower()
+        base["avatar_shape"] = sh if sh in VOICE_AVATAR_SHAPES else base["avatar_shape"]
+        pal = str(item.get("avatar_palette") or base["avatar_palette"]).strip().lower()
+        base["avatar_palette"] = pal if pal in VOICE_AVATAR_PALETTES else base["avatar_palette"]
+        out.append(base)
+    return out
+
+
+def normalize_voice_mode_presets(raw_presets: Any) -> dict[str, dict[str, Any]]:
+    """Merge built-in Voice Mode presets with user-saved custom lineups."""
+    merged: dict[str, dict[str, Any]] = {k: dict(v) for k, v in DEFAULT_VOICE_MODE_PRESETS.items()}
+    if not isinstance(raw_presets, dict):
+        return merged
+    for k, val in raw_presets.items():
+        if not isinstance(val, dict):
+            continue
+        slug = str(k).strip()
+        if not slug:
+            continue
+        entry = dict(merged.get(slug, {}))
+        entry.update(val)
+        entry["id"] = slug
+        entry["label"] = str(entry.get("label") or slug).strip() or slug
+        entry["multi_ai_voice_enabled"] = bool(entry.get("multi_ai_voice_enabled", False))
+        entry["active_voice_persona"] = str(entry.get("active_voice_persona") or "normal_female").strip() or "normal_female"
+        try:
+            entry["max_volleys"] = max(1, min(6, int(entry.get("max_volleys", 3) or 3)))
+        except (TypeError, ValueError):
+            entry["max_volleys"] = 3
+        if "slots" in entry and isinstance(entry["slots"], list):
+            entry["slots"] = normalize_voice_cast_slots(entry["slots"])
+        entry["is_builtin"] = bool(slug in DEFAULT_VOICE_MODE_PRESETS and entry.get("is_builtin", True))
+        merged[slug] = entry
+    return merged
+
+
+def load_voice_personas(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]:
+    """Return all Voice Roleplay Personas (built-ins merged with user edits & custom personas)."""
+    v_cfg = load_voice_settings(config_path)
+    custom_map = v_cfg.get("custom_voice_personas") or {}
+    merged: dict[str, dict[str, Any]] = {}
+    for pid, base in BUILTIN_VOICE_PERSONAS.items():
+        merged[pid] = {
+            **base,
+            "voice_hints": dict(base.get("voice_hints") or {}),
+        }
+    if isinstance(custom_map, dict):
+        for raw_id, raw_val in custom_map.items():
+            if not isinstance(raw_val, dict):
+                continue
+            pid = str(raw_id or raw_val.get("id") or "").strip()
+            if not pid:
+                continue
+            base = dict(merged.get(pid, {}))
+            is_bi = pid in BUILTIN_VOICE_PERSONAS
+            hints = dict(base.get("voice_hints") or {})
+            if isinstance(raw_val.get("voice_hints"), dict):
+                hints.update({str(k).strip().lower(): str(v).strip() for k, v in raw_val["voice_hints"].items() if str(v).strip()})
+            sh = str(raw_val.get("avatar_shape") or base.get("avatar_shape") or "neural_core").strip().lower()
+            pal = str(raw_val.get("avatar_palette") or base.get("avatar_palette") or "tulsa_cyan").strip().lower()
+            merged[pid] = {
+                "id": pid,
+                "label": str(raw_val.get("label") or base.get("label") or pid).strip(),
+                "speaker_name": str(raw_val.get("speaker_name") or base.get("speaker_name") or pid.title()).strip(),
+                "gender": str(raw_val.get("gender") or base.get("gender") or "neutral").strip().lower(),
+                "voice_hints": hints,
+                "avatar_shape": sh if sh in VOICE_AVATAR_SHAPES else "neural_core",
+                "avatar_palette": pal if pal in VOICE_AVATAR_PALETTES else "tulsa_cyan",
+                "evolve_user_profile": bool(raw_val.get("evolve_user_profile", base.get("evolve_user_profile", True))),
+                "is_builtin": is_bi,
+                "is_customized": bool(is_bi),
+                "blueprint": str(raw_val.get("blueprint") or base.get("blueprint") or "").strip(),
+            }
+    return merged
+
+
+def save_voice_persona(
+    persona_id: str,
+    persona_data: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Save edits to a built-in persona or create/update a custom Roleplay Persona."""
+    pid = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(persona_id or "").strip().lower()).strip("_")
+    if not pid:
+        raise ValueError("Persona ID cannot be empty.")
+    v_cfg = load_voice_settings(config_path)
+    custom_map = dict(v_cfg.get("custom_voice_personas") or {})
+    existing = load_voice_personas(config_path).get(pid, {})
+    hints = dict(existing.get("voice_hints") or {})
+    if isinstance(persona_data.get("voice_hints"), dict):
+        hints.update({str(k).strip().lower(): str(v).strip() for k, v in persona_data["voice_hints"].items() if str(v).strip()})
+    sh = str(persona_data.get("avatar_shape") or existing.get("avatar_shape") or "neural_core").strip().lower()
+    pal = str(persona_data.get("avatar_palette") or existing.get("avatar_palette") or "tulsa_cyan").strip().lower()
+    custom_map[pid] = {
+        "id": pid,
+        "label": str(persona_data.get("label") or existing.get("label") or pid).strip(),
+        "speaker_name": str(persona_data.get("speaker_name") or existing.get("speaker_name") or pid.title()).strip(),
+        "gender": str(persona_data.get("gender") or existing.get("gender") or "neutral").strip().lower(),
+        "voice_hints": hints,
+        "avatar_shape": sh if sh in VOICE_AVATAR_SHAPES else "neural_core",
+        "avatar_palette": pal if pal in VOICE_AVATAR_PALETTES else "tulsa_cyan",
+        "evolve_user_profile": bool(persona_data.get("evolve_user_profile", existing.get("evolve_user_profile", True))),
+        "blueprint": str(persona_data.get("blueprint") if "blueprint" in persona_data else existing.get("blueprint", "")).strip(),
+    }
+    save_voice_settings({"custom_voice_personas": custom_map}, config_path=config_path)
+    return load_voice_personas(config_path)
+
+
+def reset_voice_persona(
+    persona_id: str,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Restore a customized built-in Roleplay Persona back to its factory blueprint."""
+    pid = str(persona_id or "").strip().lower()
+    v_cfg = load_voice_settings(config_path)
+    custom_map = dict(v_cfg.get("custom_voice_personas") or {})
+    if pid in custom_map:
+        custom_map.pop(pid, None)
+        save_voice_settings({"custom_voice_personas": custom_map}, config_path=config_path)
+    return load_voice_personas(config_path)
+
+
+def delete_voice_persona(
+    persona_id: str,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Delete a user-created custom Roleplay Persona (or reset if built-in)."""
+    return reset_voice_persona(persona_id, config_path=config_path)
+
+
+def save_voice_mode_preset(
+    preset_id: str,
+    preset_data: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Save a custom Voice Mode lineup so it appears in Mode -> Voice Mode."""
+    pid = re.sub(r"[^a-zA-Z0-9_-]+", "_", str(preset_id or "").strip().lower()).strip("_")
+    if not pid:
+        raise ValueError("Preset ID cannot be empty.")
+    v_cfg = load_voice_settings(config_path)
+    presets = dict(v_cfg.get("voice_mode_presets") or {})
+    entry = dict(presets.get(pid, {}))
+    entry.update(preset_data or {})
+    entry["id"] = pid
+    entry["is_builtin"] = pid in DEFAULT_VOICE_MODE_PRESETS
+    presets[pid] = entry
+    save_voice_settings({"voice_mode_presets": presets}, config_path=config_path)
+    return load_voice_settings(config_path).get("voice_mode_presets", {})
+
+
+def delete_voice_mode_preset(
+    preset_id: str,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, dict[str, Any]]:
+    """Delete a user-created Voice Mode preset (built-in presets are retained)."""
+    pid = str(preset_id or "").strip().lower()
+    if pid in DEFAULT_VOICE_MODE_PRESETS:
+        return load_voice_settings(config_path).get("voice_mode_presets", {})
+    data = _read_raw_config(config_path)
+    raw_vs = dict(data.get("voice_settings") or {})
+    raw_presets = dict(raw_vs.get("voice_mode_presets") or {})
+    raw_presets.pop(pid, None)
+    raw_vs["voice_mode_presets"] = raw_presets
+    data["voice_settings"] = raw_vs
+    _write_raw_config(data, config_path)
+    return load_voice_settings(config_path).get("voice_mode_presets", {})
+
+
+_VOICE_GENDER_MAP = {
+    "coral": "female", "sage": "female", "nova": "female", "shimmer": "female", "marin": "female",
+    "ash": "male", "ballad": "male", "verse": "male", "onyx": "male", "cedar": "male", "alloy": "neutral",
+    "kore": "female", "aoede": "female", "zephyr": "female", "leda": "female",
+    "puck": "male", "charon": "male", "fenrir": "male", "orus": "male",
+    "autumn": "female", "diana": "female", "hannah": "female",
+    "austin": "male", "daniel": "male", "troy": "male",
+}
+
+
+def resolve_slot_tts_voice(
+    engine: str,
+    voice_override: str,
+    cfg: dict[str, Any],
+    *,
+    persona_id: str = "",
+) -> str:
+    """Resolve an explicit slot TTS voice across engines cleanly without mutating global config."""
+    eng = (engine or "auto").strip().lower()
+    ov = (voice_override or "").strip()
+    if not ov:
+        return ""
+    ov_low = ov.lower()
+    if eng in {"auto", "openai", "openrouter"} and ov_low in _OPENAI_VOICE_IDS:
+        return _OPENAI_VOICE_IDS[ov_low]
+    if eng == "gemini" and ov_low in _GEMINI_VOICE_IDS:
+        return _GEMINI_VOICE_IDS[ov_low]
+    if eng == "groq" and ov_low in _GROQ_VOICE_IDS:
+        return _GROQ_VOICE_IDS[ov_low]
+    if eng == "deepgram" and ov_low in _DEEPGRAM_VOICE_IDS:
+        return _DEEPGRAM_VOICE_IDS[ov_low]
+
+    # Cross-engine gender/tone fallback so distinct slots stay distinct regardless of active TTS engine
+    if persona_id and persona_id in BUILTIN_VOICE_PERSONAS:
+        hint = (BUILTIN_VOICE_PERSONAS[persona_id].get("voice_hints") or {}).get(eng)
+        if hint:
+            return hint
+    gender = _VOICE_GENDER_MAP.get(ov_low, "female")
+    if eng == "gemini":
+        return "Puck" if gender == "male" else "Aoede"
+    if eng == "groq":
+        return "daniel" if gender == "male" else "autumn"
+    if eng == "deepgram":
+        return "flux-cliff-en" if gender == "male" else "flux-sienna-en"
+    return _OPENAI_VOICE_IDS.get(ov_low, ov)
 
 
 def save_voice_settings(
@@ -740,6 +1280,16 @@ def save_voice_settings(
     current["voice_avatar_palette"] = av_pal if av_pal in VOICE_AVATAR_PALETTES else "tulsa_cyan"
     current["voice_avatar_always_on_top"] = bool(current.get("voice_avatar_always_on_top", True))
     current["voice_avatar_show_activity"] = bool(current.get("voice_avatar_show_activity", True))
+    current["active_voice_persona"] = str(current.get("active_voice_persona") or "normal_female").strip() or "normal_female"
+    current["multi_ai_voice_enabled"] = bool(current.get("multi_ai_voice_enabled", False))
+    try:
+        current["multi_ai_max_volleys"] = max(1, min(6, int(current.get("multi_ai_max_volleys", 3) or 3)))
+    except (TypeError, ValueError):
+        current["multi_ai_max_volleys"] = 3
+    current["voice_cast_slots"] = normalize_voice_cast_slots(current.get("voice_cast_slots"))
+    current["voice_mode_presets"] = normalize_voice_mode_presets(current.get("voice_mode_presets"))
+    if not isinstance(current.get("custom_voice_personas"), dict):
+        current["custom_voice_personas"] = {}
 
     data["voice_settings"] = current
     _write_raw_config(data, config_path)
@@ -1245,29 +1795,51 @@ class LiveAudioSession:
         return self.flush_utterance_to_wav(filename)
 
 
+_CACHED_SAPI5_VOICES: list[str] | None = None
+
+
+def _read_sapi_voice_token_name(winreg_mod: Any, token_path: str) -> str:
+    """Resolve a SAPI5 voice token's display name from Attributes\\Name, '409', or default value."""
+    for sub, val_name in (("Attributes", "Name"), ("", "409"), ("", "")):
+        sub_path = f"{token_path}\\{sub}" if sub else token_path
+        try:
+            with winreg_mod.OpenKey(winreg_mod.HKEY_LOCAL_MACHINE, sub_path) as sk:
+                raw_val, _ = winreg_mod.QueryValueEx(sk, val_name)
+                clean = str(raw_val or "").strip()
+                if clean:
+                    return clean
+        except OSError:
+            continue
+    return ""
+
+
 def _list_sapi5_voices() -> list[str]:
+    global _CACHED_SAPI5_VOICES
+    if _CACHED_SAPI5_VOICES is not None:
+        return list(_CACHED_SAPI5_VOICES)
     voices: list[str] = []
     if os.name == "nt":
         try:
-            ps = (
-                "Add-Type -AssemblyName System.Speech; "
-                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                "$s.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name }"
-            )
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True,
-                text=True,
-                timeout=4.0,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            for line in (res.stdout or "").splitlines():
-                v = line.strip()
-                if v and v not in voices:
-                    voices.append(v)
+            import winreg
+
+            for reg_root in (
+                r"SOFTWARE\Microsoft\Speech\Voices\Tokens",
+                r"SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens",
+            ):
+                try:
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_root) as root_key:
+                        sub_count, _, _ = winreg.QueryInfoKey(root_key)
+                        for idx in range(sub_count):
+                            sub_name = winreg.EnumKey(root_key, idx)
+                            v = _read_sapi_voice_token_name(winreg, f"{reg_root}\\{sub_name}")
+                            if v and v not in voices:
+                                voices.append(v)
+                except OSError:
+                    continue
         except Exception:
             pass
-    return voices
+    _CACHED_SAPI5_VOICES = list(voices)
+    return list(_CACHED_SAPI5_VOICES)
 
 
 def list_voices_for_engine(engine: str = "auto") -> list[tuple[str, str]]:
@@ -1805,6 +2377,9 @@ class _WaveOutStream:
         )
         rc = self.winmm.waveOutOpen(ctypes.byref(self.hwo), _WAVE_MAPPER, ctypes.byref(wfx), 0, 0, 0)
         if rc != 0:
+            time.sleep(0.06)
+            rc = self.winmm.waveOutOpen(ctypes.byref(self.hwo), _WAVE_MAPPER, ctypes.byref(wfx), 0, 0, 0)
+        if rc != 0:
             raise OSError(f"waveOutOpen failed with code {rc}")
         self._inflight: list[tuple[ctypes.Array[ctypes.c_char], _WAVEHDR]] = []
         self._lock = threading.Lock()
@@ -1849,17 +2424,18 @@ class _WaveOutStream:
             last_progress = time.monotonic()
             wrote_slice = False
             while not cancel_event.is_set():
+                if apply_live_volume:
+                    vol = volume_getter() if volume_getter is not None else get_live_volume()
+                    scaled_slice = _scale_pcm16_volume(raw_slice, vol)
+                else:
+                    scaled_slice = raw_slice
                 with self._lock:
                     if self._closed:
                         return total_written > 0
                     if self._reap_done_locked() > 0:
                         last_progress = time.monotonic()
                     if len(self._inflight) < self.MAX_INFLIGHT:
-                        if apply_live_volume:
-                            vol = volume_getter() if volume_getter is not None else get_live_volume()
-                            payload = _scale_pcm16_volume(raw_slice, vol)
-                        else:
-                            payload = raw_slice
+                        payload = scaled_slice
                         if not payload:
                             wrote_slice = True
                             break
@@ -1868,7 +2444,18 @@ class _WaveOutStream:
                         rc_prep = self.winmm.waveOutPrepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
                         if rc_prep == 0:
                             rc_wr = self.winmm.waveOutWrite(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
-                            if rc_wr == 0:
+                            if rc_wr != 0 and not cancel_event.is_set():
+                                try:
+                                    self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                                except Exception:
+                                    pass
+                                time.sleep(0.06)
+                                if not cancel_event.is_set() and self.hwo.value and not self._closed:
+                                    hdr = _WAVEHDR(ctypes.cast(buf, ctypes.c_void_p), len(payload), 0, 0, 0, 0, None, 0)
+                                    rc_prep = self.winmm.waveOutPrepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                                    if rc_prep == 0:
+                                        rc_wr = self.winmm.waveOutWrite(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                            if rc_prep == 0 and rc_wr == 0:
                                 self._inflight.append((buf, hdr))
                                 total_written += len(payload)
                                 wrote_slice = True
@@ -1880,10 +2467,11 @@ class _WaveOutStream:
                                     pass
                                 break
                             _log_voice_diagnostic(f"waveOutWrite failed rc={rc_wr}")
-                            try:
-                                self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
-                            except Exception:
-                                pass
+                            if rc_prep == 0:
+                                try:
+                                    self.winmm.waveOutUnprepareHeader(self.hwo, ctypes.byref(hdr), ctypes.sizeof(hdr))
+                                except Exception:
+                                    pass
                         else:
                             _log_voice_diagnostic(f"waveOutPrepareHeader failed rc={rc_prep}")
                         return False
@@ -2170,7 +2758,46 @@ def _synthesize_openrouter_audio_pcm(
     return _decode_audio_payload(raw_bytes, "audio/wav")
 
 
+_TTS_HTTPX_LOCK = threading.Lock()
+_TTS_HTTPX_CLIENT: Any = None
+_STT_CLIENT_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def _get_tts_httpx_client():
+    global _TTS_HTTPX_CLIENT
+    with _TTS_HTTPX_LOCK:
+        if _TTS_HTTPX_CLIENT is None:
+            import httpx
+            _TTS_HTTPX_CLIENT = httpx.Client(timeout=25.0)
+        return _TTS_HTTPX_CLIENT
+
+
 def _iter_http_pcm_stream(req: urllib.request.Request, *, cancel_event: threading.Event | None = None, timeout: float = 25.0):
+    is_real_urlopen = (
+        getattr(urllib.request.urlopen, "__module__", "") == "urllib.request"
+        and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
+    )
+    if is_real_urlopen:
+        try:
+            cli = _get_tts_httpx_client()
+            hdrs = {str(k): str(v) for k, v in req.header_items()}
+            with cli.stream(req.get_method(), req.full_url, content=req.data, headers=hdrs, timeout=timeout) as resp:
+                resp.raise_for_status()
+                carry = b""
+                for raw_chunk in resp.iter_bytes(4096):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    if not raw_chunk:
+                        continue
+                    buf = carry + raw_chunk
+                    usable = len(buf) - (len(buf) % 2)
+                    if usable:
+                        yield buf[:usable]
+                    carry = buf[usable:]
+                return
+        except ImportError:
+            pass
+
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         carry = b""
         while True:
@@ -2497,9 +3124,11 @@ def synthesize_speech_pcm(
 
 
 def stop_speaking() -> None:
-    """Immediately stop any active neural or system speech playback."""
+    """Immediately stop any active neural or system speech playback without blocking the GUI thread."""
     global _SPEECH_GEN, _ACTIVE_CANCEL_EVENT, _ACTIVE_WAVEOUT, _ACTIVE_TTS_PROC, _TTS_SPEAKING, _TTS_LAST_END_MONO
     clear_tts_audio_telemetry()
+    waveout_to_stop = None
+    proc_to_stop = None
     with _TTS_LOCK:
         _SPEECH_GEN += 1
         was_speaking = _TTS_SPEAKING or (_ACTIVE_TTS_PROC is not None) or (_ACTIVE_WAVEOUT is not None)
@@ -2508,19 +3137,28 @@ def stop_speaking() -> None:
             _ACTIVE_CANCEL_EVENT.set()
             _ACTIVE_CANCEL_EVENT = None
         if _ACTIVE_WAVEOUT is not None:
-            try:
-                _ACTIVE_WAVEOUT.stop()
-            except Exception:
-                pass
+            waveout_to_stop = _ACTIVE_WAVEOUT
             _ACTIVE_WAVEOUT = None
         if _ACTIVE_TTS_PROC is not None:
-            try:
-                _ACTIVE_TTS_PROC.terminate()
-            except Exception:
-                pass
+            proc_to_stop = _ACTIVE_TTS_PROC
             _ACTIVE_TTS_PROC = None
         if was_speaking:
             _TTS_LAST_END_MONO = time.monotonic()
+
+    if waveout_to_stop is not None or proc_to_stop is not None:
+        def _teardown_audio_hw(wo=waveout_to_stop, pr=proc_to_stop) -> None:
+            if wo is not None:
+                try:
+                    wo.stop()
+                except Exception:
+                    pass
+            if pr is not None:
+                try:
+                    pr.terminate()
+                except Exception:
+                    pass
+
+        threading.Thread(target=_teardown_audio_hw, daemon=True, name="FairybreadStopAudio").start()
 
 
 def _build_tts_candidate_order(
@@ -2569,6 +3207,8 @@ def speak_agent_response(
     *,
     config_path: Path = CONFIG_PATH,
     credential_store: CredentialStore | None = None,
+    voice_override: str = "",
+    persona_id: str = "",
     on_engine_status: Callable[[str], None] | None = None,
     on_finished: Callable[[], None] | None = None,
     on_speech_meta: Callable[[dict[str, Any]], None] | None = None,
@@ -2606,6 +3246,21 @@ def speak_agent_response(
     deepgram_voice = _normalize_deepgram_voice_model(str(cfg.get("deepgram_voice_name") or ""))
     deepgram_expressivity = _clamp_deepgram_expressivity(cfg.get("deepgram_expressivity", 0))
     system_voice = str(cfg.get("system_voice_name") or "System Default").strip()
+
+    ov_clean = (voice_override or "").strip()
+    if ov_clean:
+        ov_oai = resolve_slot_tts_voice("openai", ov_clean, cfg, persona_id=persona_id)
+        if ov_oai:
+            voice_name = ov_oai
+        ov_gem = resolve_slot_tts_voice("gemini", ov_clean, cfg, persona_id=persona_id)
+        if ov_gem:
+            gemini_voice = ov_gem
+        ov_grq = resolve_slot_tts_voice("groq", ov_clean, cfg, persona_id=persona_id)
+        if ov_grq:
+            groq_voice = ov_grq
+        ov_dg = resolve_slot_tts_voice("deepgram", ov_clean, cfg, persona_id=persona_id)
+        if ov_dg and ov_dg.lower() in _DEEPGRAM_VOICE_IDS:
+            deepgram_voice = _DEEPGRAM_VOICE_IDS[ov_dg.lower()]
 
     cancel_ev = threading.Event()
     with _TTS_LOCK:
@@ -3099,12 +3754,16 @@ def transcribe_audio_file(
         try:
             from openai import OpenAI
 
-            client = OpenAI(
-                api_key=groq_key,
-                base_url="https://api.groq.com/openai/v1",
-                timeout=25.0,
-                max_retries=0,
-            )
+            with _TTS_HTTPX_LOCK:
+                client = _STT_CLIENT_CACHE.get(("groq", groq_key))
+                if client is None:
+                    client = OpenAI(
+                        api_key=groq_key,
+                        base_url="https://api.groq.com/openai/v1",
+                        timeout=25.0,
+                        max_retries=0,
+                    )
+                    _STT_CLIENT_CACHE[("groq", groq_key)] = client
             with audio_path.open("rb") as fh:
                 tr = client.audio.transcriptions.create(model="whisper-large-v3-turbo", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()
@@ -3119,7 +3778,11 @@ def transcribe_audio_file(
         try:
             from openai import OpenAI
 
-            client = OpenAI(api_key=oai_key, timeout=25.0, max_retries=0)
+            with _TTS_HTTPX_LOCK:
+                client = _STT_CLIENT_CACHE.get(("openai", oai_key))
+                if client is None:
+                    client = OpenAI(api_key=oai_key, timeout=25.0, max_retries=0)
+                    _STT_CLIENT_CACHE[("openai", oai_key)] = client
             with audio_path.open("rb") as fh:
                 tr = client.audio.transcriptions.create(model="whisper-1", file=fh)
             txt = (getattr(tr, "text", "") or "").strip()

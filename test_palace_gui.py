@@ -905,16 +905,32 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(self.window.chat.sprinkles_enabled)
         self.assertFalse(self.window.windowIcon().isNull())
 
-        # 4. Verify KDE/XFCE-style pixel-width responsive bottom Agents: bar
+        # 4. Verify consistent max 4-across bottom Agents: grid & responsive right status stacking
         self.window._apply_squad_preset(
-            'Full Roster',
+            '8-AI Roster',
             ['gemini', 'openai', 'anthropic', 'xai', 'deepseek', 'qwen', 'cohere', 'mistral', 'openrouter', 'deepinfra', 'groq', 'cerebras'],
             deliberate=True,
         )
+        n_active = sum(
+            1
+            for name in self.window.provider_labels
+            if self.window.provider_details.get(name, {}).get('status', 'Enabled') != 'Off'
+        )
+        exp_chip_rows = max(1, (n_active + 3) // 4)
+        exp_h_wide = 28 if exp_chip_rows <= 1 else (48 if exp_chip_rows == 2 else 66)
         self.window.agent_workbench_frame.resize(520, 28)
         self.window._relayout_agent_bar()
-        self.assertEqual(self.window.agent_workbench_frame.height(), 48)
+        self.assertGreaterEqual(self.window.agent_workbench_frame.height(), 48)
         self.assertIsNotNone(self.window.right_status_grid.itemAtPosition(1, 0))
+        self.assertIsNone(self.window.agent_chips_grid.itemAtPosition(0, 4))
+        self.window.agent_workbench_frame.resize(1600, 28)
+        self.window._relayout_agent_bar()
+        self.assertEqual(self.window.agent_workbench_frame.height(), exp_h_wide)
+        self.assertIsNone(self.window.agent_chips_grid.itemAtPosition(0, 4))
+        # With <= 4 visible AIs at 1600px, frame stays compact single-row 28px
+        for n in list(self.window.provider_labels):
+            is_q = n in {'gemini', 'openai', 'deepseek', 'groq'}
+            self.window.set_provider_status(n, 'Enabled' if is_q else 'Off', '#22c55e' if is_q else '#6e7681')
         self.window.agent_workbench_frame.resize(1600, 28)
         self.window._relayout_agent_bar()
         self.assertEqual(self.window.agent_workbench_frame.height(), 28)
@@ -1323,7 +1339,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.94')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.95')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -1757,8 +1773,15 @@ class VoiceUpgradeTests(unittest.TestCase):
         w_idx = dlg.voice_avatar_mode_combo.findData('windowed')
         self.assertGreaterEqual(w_idx, 0)
         dlg.voice_avatar_mode_combo.setCurrentIndex(w_idx)
-        # Close via reject (Esc / X) without pressing Save/Done — auto-save must flush changes
+        # Verify Windows-compliant Cancel/reject() discards unapplied edits, while OK/save_settings() persists
         dlg.reject()
+        app.processEvents()
+        self.assertEqual(load_agent_defaults(cfg)['straggler_grace_sec'], 0)
+
+        dlg_ok = ManageAIsDialog(config_path=cfg, initial_page='Agent Defaults')
+        dlg_ok.ad_straggler_spin.setValue(25)
+        dlg_ok.voice_avatar_mode_combo.setCurrentIndex(dlg_ok.voice_avatar_mode_combo.findData('windowed'))
+        dlg_ok.save_settings()
         app.processEvents()
 
         self.assertEqual(load_agent_defaults(cfg)['straggler_grace_sec'], 25)
@@ -1991,6 +2014,497 @@ class VoiceUpgradeTests(unittest.TestCase):
             finally:
                 dlg.close()
                 dlg.deleteLater()
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+    def test_voice_quorum_personas_faith_respect_and_submenus(self):
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QApplication, QMenu
+        import cost_service
+        from dispatcher import ProviderDispatcher
+        from memory_service import (
+            _normalize_profile_category,
+            evolve_conversational_signature_from_turns,
+            load_memory_summary,
+        )
+        from orchestrator import PalaceOrchestrator
+        import palace_config
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from provider_registry import ProviderRegistry
+        from session_store import SessionStore
+        from voice_companion import (
+            VOICE_ANTI_STALL_RULES,
+            VoiceCompanion,
+            _detect_active_topic_hint,
+            _strip_stall_closers,
+        )
+        from voice_service import (
+            BUILTIN_VOICE_PERSONAS,
+            delete_voice_mode_preset,
+            load_voice_personas,
+            load_voice_settings,
+            reset_voice_persona,
+            resolve_slot_tts_voice,
+            save_voice_mode_preset,
+            save_voice_persona,
+        )
+        from voice_visualizer import VoiceAvatarStageWindow
+
+        cfg = self.root / 'voice_quorum_cfg.json'
+
+        # 1. Built-in & editable Roleplay Personas + Preset Saver + Cross-engine voice resolution
+        for expected_pid in (
+            'normal_female',
+            'normal_male',
+            'relationship_gf',
+            'relationship_bf',
+            'therapist_reflective',
+            'the_friend',
+            'debate_partner',
+        ):
+            self.assertIn(expected_pid, BUILTIN_VOICE_PERSONAS)
+
+        save_voice_persona(
+            'normal_female',
+            {'speaker_name': 'Aria', 'blueprint': 'Warm customized blueprint.'},
+            config_path=cfg,
+        )
+        save_voice_persona(
+            'custom_coach',
+            {'label': 'Custom Coach', 'speaker_name': 'Coach', 'blueprint': 'Direct and practical.'},
+            config_path=cfg,
+        )
+        edited = load_voice_personas(cfg)
+        self.assertEqual(edited['normal_female']['speaker_name'], 'Aria')
+        self.assertTrue(edited['normal_female']['is_customized'])
+        self.assertIn('custom_coach', edited)
+
+        reset_map = reset_voice_persona('normal_female', config_path=cfg)
+        self.assertEqual(reset_map['normal_female']['speaker_name'], 'Maya')
+        self.assertIn('custom_coach', reset_map)
+
+        presets = save_voice_mode_preset(
+            'custom_late_night',
+            {
+                'label': 'Late Night Duo',
+                'multi_ai_voice_enabled': True,
+                'active_voice_persona': 'relationship_gf',
+                'max_volleys': 2,
+            },
+            config_path=cfg,
+        )
+        self.assertIn('custom_late_night', presets)
+        after_del = delete_voice_mode_preset('custom_late_night', config_path=cfg)
+        self.assertNotIn('custom_late_night', after_del)
+        self.assertIn('trio_quorum', after_del)
+
+        self.assertEqual(resolve_slot_tts_voice('gemini', 'coral', {}, persona_id='normal_female'), 'Aoede')
+        self.assertEqual(resolve_slot_tts_voice('groq', 'ash', {}, persona_id='normal_male'), 'daniel')
+
+        # 2. Anti-stall closer stripper, Active Topic Lock, Faith Respect, OpenRouter ~ aliases, GPT-6 rates
+        cleaned = _strip_stall_closers(
+            "Humans hold conflicting beliefs because it cushions grief. Let's jump right in! What's on your mind today?"
+        )
+        self.assertEqual(cleaned, 'Humans hold conflicting beliefs because it cushions grief.')
+
+        topic_hint = _detect_active_topic_hint(
+            "I don't want you to fire this back at me I just wanted to start a bit of a debate",
+            [
+                ('Hello testing', 'Hi there'),
+                ('What makes humans hold two conflicting beliefs at the same time?', 'It often shields people from harsh dissonance.'),
+            ],
+        )
+        self.assertIn('conflicting beliefs', topic_hint)
+        self.assertTrue(any(w in VOICE_ANTI_STALL_RULES for w in ('Jesus', 'Allah', 'faith', 'religion')))
+
+        pers_block = palace_config.format_personalization_prompt_block(cfg, conversational_scale='casual')
+        self.assertIn('Faith, Worldview & Belief Respect', pers_block)
+        self.assertEqual(
+            palace_config.resolve_profile_model_override('openai', '~openai/gpt-sol-latest', is_openrouter=True),
+            '~openai/gpt-sol-latest',
+        )
+        self.assertIn('gpt-6.2-astra', cost_service.MODEL_TOKEN_RATES_PER_1M)
+        self.assertIn('gpt-sol-latest', cost_service.MODEL_TOKEN_RATES_PER_1M)
+
+        class _PaidCreds:
+            def get_api_key(self, name: str) -> str:
+                return {'openai': 'sk-paid', 'gemini': 'gk-paid', 'xai': 'xk-paid', 'anthropic': 'ak-skip'}.get(name, '')
+
+        vc_paid = VoiceCompanion(config_path=cfg, credential_store=_PaidCreds())
+        cands_oai = vc_paid._build_provider_candidates(talk_only=True, preferred_provider='openai')
+        self.assertEqual(vc_paid._last_models['openai'], 'gpt-6.2-sol')
+        cand_names = [n for n, _fn in cands_oai]
+        self.assertIn('xai', cand_names)
+        self.assertNotIn('anthropic', cand_names)
+
+        # 3. 3-AI Table Quorum (addressed speaker first, peer reaction, [PASS] skip, max_volleys cap)
+        quorum_calls = []
+
+        def _fake_quorum_llm(prompt: str) -> str:
+            idx = len(quorum_calls)
+            quorum_calls.append(prompt)
+            if idx == 0:
+                return json.dumps({
+                    'action': 'chat',
+                    'spoken_reply': 'Because emotional survival often outranks formal logic in the moment.',
+                })
+            if idx == 1:
+                return 'Marcus nailed the core mechanism — coherence takes a back seat to comfort.'
+            return '[PASS]'
+
+        vc = VoiceCompanion(config_path=cfg, llm_callable=_fake_quorum_llm)
+        slots = [
+            {'slot': 1, 'provider': 'openai', 'model': '', 'persona_id': 'normal_female', 'speaker_name': 'Maya', 'voice_name': 'coral', 'avatar_shape': 'neural_core', 'avatar_palette': 'tulsa_cyan'},
+            {'slot': 2, 'provider': 'gemini', 'model': '', 'persona_id': 'debate_partner', 'speaker_name': 'Marcus', 'voice_name': 'onyx', 'avatar_shape': 'hex_prism', 'avatar_palette': 'amber_ember'},
+            {'slot': 3, 'provider': 'groq', 'model': '', 'persona_id': 'the_friend', 'speaker_name': 'Jack', 'voice_name': 'ballad', 'avatar_shape': 'astrolabe', 'avatar_palette': 'emerald_holo'},
+        ]
+        beats = vc.respond_quorum(
+            'Marcus, why do humans hold two conflicting beliefs at once?',
+            talk_only=False,
+            cast_slots=slots,
+            multi_ai_enabled=True,
+            max_volleys=3,
+        )
+        self.assertGreaterEqual(len(beats), 2)
+        self.assertLessEqual(len(beats), 3)
+        self.assertEqual(beats[0].speaker_name, 'Marcus')
+        self.assertTrue(all('[PASS]' not in b.spoken_reply for b in beats))
+
+        # 4. Multi-avatar 3D stage renders 3 cast seats without blank frame
+        app = QApplication.instance() or QApplication([])
+        stage = VoiceAvatarStageWindow()
+        try:
+            stage.set_cast_avatars(slots, active_slot_index=1)
+            self.assertEqual(len(stage.canvas._cast_slots), 3)
+            self.assertEqual(stage.canvas._active_slot_index, 1)
+            stage.canvas.resize(480, 320)
+            stage.canvas.step_simulation(0.016, telemetry={'speaking': True, 'rms': 0.55, 'bands': [0.42] * 16})
+            img = QImage(480, 320, QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(0)
+            painter = QPainter(img)
+            stage.canvas.render_frame(painter, state_override='speaking')
+            painter.end()
+            self.assertGreater(max(bytes(img.constBits())), 35)
+        finally:
+            stage.close_programmatically()
+            stage.close()
+            stage.deleteLater()
+
+        # 5. ManageAIsDialog Voice & Audio collapsible sub-pages + PalaceWindow Mode -> Voice Mode submenu
+        dlg = ManageAIsDialog(config_path=cfg, initial_page='Voice & Audio')
+        try:
+            self.assertEqual(dlg.pages.count(), 12)
+            self.assertEqual(dlg.voice_sub_pages.count(), 3)
+            for sub_i in (0, 1, 2):
+                dlg._select_voice_subpage(sub_i, sync_sidebar=True)
+                dlg.resize(960, 680)
+                dlg.show()
+                app.processEvents()
+                self.assertEqual(dlg.voice_sub_pages.currentIndex(), sub_i)
+                aud = audit_palace_window_geometry(dlg)
+                self.assertEqual(aud['clipped_widget_count'], 0, msg=f'subpage {sub_i}: {aud.get("clipped_widgets")}')
+        finally:
+            dlg.close()
+            dlg.deleteLater()
+
+        mem = MemoryService(db_path=self.root / 'quorum_mem.db')
+        win = PalaceWindow(
+            store=SessionStore(self.root / 'quorum_sess'),
+            palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+            provider_states={'gemini': True, 'openai': True},
+            config_path=cfg,
+        )
+        win._memory_db_path = lambda: self.root / 'quorum_mem.db'
+        try:
+            mode_menu = QMenu(win)
+            win._populate_profiles_and_ais_menu(mode_menu)
+            voice_acts = [a for a in mode_menu.actions() if 'Voice Mode (Talk Mode Only)' in a.text()]
+            self.assertEqual(len(voice_acts), 1)
+            sub_menu = voice_acts[0].menu()
+            self.assertIsNotNone(sub_menu)
+            sub_texts = [a.text() for a in sub_menu.actions() if a.text().strip()]
+            self.assertTrue(voice_acts[0].isCheckable())
+            self.assertTrue(any('Start Voice Mode' in t for t in sub_texts))
+            self.assertTrue(any('Table Quorum' in t for t in sub_texts))
+            self.assertTrue(any('Quick Roleplay Persona' in t for t in sub_texts))
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+        # 6. Evolving Cognitive Signature & Faith category normalization
+        self.assertEqual(
+            _normalize_profile_category('Faith', 'I pray as a Christian before work'),
+            'Personal Interests, Values & Ongoing Threads',
+        )
+        sig_db = self.root / 'sig_mem.db'
+        with patch.object(palace_config, 'load_personalization_settings', return_value={'auto_evolve_profile': True}):
+            added = evolve_conversational_signature_from_turns(
+                [
+                    ('I naturally think in systems and pure patterns when troubleshooting bugs.', 'Makes total sense.'),
+                    ('Dry dark humor helps me unwind after a long technical slog.', 'Definitely helps clear the mental cache.'),
+                ],
+                db_path=sig_db,
+                llm_callable=lambda _p: json.dumps([
+                    {
+                        'category': 'How You Think & Communicate',
+                        'fact': 'You naturally troubleshoot using systems and pattern thinking.',
+                        'evidence': 'systems and pure patterns',
+                    }
+                ]),
+            )
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0]['category'], 'How You Think & Communicate')
+        self.assertIn('systems and pure patterns', load_memory_summary(sig_db)['text'])
+
+    def test_location_weather_manifest_persona_delete_settings_clipping_and_menu(self):
+        from PySide6.QtWidgets import QApplication
+        from dispatcher import ProviderDispatcher
+        from orchestrator import PalaceOrchestrator
+        import palace_config
+        from palace_gui import ManageAIsDialog, PalaceWindow
+        from palace_ouroboros import audit_palace_window_geometry
+        from palace_theme import build_theme_stylesheet
+        from provider_registry import ProviderRegistry
+        import search_service
+        from session_store import SessionStore
+        from voice_service import load_voice_personas, save_voice_persona
+
+        app = QApplication.instance() or QApplication([])
+        cfg = self.root / 'settings_ux_cfg.json'
+
+        # 1. Home Location round-trip in ManageAIsDialog (Settings -> General)
+        dlg_gen = ManageAIsDialog(config_path=cfg, initial_page='General')
+        try:
+            self.assertTrue(hasattr(dlg_gen, 'home_location_edit'))
+            dlg_gen.home_location_edit.setText('Adelaide, South Australia')
+            dlg_gen.resize(1040, 720)
+            dlg_gen.show()
+            app.processEvents()
+            aud = audit_palace_window_geometry(dlg_gen)
+            self.assertEqual(aud['clipped_widget_count'], 0, msg=str(aud.get('clipped_widgets')))
+            dlg_gen.save_settings()
+        finally:
+            dlg_gen.deleteLater()
+        self.assertEqual(palace_config.load_ui_settings(cfg)['home_location'], 'Adelaide, South Australia')
+
+        # 2. Zero-keyword-restriction weather place extraction + bare "Tell me the weather" saved-location fallback
+        for q_phrase in (
+            'show me the current weather and forecast for Adelaide Australia',
+            'Tell me what Adelaide weather is like',
+            'tell me what Adelaide weather is doing',
+            'tell me what to expect with Adelaide weather',
+            'What is the current temp in Adelaide',
+            'will it rain in Adelaide',
+        ):
+            self.assertEqual(
+                search_service._extract_weather_place_candidates(q_phrase),
+                ['Adelaide'],
+                msg=f'Failed extraction for: {q_phrase}',
+            )
+        self.assertIn('au', search_service._extract_weather_region_hints('show me the current weather and forecast for Adelaide Australia'))
+
+        class _FakeHTTPResp:
+            def __init__(self, body: bytes):
+                self._body = body
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self, *_n):
+                return self._body
+
+        def _fake_urlopen(req, timeout=5.0):
+            url = req.full_url if hasattr(req, 'full_url') else str(req)
+            if 'geocoding-api.open-meteo.com' in url:
+                city = 'Brisbane' if 'Brisbane' in url else 'Adelaide'
+                st_name = 'Queensland' if city == 'Brisbane' else 'South Australia'
+                return _FakeHTTPResp(json.dumps({
+                    'results': [{'name': city, 'latitude': -34.9287, 'longitude': 138.5986, 'admin1': st_name, 'country_code': 'AU', 'country': 'Australia', 'population': 1469163}]
+                }).encode('utf-8'))
+            if 'api.open-meteo.com/v1/forecast' in url:
+                return _FakeHTTPResp(json.dumps({
+                    'timezone': 'Australia/Adelaide',
+                    'current': {'time': '2026-11-24T13:00', 'temperature_2m': 24.5, 'apparent_temperature': 23.0, 'relative_humidity_2m': 45, 'weather_code': 1, 'wind_speed_10m': 12.0, 'wind_direction_10m': 220, 'precipitation': 0.0},
+                    'hourly': {'time': ['2026-11-24T13:00'], 'temperature_2m': [24.5], 'precipitation_probability': [5], 'weather_code': [1]},
+                    'daily': {'time': ['2026-11-24'], 'weather_code': [1], 'temperature_2m_max': [26.0], 'temperature_2m_min': [14.0], 'precipitation_probability_max': [5], 'precipitation_sum': [0.0], 'uv_index_max': [8.0]},
+                }).encode('utf-8'))
+            raise AssertionError(f'Unexpected URL: {url}')
+
+        with patch('urllib.request.urlopen', side_effect=_fake_urlopen):
+            bare_bundle = search_service.fetch_live_weather_bundle('Tell me the weather', config_path=cfg)
+        self.assertIsNotNone(bare_bundle['primary_location'])
+        self.assertIn('Adelaide', bare_bundle['primary_location']['label'])
+        self.assertIn('24.5°C', bare_bundle['text'])
+
+        # 3. Startup Tool & Location Manifest + dynamic [SET_LOCATION] & [WEATHER_MAP location="..."] fulfillment
+        captured_prompts = []
+
+        class _ManifestStub:
+            name = 'stub'
+            def generate(self, prompt_txt: str):
+                captured_prompts.append(prompt_txt)
+                return ProviderResponse(
+                    text='[SET_LOCATION location="Brisbane, QLD"] [WEATHER_MAP location="Brisbane"] Clear afternoon ahead.',
+                    model='stub-1',
+                    provider='stub',
+                )
+
+        reg = ProviderRegistry()
+        reg.register('stub', _ManifestStub())
+        mem = MemoryService(db_path=self.root / 'manifest_mem.db')
+        orch = PalaceOrchestrator(mem, ProviderDispatcher(reg))
+        fake_png = self.root / 'fake_radar.png'
+        fake_png.write_bytes(b'\x89PNG\r\n\x1a\n')
+        with (
+            patch('palace_config.load_ui_settings', return_value={'home_location': 'Adelaide, South Australia', 'weather_map_enabled': True}),
+            patch('palace_config.save_ui_settings', return_value={'home_location': 'Brisbane, QLD', 'weather_map_enabled': True}) as mock_save_ui,
+            patch('urllib.request.urlopen', side_effect=_fake_urlopen),
+            patch('search_service.render_live_weather_map_png', return_value=fake_png),
+        ):
+            run_res = orch.run(
+                'Should I take a raincoat when I head out on the bike later?',
+                provider_names=['stub'],
+                include_context=False,
+                include_memory=False,
+                save_to_context=False,
+            )
+        self.assertIn('Active Fairybread Native Tool & Location Manifest', captured_prompts[0])
+        self.assertIn('[WEATHER_MAP location=', captured_prompts[0])
+        mock_save_ui.assert_called_with({'home_location': 'Brisbane, QLD'})
+        self.assertIn('[WEATHER_MAP path=', run_res.final_answer or '')
+        self.assertNotIn('[SET_LOCATION', run_res.final_answer or '')
+
+        # 3b. Basic Text-Only weather option omits radar PNG tag while returning forecast prose
+        with (
+            patch('palace_config.load_ui_settings', return_value={'home_location': 'Brisbane, QLD', 'weather_map_enabled': False}),
+            patch('palace_config.save_ui_settings', return_value={'home_location': 'Brisbane, QLD', 'weather_map_enabled': False}),
+            patch('urllib.request.urlopen', side_effect=_fake_urlopen),
+            patch('search_service.render_live_weather_map_png') as mock_render_off,
+        ):
+            run_text_only = orch.run(
+                'Should I take a raincoat when I head out on the bike later?',
+                provider_names=['stub'],
+                include_context=False,
+                include_memory=False,
+                save_to_context=False,
+            )
+        mock_render_off.assert_not_called()
+        self.assertNotIn('[WEATHER_MAP', run_text_only.final_answer or '')
+        self.assertIn('Clear afternoon ahead.', run_text_only.final_answer or '')
+
+        # Verify stale Carto placeholder tile cache is purged automatically when rendering a weather map
+        stale_cache = self.root / 'w_cache'
+        stale_cache.mkdir(parents=True, exist_ok=True)
+        stale_carto = stale_cache / 'carto_dark_7_113_77.png'
+        stale_carto.write_bytes(b'API_KEY_REQUIRED_PLACEHOLDER')
+        with patch('urllib.request.urlopen', side_effect=OSError('offline')):
+            search_service.render_live_weather_map_png(
+                {'label': 'Adelaide', 'lat': -34.93, 'lon': 138.60},
+                cache_dir=stale_cache,
+                out_dir=self.root / 'w_out',
+            )
+        self.assertFalse(stale_carto.exists())
+
+        # 4. Delete custom Roleplay Persona + clipping audit on Voice Cast / Roleplay / AI Providers + uniform 11.5px CSS
+        qss = build_theme_stylesheet('cyberpunk_2077')
+        self.assertIn('QDialog QListWidget#sidebarList', qss)
+        self.assertIn('font-size: 11.5px;', qss)
+
+        save_voice_persona('temp_idiot', {'label': 'Idiot', 'speaker_name': 'Idiot', 'blueprint': 'Test'}, config_path=cfg)
+        from PySide6.QtWidgets import QWidget as _QWidget
+        phantom_dlg_calls = []
+        _orig_dlg_vis = _QWidget.setVisible
+
+        def _spy_dlg_vis(w_self, visible):
+            if visible:
+                top_w = w_self.window()
+                if not isinstance(top_w, ManageAIsDialog) and w_self.objectName() != 'QComboBoxPrivateContainer':
+                    phantom_dlg_calls.append((type(w_self).__name__, type(top_w).__name__))
+            return _orig_dlg_vis(w_self, visible)
+
+        _QWidget.setVisible = _spy_dlg_vis
+        try:
+            dlg = ManageAIsDialog(config_path=cfg, initial_page='Roleplay Personas')
+        finally:
+            _QWidget.setVisible = _orig_dlg_vis
+        self.assertEqual(phantom_dlg_calls, [], msg=f'Unexpected phantom top-level widgets during ManageAIsDialog.__init__: {phantom_dlg_calls}')
+        try:
+            dlg.resize(1040, 720)
+            dlg.show()
+            app.processEvents()
+            idx_custom = dlg.persona_editor_combo.findData('temp_idiot')
+            self.assertGreaterEqual(idx_custom, 0)
+            dlg.persona_editor_combo.setCurrentIndex(idx_custom)
+            app.processEvents()
+            self.assertTrue(dlg.del_persona_btn.isEnabled())
+            dlg.del_persona_btn.click()
+            app.processEvents()
+            self.assertNotIn('temp_idiot', load_voice_personas(cfg))
+
+            # Zero clipping + short buttons (<=24 chars) + non-empty hover tooltips across all 12 Settings pages & Voice sub-pages
+            from PySide6.QtWidgets import QPushButton as _QPB
+            for pi in range(dlg.pages.count()):
+                dlg.pages.setCurrentIndex(pi)
+                app.processEvents()
+                pg_w = dlg.pages.widget(pi)
+                pname = dlg.SETTINGS_PAGES[pi]
+                for sub_i in ((0, 1, 2) if pname == 'Voice & Audio' else (None,)):
+                    if sub_i is not None:
+                        dlg._select_voice_subpage(sub_i, sync_sidebar=True)
+                        app.processEvents()
+                    aud_all = audit_palace_window_geometry(dlg)
+                    self.assertEqual(aud_all['clipped_widget_count'], 0, msg=f'{pname}[{sub_i}]: {aud_all.get("clipped_widgets")}')
+                for btn_c in pg_w.findChildren(_QPB):
+                    b_txt = btn_c.text().replace('&&', '&')
+                    self.assertLessEqual(len(b_txt), 24, msg=f'Oversized button on {pname}: {b_txt!r}')
+                    self.assertTrue(bool((btn_c.toolTip() or '').strip()), msg=f'Missing hover tooltip on {pname}: {b_txt!r}')
+
+            prov_row_idx = dlg.SETTINGS_PAGES.index('AI Providers')
+            dlg._rebuild_nav_list(target_page_idx=prov_row_idx, voice_sub_idx=None)
+            app.processEvents()
+            self.assertTrue(hasattr(dlg, 'or_hub_key_edit'))
+            dlg.accept()
+        finally:
+            dlg.deleteLater()
+        self.assertNotIn('temp_idiot', load_voice_personas(cfg))
+
+        # 5. Top-bar Settings menu trimmed to 4 non-duplicate items (+ zero phantom windows during PalaceWindow.__init__)
+        phantom_win_calls = []
+        _orig_pw_vis = _QWidget.setVisible
+
+        def _spy_pw_vis(w_self, visible):
+            if visible:
+                top_w = w_self.window()
+                if not isinstance(top_w, PalaceWindow) and w_self.objectName() != 'QComboBoxPrivateContainer':
+                    phantom_win_calls.append((type(w_self).__name__, type(top_w).__name__))
+            return _orig_pw_vis(w_self, visible)
+
+        _QWidget.setVisible = _spy_pw_vis
+        try:
+            win = PalaceWindow(
+                store=SessionStore(self.root / 'menu_sess'),
+                palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+                provider_states={'gemini': True},
+                config_path=cfg,
+            )
+        finally:
+            _QWidget.setVisible = _orig_pw_vis
+        self.assertEqual(phantom_win_calls, [], msg=f'Unexpected phantom top-level widgets during PalaceWindow.__init__: {phantom_win_calls}')
+        win._memory_db_path = lambda: self.root / 'manifest_mem.db'
+        try:
+            self.assertGreater(len(win.provider_labels), 0)
+            self.assertTrue(all(btn.parent() is win.agent_chips_host for btn in win.provider_labels.values()))
+            menu_titles = [a.text() for a in win.menuBar().actions() if a.menu() is not None]
+            self.assertEqual(menu_titles, ['File', 'Edit', 'View', 'Council', 'Audio', 'Tools', 'Help'])
+            tools_menus = [a.menu() for a in win.menuBar().actions() if a.text() == 'Tools' and a.menu() is not None]
+            self.assertEqual(len(tools_menus), 1)
+            exec_acts = [a.text() for a in tools_menus[0].actions() if not a.isSeparator() and a.text().strip()]
+            self.assertTrue(any('Options' in t for t in exec_acts), msg=f'Expected Options... in Tools menu, got: {exec_acts}')
+            self.assertFalse(any('Memory Palace Manager' in t or 'Standing Memory Fact' in t for t in exec_acts))
         finally:
             win._force_quit = True
             win.close()

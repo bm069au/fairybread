@@ -24,7 +24,7 @@ class GeminiProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
-        timeout: float = 60.0,
+        timeout: float = 300.0,
     ):
         try:
             self.client = genai.Client(
@@ -47,7 +47,7 @@ class GeminiProvider(AIProvider):
     ) -> ProviderResponse:
         eff_model = (model_override or "").strip() or self.model
         valid_parts: list[Any] = []
-        for raw_p in (images or [])[:3]:
+        for raw_p in (images or []):
             try:
                 p = Path(raw_p)
                 if p.is_file() and 0 < p.stat().st_size <= 6 * 1024 * 1024:

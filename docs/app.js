@@ -21,6 +21,19 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v095-release',
+    title: 'Fairybread v0.95: Clean 7-Tab Menu & Options Tree, 4 New Themes + Washed-Out Wallpapers, Low-Latency Voice & Unlimited Attachments',
+    tag: 'Release v0.95',
+    date: '2026-11-25',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95 (Win_x64) is live on GitHub Releases and ready for 1-click Update Only installation:
+
+• Clean 7-Tab Desktop Menu & Expandable Options Tree: Streamlines workspace navigation into File · Edit · View · Council · Audio · Tools · Help with Tools -> Options… (Alt+F12) as one organized hierarchical control center.
+• 4 New WCAG-AAA Themes & 90%-Washed-Out Background Engine: Adds Deep Ocean Abyss (Dark Blue & Ocean), Royal Amethyst (Purple), Velvet Rose (Dark Pink), and Sakura Silk (Soft Light Pink), plus a 60-FPS HiDPI washed-out wallpaper engine (75%–96% washout) for Chat, Sidebar, or All Panels.
+• Snappy Low-Latency Voice Mode + Live 3D Avatar Switching: Persistent HTTP/TLS pools across Whisper STT, Thinking LLMs, and Deepgram/Cartesia/ElevenLabs TTS, 950 ms silence cutoff, instant live 3D hologram shape/palette switching, and { } Code live source inspection while talking.
+• Response Timing Presets & Unlimited Attachments: Choose Quick, Standard, or Deep deliberation ceilings, drag-and-drop unlimited multi-batch files/images, and manage your single auto-saving Living User Profile.`,
+  },
+  {
     id: 'news-v094-release',
     title: 'Fairybread v0.94: OpenAI Flagship Graphics, Deeper Chat Profiles, 3D Voice Avatar & Setup Wizard Fix',
     tag: 'Release v0.94',
@@ -116,6 +129,102 @@ const DEFAULT_SKINS = [
       user_bubble_text: '#f0f6fc',
       send_bg: '#e6edf3',
       send_fg: '#0d1117',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'deep_ocean',
+    name: 'Deep Ocean Abyss (Dark Blue & Ocean)',
+    author: 'bm069au',
+    origin: 'Built-in (v0.95)',
+    theme: {
+      id: 'deep_ocean',
+      name: 'Deep Ocean Abyss (Dark Blue & Ocean)',
+      bg_main: '#09131d',
+      bg_sidebar: '#060d14',
+      bg_card: '#0f1e2d',
+      bg_hover: '#162b3f',
+      border: '#23435e',
+      text_primary: '#eaf6f8',
+      text_secondary: '#b4d4dc',
+      text_muted: '#7da4b0',
+      user_bubble_bg: '#103242',
+      user_bubble_border: '#2fa4a9',
+      user_bubble_text: '#effbfc',
+      send_bg: '#4cd4ce',
+      send_fg: '#06131a',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'royal_amethyst',
+    name: 'Royal Amethyst (Purple)',
+    author: 'bm069au',
+    origin: 'Built-in (v0.95)',
+    theme: {
+      id: 'royal_amethyst',
+      name: 'Royal Amethyst (Purple)',
+      bg_main: '#130f1d',
+      bg_sidebar: '#0e0a16',
+      bg_card: '#1d172b',
+      bg_hover: '#28203b',
+      border: '#3d3159',
+      text_primary: '#f2eefa',
+      text_secondary: '#c9bedf',
+      text_muted: '#9789b5',
+      user_bubble_bg: '#2e224a',
+      user_bubble_border: '#7b5ec4',
+      user_bubble_text: '#f7f4ff',
+      send_bg: '#613bb8',
+      send_fg: '#ffffff',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'velvet_rose',
+    name: 'Velvet Rose (Dark Pink)',
+    author: 'bm069au',
+    origin: 'Built-in (v0.95)',
+    theme: {
+      id: 'velvet_rose',
+      name: 'Velvet Rose (Dark Pink)',
+      bg_main: '#170e14',
+      bg_sidebar: '#120a0f',
+      bg_card: '#22151e',
+      bg_hover: '#2e1c28',
+      border: '#442a3b',
+      text_primary: '#f9ecf2',
+      text_secondary: '#d9b8c8',
+      text_muted: '#a88295',
+      user_bubble_bg: '#3b1e30',
+      user_bubble_border: '#8f486e',
+      user_bubble_text: '#fff2f7',
+      send_bg: '#9c2b62',
+      send_fg: '#ffffff',
+      sprinkles: false,
+    },
+  },
+  {
+    id: 'sakura_silk',
+    name: 'Sakura Silk (Soft Light Pink)',
+    author: 'bm069au',
+    origin: 'Built-in (v0.95)',
+    theme: {
+      id: 'sakura_silk',
+      name: 'Sakura Silk (Soft Light Pink)',
+      bg_main: '#fdf6f9',
+      bg_sidebar: '#f7ebf0',
+      bg_card: '#ffffff',
+      bg_hover: '#f2dce6',
+      border: '#e0c3d1',
+      text_primary: '#2b1420',
+      text_secondary: '#573345',
+      text_muted: '#784e63',
+      user_bubble_bg: '#f7dce8',
+      user_bubble_border: '#d698b4',
+      user_bubble_text: '#2b1420',
+      send_bg: '#9e2b62',
+      send_fg: '#ffffff',
       sprinkles: false,
     },
   },
@@ -813,7 +922,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.94';
+    const currentSiteVersion = 'v0.95';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

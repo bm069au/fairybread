@@ -212,11 +212,13 @@ def extract_attachment(path: str | Path) -> Attachment:
     return Attachment(path, text[:MAX_TEXT_CHARS], len(text) > MAX_TEXT_CHARS, stored_path=stored_copy)
 
 
-def compose_question(question: str, attachments: list[Attachment]) -> str:
-    if sum(len(item.text) for item in attachments) > MAX_TOTAL_CHARS:
-        raise ValueError('Attachments exceed 48,000 characters. Remove a file and try again.')
+def compose_question(question: str, attachments: list[Attachment], allow_unlimited: bool = False) -> str:
     if not attachments:
         return question
+    if not allow_unlimited and sum(len(item.text) for item in attachments) > MAX_TOTAL_CHARS:
+        raise ValueError(
+            f'Attachments exceed the {MAX_TOTAL_CHARS:,}-character limit. Remove one or ask about fewer files at once.'
+        )
     parts = [question, 'ATTACHED FILE EXCERPTS (user-provided reference material):']
     for item in attachments:
         note = ' [first 24,000 characters only]' if item.truncated else ''

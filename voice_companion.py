@@ -6,25 +6,331 @@ image renders, and code patches execute asynchronously in the background.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import inspect
 import json
 from pathlib import Path
 import re
-from typing import Callable
+import threading
+from typing import Any, Callable
 
 from cost_service import emit_llm_cost, extract_sdk_usage_tokens
 from credential_store import CredentialStore
 from memory_service import parse_save_memory_tags
 from palace_config import (
     CONFIG_PATH,
+    clean_given_name,
     format_personalization_prompt_block,
+    get_app_install_dir,
+    get_provider_attribution,
+    get_source_mirror_dir,
     load_enabled_provider_names,
     load_provider_configs,
+    save_provider_attribution,
 )
-from voice_service import clean_text_for_speech, load_voice_settings
+
+_VOICE_CLIENT_LOCK = threading.Lock()
+_VOICE_OPENAI_CLIENTS: dict[tuple[str, str, float], Any] = {}
+_VOICE_GEMINI_CLIENTS: dict[tuple[str, int], Any] = {}
+
+
+def _get_cached_openai_client(
+    api_key: str,
+    *,
+    base_url: str = "",
+    timeout: float = 18.0,
+    default_headers: dict[str, str] | None = None,
+):
+    from openai import OpenAI
+
+    key_tup = (str(base_url or ""), str(api_key or ""), float(timeout))
+    with _VOICE_CLIENT_LOCK:
+        cli = _VOICE_OPENAI_CLIENTS.get(key_tup)
+        if cli is None:
+            kw: dict[str, Any] = {"api_key": api_key, "timeout": timeout, "max_retries": 0}
+            if base_url:
+                kw["base_url"] = base_url
+            if default_headers:
+                kw["default_headers"] = default_headers
+            cli = OpenAI(**kw)
+            _VOICE_OPENAI_CLIENTS[key_tup] = cli
+        return cli
+
+
+def _get_cached_gemini_client(api_key: str, *, timeout_ms: int = 18000):
+    from google import genai
+    from google.genai import types
+
+    key_tup = (str(api_key or ""), int(timeout_ms))
+    with _VOICE_CLIENT_LOCK:
+        cli = _VOICE_GEMINI_CLIENTS.get(key_tup)
+        if cli is None:
+            cli = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=timeout_ms))
+            _VOICE_GEMINI_CLIENTS[key_tup] = cli
+        return cli
+
+
+_CODE_STOPWORDS = {
+    "what", "when", "where", "which", "while", "whilst", "would", "could", "should", "about", "there", "their",
+    "these", "those", "please", "check", "look", "looking", "code", "file", "files", "mode", "voice", "chat",
+    "chatting", "turn", "button", "fairybread", "palace", "make", "sure", "does", "happens", "how", "work", "works",
+    "into", "from", "with", "that", "this", "have", "just", "want", "wanted", "tell", "explain", "right", "now",
+}
+
+
+def build_voice_code_context(utterance: str, max_chars: int = 4800) -> str:
+    """Fast (~5ms) local Python source lookup for Voice Mode when `{ } Code` is toggled ON."""
+    mirror_dir = get_source_mirror_dir()
+    install_src = get_app_install_dir() / "source"
+    if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
+        src_dir = mirror_dir
+    elif install_src.exists() and any(install_src.glob("*.py")):
+        src_dir = install_src
+    else:
+        src_dir = Path(__file__).resolve().parent
+
+    excluded = {"key.txt", "credentials.json", "palace_config.json", "ask_gpt_working_backup.py"}
+    try:
+        py_files = sorted(
+            p for p in src_dir.iterdir()
+            if p.is_file() and p.suffix.lower() == ".py" and not p.name.lower().startswith("test_") and p.name.lower() not in excluded
+        )
+    except OSError:
+        return ""
+    if not py_files:
+        return ""
+
+    u_low = (utterance or "").lower()
+    raw_tokens = [
+        tok for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", u_low)
+        if tok not in _CODE_STOPWORDS
+    ]
+    tokens = list(dict.fromkeys(raw_tokens))[:8]
+
+    # Map common plain-English feature words to exact modules so natural speech hits the right file immediately
+    concept_map = {
+        "avatar": "voice_visualizer.py",
+        "visualizer": "voice_visualizer.py",
+        "hologram": "voice_visualizer.py",
+        "theme": "palace_theme.py",
+        "themes": "palace_theme.py",
+        "menu": "palace_gui.py",
+        "options": "palace_gui.py",
+        "window": "palace_gui.py",
+        "sidebar": "palace_gui.py",
+        "memory": "memory_service.py",
+        "profile": "memory_service.py",
+        "council": "orchestrator.py",
+        "synthesizer": "synthesizer.py",
+        "setup": "setup_wizard.py",
+        "wizard": "setup_wizard.py",
+        "billing": "cost_service.py",
+        "spend": "cost_service.py",
+        "audio": "voice_service.py",
+        "tts": "voice_service.py",
+        "deepgram": "voice_service.py",
+        "companion": "voice_companion.py",
+    }
+    hinted_files = {concept_map[w] for w in re.findall(r"[a-z]+", u_low) if w in concept_map}
+
+    manifest = ", ".join(p.name for p in py_files[:30])
+    blocks: list[str] = [
+        f"FAIRYBREAD LIVE SOURCE CODE ACCESS (`{{ }} Code` is ON — Read-Only Mirror: `{src_dir}`):",
+        f"Modules ({len(py_files)}): {manifest}",
+    ]
+    used_chars = sum(len(x) for x in blocks)
+
+    scored_hits: list[tuple[int, str, int, list[str]]] = []
+    for p in py_files:
+        p_low = p.name.lower()
+        file_bonus = 8 if (p_low in u_low or p.stem.lower() in u_low) else (5 if p.name in hinted_files else 0)
+        if not tokens and not file_bonus:
+            continue
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        if tokens:
+            for idx, line in enumerate(lines):
+                l_low = line.lower()
+                matched_t = sum(1 for t in tokens if t in l_low)
+                if matched_t > 0:
+                    def_bonus = 4 if l_low.lstrip().startswith(("def ", "class ")) else 0
+                    score = matched_t * 3 + def_bonus + file_bonus
+                    if score >= 4:
+                        lo = max(0, idx - 3)
+                        hi = min(len(lines), idx + 18)
+                        scored_hits.append((score, p.name, lo + 1, lines[lo:hi]))
+                        if len(scored_hits) > 40:
+                            break
+        elif file_bonus:
+            scored_hits.append((file_bonus, p.name, 1, lines[:35]))
+
+    scored_hits.sort(key=lambda item: item[0], reverse=True)
+    seen_ranges: set[tuple[str, int]] = set()
+    added = 0
+    for _sc, fname, start_ln, snippet_lines in scored_hits:
+        bucket = (fname, start_ln // 20)
+        if bucket in seen_ranges:
+            continue
+        seen_ranges.add(bucket)
+        snip = "\n".join(f"{start_ln + i}: {ln[:140]}" for i, ln in enumerate(snippet_lines))
+        entry = f"\n--- {fname} (around line {start_ln}) ---\n{snip}"
+        if used_chars + len(entry) > max_chars:
+            break
+        blocks.append(entry)
+        used_chars += len(entry)
+        added += 1
+        if added >= 4:
+            break
+
+    if added == 0:
+        # Provide top architecture summary when the user asks a general codebase question
+        for core_name in ("palace_gui.py", "orchestrator.py", "voice_companion.py"):
+            cp = src_dir / core_name
+            if cp.is_file():
+                try:
+                    head = "\n".join(cp.read_text(encoding="utf-8", errors="replace").splitlines()[:18])
+                    entry = f"\n--- {core_name} (header) ---\n{head}"
+                    if used_chars + len(entry) <= max_chars:
+                        blocks.append(entry)
+                        used_chars += len(entry)
+                except OSError:
+                    pass
+
+    return "\n".join(blocks)
+from synthesizer import is_pass_or_defer_text
+from voice_service import clean_text_for_speech, load_voice_personas, load_voice_settings
+
+
+_SET_AGENT_NAME_TAG_RE = re.compile(r"\[SET_AGENT_NAME\s+([^\]]+)\]", re.IGNORECASE)
+_KV_ATTR_RE = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"|([a-zA-Z_]+)\s*=\s*\'([^\']*)\'')
+
+
+def _strip_preset_identity_prefix(blueprint: str) -> str:
+    bp = (blueprint or "").strip()
+    if not bp:
+        return ""
+    stripped = re.sub(
+        r"^\s*You\s+are\s+[A-Z][a-zA-Z0-9 _\-]{1,28}\s*(?:—|–|-|:)\s*",
+        "",
+        bp,
+        count=1,
+    ).strip()
+    if stripped and stripped != bp:
+        return stripped[0].upper() + stripped[1:]
+    return bp
+
+
+def parse_set_agent_name_tags(text: str) -> tuple[str, list[dict[str, str]]]:
+    raw = text or ""
+    updates: list[dict[str, str]] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        attrs_raw = match.group(1) or ""
+        parsed: dict[str, str] = {}
+        for m in _KV_ATTR_RE.finditer(attrs_raw):
+            k = (m.group(1) or m.group(3) or "").strip().lower()
+            v = (m.group(2) if m.group(1) else m.group(4)) or ""
+            if k:
+                parsed[k] = v.strip()
+        prov = str(parsed.get("provider") or "").strip().lower()
+        nm = clean_given_name(str(parsed.get("name") or parsed.get("given_name") or ""))
+        if prov and nm:
+            updates.append({"provider": prov, "given_name": nm})
+        return ""
+
+    cleaned = _SET_AGENT_NAME_TAG_RE.sub(_repl, raw)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned, updates
 
 
 _RETIRED_GROQ_MODELS = {"llama-3.3-70b-versatile", "llama-3.1-8b-instant"}
 _GROQ_VOICE_FALLBACK_CHAIN = ("openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b")
+
+VOICE_ANTI_STALL_RULES = (
+    "ACTIVE CONVERSATION & ANTI-STALL RULES:\n"
+    "- NEVER sound like a clinical helpdesk bot or customer-support agent.\n"
+    "- BANNED PHRASES (do NOT use these or close variants): 'when you are ready', 'let us jump right in', "
+    "'I am all ears', 'what is on your mind', 'let me know if anything sounds off', 'my schedule is wide open', "
+    "'whenever you are ready', 'if you ever want to chat'.\n"
+    "- Contribute real substance FIRST (a clear opinion, observation, emotional read, joke, or counterpoint) instead of bouncing shallow questions back at the user.\n"
+    "- Do NOT end every turn with a question. When you do ask one, make it specific to the exact idea just raised.\n"
+    "- If the user asks you to debate, stop firing questions back, or push deeper, stay locked onto the active subject and argue or explore a concrete angle immediately.\n"
+    "- Faith & Belief Respect: Never denigrate, mock, or refuse benign religious or spiritual expressions, prayers, or sacred figures (such as Jesus, Allah, God, Muhammad, Buddha). Whether the user is Christian, Muslim, Jewish, Hindu, Buddhist, or exploring spirituality, meet their faith with genuine warmth and acceptance and ask caring, respectful questions about what their beliefs mean to them.\n"
+)
+
+_BANNED_STALL_SENTENCE_RE = re.compile(
+    r"(?:"
+    r"when(?:ever)?\s+you(?:'re|\s+are)\s+ready|"
+    r"let(?:'s|\s+us)\s+jump\s+right\s+in|"
+    r"i(?:'m|\s+am)\s+all\s+ears|"
+    r"what(?:'s|\s+is)\s+on\s+your\s+mind(?:\s+today)?\??|"
+    r"let\s+me\s+know\s+if\s+(?:anything\s+sounds\s+off|you\s+need\s+anything|you\s+want\s+to)|"
+    r"my\s+schedule(?:'s|\s+is)\s+wide\s+open|"
+    r"if\s+you\s+ever\s+want\s+to\s+chat|"
+    r"what(?:'s|\s+is)\s+the\s+topic\??|"
+    r"ready\s+for\s+whatever\s+you\s+need"
+    r")",
+    re.IGNORECASE,
+)
+
+_META_CHALLENGE_RE = re.compile(
+    r"\b(?:"
+    r"fire\s+(?:this|it|that)\s+back|bounce\s+(?:this|it|that)\s+back|stop\s+asking|"
+    r"don'?t\s+ask\s+me|start\s+(?:a\s+)?debate|debate\s+(?:me|this|it)|argue\s+(?:this|it|with\s+me)|"
+    r"go\s+deeper|your\s+turn|what\s+do\s+you\s+think|tell\s+me\s+your\s+take|stay\s+on\s+(?:that|this|topic)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _strip_stall_closers(text: str, recent_closers: list[str] | None = None) -> str:
+    """Remove repetitive customer-service stall closers when substantive speech precedes them."""
+    clean = (text or "").strip()
+    if not clean:
+        return ""
+    recent_norm = {re.sub(r"[^a-z0-9]+", " ", c.lower()).strip() for c in (recent_closers or [])[-6:] if c}
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean) if s.strip()]
+    if len(sents) > 1:
+        kept = list(sents)
+        while len(kept) > 1:
+            tail = kept[-1]
+            tail_norm = re.sub(r"[^a-z0-9]+", " ", tail.lower()).strip()
+            if _BANNED_STALL_SENTENCE_RE.search(tail) or (tail_norm and tail_norm in recent_norm):
+                kept.pop()
+            else:
+                break
+        clean = " ".join(kept).strip()
+    # Also trim trailing stall clause separated by em-dash or comma if substance precedes it
+    split_clause = re.split(r"(?:\s*[—–-]+\s*|\s*,\s*)(?=[^,]{3,85}$)", clean, maxsplit=1)
+    if len(split_clause) == 2 and len(split_clause[0].split()) >= 4 and _BANNED_STALL_SENTENCE_RE.search(split_clause[1]):
+        head = split_clause[0].strip()
+        if head and head[-1] not in ".!?":
+            head += "."
+        clean = head
+    return clean
+
+
+def _detect_active_topic_hint(utterance: str, history: list[tuple[str, str]]) -> str:
+    """Keep the active conversation topic locked when the user pushes back or asks for debate."""
+    if not utterance or not history:
+        return ""
+    if not _META_CHALLENGE_RE.search(utterance) and len(utterance.split()) > 10:
+        return ""
+    for u_prev, a_prev in reversed(history[-4:]):
+        u_clean = (u_prev or "").strip()
+        a_clean = (a_prev or "").strip()
+        low_u = u_clean.lower()
+        if any(tok in low_u for tok in ("testing", "hello", "that's all", "sounds good")) and len(u_clean) < 40:
+            continue
+        if len(u_clean) >= 18 and not _META_CHALLENGE_RE.search(u_clean):
+            return (
+                f"User's active thread: {u_clean[:220]}"
+                + (f" | Last table point: {a_clean[:180]}" if a_clean else "")
+            )
+        if len(a_clean) >= 30 and not _BANNED_STALL_SENTENCE_RE.search(a_clean):
+            return f"Last active point on the table: {a_clean[:220]}"
+    return ""
 
 
 @dataclass
@@ -39,6 +345,14 @@ class VoiceCompanionDecision:
     fell_back: bool = False
     fallback_reason: str = ""
     memory_saves: list[dict[str, str]] = field(default_factory=list)
+    speaker_name: str = ""
+    persona_id: str = ""
+    voice_name: str = ""
+    avatar_shape: str = ""
+    avatar_palette: str = ""
+    slot_index: int = 0
+    evolve_user_profile: bool = True
+    updated_attributions: list[dict[str, str]] = field(default_factory=list)
 
 
 _DELEGATE_HINT_RE = re.compile(
@@ -95,13 +409,15 @@ class VoiceCompanion:
         self.credential_store = credential_store
         self._injected_llm = llm_callable
         self._history: list[tuple[str, str]] = []
-        self._lock_history_limit = 8
+        self._recent_closers: list[str] = []
+        self._lock_history_limit = 10
         self._last_models: dict[str, str] = {}
         self._last_requested_provider: str = ""
         self._candidate_skip_reasons: list[str] = []
 
     def reset(self) -> None:
         self._history.clear()
+        self._recent_closers.clear()
 
     def _build_provider_candidates(
         self,
@@ -109,7 +425,8 @@ class VoiceCompanion:
         talk_only: bool = False,
         preferred_provider: str = "",
         fallback_provider: str = "",
-    ) -> list[tuple[str, Callable[[str], str]]]:
+        model_override: str = "",
+    ) -> list[tuple[str, Callable[..., str]]]:
         self._last_models = {}
         self._candidate_skip_reasons = []
         if self._injected_llm is not None:
@@ -132,29 +449,55 @@ class VoiceCompanion:
         pref = (preferred_provider or str(v_cfg.get("voice_llm_provider") or "auto")).strip().lower() or "auto"
         fb = (fallback_provider or str(v_cfg.get("voice_llm_fallback") or "auto")).strip().lower() or "auto"
         explicit_set = {x for x in (pref, fb) if x not in {"", "auto", "none"}}
+        ov_model = (model_override or "").strip()
 
         def _is_usable(pname: str) -> bool:
             return (pname in enabled) or (not enabled) or (pname in explicit_set)
 
-        by_name: dict[str, Callable[[str], str]] = {}
+        def _build_chat_messages(
+            prompt_text: str,
+            system_prompt: str = "",
+            history_messages: list[dict[str, str]] | None = None,
+        ) -> list[dict[str, str]]:
+            msgs: list[dict[str, str]] = []
+            if system_prompt:
+                msgs.append({"role": "system", "content": system_prompt})
+            for hm in (history_messages or []):
+                r = str(hm.get("role") or "").strip().lower()
+                c = str(hm.get("content") or "").strip()
+                if r in {"user", "assistant"} and c:
+                    msgs.append({"role": r, "content": c})
+            msgs.append({"role": "user", "content": prompt_text})
+            return msgs
 
-        # DeepSeek (fast, natural, zero-bloat conversational routing; skip reasoner in talk_only)
+        by_name: dict[str, Callable[..., str]] = {}
+
+        # DeepSeek (fast, natural, zero-bloat conversational routing; skip reasoner in talk_only unless pinned)
         ds_key = store.get_api_key("deepseek")
         if ds_key and _is_usable("deepseek"):
-            ds_model = str((p_cfgs.get("deepseek") or {}).get("model") or "deepseek-chat").strip() or "deepseek-chat"
-            if talk_only and "reasoner" in ds_model.lower():
+            ds_model = (
+                ov_model if (ov_model and pref == "deepseek") else str((p_cfgs.get("deepseek") or {}).get("model") or "deepseek-chat").strip()
+            ) or "deepseek-chat"
+            if talk_only and not (ov_model and pref == "deepseek") and "reasoner" in ds_model.lower():
                 ds_model = "deepseek-chat"
             self._last_models["deepseek"] = ds_model
 
-            def _call_deepseek(prompt_text: str, _k=ds_key, _m=ds_model) -> str:
-                from openai import OpenAI
-
-                cli = OpenAI(api_key=_k, base_url="https://api.deepseek.com", timeout=15.0, max_retries=0)
+            def _call_deepseek(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                low_latency: bool = True,
+                _k=ds_key,
+                _m=ds_model,
+            ) -> str:
+                cli = _get_cached_openai_client(_k, base_url="https://api.deepseek.com", timeout=15.0)
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
                 resp = cli.chat.completions.create(
                     model=_m,
-                    messages=[{"role": "user", "content": prompt_text}],
-                    temperature=0.4,
-                    max_tokens=450,
+                    messages=msgs,
+                    temperature=0.65,
+                    max_tokens=320 if low_latency else 600,
                 )
                 txt = (resp.choices[0].message.content or "").strip()
                 in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
@@ -163,35 +506,63 @@ class VoiceCompanion:
 
             by_name["deepseek"] = _call_deepseek
 
-        # Gemini (in talk_only, prefer hydrogen & 2.5-flash ahead of configured model to avoid thinking lag)
+        # Gemini (use configured Paid model like gemini-4-neon first instead of forcing lite models)
         gem_key = store.get_api_key("gemini")
         if gem_key and _is_usable("gemini"):
             gem_cfg_model = str((p_cfgs.get("gemini") or {}).get("model") or "").strip()
-            if talk_only:
-                gem_models = ["gemini-4-hydrogen", "gemini-2.5-flash"]
-                if gem_cfg_model and gem_cfg_model not in gem_models:
-                    gem_models.append(gem_cfg_model)
+            if ov_model and pref == "gemini":
+                gem_models = [ov_model, "gemini-4-neon", "gemini-2.5-flash", "gemini-4-hydrogen"]
             else:
-                gem_models = ["gemini-4-hydrogen"]
-                if gem_cfg_model and gem_cfg_model not in gem_models:
-                    gem_models.append(gem_cfg_model)
-                if "gemini-2.5-flash" not in gem_models:
-                    gem_models.append("gemini-2.5-flash")
+                gem_models = []
+                if gem_cfg_model:
+                    if talk_only and gem_cfg_model.lower() == "gemini-4-carbon":
+                        gem_models.append("gemini-4-neon")
+                    else:
+                        gem_models.append(gem_cfg_model)
+                for fb_gem in ("gemini-4-neon", "gemini-2.5-flash", "gemini-4-hydrogen"):
+                    if fb_gem not in gem_models:
+                        gem_models.append(fb_gem)
+            gem_models = list(dict.fromkeys(m for m in gem_models if m))
             self._last_models["gemini"] = gem_models[0]
 
-            def _call_gemini(prompt_text: str, _k=gem_key, _models=tuple(gem_models)) -> str:
-                from google import genai
+            def _call_gemini(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                low_latency: bool = True,
+                _k=gem_key,
+                _models=tuple(gem_models),
+            ) -> str:
                 from google.genai import types
 
-                cli = genai.Client(api_key=_k, http_options=types.HttpOptions(timeout=18000))
+                cli = _get_cached_gemini_client(_k, timeout_ms=18000)
+                hist_str = ""
+                if history_messages:
+                    hist_str = "\n".join(
+                        f"{'User' if m['role'] == 'user' else 'Assistant'}: {m['content']}"
+                        for m in history_messages
+                        if m.get("content")
+                    )
+                full_content = "\n\n".join(p for p in (system_prompt, hist_str, prompt_text) if p)
                 last_err: Exception | None = None
                 for gm in _models:
                     try:
-                        r = cli.models.generate_content(model=gm, contents=prompt_text)
+                        if low_latency:
+                            try:
+                                cfg_g = types.GenerateContentConfig(
+                                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                                    max_output_tokens=360,
+                                )
+                                r = cli.models.generate_content(model=gm, contents=full_content, config=cfg_g)
+                            except Exception:
+                                r = cli.models.generate_content(model=gm, contents=full_content)
+                        else:
+                            r = cli.models.generate_content(model=gm, contents=full_content)
                         txt = (getattr(r, "text", "") or "").strip()
                         if txt:
                             self._last_models["gemini"] = gm
-                            in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=prompt_text, output_text=txt)
+                            in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=full_content, output_text=txt)
                             emit_llm_cost("gemini", gm, in_t, out_t, source="voice_companion")
                             return txt
                     except Exception as exc:
@@ -201,45 +572,93 @@ class VoiceCompanion:
 
             by_name["gemini"] = _call_gemini
 
-        # OpenAI (skip slow reasoning models in interactive talk_only mode)
+        # OpenAI (Paid conversational tier defaults to gpt-6.2-sol instead of downgrading to gpt-4o-mini)
         oai_key = store.get_api_key("openai")
         if oai_key and _is_usable("openai"):
-            oai_model = str((p_cfgs.get("openai") or {}).get("model") or "gpt-5-mini").strip() or "gpt-5-mini"
-            if talk_only and oai_model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
-                oai_model = "gpt-4o-mini"
-            self._last_models["openai"] = oai_model
+            cfg_oai = str((p_cfgs.get("openai") or {}).get("model") or "").strip()
+            oai_models: list[str] = []
+            if ov_model and pref == "openai":
+                oai_models.append(ov_model)
+            elif cfg_oai:
+                low_cfg = cfg_oai.lower()
+                if low_cfg in {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro"} or low_cfg.startswith(("gpt-6.2-astra", "o1", "o3", "o4")):
+                    oai_models.append("gpt-6.2-sol")
+                else:
+                    oai_models.append(cfg_oai)
+            for fb_oai in ("gpt-6.2-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-5.4", "gpt-4o-mini"):
+                if fb_oai not in oai_models:
+                    oai_models.append(fb_oai)
+            oai_models_t = tuple(dict.fromkeys(m for m in oai_models if m))
+            self._last_models["openai"] = oai_models_t[0]
 
-            def _call_openai(prompt_text: str, _k=oai_key, _m=oai_model) -> str:
-                from openai import OpenAI
-
-                cli = OpenAI(api_key=_k, timeout=18.0, max_retries=0)
-                r = cli.responses.create(model=_m, input=prompt_text)
-                txt = (getattr(r, "output_text", "") or "").strip()
-                in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=prompt_text, output_text=txt)
-                emit_llm_cost("openai", _m, in_t, out_t, source="voice_companion")
-                return txt
+            def _call_openai(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                low_latency: bool = True,
+                _k=oai_key,
+                _models=oai_models_t,
+            ) -> str:
+                cli = _get_cached_openai_client(_k, timeout=18.0)
+                last_err: Exception | None = None
+                for om in _models:
+                    kw: dict = {"model": om}
+                    if system_prompt:
+                        kw["instructions"] = system_prompt
+                    if history_messages:
+                        msg_list = [{"role": m["role"], "content": m["content"]} for m in history_messages if m.get("content")]
+                        msg_list.append({"role": "user", "content": prompt_text})
+                        kw["input"] = msg_list
+                    else:
+                        kw["input"] = prompt_text
+                    try:
+                        if low_latency and not om.lower().startswith("gpt-4o"):
+                            try:
+                                r = cli.responses.create(**kw, reasoning={"effort": "low"})
+                            except Exception:
+                                r = cli.responses.create(**kw)
+                        else:
+                            r = cli.responses.create(**kw)
+                        txt = (getattr(r, "output_text", "") or "").strip()
+                        if txt:
+                            self._last_models["openai"] = om
+                            in_t, out_t = extract_sdk_usage_tokens(r, prompt_text=prompt_text, output_text=txt)
+                            emit_llm_cost("openai", om, in_t, out_t, source="voice_companion")
+                            return txt
+                    except Exception as exc:
+                        last_err = exc
+                        continue
+                raise RuntimeError(f"OpenAI voice companion call failed: {last_err}")
 
             by_name["openai"] = _call_openai
 
         # Groq / Cerebras ultra-low-latency conversational endpoints
         groq_key = store.get_api_key("groq")
         if groq_key and _is_usable("groq"):
-            cfg_m = str((p_cfgs.get("groq") or {}).get("model") or "").strip()
+            cfg_m = ov_model if (ov_model and pref == "groq") else str((p_cfgs.get("groq") or {}).get("model") or "").strip()
             primary_gm = cfg_m if (cfg_m and cfg_m.lower() not in _RETIRED_GROQ_MODELS) else _GROQ_VOICE_FALLBACK_CHAIN[0]
             groq_models = tuple(dict.fromkeys([primary_gm, *_GROQ_VOICE_FALLBACK_CHAIN]))
             self._last_models["groq"] = groq_models[0]
 
-            def _call_groq(prompt_text: str, _k=groq_key, _models=groq_models) -> str:
-                from openai import OpenAI
-
-                cli = OpenAI(api_key=_k, base_url="https://api.groq.com/openai/v1", timeout=15.0, max_retries=0)
+            def _call_groq(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                low_latency: bool = True,
+                _k=groq_key,
+                _models=groq_models,
+            ) -> str:
+                cli = _get_cached_openai_client(_k, base_url="https://api.groq.com/openai/v1", timeout=15.0)
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
                 last_err: Exception | None = None
                 for gm in _models:
                     try:
                         resp = cli.chat.completions.create(
                             model=gm,
-                            messages=[{"role": "user", "content": prompt_text}],
-                            temperature=0.4,
+                            messages=msgs,
+                            temperature=0.65,
                             max_tokens=800,
                         )
                         txt = (resp.choices[0].message.content or "").strip()
@@ -257,16 +676,26 @@ class VoiceCompanion:
 
         cer_key = store.get_api_key("cerebras")
         if cer_key and _is_usable("cerebras"):
-            cer_model = str((p_cfgs.get("cerebras") or {}).get("model") or "gpt-oss-120b").strip() or "gpt-oss-120b"
+            cer_model = (
+                ov_model if (ov_model and pref == "cerebras") else str((p_cfgs.get("cerebras") or {}).get("model") or "gpt-oss-120b").strip()
+            ) or "gpt-oss-120b"
             self._last_models["cerebras"] = cer_model
 
-            def _call_cerebras(prompt_text: str, _k=cer_key, _m=cer_model) -> str:
+            def _call_cerebras(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=cer_key,
+                _m=cer_model,
+            ) -> str:
                 from cerebras.cloud.sdk import Cerebras
 
                 cli = Cerebras(api_key=_k, timeout=15.0, max_retries=0)
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
                 resp = cli.chat.completions.create(
                     model=_m,
-                    messages=[{"role": "user", "content": prompt_text}],
+                    messages=msgs,
                     max_tokens=450,
                 )
                 txt = (resp.choices[0].message.content or "").strip()
@@ -280,18 +709,29 @@ class VoiceCompanion:
         qwen_key = store.get_api_key("qwen")
         if qwen_key and _is_usable("qwen"):
             qwen_cfg = p_cfgs.get("qwen") or {}
-            qwen_model = str(qwen_cfg.get("model") or "Qwen/Qwen3.8-27B").strip() or "Qwen/Qwen3.8-27B"
+            qwen_model = (
+                ov_model if (ov_model and pref == "qwen") else str(qwen_cfg.get("model") or "Qwen/Qwen3.8-27B").strip()
+            ) or "Qwen/Qwen3.8-27B"
             qwen_base = str(qwen_cfg.get("base_url") or "https://api.deepinfra.com/v1/openai").strip()
             self._last_models["qwen"] = qwen_model
 
-            def _call_qwen(prompt_text: str, _k=qwen_key, _m=qwen_model, _b=qwen_base) -> str:
+            def _call_qwen(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=qwen_key,
+                _m=qwen_model,
+                _b=qwen_base,
+            ) -> str:
                 from openai import OpenAI
 
                 cli = OpenAI(api_key=_k, base_url=_b, timeout=18.0, max_retries=0)
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
                 resp = cli.chat.completions.create(
                     model=_m,
-                    messages=[{"role": "user", "content": prompt_text}],
-                    temperature=0.4,
+                    messages=msgs,
+                    temperature=0.65,
                     max_tokens=450,
                 )
                 txt = (resp.choices[0].message.content or "").strip()
@@ -304,14 +744,24 @@ class VoiceCompanion:
         # Cohere (command-a / command-r)
         coh_key = store.get_api_key("cohere")
         if coh_key and _is_usable("cohere"):
-            coh_model = str((p_cfgs.get("cohere") or {}).get("model") or "command-a-03-2025").strip() or "command-a-03-2025"
+            coh_model = (
+                ov_model if (ov_model and pref == "cohere") else str((p_cfgs.get("cohere") or {}).get("model") or "command-a-03-2025").strip()
+            ) or "command-a-03-2025"
             self._last_models["cohere"] = coh_model
 
-            def _call_cohere(prompt_text: str, _k=coh_key, _m=coh_model) -> str:
+            def _call_cohere(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=coh_key,
+                _m=coh_model,
+            ) -> str:
                 import cohere
 
                 cli = cohere.ClientV2(api_key=_k, timeout=18.0)
-                resp = cli.chat(model=_m, messages=[{"role": "user", "content": prompt_text}])
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
+                resp = cli.chat(model=_m, messages=msgs)
                 txt = (resp.message.content[0].text or "").strip()
                 in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
                 emit_llm_cost("cohere", _m, in_t, out_t, source="voice_companion")
@@ -322,14 +772,24 @@ class VoiceCompanion:
         # Mistral
         mis_key = store.get_api_key("mistral")
         if mis_key and _is_usable("mistral"):
-            mis_model = str((p_cfgs.get("mistral") or {}).get("model") or "mistral-small-latest").strip() or "mistral-small-latest"
+            mis_model = (
+                ov_model if (ov_model and pref == "mistral") else str((p_cfgs.get("mistral") or {}).get("model") or "mistral-small-latest").strip()
+            ) or "mistral-small-latest"
             self._last_models["mistral"] = mis_model
 
-            def _call_mistral(prompt_text: str, _k=mis_key, _m=mis_model) -> str:
+            def _call_mistral(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=mis_key,
+                _m=mis_model,
+            ) -> str:
                 from mistralai.client import Mistral
 
                 cli = Mistral(api_key=_k, timeout_ms=18000)
-                resp = cli.chat.complete(model=_m, messages=[{"role": "user", "content": prompt_text}])
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
+                resp = cli.chat.complete(model=_m, messages=msgs)
                 txt = (resp.choices[0].message.content or "").strip()
                 in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
                 emit_llm_cost("mistral", _m, in_t, out_t, source="voice_companion")
@@ -337,10 +797,91 @@ class VoiceCompanion:
 
             by_name["mistral"] = _call_mistral
 
+        # xAI (Grok) — high-EQ companion & unfiltered conversational banter (Claude intentionally excluded from voice bonding)
+        xai_key = store.get_api_key("xai") or store.get_api_key("grok")
+        if xai_key and (_is_usable("xai") or _is_usable("grok") or pref in {"xai", "grok"}):
+            xai_cfg_m = (
+                ov_model
+                if (ov_model and pref in {"xai", "grok"})
+                else str(((p_cfgs.get("xai") or p_cfgs.get("grok") or {}).get("model")) or "grok-3").strip()
+            ) or "grok-3"
+            xai_models = tuple(dict.fromkeys([xai_cfg_m, "grok-4", "grok-3", "grok-3-mini", "grok-2-latest"]))
+            self._last_models["xai"] = xai_models[0]
+            self._last_models["grok"] = xai_models[0]
+
+            def _call_xai(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=xai_key,
+                _models=xai_models,
+            ) -> str:
+                from openai import OpenAI
+
+                cli = OpenAI(api_key=_k, base_url="https://api.x.ai/v1", timeout=18.0, max_retries=0)
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
+                last_err: Exception | None = None
+                for xm in _models:
+                    try:
+                        resp = cli.chat.completions.create(
+                            model=xm,
+                            messages=msgs,
+                            temperature=0.65,
+                            max_tokens=450,
+                        )
+                        txt = (resp.choices[0].message.content or "").strip()
+                        if txt:
+                            self._last_models["xai"] = xm
+                            in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
+                            emit_llm_cost("xai", xm, in_t, out_t, source="voice_companion")
+                            return txt
+                    except Exception as exc:
+                        last_err = exc
+                        continue
+                raise RuntimeError(f"xAI voice companion call failed: {last_err}")
+
+            by_name["xai"] = _call_xai
+            by_name["grok"] = _call_xai
+
+        # OpenRouter support if configured
+        or_key = store.get_api_key("openrouter")
+        if or_key and (_is_usable("openrouter") or pref == "openrouter"):
+            or_model = (
+                ov_model if (ov_model and pref == "openrouter") else str((p_cfgs.get("openrouter") or {}).get("model") or "~openai/gpt-sol-latest").strip()
+            ) or "~openai/gpt-sol-latest"
+            self._last_models["openrouter"] = or_model
+
+            def _call_openrouter(
+                prompt_text: str,
+                *,
+                system_prompt: str = "",
+                history_messages: list[dict[str, str]] | None = None,
+                _k=or_key,
+                _m=or_model,
+            ) -> str:
+                from openai import OpenAI
+
+                cli = OpenAI(
+                    api_key=_k,
+                    base_url="https://openrouter.ai/api/v1",
+                    timeout=18.0,
+                    max_retries=0,
+                    default_headers={"HTTP-Referer": "https://fairybread.me", "X-Title": "Fairybread"},
+                )
+                msgs = _build_chat_messages(prompt_text, system_prompt, history_messages)
+                resp = cli.chat.completions.create(model=_m, messages=msgs, temperature=0.65, max_tokens=450)
+                txt = (resp.choices[0].message.content or "").strip()
+                in_t, out_t = extract_sdk_usage_tokens(resp, prompt_text=prompt_text, output_text=txt)
+                emit_llm_cost("openrouter", _m, in_t, out_t, source="voice_companion")
+                return txt
+
+            by_name["openrouter"] = _call_openrouter
+
         base_order = (
-            ("groq", "deepseek", "gemini", "openai", "cerebras", "qwen", "cohere", "mistral")
+            ("groq", "deepseek", "gemini", "openai", "xai", "cerebras", "qwen", "cohere", "mistral", "openrouter")
             if talk_only
-            else ("deepseek", "gemini", "openai", "groq", "cerebras", "qwen", "cohere", "mistral")
+            else ("deepseek", "gemini", "openai", "xai", "groq", "cerebras", "qwen", "cohere", "mistral", "openrouter")
         )
 
         ordered_names: list[str] = []
@@ -386,11 +927,16 @@ class VoiceCompanion:
         talk_only: bool = False,
         preferred_provider: str = "",
         fallback_provider: str = "",
+        model_override: str = "",
+        system_prompt: str = "",
+        history_messages: list[dict[str, str]] | None = None,
+        low_latency: bool = True,
     ) -> tuple[str, str, str, str, bool, str]:
         cands = self._build_provider_candidates(
             talk_only=talk_only,
             preferred_provider=preferred_provider,
             fallback_provider=fallback_provider,
+            model_override=model_override,
         )
         req_p = self._last_requested_provider or (cands[0][0] if cands else "")
         errors: list[str] = list(getattr(self, "_candidate_skip_reasons", []) or [])
@@ -398,7 +944,19 @@ class VoiceCompanion:
             raise RuntimeError(f"Voice companion LLM unavailable: {'; '.join(errors) or 'no configured provider'}")
         for pname, fn in cands:
             try:
-                out = (fn(prompt_text) or "").strip()
+                call_kw: dict = {}
+                try:
+                    sig = inspect.signature(fn)
+                    if "system_prompt" in sig.parameters and system_prompt:
+                        call_kw["system_prompt"] = system_prompt
+                    if "history_messages" in sig.parameters and history_messages:
+                        call_kw["history_messages"] = history_messages
+                    if "low_latency" in sig.parameters:
+                        call_kw["low_latency"] = low_latency
+                except (TypeError, ValueError):
+                    pass
+                raw_in = prompt_text if call_kw or not system_prompt else f"{system_prompt}\n\n{prompt_text}"
+                out = (fn(raw_in, **call_kw) if call_kw else fn(raw_in) or "").strip()
                 if out:
                     model_used = self._last_models.get(pname, "")
                     fell_back = bool(errors) or (bool(req_p) and req_p not in {"auto", "injected", pname})
@@ -418,6 +976,11 @@ class VoiceCompanion:
         self._history.append((user_text, spoken_reply))
         if len(self._history) > self._lock_history_limit:
             self._history = self._history[-self._lock_history_limit :]
+        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", (spoken_reply or "").strip()) if s.strip()]
+        if sents:
+            self._recent_closers.append(sents[-1])
+            if len(self._recent_closers) > 12:
+                self._recent_closers = self._recent_closers[-12:]
 
     def _fallback_decision(
         self,
@@ -462,6 +1025,44 @@ class VoiceCompanion:
         )
         return VoiceCompanionDecision(action="chat", spoken_reply=reply, provider_used="fallback")
 
+    def _structured_history_messages(self) -> list[dict[str, str]]:
+        msgs: list[dict[str, str]] = []
+        for u_prev, a_prev in self._history[-6:]:
+            if u_prev:
+                msgs.append({"role": "user", "content": u_prev})
+            if a_prev:
+                msgs.append({"role": "assistant", "content": a_prev})
+        return msgs
+
+    def _load_living_profile_block(self, explicit_text: str = "") -> str:
+        raw = (explicit_text or "").strip()
+        if not raw:
+            try:
+                from memory_service import load_memory_summary
+                raw = str(load_memory_summary().get("text") or "").strip()
+            except Exception:
+                raw = ""
+        return raw[:1400] if raw else ""
+
+    def _persist_agent_name_updates(
+        self,
+        updates: list[dict[str, str]],
+        *,
+        default_provider: str = "",
+    ) -> list[dict[str, str]]:
+        applied: list[dict[str, str]] = []
+        for item in updates or []:
+            prov = str(item.get("provider") or default_provider or "").strip().lower()
+            nm = clean_given_name(str(item.get("given_name") or item.get("name") or ""))
+            if not prov or prov == "auto" or not nm:
+                continue
+            try:
+                save_provider_attribution(prov, {"given_name": nm}, config_path=self.config_path)
+                applied.append({"provider": prov, "given_name": nm})
+            except Exception:
+                pass
+        return applied
+
     def respond(
         self,
         user_utterance: str,
@@ -475,6 +1076,17 @@ class VoiceCompanion:
         allow_memory_write: bool = True,
         preferred_provider: str = "",
         fallback_provider: str = "",
+        model_override: str = "",
+        persona_id: str = "",
+        speaker_name: str = "",
+        voice_name: str = "",
+        avatar_shape: str = "",
+        avatar_palette: str = "",
+        slot_index: int = 0,
+        record_history: bool = True,
+        living_profile_text: str = "",
+        extra_quorum_context: str = "",
+        include_palace_code: bool = False,
     ) -> VoiceCompanionDecision:
         utterance = (user_utterance or "").strip()
         if not utterance:
@@ -482,13 +1094,89 @@ class VoiceCompanion:
                 action="chat",
                 spoken_reply="Sorry, I didn't quite catch that. Could you say that again?",
                 provider_used="local",
+                speaker_name=speaker_name,
+                persona_id=persona_id,
+                voice_name=voice_name,
+                avatar_shape=avatar_shape,
+                avatar_palette=avatar_palette,
+                slot_index=slot_index,
             )
+
+        try:
+            v_cfg = load_voice_settings(self.config_path)
+            personas = load_voice_personas(self.config_path)
+        except Exception:
+            v_cfg = {}
+            personas = {}
+
+        eff_prov = (preferred_provider or str(v_cfg.get("voice_llm_provider") or "auto")).strip().lower()
+        if not eff_prov or eff_prov == "auto":
+            try:
+                cands = self._build_provider_candidates(
+                    preferred_provider=preferred_provider,
+                    fallback_provider=fallback_provider,
+                )
+                if cands:
+                    eff_prov = str(cands[0][0] or "").strip().lower()
+            except Exception:
+                pass
+
+        try:
+            prov_attr = (
+                get_provider_attribution(eff_prov, config_path=self.config_path)
+                if eff_prov and eff_prov != "auto"
+                else {}
+            )
+        except Exception:
+            prov_attr = {}
+
+        custom_given = clean_given_name(str(prov_attr.get("given_name") or ""))
+        eff_pid = (
+            persona_id
+            or str(v_cfg.get("active_voice_persona") or prov_attr.get("conversational_mode") or "normal_female")
+        ).strip() or "normal_female"
+        p_meta = personas.get(eff_pid) or personas.get("default") or personas.get("normal_female") or {}
+        if speaker_name.strip():
+            eff_speaker = speaker_name.strip()
+        elif custom_given:
+            eff_speaker = custom_given
+        else:
+            eff_speaker = str(p_meta.get("speaker_name") or prov_attr.get("display_name") or "Maya").strip()
+        eff_voice = (voice_name or str(prov_attr.get("voice_name") or v_cfg.get("voice_name") or "coral")).strip()
+        eff_shape = (avatar_shape or str(prov_attr.get("avatar_shape") or p_meta.get("avatar_shape") or "neural_core")).strip()
+        eff_palette = (avatar_palette or str(prov_attr.get("avatar_palette") or p_meta.get("avatar_palette") or "tulsa_cyan")).strip()
+        eff_evolve = bool(p_meta.get("evolve_user_profile", True))
+        raw_bp = str(p_meta.get("blueprint") or "").strip()
+        preset_sp = str(p_meta.get("speaker_name") or "").strip()
+        persona_blueprint = (
+            _strip_preset_identity_prefix(raw_bp)
+            if (eff_speaker and preset_sp and eff_speaker.lower() != preset_sp.lower())
+            else raw_bp
+        )
+        persona_label = str(p_meta.get("label") or eff_speaker).strip()
+        role_attr_txt = str(prov_attr.get("role_attribution") or "").strip()
+        role_attr_block = f"AGENT ROLE & ATTRIBUTION:\n{role_attr_txt}\n\n" if role_attr_txt else ""
+        identity_rule = (
+            f"AGENT IDENTITY RULE: Your assigned Fairybread name is '{eff_speaker}' (provider id: {eff_prov or 'auto'}). "
+            f"Always answer to '{eff_speaker}' naturally as your real identity in this workspace — never insist you are Maya/another preset name and never refuse a user-given name.\n"
+        )
 
         hist_lines = []
         for u_prev, a_prev in self._history[-6:]:
             hist_lines.append(f"User: {u_prev}")
-            hist_lines.append(f"You: {a_prev}")
+            hist_lines.append(f"Table: {a_prev}")
         hist_block = "\n".join(hist_lines) if hist_lines else "(new voice conversation)"
+        structured_hist = self._structured_history_messages()
+
+        living_profile = self._load_living_profile_block(living_profile_text)
+        profile_block = (
+            f"LIVING USER PROFILE & CONVERSATIONAL SIGNATURE (use naturally to build genuine rapport & continuity):\n{living_profile}\n\n"
+            if living_profile
+            else ""
+        )
+
+        topic_lock = _detect_active_topic_hint(utterance, self._history)
+        topic_lock_block = f"ACTIVE TOPIC LOCK (stay on this exact subject): {topic_lock}\n" if topic_lock else ""
 
         if allow_memory_write:
             mem_block = (
@@ -511,26 +1199,50 @@ class VoiceCompanion:
         try:
             raw_pers = format_personalization_prompt_block(self.config_path, conversational_scale="casual")
             if raw_pers:
-                pers_block = raw_pers[:700] + "\n"
+                pers_block = raw_pers[:750] + "\n"
         except Exception:
             pers_block = ""
 
+        persona_header = (
+            f"ROLEPLAY PERSONA — {eff_speaker} ({persona_label}):\n{persona_blueprint}\n\n"
+            if persona_blueprint
+            else ""
+        )
+        quorum_block = f"{extra_quorum_context.strip()}\n\n" if extra_quorum_context.strip() else ""
+        code_ctx = build_voice_code_context(utterance) if include_palace_code else ""
+        code_ctx_block = f"{code_ctx}\n\n" if code_ctx else ""
+
         if talk_only:
-            prompt = (
-                "You are Fairybread in Talk Mode Only — a warm, relaxed, fast conversational companion.\n"
-                "There is NO background council, NO code execution, NO image generation, and NO web tools active right now.\n"
+            mode_cap_line = (
+                "SOURCE CODE ACCESS IS ACTIVE (`{ } Code` button is ON): You CAN read and inspect Fairybread's live Python source code provided in the prompt below. Discuss how the code works accurately in plain spoken English (summarize logic and module/function behavior clearly without reading raw punctuation aloud).\n\n"
+                if code_ctx
+                else "There is NO background council, NO code execution, NO image generation, and NO web tools active right now.\n\n"
+            )
+            system_prompt = (
+                f"You are {eff_speaker} in Fairybread Live Voice Mode — a deeply natural, attentive conversational partner.\n"
+                f"{mode_cap_line}"
+                f"{identity_rule}\n"
+                f"{role_attr_block}"
+                f"{persona_header}"
+                f"{quorum_block}"
+                f"{profile_block}"
                 f"{pers_block}"
-                f"{mem_rule_talk}"
-                "Have a natural conversation directly with the user. If they ask for deep coding, image generation, or multi-AI analysis, "
-                "give a brief friendly answer and mention they can switch back to Work Mode, Code AIs, or Graphics anytime.\n\n"
+                f"{VOICE_ANTI_STALL_RULES}\n"
+                f"{mem_rule_talk}\n"
+                f"NAME CHANGE TOOL: If the user gives you (or another AI) a new name to go by (e.g. 'call yourself Ash' or 'I will name you Max'), "
+                f"emit `[SET_AGENT_NAME provider=\"{eff_prov or 'auto'}\" name=\"NewName\"]` at the very end so Fairybread saves it permanently, and adopt the name naturally out loud.\n"
+            )
+            prompt = (
                 f"{mem_block}"
+                f"{code_ctx_block}"
                 f"RECENT VOICE HISTORY:\n{hist_block}\n"
                 f"RECENT WORKSPACE CONTEXT:\n{(recent_chat_snippet or '(none)')[:500]}\n\n"
+                f"{topic_lock_block}"
                 f"USER JUST SAID: {utterance}\n\n"
                 "SPOKEN STYLE RULES:\n"
-                "- Reply in plain natural conversational sentences only (1-3 short everyday sentences, contractions okay).\n"
-                "- Follow natural topic shifts, jokes, and side tangents effortlessly without dragging the user back to older topics.\n"
-                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than an optional trailing `[SAVE_MEMORY summary=\"...\" fact=\"...\"]` when explicitly storing memory."
+                "- Reply in plain natural conversational sentences only (1-3 crisp spoken sentences, contractions okay).\n"
+                "- Engage directly with the substance of what the user just said; follow genuine topic shifts, jokes, and side tangents naturally while staying locked onto the active subject when the user challenges your style.\n"
+                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than optional trailing `[SAVE_MEMORY ...]` or `[SET_AGENT_NAME provider=\"...\" name=\"...\"]`."
             )
             try:
                 raw_out, pname, m_used, req_p, fell_back, fb_reason = self._invoke_fast_llm_detailed(
@@ -538,6 +1250,10 @@ class VoiceCompanion:
                     talk_only=True,
                     preferred_provider=preferred_provider,
                     fallback_provider=fallback_provider,
+                    model_override=model_override,
+                    system_prompt=system_prompt,
+                    history_messages=structured_hist,
+                    low_latency=(not bool(code_ctx)),
                 )
             except Exception as exc:
                 dec = VoiceCompanionDecision(
@@ -550,16 +1266,37 @@ class VoiceCompanion:
                     requested_provider=preferred_provider or self._last_requested_provider,
                     fell_back=True,
                     fallback_reason=str(exc),
+                    speaker_name=eff_speaker,
+                    persona_id=eff_pid,
+                    voice_name=eff_voice,
+                    avatar_shape=eff_shape,
+                    avatar_palette=eff_palette,
+                    slot_index=slot_index,
+                    evolve_user_profile=eff_evolve,
                 )
-                self._remember(utterance, dec.spoken_reply)
+                if record_history:
+                    self._remember(utterance, dec.spoken_reply)
                 return dec
 
             obj = _extract_json_obj(raw_out)
             candidate_txt = str(obj.get("spoken_reply") or raw_out) if (isinstance(obj, dict) and obj.get("spoken_reply")) else raw_out
             stripped_txt, parsed_saves = parse_save_memory_tags(candidate_txt, replace_with_badge=False)
+            stripped_txt, name_tags = parse_set_agent_name_tags(stripped_txt)
+            applied_names = self._persist_agent_name_updates(
+                name_tags,
+                default_provider=(pname if pname and pname != "fallback" else eff_prov),
+            )
+            for item in applied_names:
+                if item.get("provider") in {eff_prov, pname}:
+                    eff_speaker = item["given_name"]
             if not allow_memory_write:
                 parsed_saves = []
-            spoken = clean_text_for_speech(stripped_txt) or ("Saved that to your Memory Palace." if parsed_saves else "Gotcha.")
+            cleaned = clean_text_for_speech(stripped_txt)
+            spoken = _strip_stall_closers(cleaned, self._recent_closers) or cleaned or (
+                f"Got it, you can call me {eff_speaker}."
+                if applied_names
+                else ("Saved that to your Memory Palace." if parsed_saves else "Gotcha.")
+            )
             dec = VoiceCompanionDecision(
                 action="chat",
                 spoken_reply=spoken,
@@ -571,8 +1308,17 @@ class VoiceCompanion:
                 fell_back=fell_back,
                 fallback_reason=fb_reason,
                 memory_saves=parsed_saves,
+                speaker_name=eff_speaker,
+                persona_id=eff_pid,
+                voice_name=eff_voice,
+                avatar_shape=eff_shape,
+                avatar_palette=eff_palette,
+                slot_index=slot_index,
+                evolve_user_profile=eff_evolve,
+                updated_attributions=applied_names,
             )
-            self._remember(utterance, dec.spoken_reply)
+            if record_history:
+                self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")
             return dec
 
         bg_block = (
@@ -590,27 +1336,44 @@ class VoiceCompanion:
             else "- No-History (ephemeral) mode is ON: omit `save_memory` and let the user know if they ask to save memory.\n"
         )
 
-        prompt = (
-            "You are Fairybread's live conversational Voice Companion — warm, friendly, natural, relaxed, and intuitive.\n"
+        system_prompt = (
+            f"You are {eff_speaker} — Fairybread's live conversational Voice Companion.\n"
             "You talk directly with the user out loud while Fairybread's multi-AI crew can work asynchronously in the background.\n\n"
+            f"{identity_rule}\n"
+            f"{role_attr_block}"
+            f"{persona_header}"
+            f"{quorum_block}"
+            f"{profile_block}"
             f"{pers_block}"
+            f"{VOICE_ANTI_STALL_RULES}"
+        )
+        prompt = (
             f"{bg_block}\n"
             f"{mem_block}"
+            f"{code_ctx_block}"
             f"RECENT VOICE HISTORY:\n{hist_block}\n"
             f"RECENT WORKSPACE CONTEXT:\n{(recent_chat_snippet or '(none)')[:500]}\n\n"
+            f"{topic_lock_block}"
             f"USER JUST SAID: {utterance}\n\n"
             "Respond ONLY with a single valid JSON object matching this exact schema:\n"
-            '{"action": "chat|delegate|steer|status", "spoken_reply": "...", "delegated_task": "...", "steer_note": "...", "save_memory": null}\n\n'
+            '{"action": "chat|delegate|steer|status", "spoken_reply": "...", "delegated_task": "...", "steer_note": "...", "save_memory": null, "set_agent_name": null}\n\n'
             "ROUTING RULES:\n"
             f"{mem_json_rule}"
-            "1. 'chat': Casual talk, follow-up banter, quick questions, memory recalls/saves, brainstorming, or simple explanations you can answer directly right now (even if the background crew is BUSY).\n"
+            + (
+                "- Live Source Code Inspection (`{ } Code` is ON): Matched Fairybread Python source snippets are included above. If the user is asking you to look at, explain, or talk through the code, answer directly right now using `action=\"chat\"` based on the real code above! Only use `action=\"delegate\"` if they want a full multi-AI audit or code edits/patches.\n"
+                if code_ctx
+                else ""
+            )
+            + f"- Custom AI Name: If the user gives you (or another AI) a name to go by (e.g. 'call yourself Ash' or 'your name is Max'), set optional "
+            f'`"set_agent_name": {{"provider": "{eff_prov or "auto"}", "name": "NewName"}}` in the JSON (keeping `action="chat"`) and adopt it naturally in `spoken_reply`.\n'
+            "1. 'chat': Casual talk, debate, roleplay, follow-up banter, quick questions, memory recalls/saves, brainstorming, or simple explanations you can answer directly right now (even if the background crew is BUSY).\n"
             "2. 'delegate': Complex or heavy work suited to Fairybread's multi-AI team — generating/drawing images, editing/debugging/patching code, deep research, multi-AI comparisons, reading files/emails. "
             "Put a clean self-contained prompt in 'delegated_task', and in 'spoken_reply' give a warm 1-2 sentence handoff letting them know the team started in the background (or queued it if already busy) and they can keep talking with you.\n"
             "3. 'steer': ONLY when BACKGROUND CREW STATUS is BUSY and the user is adjusting, redirecting, or adding constraints to the currently running background task. Put the instruction in 'steer_note' and confirm warmly in 'spoken_reply'.\n"
             "4. 'status': ONLY when BACKGROUND CREW STATUS is BUSY and the user asks how the background work is going. Summarize the live phase naturally in 'spoken_reply'.\n"
             "SPOKEN STYLE RULES:\n"
             "- Keep 'spoken_reply' to 1-3 natural conversational sentences (warm everyday phrasing, contractions okay).\n"
-            "- Follow natural topic shifts, jokes, and side tangents effortlessly without dragging the user back to older topics.\n"
+            "- Engage directly with the active subject and follow genuine topic shifts, jokes, and side tangents naturally; never reply with robotic customer-service stall phrases.\n"
             "- ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] in 'spoken_reply'."
         )
 
@@ -620,6 +1383,10 @@ class VoiceCompanion:
                 talk_only=False,
                 preferred_provider=preferred_provider,
                 fallback_provider=fallback_provider,
+                model_override=model_override,
+                system_prompt=system_prompt,
+                history_messages=structured_hist,
+                low_latency=(not bool(code_ctx)),
             )
         except Exception as exc:
             dec = self._fallback_decision(
@@ -631,14 +1398,31 @@ class VoiceCompanion:
             dec.requested_provider = preferred_provider or self._last_requested_provider
             dec.fell_back = True
             dec.fallback_reason = str(exc)
-            self._remember(utterance, dec.spoken_reply)
+            dec.speaker_name = eff_speaker
+            dec.persona_id = eff_pid
+            dec.voice_name = eff_voice
+            dec.avatar_shape = eff_shape
+            dec.avatar_palette = eff_palette
+            dec.slot_index = slot_index
+            dec.evolve_user_profile = eff_evolve
+            if record_history:
+                self._remember(utterance, dec.spoken_reply)
             return dec
 
         obj = _extract_json_obj(raw_out)
         if not obj:
             stripped_raw, parsed_raw_saves = parse_save_memory_tags(raw_out, replace_with_badge=False)
-            spoken = clean_text_for_speech(stripped_raw)
-            if not spoken:
+            stripped_raw, raw_name_tags = parse_set_agent_name_tags(stripped_raw)
+            applied_raw_names = self._persist_agent_name_updates(
+                raw_name_tags,
+                default_provider=(pname if pname and pname != "fallback" else eff_prov),
+            )
+            for item in applied_raw_names:
+                if item.get("provider") in {eff_prov, pname}:
+                    eff_speaker = item["given_name"]
+            cleaned = clean_text_for_speech(stripped_raw)
+            spoken = _strip_stall_closers(cleaned, self._recent_closers) or cleaned
+            if not spoken and not applied_raw_names:
                 dec = self._fallback_decision(
                     utterance,
                     background_busy=background_busy,
@@ -648,18 +1432,34 @@ class VoiceCompanion:
                 dec.requested_provider = req_p
                 dec.fell_back = True
                 dec.fallback_reason = fb_reason or "Empty non-JSON reply"
+                dec.speaker_name = eff_speaker
+                dec.persona_id = eff_pid
+                dec.voice_name = eff_voice
+                dec.avatar_shape = eff_shape
+                dec.avatar_palette = eff_palette
+                dec.slot_index = slot_index
+                dec.evolve_user_profile = eff_evolve
             else:
                 dec = VoiceCompanionDecision(
                     action="chat",
-                    spoken_reply=spoken,
+                    spoken_reply=spoken or f"Got it, you can call me {eff_speaker}.",
                     provider_used=pname,
                     model_used=m_used,
                     requested_provider=req_p,
                     fell_back=fell_back,
                     fallback_reason=fb_reason,
                     memory_saves=parsed_raw_saves if allow_memory_write else [],
+                    speaker_name=eff_speaker,
+                    persona_id=eff_pid,
+                    voice_name=eff_voice,
+                    avatar_shape=eff_shape,
+                    avatar_palette=eff_palette,
+                    slot_index=slot_index,
+                    evolve_user_profile=eff_evolve,
+                    updated_attributions=applied_raw_names,
                 )
-            self._remember(utterance, dec.spoken_reply)
+            if record_history:
+                self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")
             return dec
 
         action = str(obj.get("action") or "chat").strip().lower()
@@ -667,7 +1467,25 @@ class VoiceCompanion:
             action = "chat"
         raw_reply_field = str(obj.get("spoken_reply") or "")
         stripped_reply, tag_saves = parse_save_memory_tags(raw_reply_field, replace_with_badge=False)
-        spoken = clean_text_for_speech(stripped_reply)
+        stripped_reply, reply_name_tags = parse_set_agent_name_tags(stripped_reply)
+        json_name_updates: list[dict[str, str]] = list(reply_name_tags)
+        raw_sn = obj.get("set_agent_name")
+        sn_items = raw_sn if isinstance(raw_sn, list) else ([raw_sn] if isinstance(raw_sn, dict) else [])
+        for sn in sn_items:
+            if isinstance(sn, dict):
+                nm_v = clean_given_name(str(sn.get("name") or sn.get("given_name") or ""))
+                pr_v = str(sn.get("provider") or pname or eff_prov or "").strip().lower()
+                if nm_v and pr_v and pr_v != "auto":
+                    json_name_updates.append({"provider": pr_v, "given_name": nm_v})
+        applied_json_names = self._persist_agent_name_updates(
+            json_name_updates,
+            default_provider=(pname if pname and pname != "fallback" else eff_prov),
+        )
+        for item in applied_json_names:
+            if item.get("provider") in {eff_prov, pname}:
+                eff_speaker = item["given_name"]
+        cleaned_reply = clean_text_for_speech(stripped_reply)
+        spoken = _strip_stall_closers(cleaned_reply, self._recent_closers) or cleaned_reply
         delegated_task = str(obj.get("delegated_task") or "").strip()
         steer_note = str(obj.get("steer_note") or "").strip()
 
@@ -724,9 +1542,318 @@ class VoiceCompanion:
             fell_back=fell_back,
             fallback_reason=fb_reason,
             memory_saves=collected_saves,
+            speaker_name=eff_speaker,
+            persona_id=eff_pid,
+            voice_name=eff_voice,
+            avatar_shape=eff_shape,
+            avatar_palette=eff_palette,
+            slot_index=slot_index,
+            evolve_user_profile=eff_evolve,
+            updated_attributions=applied_json_names,
         )
-        self._remember(utterance, dec.spoken_reply)
+        if record_history:
+            self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")
         return dec
+
+    def respond_quorum(
+        self,
+        user_utterance: str,
+        *,
+        background_busy: bool = False,
+        background_status: str = "",
+        background_question: str = "",
+        recent_chat_snippet: str = "",
+        talk_only: bool = False,
+        memory_context: str = "",
+        allow_memory_write: bool = True,
+        preferred_provider: str = "",
+        fallback_provider: str = "",
+        cast_slots: list[dict] | None = None,
+        multi_ai_enabled: bool | None = None,
+        max_volleys: int | None = None,
+        living_profile_text: str = "",
+        include_palace_code: bool = False,
+    ) -> list[VoiceCompanionDecision]:
+        """Run a 1-AI Roleplay turn or a 2-4 AI Table Quorum volley with peer reactions and anti-loop brake."""
+        utterance = (user_utterance or "").strip()
+        try:
+            v_cfg = load_voice_settings(self.config_path)
+            personas = load_voice_personas(self.config_path)
+        except Exception:
+            v_cfg = {}
+            personas = {}
+
+        multi_on = bool(v_cfg.get("multi_ai_voice_enabled", False) if multi_ai_enabled is None else multi_ai_enabled)
+        raw_volleys = v_cfg.get("multi_ai_max_volleys", 3) if max_volleys is None else max_volleys
+        try:
+            volley_cap = max(1, min(6, int(raw_volleys or 3)))
+        except (TypeError, ValueError):
+            volley_cap = 3
+
+        raw_slots = list(cast_slots if cast_slots is not None else (v_cfg.get("voice_cast_slots") or []))
+        if not raw_slots:
+            raw_slots = [{"slot": 1, "provider": preferred_provider or "auto", "persona_id": v_cfg.get("active_voice_persona", "normal_female")}]
+
+        _preset_placeholders = {"maya", "liam", "chloe", "ethan", "elena", "jack", "marcus", "seat 1", "seat 2", "seat 3", "seat 4"}
+        active_slots: list[dict] = []
+        for idx, raw_s in enumerate(raw_slots[:4]):
+            if not isinstance(raw_s, dict):
+                continue
+            prov = str(raw_s.get("provider") or "").strip().lower()
+            if idx == 0 and not prov:
+                prov = preferred_provider or str(v_cfg.get("voice_llm_provider") or "auto").strip().lower() or "auto"
+            if idx > 0 and (not multi_on or not prov or prov in {"none", "off", "blank"}):
+                continue
+            eff_prov = preferred_provider if (idx == 0 and preferred_provider) else prov
+            if eff_prov == "auto":
+                try:
+                    cands = self._build_provider_candidates(preferred_provider=eff_prov, fallback_provider=fallback_provider)
+                    if cands:
+                        eff_prov = str(cands[0][0] or "").strip().lower()
+                except Exception:
+                    pass
+            try:
+                p_attr = (
+                    get_provider_attribution(eff_prov, config_path=self.config_path)
+                    if eff_prov and eff_prov != "auto"
+                    else {}
+                )
+            except Exception:
+                p_attr = {}
+            pid = str(raw_s.get("persona_id") or p_attr.get("conversational_mode") or ("default" if idx == 0 else "the_friend")).strip()
+            if idx == 0 and v_cfg.get("active_voice_persona") and not cast_slots:
+                pid = str(raw_s.get("persona_id") or v_cfg.get("active_voice_persona") or "normal_female").strip()
+            p_meta = personas.get(pid) or personas.get("default") or personas.get("normal_female") or {}
+            custom_given = clean_given_name(str(p_attr.get("given_name") or ""))
+            raw_sp = str(raw_s.get("speaker_name") or "").strip()
+            if custom_given and (not raw_sp or raw_sp.lower() in _preset_placeholders or cast_slots is None):
+                sp_name = custom_given
+            else:
+                sp_name = raw_sp or custom_given or str(p_meta.get("speaker_name") or p_attr.get("display_name") or f"Seat {idx + 1}").strip()
+            v_name = str(raw_s.get("voice_name") or p_attr.get("voice_name") or ((p_meta.get("voice_hints") or {}).get("openai")) or "coral").strip()
+            sh = str(raw_s.get("avatar_shape") or p_attr.get("avatar_shape") or p_meta.get("avatar_shape") or "neural_core").strip()
+            pal = str(raw_s.get("avatar_palette") or p_attr.get("avatar_palette") or p_meta.get("avatar_palette") or "tulsa_cyan").strip()
+            raw_bp = str(p_meta.get("blueprint") or "").strip()
+            preset_sp = str(p_meta.get("speaker_name") or "").strip()
+            clean_bp = (
+                _strip_preset_identity_prefix(raw_bp)
+                if (sp_name and preset_sp and sp_name.lower() != preset_sp.lower())
+                else raw_bp
+            )
+            active_slots.append({
+                "slot_index": idx,
+                "provider": preferred_provider if (idx == 0 and preferred_provider) else prov,
+                "resolved_provider": eff_prov,
+                "model": str(raw_s.get("model") or p_attr.get("model") or "").strip(),
+                "persona_id": pid,
+                "speaker_name": sp_name,
+                "voice_name": v_name,
+                "avatar_shape": sh,
+                "avatar_palette": pal,
+                "blueprint": clean_bp,
+                "role_attribution": str(p_attr.get("role_attribution") or "").strip(),
+                "label": str(p_meta.get("label") or sp_name).strip(),
+                "evolve_user_profile": bool(p_meta.get("evolve_user_profile", True)),
+            })
+
+        if not active_slots:
+            single = self.respond(
+                utterance,
+                background_busy=background_busy,
+                background_status=background_status,
+                background_question=background_question,
+                recent_chat_snippet=recent_chat_snippet,
+                talk_only=talk_only,
+                memory_context=memory_context,
+                allow_memory_write=allow_memory_write,
+                preferred_provider=preferred_provider,
+                fallback_provider=fallback_provider,
+                living_profile_text=living_profile_text,
+                include_palace_code=include_palace_code,
+            )
+            return [single]
+
+        if not multi_on or len(active_slots) <= 1:
+            s0 = active_slots[0]
+            single = self.respond(
+                utterance,
+                background_busy=background_busy,
+                background_status=background_status,
+                background_question=background_question,
+                recent_chat_snippet=recent_chat_snippet,
+                talk_only=talk_only,
+                memory_context=memory_context,
+                allow_memory_write=allow_memory_write,
+                preferred_provider=s0["provider"],
+                fallback_provider=fallback_provider,
+                model_override=s0["model"],
+                persona_id=s0["persona_id"],
+                speaker_name=s0["speaker_name"],
+                voice_name=s0["voice_name"],
+                avatar_shape=s0["avatar_shape"],
+                avatar_palette=s0["avatar_palette"],
+                slot_index=s0["slot_index"],
+                living_profile_text=living_profile_text,
+                include_palace_code=include_palace_code,
+            )
+            return [single]
+
+        # Prioritize a directly addressed speaker name if mentioned in the user's utterance
+        ordered_slots = list(active_slots)
+        u_low = utterance.lower()
+        for pos, sl in enumerate(ordered_slots):
+            nm_low = sl["speaker_name"].lower()
+            if nm_low and re.search(rf"\b{re.escape(nm_low)}\b", u_low):
+                if pos != 0:
+                    ordered_slots.insert(0, ordered_slots.pop(pos))
+                break
+
+        roster_lines = [
+            f"- {sl['speaker_name']} ({sl['label']})"
+            for sl in active_slots
+        ]
+        quorum_roster_txt = (
+            "TABLE QUORUM SEATS (you are sitting around a table with the human user and these peers):\n"
+            + "\n".join(roster_lines)
+            + "\n- Keep your spoken beat punchy (1-2 natural conversational sentences) so the table flows like real human conversation."
+        )
+
+        lead = ordered_slots[0]
+        beat1 = self.respond(
+            utterance,
+            background_busy=background_busy,
+            background_status=background_status,
+            background_question=background_question,
+            recent_chat_snippet=recent_chat_snippet,
+            talk_only=talk_only,
+            memory_context=memory_context,
+            allow_memory_write=allow_memory_write,
+            preferred_provider=lead["provider"],
+            fallback_provider=fallback_provider,
+            model_override=lead["model"],
+            persona_id=lead["persona_id"],
+            speaker_name=lead["speaker_name"],
+            voice_name=lead["voice_name"],
+            avatar_shape=lead["avatar_shape"],
+            avatar_palette=lead["avatar_palette"],
+            slot_index=lead["slot_index"],
+            record_history=False,
+            living_profile_text=living_profile_text,
+            extra_quorum_context=quorum_roster_txt,
+            include_palace_code=include_palace_code,
+        )
+
+        beats: list[VoiceCompanionDecision] = [beat1]
+        if beat1.action != "chat" or beat1.provider_used == "fallback" or volley_cap <= 1:
+            self._remember(utterance, f"{beat1.speaker_name}: {beat1.spoken_reply}")
+            return beats
+
+        living_profile = self._load_living_profile_block(living_profile_text)
+        topic_lock = _detect_active_topic_hint(utterance, self._history)
+        structured_hist = self._structured_history_messages()
+
+        # Candidate order for follow-up beats: other seats first, plus optional lead comeback if challenged
+        peer_queue = list(ordered_slots[1:])
+        if len(ordered_slots) >= 2 and volley_cap >= 3:
+            peer_queue.append(lead)
+
+        for cand in peer_queue:
+            if len(beats) >= volley_cap:
+                break
+            # Avoid the same speaker talking twice in a row
+            if cand["slot_index"] == beats[-1].slot_index:
+                continue
+
+            beats_transcript = "\n".join(
+                f"{b.speaker_name}: {b.spoken_reply}"
+                for b in beats
+            )
+            peer_names = ", ".join(sl["speaker_name"] for sl in active_slots if sl["slot_index"] != cand["slot_index"])
+            peer_role = f"AGENT ROLE & ATTRIBUTION:\n{cand['role_attribution']}\n\n" if cand.get("role_attribution") else ""
+            peer_prov_id = str(cand.get("resolved_provider") or cand.get("provider") or "auto").strip().lower()
+            sys_peer = (
+                f"You are {cand['speaker_name']} ({cand['label']}) running on provider {peer_prov_id} at a live spoken group table with the human user and peers: {peer_names}.\n"
+                f"AGENT IDENTITY RULE: Your assigned Fairybread name is '{cand['speaker_name']}'. Always answer to '{cand['speaker_name']}' naturally.\n"
+                f"{peer_role}"
+                f"{cand['blueprint']}\n\n"
+                + (f"LIVING USER PROFILE:\n{living_profile}\n\n" if living_profile else "")
+                + f"{VOICE_ANTI_STALL_RULES}\n"
+                "PEER QUORUM RULES:\n"
+                "- Do NOT act like a butler answering the user from scratch.\n"
+                "- React directly to what the previous speaker(s) just said at the table — address them by name, push back, sharpen the idea, or drop a quick witty reaction.\n"
+                "- Keep it to 1-2 short, natural spoken sentences (under ~35 words).\n"
+                "- Stay anchored to the human user's active topic.\n"
+                "- If the previous speakers already covered the point well and your persona has nothing genuinely distinct or contrarian to add, output ONLY: [PASS]"
+            )
+            peer_prompt = (
+                (f"ACTIVE TOPIC LOCK: {topic_lock}\n" if topic_lock else "")
+                + f"HUMAN USER SAID: {utterance}\n\n"
+                + f"SPOKEN SO FAR AT THE TABLE:\n{beats_transcript}\n\n"
+                + f"Now speak as {cand['speaker_name']} (or output [PASS] to stay quiet). Plain spoken text only — zero JSON, zero markdown."
+            )
+            fb_mode = fallback_provider if (cand["provider"] == "auto" or self._injected_llm is not None) else "none"
+            try:
+                raw_peer, p_used, m_used, req_p, fell_back, fb_reason = self._invoke_fast_llm_detailed(
+                    peer_prompt,
+                    talk_only=True,
+                    preferred_provider=cand["provider"],
+                    fallback_provider=fb_mode,
+                    model_override=cand["model"],
+                    system_prompt=sys_peer,
+                    history_messages=structured_hist,
+                )
+            except Exception:
+                continue
+
+            if not raw_peer or is_pass_or_defer_text(raw_peer) or "[pass]" in raw_peer.lower():
+                continue
+            obj_p = _extract_json_obj(raw_peer)
+            cand_text = str(obj_p.get("spoken_reply") or raw_peer) if (isinstance(obj_p, dict) and obj_p.get("spoken_reply")) else raw_peer
+            cand_text, peer_saves = parse_save_memory_tags(cand_text, replace_with_badge=False)
+            cand_text, peer_name_tags = parse_set_agent_name_tags(cand_text)
+            applied_peer_names = self._persist_agent_name_updates(
+                peer_name_tags,
+                default_provider=(p_used if p_used and p_used != "fallback" else peer_prov_id),
+            )
+            peer_speaker = cand["speaker_name"]
+            for item in applied_peer_names:
+                if item.get("provider") in {peer_prov_id, p_used}:
+                    peer_speaker = item["given_name"]
+            # Strip accidental leading speaker label like "Marcus: ..."
+            cand_text = re.sub(rf"^{re.escape(peer_speaker)}\s*:\s*", "", cand_text.strip(), flags=re.IGNORECASE)
+            cleaned_p = clean_text_for_speech(cand_text)
+            spoken_p = _strip_stall_closers(cleaned_p, self._recent_closers) or cleaned_p
+            if (not spoken_p or len(spoken_p) < 3) and not applied_peer_names:
+                continue
+            if not spoken_p and applied_peer_names:
+                spoken_p = f"Got it, call me {peer_speaker}."
+
+            beats.append(
+                VoiceCompanionDecision(
+                    action="chat",
+                    spoken_reply=spoken_p,
+                    provider_used=p_used,
+                    model_used=m_used,
+                    requested_provider=req_p,
+                    fell_back=fell_back,
+                    fallback_reason=fb_reason,
+                    memory_saves=peer_saves if allow_memory_write else [],
+                    speaker_name=peer_speaker,
+                    persona_id=cand["persona_id"],
+                    voice_name=cand["voice_name"],
+                    avatar_shape=cand["avatar_shape"],
+                    avatar_palette=cand["avatar_palette"],
+                    slot_index=cand["slot_index"],
+                    evolve_user_profile=cand["evolve_user_profile"],
+                    updated_attributions=applied_peer_names,
+                )
+            )
+
+        self._remember(
+            utterance,
+            "\n".join(f"{b.speaker_name}: {b.spoken_reply}" for b in beats),
+        )
+        return beats
 
     def summarize_completed_work(
         self,

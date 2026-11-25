@@ -2,7 +2,7 @@
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
-👉 **Download the Windows x64 Installer (Latest — v0.94):** [**Fairybread_v0.94_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/latest)  
+👉 **Download the Windows x64 Installer (Latest — v0.95):** [**Fairybread_v0.95_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/latest)  
 👉 **Website & Release Notes:** [**fairybread.me**](https://fairybread.me) · [**Releases**](https://github.com/bm069au/fairybread/releases)  
 👉 **Full Operating & Drawing Instructions:** See [USER_GUIDE.md](USER_GUIDE.md) (or press **`F1`** / **`Help → 📖 User Guide & Drawing Instructions…`** inside the app).
 
@@ -47,7 +47,7 @@ I made Fairybread **Source-Available Donationware** under the [Fairybread Dual L
 
 ---
 
-## Key Technical Highlights (`v0.94`)
+## Key Technical Highlights (`v0.95`)
 
 - **Guided Setup & Selective Backup Restore Wizard:**
   - Automatically launches once on fresh installs (only when zero AI agents are configured) and can be re-opened anytime via **`Settings → 🧭 Guided Setup & Restore Wizard…`**. Walks you through a plain-English needs questionnaire, builds a clickable tick-off API key checklist, or selectively restores Memories, Settings, and Encrypted API Keys from backup.

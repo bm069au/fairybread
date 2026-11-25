@@ -1,3 +1,24 @@
+# Fairybread — Beta v0.95 (Win_x64) Changelog
+**Release Date:** 2026-11-25
+**Version:** `0.95` (`0.95.0.0`)
+
+## Summary of Changes in `v0.95`
+1. **🧭 LibreOffice-Style 7-Tab Menu Bar & Expandable `Options — Fairybread` Tree (`palace_gui.py`, `palace_theme.py`):**
+   - Replaces scattered menu/toolbar clutter with a clean 7-tab desktop menu bar (`File  Edit  View  Council  Audio  Tools  Help`), keeping `Audio` as a dedicated top-level menu and `Tools → Options… (Alt+F12)` as the single doorway to settings.
+   - Reorganizes `Options — Fairybread` into an expandable hierarchical tree (`▾ Fairybread`, `▾ Council` including `Response Timing`, `▾ Providers`, `▾ Voice & Audio`, `▾ Image Engine`, `▾ Memory Palace`) with neutral desktop palette styling, `[ Help ]` + `[ Reset Page ] [ Cancel ] [ Apply ] [ OK ]` footer, and plain-English `External Apps (MCP)` badges/tooltips.
+2. **🧠 Single Auto-Saving `Living Profile…` (`palace_gui.py`, `memory_service.py`):**
+   - Consolidates all Living User Profile access into one `Living Profile…` button under `Options → Memory Palace → Memory & Profile` (removing duplicate buttons from `Tools` and the right-hand `Memory` panel) and automatically saves open direct edits on window close so agent-updated and user-edited profiles stay 100% synchronized.
+3. **⚡ Response Timing Presets, Arrival-Order Dispatch & Plain-English Failure Tooltips (`palace_config.py`, `dispatcher.py`, `orchestrator.py`, `palace_gui.py`):**
+   - Adds `Quick (60s / 0s / 30s)`, `Standard (180s / 120s / 90s)`, and `Deep (300s / 240s / 90s)` phase ceilings (`straggler_grace_sec: 0`), 15s connection handshakes, live `on_activity` heartbeat tracking, arrival-order result recording, and greyed-out failed agent chips with plain-English `What went wrong:` / `How to fix:` hover tooltips.
+4. **🎨 4 New WCAG-AAA Themes & HiDPI Washed-Out Background Engine (`palace_theme.py`, `palace_config.py`, `palace_gui.py`):**
+   - Adds `Deep Ocean Abyss` (dark blue & ocean), `Royal Amethyst` (purple), `Velvet Rose` (dark pink), and `Sakura Silk` (soft light pink), plus a 60-FPS HiDPI pre-baked `75%–96%` washed-out background picture engine across Chat, Left Sidebar, and Memory panels.
+5. **🎙️ Low-Latency Voice Mode, `{ } Code` Voice Inspection & Windows Compliance (`voice_companion.py`, `voice_service.py`, `voice_visualizer.py`, `setup_wizard.py`, `palace_gui.py`):**
+   - Eliminates Voice Mode barge-in lock inversion, fixes instant live 3D Avatar shape/palette switching, wires `{ } Code` local Python source lookup into both `Talk Only` and Live Voice Mode, adds persistent TLS pools + `950 ms` silence cutoff + low-latency reasoning for snappy voice replies, ensures all configured AIs stay active after every run & on `+ New Conversation`, and enforces native Windows `[ □ ] [ ✕ ]` / `Esc` / `Cancel` compliance across all dialogs.
+6. **📎 Unlimited Multi-Batch Attachments, Clean Daylight Contrast, First-Ask Drawing & OpenAI Retirement Failover (`attachment_service.py`, `openai_provider.py`, `gemini_provider.py`, `orchestrator.py`, `palace_theme.py`, `palace_gui.py`):**
+   - Removes per-turn attachment count caps, improves Clean Daylight theme readability, rescues `[GENERATE_IMAGE]` tags for reliable first-ask image rendering, removes false autopatch notices, and adds automatic OpenAI model retirement failover (`gpt-5` / `o3` → `gpt-6.2-sol` / `gpt-6-luna` / `gpt-6.2-astra`).
+
+---
+
 # Fairybread — v0.94 (Win_x64) Changelog
 **Release Date:** 2026-11-23
 **Version:** `0.94` (`0.94.0.0`)

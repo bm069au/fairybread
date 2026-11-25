@@ -19,12 +19,16 @@ from synthesizer import (
 
 _DIRECT_DRAW_VERB_RE = re.compile(
     r"\b(?:"
-    r"draw\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
-    r"paint\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
-    r"illustrate\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?|"
-    r"render\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:realistic|photorealistic|hyperrealistic|high[- ]res|hd|pictures?|images?|photos?|portraits?|scenes?|cats?|dogs?|[a-z]+\s+(?:cats?|dogs?|portraits?|landscapes?|banners?|wallpapers?))|"
-    r"(?:generate|create|make|render|design|give\s+me|want|like|need|requested)\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:[a-z0-9_-]+\s+){0,4}"
-    r"(?:images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?)"
+    r"draw\s+(?:me\s+)?(?:a|an|the|some|what|how|that|this|our|your|\d+|two|three|four)?|"
+    r"paint\s+(?:me\s+)?(?:a|an|the|some|what|how|\d+|two|three|four)?|"
+    r"illustrate\s+(?:me\s+)?(?:a|an|the|some|what|how|\d+|two|three|four)?|"
+    r"sketch\s+(?:me\s+)?(?:a|an|the|some|what|how|\d+|two|three|four)?|"
+    r"use\s+(?:the\s+)?graphic(?:s)?\s+(?:mode|ability|tool|engine)|"
+    r"show\s+me\s+(?:a\s+|an\s+|the\s+)?(?:graphic|mock[- ]?up|diagram|drawing|picture|image|visual)|"
+    r"show\s+me\s+what\s+(?:you\s+mean|it\s+looks\s+like|that\s+looks\s+like).*?\b(?:graphic|mock[- ]?up|draw|picture|image)\b|"
+    r"render\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:realistic|photorealistic|hyperrealistic|high[- ]res|hd|pictures?|images?|photos?|portraits?|scenes?|mock[- ]?ups?|graphics?|diagrams?|cats?|dogs?|[a-z]+\s+(?:cats?|dogs?|portraits?|landscapes?|banners?|wallpapers?|mock[- ]?ups?|graphics?))|"
+    r"(?:generate|create|make|render|design|give\s+me|want|like|need|requested|produce|build)\s+(?:me\s+)?(?:a|an|the|some|\d+|two|three|four)?\s*(?:[a-z0-9_-]+\s+){0,4}"
+    r"(?:images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?|mock[- ]?ups?|diagrams?)"
     r")\b",
     re.IGNORECASE,
 )
@@ -33,6 +37,7 @@ _VISUAL_TOPIC_RE = re.compile(
     r"\b(?:"
     r"images?|pictures?|photos?|photographs?|portraits?|drawings?|paintings?|illustrations?|"
     r"wallpapers?|banners?|covers?|thumbnails?|posters?|logos?|graphics?|backgrounds?|"
+    r"mock[- ]?ups?|diagrams?|wireframes?|"
     r"drafts?|options?|variants?|render(?:s|ing)?|fullrender|avatar|avatars?|pfp|profile\s*pic(?:ture)?|"
     r"draw(?:s|ing)?|paint(?:s|ing)?|sketch(?:es|ing)?"
     r")\b",
@@ -62,9 +67,12 @@ _CODE_OR_ARCH_EXCLUSION_RE = re.compile(
 
 _EXPLICIT_CREATE_VISUAL_RE = re.compile(
     r"^(?:draw|paint|sketch|illustrate)\b"
-    r"|\b(?:draw|paint|sketch|illustrate|render)\s+(?:me\s+)?(?:a|an|the|some|\d+)?\s*(?:realistic|photorealistic|hyperrealistic|pictures?|images?|photos?|portraits?|banners?|wallpapers?|avatars?|logos?)\b"
-    r"|\bmake\s+\d+\s+different\s+(?:banners?|images?|pictures?|logos?)"
-    r"|\b(?:generate|make|create)\s+(?:me\s+)?(?:a|an|\d+)\s+(?:picture|photo|photograph|portrait|banner|wallpaper|avatar|logo|profile\s*pic)\b",
+    r"|\b(?:draw|paint|sketch|illustrate)\s+(?:me\s+)?(?:what|how|a|an|the|some|that|this|\d+)\b"
+    r"|\buse\s+(?:the\s+)?graphic(?:s)?\s+(?:mode|ability|tool|engine)\b"
+    r"|\b(?:show\s+me|create|make|generate|draw|render)\s+(?:a\s+|an\s+|the\s+)?(?:[a-z0-9_-]+\s+){0,3}(?:graphic|mock[- ]?up|diagram|visual\s+mock[- ]?up|ui\s+mock[- ]?up)\b"
+    r"|\b(?:draw|paint|sketch|illustrate|render)\s+(?:me\s+)?(?:a|an|the|some|\d+)?\s*(?:realistic|photorealistic|hyperrealistic|pictures?|images?|photos?|portraits?|banners?|wallpapers?|avatars?|logos?|graphics?|mock[- ]?ups?|diagrams?)\b"
+    r"|\bmake\s+\d+\s+different\s+(?:banners?|images?|pictures?|logos?|graphics?|mock[- ]?ups?)"
+    r"|\b(?:generate|make|create)\s+(?:me\s+)?(?:a|an|\d+)\s+(?:picture|photo|photograph|portrait|banner|wallpaper|avatar|logo|profile\s*pic|graphic|mock[- ]?up)\b",
     re.IGNORECASE,
 )
 
@@ -490,7 +498,10 @@ def classify_drawing_request(question: str) -> str:
         return "none"
     if _CODE_OR_ARCH_EXCLUSION_RE.search(q) and not _EXPLICIT_CREATE_VISUAL_RE.search(q):
         return "none"
-    if _COUNCIL_COLLAB_RE.search(q):
+    if _COUNCIL_COLLAB_RE.search(q) or (
+        _EXPLICIT_CREATE_VISUAL_RE.search(q)
+        and re.search(r"\b(?:solutions?|proposals?|menu|settings|dialog|interface|ui|mock[- ]?ups?)\b", q, re.IGNORECASE)
+    ):
         return "council_draw"
     return "direct_draw"
 
@@ -631,14 +642,24 @@ class PalaceOrchestrator:
                     + pixel_anchor_note
                 )
         elif drawing_mode == "council_draw":
-            mode_rules = (
-                "- GRAPHIC PROMPT DUO BRAINSTORM MODE (SPECIALISTS -> EXECUTABLE VISUAL TAGS): YOUR ROLE IS PROMPT OPTIMIZATION — "
-                "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag(s) straight to the configured image renderer. "
-                "NEVER reply `[PASS]` or hand off execution to Gemini in chat. "
-                "Contribute specific visual, lighting, anatomical, or compositional improvements and emit THREE (3) executable smaller draft `[GENERATE_IMAGE prompt=\"...\" title=\"Draft 1/2/3...\" size=\"512x512\" quality=\"low\"]` (or `size=\"640x360\" quality=\"low\"` for banners) tags so every option is visually rendered on screen for the user to compare before choosing a final full-resolution master! "
-                "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) or inline backticks and NEVER ask the user to copy-paste a prompt into another tool."
-                + pixel_anchor_note
-            )
+            if re.search(r"\b(?:solutions?|proposals?|menu|settings|dialog|interface|ui|mock[- ]?ups?)\b", question, re.IGNORECASE):
+                mode_rules = (
+                    "- COMBINED SOLUTIONS & GRAPHIC MOCKUP MODE: The user asked for solutions/recommendations AND a visual graphic/mockup. "
+                    "Provide your concrete written solution and recommendations clearly, AND include an executable "
+                    "`[GENERATE_IMAGE prompt=\"Detailed high-fidelity desktop UI / design mockup description...\" title=\"Proposed Design Mockup\" size=\"1280x1024\" quality=\"high\"]` "
+                    "tag at the end of your response so Fairybread's Python Image Engine renders your visual mockup on screen immediately! "
+                    "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) or inline backticks."
+                    + pixel_anchor_note
+                )
+            else:
+                mode_rules = (
+                    "- GRAPHIC PROMPT DUO BRAINSTORM MODE (SPECIALISTS -> EXECUTABLE VISUAL TAGS): YOUR ROLE IS PROMPT OPTIMIZATION — "
+                    "Fairybread's Python Image Engine automatically sends your emitted `[GENERATE_IMAGE prompt=\"...\" ...]` tag(s) straight to the configured image renderer. "
+                    "NEVER reply `[PASS]` or hand off execution to Gemini in chat. "
+                    "Contribute specific visual, lighting, anatomical, or compositional improvements and emit THREE (3) executable smaller draft `[GENERATE_IMAGE prompt=\"...\" title=\"Draft 1/2/3...\" size=\"512x512\" quality=\"low\"]` (or `size=\"640x360\" quality=\"low\"` for banners) tags so every option is visually rendered on screen for the user to compare before choosing a final full-resolution master! "
+                    "NEVER wrap `[GENERATE_IMAGE ...]` inside code fences (` ``` `) or inline backticks and NEVER ask the user to copy-paste a prompt into another tool."
+                    + pixel_anchor_note
+                )
         else:
             mode_rules = (
                 "- Resource & Specialty Awareness: If this task requires heavy specialist execution outside your strength, "
@@ -647,6 +668,26 @@ class PalaceOrchestrator:
             )
         q_no_att = question.split("\n\nATTACHED FILE EXCERPTS (user-provided reference material):", 1)[0]
         is_visual_prompt = (drawing_mode != "none") or bool(_VISUAL_TOPIC_RE.search(q_no_att))
+        try:
+            from palace_config import load_tool_settings
+            _t_cfg = load_tool_settings()
+        except Exception:
+            _t_cfg = {}
+        try:
+            from search_service import resolve_saved_user_location
+            _home_loc = resolve_saved_user_location()
+        except Exception:
+            _home_loc = ""
+        _home_loc_desc = (
+            _home_loc
+            if _home_loc
+            else 'Not set yet (if the user mentions where they live, emit [SET_LOCATION location="City, Region"])'
+        )
+        try:
+            from palace_config import load_ui_settings
+            _w_map_on = bool(load_ui_settings().get("weather_map_enabled", True))
+        except Exception:
+            _w_map_on = True
         if is_visual_prompt:
             visual_tools_block = (
                 "- Visual & Image Generation Tools:\n"
@@ -658,14 +699,25 @@ class PalaceOrchestrator:
                 "  3. To inspect how the live Fairybread window looks on screen (strictly scoped to the application window buffer), emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`."
             )
         else:
+            _weather_tool_note = (
+                "  * Live Weather & Radar Graphic Card (`[WEATHER_MAP location=\"<City, Region or Postcode>\"]` or `[WEATHER_MAP location=\"home\"]`): "
+                "Fairybread has a built-in free Open-Meteo/BOM + OpenStreetMap + RainViewer radar graphic card renderer (no API key required). Whenever the user's intent involves weather, temperature, rain, radar, climate, or outdoor conditions—no matter what phrasing they use—emit `[WEATHER_MAP location=\"...\"]`. NEVER claim you lack a live weather feed or offer to code a weather script.\n"
+                if _w_map_on
+                else "  * Live Weather Text Forecast: Fairybread injects free Open-Meteo/BOM weather data automatically (Weather Radar Map image is currently set to Basic Text-Only mode in Settings -> General; present clean text & tables without emitting image tags).\n"
+            )
             visual_tools_block = (
-                "- Visual Tools: Only if explicitly asked for a technical architecture diagram/flowchart, use a self-contained ` ```svg ... ``` ` block; "
-                "to inspect the live Fairybread window UI buffer, emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`."
+                "- Active Fairybread Native Tool & Location Manifest (No Keyword Restrictions — Decide by User Intent):\n"
+                f"  * User Home Location: {_home_loc_desc}\n"
+                f"{_weather_tool_note}"
+                "  * Save User Location (`[SET_LOCATION location=\"<City, Region or Postcode>\"]`): Whenever the user tells you where they live or asks to set their location, emit this tag to save it into Settings.\n"
+                "  * Set AI Custom Name (`[SET_AGENT_NAME provider=\"<provider_id>\" name=\"<CustomName>\"]`): Whenever the user assigns or edits an AI agent's given name (e.g., naming `gemini` \"Max\" or `openai` \"Ash\"), emit this tag to save it permanently into Settings.\n"
+                "  * Visual & Diagram Tools: Only emit `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` when the user asks to create or show an image/graphic; for technical flowcharts use ` ```svg ... ``` `; for app UI inspection emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`."
             )
         enable_ws_tools = (
             drawing_mode == "none"
             and (
-                "[FILE_LIST" in question.upper()
+                bool(_t_cfg.get("project_folder_tool", True))
+                or "[FILE_LIST" in question.upper()
                 or "WORKSPACE" in extra_workspace_context.upper()
                 or bool(_CODE_OR_ARCH_EXCLUSION_RE.search(q_no_att))
             )
@@ -700,17 +752,25 @@ class PalaceOrchestrator:
             and active_providers is not None
             and len(active_providers) <= 1
         )
+        solo_identity_note = ""
+        if active_providers and len(active_providers) == 1:
+            try:
+                from palace_config import format_agent_identity_directive
+                solo_identity_note = format_agent_identity_directive(active_providers[0])
+            except Exception:
+                solo_identity_note = ""
+        solo_id_block = f"\n{solo_identity_note}\n" if solo_identity_note else ""
         if is_solo_casual:
             identity_header = (
                 "You are Fairybread, talking directly with the user like a natural, sharp, warm friend and collaborator."
-                f"{detail_section}{pers_section}"
+                f"{solo_id_block}{detail_section}{pers_section}"
             )
             democratic_rule = ""
         else:
             identity_header = (
                 "You are an AI working inside the Fairybread (Palace) democratic multi-agent council."
-                f"{detail_section}{pers_section}\n"
-                f"DEMOCRATIC COUNCIL ROSTER & PEER STRENGTHS:\n{roster}\n"
+                f"{solo_id_block}{detail_section}{pers_section}\n"
+                f"DEMOCRATIC COUNCIL ROSTER & PEER STRENGTHS (Use custom Given Names when addressing peers):\n{roster}\n"
             )
             democratic_rule = "- No single AI rules the council; you work democratically with your peers.\n"
         return f"""
@@ -762,11 +822,12 @@ SHARED MEMORY CONTEXT:
 USER QUESTION:
 {question}
 
-PEER RESPONSES FROM PREVIOUS ROUND:
+PEER RESPONSES FROM PREVIOUS ROUND (FROZEN ROUND 1 SNAPSHOT):
 {peer_block}
 
 Instructions:
 - Work democratically: no single AI is the boss. Respect peer deferrals and let the strongest specialist(s) for this task lead the final artifact.
+- Critique & Go Deeper: Challenge a specific weak claim or unverified assumption in the Round 1 answers, explain what would verify or disprove it, and add a substantive improvement or edge case that Round 1 missed.
 - If multiple specialists proposed approaches, vote on or refine the strongest one (`[VOTE: <peer_name>]`).
 - Strict Anti-Echo / Anti-Loop Rule: Never write filler agreement ("I agree with...", "Building on..."). If a peer has already nailed the solution and you have no substantive flaw, edge case, or net-new improvement to add, reply ONLY with the single token `[PASS]`.
 """.strip()
@@ -1030,7 +1091,15 @@ Instructions:
                 write_context = None
 
         # Organic Approval & Auto-Deploy promotion (no /autopatch technical switches needed!)
-        if can_patch and not is_autopatch:
+        is_discussion_or_visual_query = bool(
+            re.search(
+                r"\b(?:give\s+me\s+solutions|solutions\s+and\s+options|options\s+and\s+solutions|what\s+do\s+you\s+think|why\s+is|how\s+does|mock[- ]?up|graphic\s+mode|show\s+me\s+a\s+graphic)\b",
+                cleaned_q or "",
+                re.IGNORECASE,
+            )
+            or classify_drawing_request(question) != "none"
+        )
+        if can_patch and not is_autopatch and not is_discussion_or_visual_query:
             if (approval_policy == "auto_deploy" or permission_mode in {"auto", "turbo"}) and self_code_intent:
                 is_autopatch = True
                 include_palace_code = True
@@ -1422,7 +1491,14 @@ Instructions:
                         pass
                 return direct_result
 
-            if drawing_mode == "council_draw" and _EXPLICIT_ALL_AGENTS_RE.search(q_no_att):
+            if drawing_mode == "council_draw" and re.search(
+                r"\b(?:solutions?|proposals?|menu|settings|dialog|interface|ui|mock[- ]?ups?)\b",
+                q_no_att,
+                re.IGNORECASE,
+            ):
+                if pool:
+                    effective_providers = list(pool)
+            elif drawing_mode == "council_draw" and _EXPLICIT_ALL_AGENTS_RE.search(q_no_att):
                 # Honor explicit "All agents / All AIs / Everyone" request across the active pool
                 if pool:
                     effective_providers = list(pool)
@@ -1513,7 +1589,12 @@ Instructions:
                 if weather_blk:
                     extra_blocks.insert(0, weather_blk)
                 prim_loc = w_bundle.get("primary_location") if isinstance(w_bundle, dict) else None
-                if prim_loc:
+                try:
+                    from palace_config import load_ui_settings as _load_w_ui
+                    _want_w_map = bool(_load_w_ui().get("weather_map_enabled", True))
+                except Exception:
+                    _want_w_map = True
+                if prim_loc and _want_w_map:
                     try:
                         map_png = render_live_weather_map_png(
                             prim_loc,
@@ -1709,8 +1790,8 @@ Instructions:
                 if on_speaker_message is not None:
                     on_speaker_message(msg)
 
-        p_timeout = float(agent_defaults.get("provider_timeout_sec", 45) or 45)
-        s_grace = float(agent_defaults.get("straggler_grace_sec", 15) or 0)
+        p_timeout = float(agent_defaults.get("provider_timeout_sec", 180) or 180)
+        s_grace = float(agent_defaults.get("straggler_grace_sec", 0) or 0)
         eff_prov_list = list(effective_providers) if effective_providers is not None else list(pool)
         eff_count = len(eff_prov_list)
         total_ctx_chars = len(cleaned_q or "") + len(session_context or "") + len(memory_context or "")
@@ -1724,11 +1805,43 @@ Instructions:
             any(tok in str(eff_overrides.get(p, "")).lower() for tok in ("carbon", "reasoner", "sol", "pro", "r1", "o3"))
             for p in eff_prov_list
         )
-        if depth_key == "deep" or has_reasoning_override:
-            p_timeout = max(p_timeout, 90.0)
         has_reasoning_model = any(
             p in {"gemini", "openai", "qwen", "anthropic", "claude", "deepseek"} for p in eff_prov_list
         )
+        is_deep_delib_task = bool(
+            depth_key == "deep"
+            or has_reasoning_override
+            or drawing_mode != "none"
+            or bool(attached_images)
+            or include_palace_code
+            or total_ctx_chars > 4000
+            or _CODE_OR_ARCH_EXCLUSION_RE.search(cleaned_q or "")
+        )
+        is_quick_delib_task = bool(
+            not is_deep_delib_task
+            and conversational_scale == "casual"
+            and len(cleaned_q or "") <= 115
+        )
+        try:
+            from palace_config import resolve_council_time_budget
+            phase_budget = resolve_council_time_budget(
+                str(agent_defaults.get("deliberation_budget") or "standard"),
+                is_deep_task=is_deep_delib_task,
+                is_quick_task=is_quick_delib_task,
+            )
+        except Exception:
+            phase_budget = (
+                {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 90}
+                if is_deep_delib_task
+                else (
+                    {"round1_sec": 60, "round2_sec": 0, "synthesis_sec": 30}
+                    if is_quick_delib_task
+                    else {"round1_sec": 180, "round2_sec": 120, "synthesis_sec": 90}
+                )
+            )
+        r1_phase_ceiling = float(phase_budget.get("round1_sec", 180))
+        r2_phase_ceiling = float(phase_budget.get("round2_sec", 120))
+        p_timeout = max(p_timeout, r1_phase_ceiling) if (s_grace == 0 or s_grace >= 5.0) else p_timeout
         if (
             s_grace >= 5.0
             and eff_count >= 3
@@ -1738,18 +1851,22 @@ Instructions:
                 or has_reasoning_model
                 or has_reasoning_override
                 or depth_key == "deep"
+                or drawing_mode != "none"
+                or bool(attached_images)
                 or len(cleaned_q or "") > 115
                 or _CODE_OR_ARCH_EXCLUSION_RE.search(cleaned_q or "")
                 or resolved_search_depth in {"moderate", "deep"}
             )
         ):
-            target_grace = 30.0 if (
+            target_grace = 180.0 if (
                 total_ctx_chars > 4000
                 or out_detail_key == "high"
                 or has_reasoning_model
                 or has_reasoning_override
                 or depth_key == "deep"
-            ) else 25.0
+                or drawing_mode != "none"
+                or bool(attached_images)
+            ) else 120.0
             s_grace = min(p_timeout, max(s_grace, target_grace))
 
         parsed_history_messages = (
@@ -2052,7 +2169,7 @@ Instructions:
                     _r2_kw: dict[str, Any] = {
                         "provider_names": active_names,
                         "on_result": _record_peer,
-                        "per_provider_timeout": p_timeout,
+                        "per_provider_timeout": max(r2_phase_ceiling, 60.0) if r2_phase_ceiling > 0 else p_timeout,
                         "straggler_grace_seconds": s_grace if s_grace > 0 else None,
                     }
                     if eff_overrides:
@@ -2240,13 +2357,124 @@ Instructions:
                 and "[GENERATE_IMAGE" in synthesis.text.upper()
             ):
                 synthesis.text = re.sub(r'\[GENERATE_IMAGE\s+(?:[^\]"]|"[^"]*")*\]', "", synthesis.text, flags=re.IGNORECASE).strip()
+            elif is_visual_turn and synthesis and synthesis.succeeded and synthesis.text is not None:
+                try:
+                    from palace_theme import _GENERATE_IMAGE_TAG_PATTERN, _unwrap_real_image_tags
+                    synthesis.text = _unwrap_real_image_tags(synthesis.text)
+                    if "[GENERATE_IMAGE" not in synthesis.text.upper():
+                        rescued_tags: list[str] = []
+                        voted_match = re.search(r"\[VOTE:\s*([a-zA-Z0-9_-]+)\s*\]", synthesis.text, re.IGNORECASE)
+                        voted_prov = voted_match.group(1).strip().lower() if voted_match else ""
+                        cand_order = [p for p in (voted_prov, "openai", "gemini", "deepseek", "qwen", *synth_inputs.keys(), *active_results.keys()) if p]
+                        seen_c: set[str] = set()
+                        for pref_p in cand_order:
+                            if pref_p in seen_c:
+                                continue
+                            seen_c.add(pref_p)
+                            p_res = synth_inputs.get(pref_p) or active_results.get(pref_p)
+                            if p_res is None or not p_res.succeeded or p_res.response is None:
+                                continue
+                            unwrapped_peer = _unwrap_real_image_tags(p_res.response.text or "")
+                            found_tags = [m.group(0) for m in _GENERATE_IMAGE_TAG_PATTERN.finditer(unwrapped_peer)]
+                            if found_tags:
+                                rescued_tags = found_tags[:3]
+                                break
+                        if not rescued_tags and drawing_mode != "none":
+                            req_sz_fb = _extract_requested_image_size(q_no_att) or "1280x1024"
+                            clean_q_fb = re.sub(r"\s+", " ", q_no_att).replace('"', "'").strip()[:360]
+                            clean_s_fb = re.sub(r"\s+", " ", synthesis.text).replace('"', "'").strip()[:420]
+                            fb_prompt = f"High-fidelity visual design / illustration for: {clean_q_fb}. Details: {clean_s_fb}"
+                            fb_title = (clean_q_fb[:42] or "Visual Design").replace('"', "'")
+                            rescued_tags = [f'[GENERATE_IMAGE prompt="{fb_prompt}" title="{fb_title}" size="{req_sz_fb}" quality="high"]']
+                        if rescued_tags:
+                            synthesis.text = (synthesis.text.rstrip() + "\n\n" + "\n\n".join(rescued_tags)).strip()
+                except Exception:
+                    pass
+
+        def _fulfill_dynamic_location_and_weather_tags(txt: str) -> str:
+            nonlocal weather_map_tag
+            out_t = txt or ""
+            # Handle [SET_LOCATION location="..."] emitted when the user shares where they live
+            set_loc_re = re.compile(r'\[SET_LOCATION\s+location="([^"]+)"[^\]]*\]', re.IGNORECASE)
+            loc_matches = set_loc_re.findall(out_t)
+            if loc_matches:
+                new_home = loc_matches[-1].strip()
+                if new_home:
+                    try:
+                        from palace_config import save_ui_settings
+                        save_ui_settings({"home_location": new_home})
+                    except Exception:
+                        pass
+                out_t = set_loc_re.sub("", out_t).strip()
+
+            # Handle [SET_AGENT_NAME provider="..." name="..."] emitted when the user gives an AI a custom name
+            set_name_re = re.compile(
+                r'\[SET_AGENT_NAME\s+[^\]]*provider="([^"]+)"[^\]]*name="([^"]+)"[^\]]*\]'
+                r'|\[SET_AGENT_NAME\s+[^\]]*name="([^"]+)"[^\]]*provider="([^"]+)"[^\]]*\]',
+                re.IGNORECASE,
+            )
+            name_matches = set_name_re.findall(out_t)
+            if name_matches:
+                try:
+                    from palace_config import save_provider_attribution
+                    for m_tup in name_matches:
+                        p_id = (m_tup[0] or m_tup[3] or "").strip().lower()
+                        g_nm = (m_tup[1] or m_tup[2] or "").strip()
+                        if p_id and g_nm:
+                            save_provider_attribution(p_id, {"given_name": g_nm})
+                except Exception:
+                    pass
+                out_t = set_name_re.sub("", out_t).strip()
+
+            # Handle [WEATHER_MAP location="..."] emitted via LLM intent when pre-fetch didn't already run
+            wloc_re = re.compile(r'\[WEATHER_MAP\s+(?=[^\]]*location="([^"]+)")(?![^\]]*path=)[^\]]*\]', re.IGNORECASE)
+            wloc_match = wloc_re.search(out_t)
+            if wloc_match:
+                req_loc = wloc_match.group(1).strip()
+                out_t = wloc_re.sub("", out_t).strip()
+                try:
+                    from palace_config import load_ui_settings as _load_w_ui2
+                    _want_w_map2 = bool(_load_w_ui2().get("weather_map_enabled", True))
+                except Exception:
+                    _want_w_map2 = True
+                if not weather_map_tag and effective_ui_depth != "off" and _want_w_map2:
+                    try:
+                        from search_service import (
+                            fetch_live_weather_bundle,
+                            render_live_weather_map_png,
+                            resolve_saved_user_location,
+                        )
+                        target_loc = resolve_saved_user_location() if req_loc.lower() in {"home", "local", "user", "current"} else req_loc
+                        if target_loc:
+                            w_bun = fetch_live_weather_bundle(target_loc, allow_query_without_keyword=True)
+                            prim_l = w_bun.get("primary_location") if isinstance(w_bun, dict) else None
+                            if prim_l:
+                                map_p = render_live_weather_map_png(
+                                    prim_l,
+                                    weather_data=w_bun.get("primary_weather") or {},
+                                )
+                                if map_p is not None:
+                                    s_title = str(prim_l.get("label") or target_loc).replace('"', "'").strip()
+                                    weather_map_tag = f'[WEATHER_MAP path="{map_p}" title="{s_title} — Live Radar & Conditions"]'
+                    except Exception:
+                        pass
+            return out_t
+
+        if not (cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()):
+            if synthesis and synthesis.succeeded and synthesis.text is not None:
+                synthesis.text = _fulfill_dynamic_location_and_weather_tags(synthesis.text)
+            elif synthesis is None:
+                for _pn, _pr in active_results.items():
+                    if _pr.succeeded and _pr.response is not None and (_pr.response.text or "").strip():
+                        _pr.response.text = _fulfill_dynamic_location_and_weather_tags(_pr.response.text)
 
         if (weather_map_tag or local_recall_footer) and not (
             cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()
         ):
             def _apply_weather_and_recall_decorations(txt: str) -> str:
                 out_t = txt or ""
-                if weather_map_tag and "[WEATHER_MAP" not in out_t.upper():
+                if weather_map_tag:
+                    out_t = re.sub(r'\[WEATHER_MAP\s+(?:[^\]"]|"[^"]*")*\]\s*', "", out_t, flags=re.IGNORECASE).strip()
                     out_t = f"{weather_map_tag}\n\n{out_t}".strip()
                 if local_recall_footer and "$0.00" not in out_t:
                     out_t = f"{out_t}{local_recall_footer}".strip()
@@ -2321,7 +2549,7 @@ Instructions:
 
                 # If no patch was applied yet (e.g. agents only called [TOOL: ...] or had a target/allowlist/syntax mismatch),
                 # run up to 1 automatic In-Turn Coding Architect Self-Heal / Patch Generation pass!
-                if not applied_files and succeeded_initial:
+                if not applied_files and (explicit_autopatch_requested or rejection_notes) and succeeded_initial:
                     pref_order = ["deepseek", "gemini", "openai", "mistral", "qwen", "groq", "cerebras", "cohere"]
                     lead_coder = next((c for c in pref_order if c in succeeded_initial), succeeded_initial[0])
                     gathered_ctx = ""
@@ -2402,15 +2630,16 @@ Instructions:
                             "",
                             synthesis.text,
                         ).strip()
-                    diag_block = (
-                        "\n".join(rejection_notes)
-                        if rejection_notes
-                        else "⚠ **Autopatch Notice**: No executable `[IDLE_PATCH]` block targeting an allowlisted file was produced."
-                    )
-                    if synthesis and synthesis.text:
-                        synthesis.text = f"{synthesis.text}\n\n---\n{diag_block}"
-                    elif synthesis is None:
-                        synthesis = SynthesisResult(text=diag_block, provider_name="palace", contributors=tuple(succeeded_initial))
+                    if explicit_autopatch_requested or rejection_notes:
+                        diag_block = (
+                            "\n".join(rejection_notes)
+                            if rejection_notes
+                            else "⚠ **Autopatch Notice**: No executable `[IDLE_PATCH]` block targeting an allowlisted file was produced."
+                        )
+                        if synthesis and synthesis.text:
+                            synthesis.text = f"{synthesis.text}\n\n---\n{diag_block}"
+                        elif synthesis is None:
+                            synthesis = SynthesisResult(text=diag_block, provider_name="palace", contributors=tuple(succeeded_initial))
             except Exception as exc:
                 if synthesis and synthesis.text:
                     synthesis.text += f"\n\n---\n⚠ **Autopatch Error**: {exc}"

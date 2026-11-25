@@ -308,6 +308,16 @@ class GuidedSetupWizardDialog(QDialog):
         self._zip_info: dict[str, Any] = {}
 
         self.setWindowTitle("Fairybread — Guided Setup & Restore Wizard")
+        self.setWindowFlags(
+            (
+                self.windowFlags()
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
         self.resize(900, 680)
         self.setMinimumSize(780, 560)
         self.setStyleSheet(
@@ -577,7 +587,7 @@ class GuidedSetupWizardDialog(QDialog):
         bud_specs = [
             ("free", "🆓  Free / Starter ($0 free models & trial keys where available)"),
             ("balanced", "⚖️  Balanced Best Value (fast, warm & inexpensive — typically pennies per session)"),
-            ("flagship", "🏆  Flagship Top-End (Claude Sonnet 5.5, Gemini 4 Neon, GPT-5, Grok 4)"),
+            ("flagship", "🏆  Flagship Top-End (Claude Sonnet 5.5, Gemini 4 Neon, GPT-6.2, Grok 4)"),
         ]
         for key, text in bud_specs:
             rb = QRadioButton(text)
@@ -1143,6 +1153,16 @@ class SpendBillingDialog(QDialog):
         self._balance_cache: dict[str, str] = {}
 
         self.setWindowTitle("Fairybread — Spend & Billing Tickers")
+        self.setWindowFlags(
+            (
+                self.windowFlags()
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
         self.resize(820, 620)
         self.setMinimumSize(700, 500)
         self.setStyleSheet(

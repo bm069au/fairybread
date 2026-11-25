@@ -9,7 +9,7 @@ class MistralProvider(AIProvider):
         self,
         api_key: str,
         model: str = "mistral-small-latest",
-        timeout: float = 45.0,
+        timeout: float = 180.0,
     ):
         self.client = Mistral(
             api_key=api_key,

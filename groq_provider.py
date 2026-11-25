@@ -9,7 +9,7 @@ class GroqProvider(AIProvider):
         self,
         api_key: str,
         model: str = "openai/gpt-oss-120b",
-        timeout: float = 45.0,
+        timeout: float = 120.0,
     ):
         self.client = Groq(
             api_key=api_key,

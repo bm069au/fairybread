@@ -12,7 +12,7 @@ class CerebrasProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gpt-oss-120b",
-        timeout: float = 45.0,
+        timeout: float = 120.0,
     ):
         self.client = Cerebras(api_key=api_key, timeout=timeout, max_retries=0)
         clean_model = (model or "gpt-oss-120b").strip()

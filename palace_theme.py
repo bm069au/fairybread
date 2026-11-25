@@ -99,12 +99,55 @@ def get_generated_images_dir() -> Path:
     return base
 
 
-def provider_icon(name: str) -> str:
-    return AI_ICONS.get((name or "").lower(), "•")
+_ATTR_CACHE_LOCK = threading.Lock()
+_ATTR_CACHE_DATA: dict[str, tuple[int, dict[str, dict[str, Any]]]] = {}
 
 
-def provider_color(name: str) -> str:
-    return AI_COLORS.get((name or "").lower(), NEUTRAL_GREY)
+def _load_cached_attributions(config_path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Mtime-cached read of provider attributions (zero disk I/O per paint frame)."""
+    if config_path is None and os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return {}
+    try:
+        from palace_config import CONFIG_PATH, clean_given_name, load_provider_configs
+        target_p = Path(config_path) if config_path is not None else Path(CONFIG_PATH)
+        key = str(target_p)
+        mtime = target_p.stat().st_mtime_ns if target_p.exists() else -1
+        with _ATTR_CACHE_LOCK:
+            cached = _ATTR_CACHE_DATA.get(key)
+            if cached is not None and cached[0] == mtime:
+                return cached[1]
+        raw_cfgs = load_provider_configs(config_path=target_p)
+        out: dict[str, dict[str, Any]] = {}
+        for pname, cfg in raw_cfgs.items():
+            clean_p = str(pname or "").strip().lower()
+            if not clean_p or not isinstance(cfg, dict):
+                continue
+            out[clean_p] = {
+                "given_name": clean_given_name(cfg.get("given_name")),
+                "icon": str(cfg.get("icon") or "").strip(),
+                "color": str(cfg.get("color") or "").strip(),
+            }
+        with _ATTR_CACHE_LOCK:
+            _ATTR_CACHE_DATA[key] = (mtime, out)
+        return out
+    except Exception:
+        return {}
+
+
+def provider_icon(name: str, *, config_path: Path | None = None) -> str:
+    clean = (name or "").lower()
+    custom = _load_cached_attributions(config_path).get(clean, {}).get("icon")
+    if custom:
+        return str(custom)
+    return AI_ICONS.get(clean, "•")
+
+
+def provider_color(name: str, *, config_path: Path | None = None) -> str:
+    clean = (name or "").lower()
+    custom = _load_cached_attributions(config_path).get(clean, {}).get("color")
+    if custom and re.fullmatch(r"#[0-9a-fA-F]{6}", custom):
+        return custom
+    return AI_COLORS.get(clean, NEUTRAL_GREY)
 
 
 def provider_bg_color(name: str) -> str:
@@ -131,18 +174,34 @@ AI_SHORT_NAMES = {
 }
 
 
-def provider_display_name(name: str) -> str:
+def provider_given_name(name: str, *, config_path: Path | None = None) -> str:
     clean = (name or "").lower()
-    return AI_SHORT_NAMES.get(clean, AI_DISPLAY_NAMES.get(clean, clean.capitalize()))
+    return str(_load_cached_attributions(config_path).get(clean, {}).get("given_name") or "").strip()
 
 
-def format_ai_badge_html(name: str, active: bool = True) -> str:
-    icon = provider_icon(name)
-    color = provider_color(name) if active else NEUTRAL_GREY
-    disp = html.escape(provider_display_name(name))
+def provider_display_name(
+    name: str,
+    *,
+    include_provider_tag: bool = True,
+    config_path: Path | None = None,
+    include_given_name: bool = False,
+) -> str:
+    clean = (name or "").lower()
+    base = AI_SHORT_NAMES.get(clean, AI_DISPLAY_NAMES.get(clean, clean.capitalize()))
+    if include_given_name:
+        given = provider_given_name(clean, config_path=config_path)
+        if given and given.lower() != base.lower():
+            return f"{given} ({base})" if include_provider_tag else given
+    return base
+
+
+def format_ai_badge_html(name: str, active: bool = True, *, config_path: Path | None = None) -> str:
+    icon = provider_icon(name, config_path=config_path)
+    color = provider_color(name, config_path=config_path) if active else NEUTRAL_GREY
+    disp = html.escape(provider_display_name(name, config_path=config_path))
     return (
         f'<span style="color:{color}; font-weight:700;">{icon}</span> '
-        f'<span style="color:#e6edf3; font-weight:600;">{disp}</span>'
+        f'<span style="font-weight:600;">{disp}</span>'
     )
 
 
@@ -1509,10 +1568,37 @@ def prewarm_generated_images(
     return svg_results + [p for p in results if p is not None]
 
 
-def format_markdown_and_drawings(content: str) -> str:
+def format_markdown_and_drawings(content: str, *, theme_id: str = "") -> str:
     """Convert AI response text into clean HTML with rendered SVG/Image pictures, headings, bold, and code blocks."""
     raw = content or ""
-    cache_key = raw
+    eff_tid = (theme_id or "").strip().lower()
+    if not eff_tid:
+        try:
+            from palace_config import load_ui_settings
+            eff_tid = str(load_ui_settings().get("theme") or "dark").strip().lower()
+        except Exception:
+            eff_tid = "dark"
+    t_dict = load_theme_dict(eff_tid)
+    bg_hex = str(t_dict.get("bg_main") or "#0d1117").strip().lstrip("#")
+    is_light = False
+    if len(bg_hex) == 6:
+        try:
+            is_light = (int(bg_hex[0:2], 16) + int(bg_hex[2:4], 16) + int(bg_hex[4:6], 16)) > 380
+        except ValueError:
+            is_light = (eff_tid == "light")
+    card_bg = "#f6f8fa" if is_light else "#0d1117"
+    card_alt_bg = "#eaeef2" if is_light else "#121720"
+    card_hdr_bg = "#eaeef2" if is_light else "#161b22"
+    card_border = "#d0d7de" if is_light else "#21262d"
+    tbl_border = "#d0d7de" if is_light else "#262c3a"
+    code_inline_bg = "#eaeef2" if is_light else "#1c2128"
+    txt_head = "#1f2328" if is_light else "#ffffff"
+    txt_subhead = "#1f2328" if is_light else "#f0f6fc"
+    txt_body = "#1f2328" if is_light else "#c9d1d9"
+    txt_code = "#1f2328" if is_light else "#d0d7de"
+    txt_muted = "#57606a" if is_light else "#8b949e"
+
+    cache_key = f"{raw}\n@@THEME:{'L' if is_light else 'D'}"
     has_snapshot_tag = "[PALACE_UI_SNAPSHOT" in raw
     if has_snapshot_tag:
         snap_gen_mtime = -1
@@ -1525,7 +1611,7 @@ def format_markdown_and_drawings(content: str) -> str:
             audit_mtime = (get_experimental_data_root() / "latest_ui_audit.json").stat().st_mtime_ns
         except OSError:
             pass
-        cache_key = f"{raw}\n@@SNAP:{snap_gen_mtime}:{audit_mtime}"
+        cache_key = f"{cache_key}\n@@SNAP:{snap_gen_mtime}:{audit_mtime}"
     cached = _md_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -1552,14 +1638,14 @@ def format_markdown_and_drawings(content: str) -> str:
             esc_title = html.escape(tag_title)
             esc_path = html.escape(str(png_path))
             img_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="8" style="margin:10px 0; background:#0d1117; border:1px solid #21262d;">'
+                f'<table width="100%" cellspacing="0" cellpadding="8" style="margin:10px 0; background:{card_bg}; border:1px solid {card_border};">'
                 f'<tr><td>'
-                f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
+                f'<div style="color:{txt_muted}; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'🖼 {esc_title} &nbsp;·&nbsp; '
-                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
-                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
-                f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
-                f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
+                f'<a href="open-img:{esc_path}" style="color:#0969da; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#1a7f37; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#0969da; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
+                f'<a href="delete-file:{esc_path}" style="color:#cf222e; text-decoration:none;">🗑 Delete</a>'
                 f'</div>'
                 f'<a href="open-img:{esc_path}"><img src="{file_url}" width="420"></a>'
                 f'</td></tr></table>'
@@ -1578,12 +1664,12 @@ def format_markdown_and_drawings(content: str) -> str:
         lang = (match.group(1) or "").strip()
         code_txt = html.escape(match.group(2) or "")
         lang_hdr = (
-            f'<div style="color:#6e7681; font-size:11px; font-family:Consolas,monospace; margin-bottom:4px;">{html.escape(lang)}</div>'
+            f'<div style="color:{txt_muted}; font-size:11px; font-family:Consolas,monospace; margin-bottom:4px;">{html.escape(lang)}</div>'
             if lang else ""
         )
         block = (
-            f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:8px 0; background:#0d1117; border:1px solid #21262d;">'
-            f'<tr><td style="font-family:Consolas,monospace; font-size:12px; color:#d0d7de; white-space:pre-wrap;">'
+            f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:8px 0; background:{card_bg}; border:1px solid {card_border};">'
+            f'<tr><td style="font-family:Consolas,monospace; font-size:12px; color:{txt_code}; white-space:pre-wrap;">'
             f'{lang_hdr}{code_txt}</td></tr></table>'
         )
         idx = len(code_blocks)
@@ -1594,7 +1680,7 @@ def format_markdown_and_drawings(content: str) -> str:
 
     def _replace_inline_code(match: re.Match) -> str:
         code_span = (
-            f'<span style="background:#1c2128; color:#e6edf3; font-family:Consolas,monospace; '
+            f'<span style="background:{code_inline_bg}; color:{txt_code}; font-family:Consolas,monospace; '
             f'padding:1px 5px; border-radius:4px;">{html.escape(match.group(1))}</span>'
         )
         idx = len(inline_codes)
@@ -1655,10 +1741,10 @@ def format_markdown_and_drawings(content: str) -> str:
                 preview_w = min(680, max(360, int(540 * (target_w / float(max(1, target_h))))))
                 promote_link = ""
             img_block = (
-                f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:10px 0; background:#0d1117; border:1px solid #21262d;">'
+                f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:10px 0; background:{card_bg}; border:1px solid {card_border};">'
                 f'<tr><td>'
-                f'<div style="color:#8b949e; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
-                f'🎨 {esc_title} &nbsp;<span style="color:#6e7681;">({esc_size})</span> &nbsp;·&nbsp; '
+                f'<div style="color:{txt_muted}; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
+                f'🎨 {esc_title} &nbsp;<span style="color:{txt_muted};">({esc_size})</span> &nbsp;·&nbsp; '
                 f'{promote_link}'
                 f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
                 f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
@@ -1766,30 +1852,93 @@ def format_markdown_and_drawings(content: str) -> str:
 
     processed = _WEATHER_MAP_TAG_PATTERN.sub(_replace_weather_map, processed)
 
-    # 4. Escape remaining text and format Markdown headings, bold, inline code, and horizontal rules
+    # 4. Escape remaining text and format Markdown tables, headings, bold, inline code, and horizontal rules
     escaped = html.escape(processed)
     lines = escaped.split("\n")
     out_lines: list[str] = []
-    for line in lines:
+
+    def _split_md_row(row_txt: str) -> list[str]:
+        s = row_txt.strip()
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        return [c.strip() for c in s.split("|")]
+
+    def _is_md_table_sep(row_txt: str) -> bool:
+        s = row_txt.strip()
+        if "|" not in s:
+            return False
+        cells = _split_md_row(s)
+        return bool(cells) and all(re.match(r"^:?-{2,}:?$", c.replace(" ", "")) for c in cells)
+
+    li = 0
+    n_lines = len(lines)
+    while li < n_lines:
+        line = lines[li]
         stripped = line.strip()
+        if (
+            stripped.startswith("|")
+            and stripped.endswith("|")
+            and (li + 1) < n_lines
+            and _is_md_table_sep(lines[li + 1].strip())
+        ):
+            headers = _split_md_row(stripped)
+            li += 2
+            body_rows: list[list[str]] = []
+            while li < n_lines:
+                r_s = lines[li].strip()
+                if r_s.startswith("|") and r_s.endswith("|") and "|" in r_s[1:-1]:
+                    body_rows.append(_split_md_row(r_s))
+                    li += 1
+                else:
+                    break
+            th_cells = "".join(
+                f'<th align="left" style="background:{card_hdr_bg}; color:{txt_subhead}; font-weight:700; '
+                f'border:1px solid {tbl_border}; padding:6px 10px; font-size:12px;">{h}</th>'
+                for h in headers
+            )
+            tr_blocks: list[str] = []
+            for r_idx, row_cells in enumerate(body_rows):
+                bg_row = card_bg if r_idx % 2 == 0 else card_alt_bg
+                padded = list(row_cells) + [""] * max(0, len(headers) - len(row_cells))
+                tds = "".join(
+                    f'<td style="background:{bg_row}; color:{txt_body}; border:1px solid {card_border}; '
+                    f'padding:5px 10px; font-size:12.5px;">{c}</td>'
+                    for c in padded[:len(headers)]
+                )
+                tr_blocks.append(f"<tr>{tds}</tr>")
+            tbl_html = (
+                f'<table cellspacing="0" cellpadding="0" '
+                f'style="margin:8px 0; border-collapse:collapse; border:1px solid {tbl_border}; width:100%;">'
+                f'<tr>{th_cells}</tr>{"".join(tr_blocks)}</table>'
+            )
+            out_lines.append(tbl_html)
+            continue
         if stripped in {"---", "***", "___"}:
-            out_lines.append('<hr style="border:none; border-top:1px solid #21262d; margin:10px 0;">')
+            out_lines.append(f'<hr style="border:none; border-top:1px solid {card_border}; margin:10px 0;">')
+            li += 1
             continue
         if stripped.startswith("#### "):
-            out_lines.append(f'<div style="font-size:13.5px; font-weight:700; color:#f0f6fc; margin-top:8px;">{stripped[5:]}</div>')
+            out_lines.append(f'<div style="font-size:13.5px; font-weight:700; color:{txt_subhead}; margin-top:8px;">{stripped[5:]}</div>')
+            li += 1
             continue
         if stripped.startswith("### "):
-            out_lines.append(f'<div style="font-size:14.5px; font-weight:700; color:#f0f6fc; margin-top:10px; margin-bottom:2px;">{stripped[4:]}</div>')
+            out_lines.append(f'<div style="font-size:14.5px; font-weight:700; color:{txt_subhead}; margin-top:10px; margin-bottom:2px;">{stripped[4:]}</div>')
+            li += 1
             continue
         if stripped.startswith("## "):
-            out_lines.append(f'<div style="font-size:15.5px; font-weight:700; color:#ffffff; margin-top:12px; margin-bottom:3px;">{stripped[3:]}</div>')
+            out_lines.append(f'<div style="font-size:15.5px; font-weight:700; color:{txt_head}; margin-top:12px; margin-bottom:3px;">{stripped[3:]}</div>')
+            li += 1
             continue
         if stripped.startswith("# "):
-            out_lines.append(f'<div style="font-size:16.5px; font-weight:700; color:#ffffff; margin-top:12px; margin-bottom:4px;">{stripped[2:]}</div>')
+            out_lines.append(f'<div style="font-size:16.5px; font-weight:700; color:{txt_head}; margin-top:12px; margin-bottom:4px;">{stripped[2:]}</div>')
+            li += 1
             continue
         if stripped.startswith("* ") or stripped.startswith("- "):
             line = f"&nbsp;&nbsp;• {stripped[2:]}"
         out_lines.append(line)
+        li += 1
 
     formatted = "<br>".join(out_lines)
     # Bold **text**
@@ -1808,11 +1957,18 @@ def format_markdown_and_drawings(content: str) -> str:
     return formatted
 
 
+_CACHED_APP_QICON: QIcon | None = None
+
+
 def fairybread_app_qicon() -> QIcon:
     """Render a multi-resolution (16..256px) Fairybread app icon:
     Loads the transparent Fairybread mascot icon (fairybread_icon.png) across all Windows
     titlebar/taskbar resolutions (16..256px), falling back to the top-left white-bread triangle if absent.
     """
+    global _CACHED_APP_QICON
+    if _CACHED_APP_QICON is not None and not _CACHED_APP_QICON.isNull():
+        return _CACHED_APP_QICON
+
     icon = QIcon()
     asset_png = get_resource_path("fairybread_icon.png")
     if asset_png.exists():
@@ -1828,14 +1984,18 @@ def fairybread_app_qicon() -> QIcon:
                 icon.addPixmap(scaled)
             try:
                 ico_path = get_generated_images_dir().parent / "fairybread.ico"
-                icon.pixmap(64, 64).save(str(ico_path), "ICO")
+                if not ico_path.exists():
+                    icon.pixmap(64, 64).save(str(ico_path), "ICO")
             except Exception:
                 pass
+            if not icon.isNull():
+                _CACHED_APP_QICON = icon
             return icon
     asset_ico = get_resource_path("fairybread_icon.ico")
     if asset_ico.exists():
         ico_loaded = QIcon(str(asset_ico))
         if not ico_loaded.isNull():
+            _CACHED_APP_QICON = ico_loaded
             return ico_loaded
 
     # Fallback: Coordinates matching the top-left white-bread triangle + loose sprinkles below the diagonal cut
@@ -1905,9 +2065,12 @@ def fairybread_app_qicon() -> QIcon:
 
     try:
         ico_path = get_generated_images_dir().parent / "fairybread.ico"
-        icon.pixmap(64, 64).save(str(ico_path), "ICO")
+        if not ico_path.exists():
+            icon.pixmap(64, 64).save(str(ico_path), "ICO")
     except Exception:
         pass
+    if not icon.isNull():
+        _CACHED_APP_QICON = icon
     return icon
 
 
@@ -2020,6 +2183,78 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
         "send_fg": "#1e1f29",
         "sprinkles": False,
     },
+    "deep_ocean": {
+        "id": "deep_ocean",
+        "name": "Deep Ocean Abyss (Dark Blue & Ocean)",
+        "bg_main": "#09131d",
+        "bg_sidebar": "#060d14",
+        "bg_card": "#0f1e2d",
+        "bg_hover": "#162b3f",
+        "border": "#23435e",
+        "text_primary": "#eaf6f8",
+        "text_secondary": "#b4d4dc",
+        "text_muted": "#7da4b0",
+        "user_bubble_bg": "#103242",
+        "user_bubble_border": "#2fa4a9",
+        "user_bubble_text": "#effbfc",
+        "send_bg": "#4cd4ce",
+        "send_fg": "#06131a",
+        "sprinkles": False,
+    },
+    "royal_amethyst": {
+        "id": "royal_amethyst",
+        "name": "Royal Amethyst (Purple)",
+        "bg_main": "#130f1d",
+        "bg_sidebar": "#0e0a16",
+        "bg_card": "#1d172b",
+        "bg_hover": "#28203b",
+        "border": "#3d3159",
+        "text_primary": "#f2eefa",
+        "text_secondary": "#c9bedf",
+        "text_muted": "#9789b5",
+        "user_bubble_bg": "#2e224a",
+        "user_bubble_border": "#7b5ec4",
+        "user_bubble_text": "#f7f4ff",
+        "send_bg": "#613bb8",
+        "send_fg": "#ffffff",
+        "sprinkles": False,
+    },
+    "velvet_rose": {
+        "id": "velvet_rose",
+        "name": "Velvet Rose (Dark Pink)",
+        "bg_main": "#170e14",
+        "bg_sidebar": "#120a0f",
+        "bg_card": "#22151e",
+        "bg_hover": "#2e1c28",
+        "border": "#442a3b",
+        "text_primary": "#f9ecf2",
+        "text_secondary": "#d9b8c8",
+        "text_muted": "#a88295",
+        "user_bubble_bg": "#3b1e30",
+        "user_bubble_border": "#8f486e",
+        "user_bubble_text": "#fff2f7",
+        "send_bg": "#9c2b62",
+        "send_fg": "#ffffff",
+        "sprinkles": False,
+    },
+    "sakura_silk": {
+        "id": "sakura_silk",
+        "name": "Sakura Silk (Soft Light Pink)",
+        "bg_main": "#fdf6f9",
+        "bg_sidebar": "#f7ebf0",
+        "bg_card": "#ffffff",
+        "bg_hover": "#f2dce6",
+        "border": "#e0c3d1",
+        "text_primary": "#2b1420",
+        "text_secondary": "#573345",
+        "text_muted": "#784e63",
+        "user_bubble_bg": "#f7dce8",
+        "user_bubble_border": "#d698b4",
+        "user_bubble_text": "#2b1420",
+        "send_bg": "#9e2b62",
+        "send_fg": "#ffffff",
+        "sprinkles": False,
+    },
 }
 
 
@@ -2081,10 +2316,14 @@ def list_available_themes() -> list[tuple[str, str]]:
     ensure_builtin_theme_files()
     out: list[tuple[str, str]] = [
         ("dark", "Midnight Dark (Default)"),
+        ("deep_ocean", "Deep Ocean Abyss (Dark Blue & Ocean)"),
+        ("royal_amethyst", "Royal Amethyst (Purple)"),
+        ("velvet_rose", "Velvet Rose (Dark Pink)"),
+        ("sakura_silk", "Sakura Silk (Soft Light Pink)"),
+        ("dracula_pro", "Dracula Pro"),
         ("winamp_1999", "Winamp Classic 1999 (2.x LED)"),
         ("cyberpunk_2077", "Cyberpunk Night City"),
         ("matrix_crt", "Matrix Phosphor (CRT Terminal)"),
-        ("dracula_pro", "Dracula Pro"),
         ("light", "Clean Daylight"),
         ("system", "Windows 11 System Auto"),
     ]
@@ -2145,8 +2384,13 @@ def build_theme_stylesheet(theme_id: str = "dark") -> str:
     send_bg = t["send_bg"]
     send_fg = t["send_fg"]
     return f"""
-QMainWindow, QDialog {{ background: {bg_main}; color: {txt}; font-family: "Segoe UI Variable", "Segoe UI"; font-size: 13px; }}
-QToolTip {{ background: {bg_card}; color: {txt}; border: 1px solid {border}; border-radius: 6px; padding: 6px 10px; font-size: 12px; }}
+QMainWindow {{ background: {bg_main}; color: {txt}; font-family: "Segoe UI Variable", "Segoe UI"; font-size: 13px; }}
+QDialog, QDialog QLabel, QDialog QCheckBox, QDialog QPushButton, QDialog QComboBox, QDialog QLineEdit, QDialog QSpinBox, QDialog QTextEdit, QDialog QListWidget#sidebarList {{ background: transparent; color: {txt}; font-family: "Segoe UI Variable Text", "Inter", "Aptos", "Segoe UI", sans-serif; font-size: 11.5px; }}
+QDialog {{ background: {bg_main}; color: {txt}; }}
+QDialog QScrollArea, QDialog QScrollArea > QWidget, QDialog QScrollArea > QWidget > QWidget, QDialog QStackedWidget {{ background: {bg_main}; color: {txt}; border: none; }}
+QDialog QTableWidget {{ background: {bg_main}; alternate-background-color: {bg_side}; color: {txt}; border: 1px solid {border}; border-radius: 3px; gridline-color: {border}; }}
+QDialog QHeaderView::section {{ background: {bg_card}; color: {txt_sec}; border: none; border-bottom: 1px solid {border}; border-right: 1px solid {border}; padding: 5px 8px; font-weight: 600; }}
+QToolTip {{ background-color: #f7f5d7; color: #111318; border: 1px solid #7a7a68; border-radius: 3px; padding: 4px 8px; font-size: 11.5px; }}
 QMenuBar {{ background: {bg_main}; color: {txt_sec}; border-bottom: 1px solid {border}; padding: 3px 8px; font-size: 12.5px; }}
 QMenuBar::item {{ padding: 4px 10px; border-radius: 5px; }}
 QMenuBar::item:selected {{ background: {bg_card}; }}
@@ -2161,21 +2405,30 @@ QFrame#agentWorkbenchBar {{ background: transparent; border: none; }}
 QFrame#idleBanner {{ background: {bg_side}; border: 1px solid {border}; border-radius: 8px; }}
 QLabel#loadedAIsLabel {{ color: {txt_muted}; font-size: 12px; font-weight: 600; margin-right: 4px; }}
 QLabel#sectionTitle {{ font-size: 15px; font-weight: 600; color: {txt}; }}
+QDialog QLabel#sectionTitle {{ font-size: 13px; font-weight: 700; color: {txt}; }}
 QLabel#sidebarHeading {{ color: {txt_muted}; font-size: 11.5px; font-weight: 600; }}
 QLabel#muted {{ color: {txt_muted}; font-size: 11px; }}
+QDialog QLabel#muted {{ color: {txt_muted}; font-size: 11px; }}
 QComboBox#profilePicker {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 3px 8px; color: {txt_sec}; font-size: 12px; font-weight: 600; }}
 QPushButton#pinnedHeaderButton, QPushButton#sectionToggleButton {{ background: transparent; border: none; border-radius: 6px; padding: 6px 8px; text-align: left; color: {txt_muted}; font-weight: 600; font-size: 12px; }}
 QPushButton#pinnedHeaderButton:hover, QPushButton#sectionToggleButton:hover {{ background: {bg_hover}; color: {txt}; }}
 QListWidget#pinnedList {{ background: transparent; border: none; border-left: 1px solid {border}; margin-left: 8px; padding-left: 4px; outline: none; }}
-QListWidget#pinnedList::item, QListWidget#sidebarList::item {{ color: {txt_sec}; padding: 2px 6px; border-radius: 5px; margin-bottom: 0px; }}
+QListWidget#pinnedList::item, QListWidget#sidebarList::item {{ color: {txt_sec}; padding: 3px 6px; border-radius: 2px; margin-bottom: 0px; }}
 QListWidget#sidebarList {{ background: transparent; border: none; padding: 1px; outline: none; font-size: 12.5px; }}
+QDialog QListWidget#sidebarList {{ background: {bg_side}; border: 1px solid {border}; border-radius: 2px; padding: 3px; font-family: "Segoe UI Variable Text", "Inter", "Aptos", "Segoe UI", sans-serif; font-size: 11.5px; }}
 QListWidget#sidebarList::item:hover {{ background: {bg_hover}; }}
 QListWidget#pinnedList::item:selected, QListWidget#sidebarList::item:selected {{ background: {bg_card}; color: {txt}; font-weight: 600; }}
+QDialog QListWidget#sidebarList::item:selected {{ background: #0078d4; color: #ffffff; font-weight: 600; border-radius: 2px; }}
 QTextBrowser#chatView {{ background: {bg_main}; color: {txt}; border: none; padding: 4px 0px; font-size: 13px; }}
 QFrame#composerCard {{ background: {bg_card}; border: 1px solid {border}; border-radius: 12px; }}
 QTextEdit#composerInput {{ background: transparent; border: none; color: {txt}; font-size: 13px; padding: 2px; }}
 QListWidget#attachmentList {{ background: {bg_side}; border: 1px solid {border}; border-radius: 6px; padding: 4px; }}
-QLineEdit, QComboBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 8px; color: {txt}; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
+QLineEdit, QComboBox, QListWidget, QTextBrowser, QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 4px; padding: 4px 8px; color: {txt}; selection-background-color: #0078d4; selection-color: #ffffff; }}
+QDialog QLineEdit, QDialog QComboBox {{ background: {bg_card}; border: 1px solid {border}; border-radius: 3px; padding: 3px 8px; color: {txt}; font-size: 11.5px; }}
+QDialog QPushButton {{ background: {bg_card}; border: 1px solid {border}; border-radius: 3px; padding: 3px 10px; color: {txt}; font-size: 11.5px; }}
+QDialog QPushButton:hover {{ background: {bg_hover}; }}
+QDialog QListWidget {{ background: {bg_card}; border: 1px solid {border}; border-radius: 3px; padding: 4px; color: {txt}; font-size: 11.5px; }}
+QDialog QTextEdit {{ background: {bg_card}; border: 1px solid {border}; border-radius: 3px; padding: 5px 8px; color: {txt}; font-size: 11.5px; }}
 QSpinBox {{ background: {bg_card}; border: 1px solid {border}; border-radius: 6px; padding: 5px 28px 5px 8px; color: {txt}; min-height: 22px; selection-background-color: #1f4b8e; selection-color: #ffffff; }}
 QSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: 22px; border-left: 1px solid {border}; border-bottom: 1px solid {border}; border-top-right-radius: 5px; background: {bg_hover}; }}
 QSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: 22px; border-left: 1px solid {border}; border-bottom-right-radius: 5px; background: {bg_hover}; }}
@@ -2209,6 +2462,137 @@ QScrollBar::handle:vertical:hover {{ background: {send_bg}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 """
+
+
+def render_theme_ambient_qimage(theme_id: str = "dark", width: int = 1280, height: int = 800) -> QImage:
+    """Generate smooth atmospheric built-in artwork matched to the theme (designed for ~90% washout)."""
+    from PySide6.QtGui import QLinearGradient, QRadialGradient
+
+    tid = (theme_id or "dark").strip().lower()
+    if tid == "system":
+        tid = "light" if _detect_windows_light_theme() else "dark"
+
+    w, h = max(320, int(width)), max(240, int(height))
+    img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    if tid == "deep_ocean":
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QColor("#0d3b5c"))
+        grad.setColorAt(0.45, QColor("#08243a"))
+        grad.setColorAt(1.0, QColor("#04111d"))
+        p.fillRect(0, 0, w, h, grad)
+        # Diffused underwater sunbeams + sea-glass bioluminescent currents
+        p.setPen(Qt.PenStyle.NoPen)
+        for bx, bw, alpha in ((0.18, 0.14, 70), (0.44, 0.19, 85), (0.72, 0.13, 60)):
+            beam = QLinearGradient(w * bx, 0, w * (bx + 0.12), h * 0.85)
+            beam.setColorAt(0.0, QColor(76, 212, 206, alpha))
+            beam.setColorAt(1.0, QColor(14, 165, 233, 0))
+            poly = QPolygonF([
+                QPointF(w * bx, 0),
+                QPointF(w * (bx + bw), 0),
+                QPointF(w * (bx + bw + 0.18), h),
+                QPointF(w * (bx + 0.05), h),
+            ])
+            p.setBrush(beam)
+            p.drawPolygon(poly)
+        for cx, cy, cr, col in (
+            (0.25, 0.72, 0.36, QColor(45, 212, 191, 95)),
+            (0.76, 0.62, 0.42, QColor(14, 165, 233, 85)),
+            (0.52, 0.30, 0.30, QColor(56, 189, 248, 70)),
+        ):
+            rg = QRadialGradient(w * cx, h * cy, max(w, h) * cr)
+            rg.setColorAt(0.0, col)
+            rg.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
+            p.setBrush(rg)
+            p.drawEllipse(QPointF(w * cx, h * cy), w * cr, h * cr)
+    elif tid == "royal_amethyst":
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0.0, QColor("#24143d"))
+        grad.setColorAt(0.55, QColor("#160e29"))
+        grad.setColorAt(1.0, QColor("#0d0818"))
+        p.fillRect(0, 0, w, h, grad)
+        p.setPen(Qt.PenStyle.NoPen)
+        for cx, cy, cr, col in (
+            (0.22, 0.28, 0.40, QColor(168, 85, 247, 115)),
+            (0.78, 0.68, 0.45, QColor(124, 58, 237, 110)),
+            (0.54, 0.46, 0.32, QColor(216, 180, 254, 80)),
+        ):
+            rg = QRadialGradient(w * cx, h * cy, max(w, h) * cr)
+            rg.setColorAt(0.0, col)
+            rg.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
+            p.setBrush(rg)
+            p.drawEllipse(QPointF(w * cx, h * cy), w * cr, h * cr)
+    elif tid in {"velvet_rose", "sakura_silk"}:
+        is_lt = (tid == "sakura_silk")
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0.0, QColor("#ffd6e7" if is_lt else "#3d162b"))
+        grad.setColorAt(0.55, QColor("#f9c2da" if is_lt else "#260f1c"))
+        grad.setColorAt(1.0, QColor("#fce7f3" if is_lt else "#160810"))
+        p.fillRect(0, 0, w, h, grad)
+        p.setPen(Qt.PenStyle.NoPen)
+        for cx, cy, cr, col in (
+            (0.20, 0.26, 0.35, QColor(244, 114, 182, 120)),
+            (0.76, 0.32, 0.30, QColor(251, 113, 133, 105)),
+            (0.64, 0.75, 0.40, QColor(236, 72, 153, 110)),
+            (0.32, 0.78, 0.26, QColor(249, 168, 212, 95)),
+        ):
+            rg = QRadialGradient(w * cx, h * cy, max(w, h) * cr)
+            rg.setColorAt(0.0, col)
+            rg.setColorAt(1.0, QColor(col.red(), col.green(), col.blue(), 0))
+            p.setBrush(rg)
+            p.drawEllipse(QPointF(w * cx, h * cy), w * cr, h * cr)
+    else:
+        t = load_theme_dict(tid)
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0.0, QColor(t.get("user_bubble_bg", "#1c2128")))
+        grad.setColorAt(1.0, QColor(t.get("bg_main", "#0d1117")))
+        p.fillRect(0, 0, w, h, grad)
+        p.setPen(Qt.PenStyle.NoPen)
+        acc = QColor(t.get("send_bg", "#38bdf8"))
+        for cx, cy, cr in ((0.24, 0.30, 0.38), (0.76, 0.70, 0.42)):
+            rg = QRadialGradient(w * cx, h * cy, max(w, h) * cr)
+            rg.setColorAt(0.0, QColor(acc.red(), acc.green(), acc.blue(), 95))
+            rg.setColorAt(1.0, QColor(acc.red(), acc.green(), acc.blue(), 0))
+            p.setBrush(rg)
+            p.drawEllipse(QPointF(w * cx, h * cy), w * cr, h * cr)
+
+    p.end()
+    return img
+
+
+def bake_washed_backdrop_pixmap(
+    source_img: QImage,
+    target_size: QSize,
+    dpr: float,
+    base_hex: str,
+    washout_pct: int = 90,
+) -> QPixmap:
+    """Pre-bake a HiDPI aspect-fill QPixmap with `washout_pct`% theme base color composited on top."""
+    eff_dpr = max(1.0, float(dpr or 1.0))
+    pw = max(1, int(round(target_size.width() * eff_dpr)))
+    ph = max(1, int(round(target_size.height() * eff_dpr)))
+    pix = QPixmap(pw, ph)
+    base_col = QColor(base_hex or "#0d1117")
+    pix.fill(base_col)
+    if source_img is not None and not source_img.isNull():
+        scaled = source_img.scaled(
+            pw,
+            ph,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        sx = max(0, (scaled.width() - pw) // 2)
+        sy = max(0, (scaled.height() - ph) // 2)
+        painter = QPainter(pix)
+        painter.drawImage(0, 0, scaled, sx, sy, pw, ph)
+        wash_alpha = max(0.75, min(0.96, float(washout_pct) / 100.0))
+        overlay = QColor(base_col.red(), base_col.green(), base_col.blue(), int(round(wash_alpha * 255)))
+        painter.fillRect(0, 0, pw, ph, overlay)
+        painter.end()
+    pix.setDevicePixelRatio(eff_dpr)
+    return pix
 
 
 STYLES = build_theme_stylesheet("dark")

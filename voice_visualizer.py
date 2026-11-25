@@ -268,6 +268,9 @@ class VoiceAvatarCanvas(QWidget):
         self._palette_id = "tulsa_cyan"
         self._theme_dict: dict[str, Any] = {}
         self._provider_color = ""
+        self._cast_slots: list[dict[str, Any]] = []
+        self._active_slot_index: int = 0
+        self._slot_scales: dict[int, float] = {}
         self._state = "idle"  # "idle" | "listening" | "thinking" | "speaking"
         self._muted = False
         self._mic_level = 0.0
@@ -301,6 +304,35 @@ class VoiceAvatarCanvas(QWidget):
             self._theme_dict = dict(theme_dict)
         if provider_color_hex is not None:
             self._provider_color = str(provider_color_hex or "")
+        self.update()
+
+    def set_cast_avatars(
+        self,
+        cast_slots: list[dict[str, Any]] | None,
+        active_slot_index: int = 0,
+    ) -> None:
+        """Configure 1..4 active AI voice avatars with dynamic speaker spotlight scaling."""
+        valid_shapes = {sid for sid, _ in AVATAR_SHAPES}
+        cleaned: list[dict[str, Any]] = []
+        for idx, sl in enumerate((cast_slots or [])[:4]):
+            if not isinstance(sl, dict):
+                continue
+            sh = str(sl.get("avatar_shape") or self._shape_id or "neural_core").strip().lower()
+            pal = str(sl.get("avatar_palette") or self._palette_id or "tulsa_cyan").strip().lower()
+            cleaned.append({
+                "slot_index": int(sl.get("slot_index", idx)),
+                "speaker_name": str(sl.get("speaker_name") or f"AI {idx + 1}").strip(),
+                "persona_label": str(sl.get("persona_label") or "").strip(),
+                "avatar_shape": sh if sh in valid_shapes else "neural_core",
+                "avatar_palette": pal or "tulsa_cyan",
+                "provider_color": str(sl.get("provider_color") or "").strip(),
+            })
+        self._cast_slots = cleaned
+        self._active_slot_index = int(active_slot_index)
+        for pos, sl in enumerate(self._cast_slots):
+            sidx = sl["slot_index"]
+            if sidx not in self._slot_scales:
+                self._slot_scales[sidx] = 1.18 if (sidx == self._active_slot_index or pos == 0) else 0.58
         self.update()
 
     def set_interaction_state(
@@ -384,12 +416,21 @@ class VoiceAvatarCanvas(QWidget):
             speed_mul = 2.05
         elif self._state == "listening" and not self._muted:
             eff_state = "listening"
-            speed_mul = 0.72 + self._smooth_mic * 0.9
+            speed_mul = 0.45
         else:
             eff_state = "idle"
             speed_mul = 0.45
 
         self._phase += dt * speed_mul
+        if self._cast_slots:
+            for pos, sl in enumerate(self._cast_slots):
+                sidx = sl["slot_index"]
+                is_act = (sidx == self._active_slot_index) or (
+                    not any(x["slot_index"] == self._active_slot_index for x in self._cast_slots) and pos == 0
+                )
+                target_sc = 1.18 if is_act else 0.58
+                cur_sc = float(self._slot_scales.get(sidx, target_sc))
+                self._slot_scales[sidx] = cur_sc + (target_sc - cur_sc) * 0.18
         return {
             "effective_state": eff_state,
             "rms": float(self._smooth_rms),
@@ -400,39 +441,31 @@ class VoiceAvatarCanvas(QWidget):
         self.step_simulation()
         self.update()
 
-    def render_frame(self, painter: QPainter, state_override: str | None = None) -> None:
-        """Render one complete frame onto `painter` (used both by paintEvent and offscreen unit tests)."""
-        pal = resolve_avatar_palette(self._palette_id, self._theme_dict, self._provider_color)
-        w = max(1, self.width())
-        h = max(1, self.height())
-        painter.fillRect(0, 0, w, h, QColor(pal["bg"]))
-
-        eff_state = state_override or (
-            "speaking"
-            if self._smooth_rms > 0.02
-            else (self._state if self._state in {"thinking", "listening"} else "idle")
-        )
-        cx, cy = w * 0.5, h * 0.48
-        scale = min(w, h) * 0.34
-
+    def _paint_single_avatar_geometry(
+        self,
+        painter: QPainter,
+        shape_id: str,
+        cx: float,
+        cy: float,
+        scale: float,
+        pal: dict[str, str],
+        energy: float,
+        mic_e: float,
+        eff_state: str,
+        bands: np.ndarray,
+    ) -> None:
         c_core = QColor(pal["core"])
         c_pri = QColor(pal["primary"])
         c_sec = QColor(pal["secondary"])
         c_glow = QColor(pal["glow"])
 
-        energy = float(self._smooth_rms)
-        mic_e = float(self._smooth_mic) if not self._muted else 0.0
-        bands = self._smooth_bands
-
-        # 1. Soft radial bloom + directional corona bursts in a compact offscreen QImage
         self._draw_corona_bloom(painter, cx, cy, scale, c_core, c_pri, c_glow, energy, mic_e, eff_state, bands)
 
-        # 2. Additive crystalline geometry layer
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
 
-        sid = self._shape_id
+        sid = shape_id or "neural_core"
         if sid == "tesseract":
             self._paint_tesseract(painter, cx, cy, scale, c_core, c_pri, c_sec, energy, mic_e, eff_state, bands)
         elif sid == "astrolabe":
@@ -446,6 +479,119 @@ class VoiceAvatarCanvas(QWidget):
         else:
             self._paint_neural_core(painter, cx, cy, scale, c_core, c_pri, c_sec, energy, mic_e, eff_state, bands)
         painter.restore()
+
+    def _draw_avatar_label_pill(
+        self,
+        painter: QPainter,
+        cx: float,
+        cy_bottom: float,
+        label_text: str,
+        primary_hex: str,
+        is_active: bool,
+    ) -> None:
+        if not label_text:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = QFont("Segoe UI", 9 if is_active else 8, QFont.Weight.Bold if is_active else QFont.Weight.Medium)
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(label_text)
+        th = fm.height()
+        pw = tw + 18
+        ph = th + 8
+        rx = max(6.0, min(float(self.width()) - pw - 6.0, cx - pw * 0.5))
+        ry = max(6.0, min(float(self.height()) - ph - 6.0, cy_bottom))
+        rect = QRectF(rx, ry, pw, ph)
+        c_pri = QColor(primary_hex)
+        bg = QColor(10, 16, 24, 215 if is_active else 160)
+        border = QColor(c_pri.red(), c_pri.green(), c_pri.blue(), 220 if is_active else 105)
+        painter.setBrush(bg)
+        painter.setPen(QPen(border, 1.3 if is_active else 0.9))
+        painter.drawRoundedRect(rect, 9.0, 9.0)
+        painter.setPen(QColor("#f0f6fc") if is_active else QColor("#9ca3af"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label_text)
+        painter.restore()
+
+    def render_frame(self, painter: QPainter, state_override: str | None = None) -> None:
+        """Render one complete frame onto `painter` (used both by paintEvent and offscreen unit tests)."""
+        pal = resolve_avatar_palette(self._palette_id, self._theme_dict, self._provider_color)
+        w = max(1, self.width())
+        h = max(1, self.height())
+        painter.fillRect(0, 0, w, h, QColor(pal["bg"]))
+
+        eff_state = state_override or (
+            "speaking"
+            if self._smooth_rms > 0.02
+            else (self._state if self._state in {"thinking", "listening"} else "idle")
+        )
+        energy = float(self._smooth_rms)
+        mic_e = 0.0
+        bands = self._smooth_bands
+
+        if len(self._cast_slots) <= 1:
+            sl0 = self._cast_slots[0] if self._cast_slots else None
+            use_shape = sl0["avatar_shape"] if sl0 else self._shape_id
+            use_pal = (
+                resolve_avatar_palette(sl0["avatar_palette"], self._theme_dict, sl0.get("provider_color", ""))
+                if sl0
+                else pal
+            )
+            cx, cy = w * 0.5, h * 0.48
+            scale = min(w, h) * 0.34
+            self._paint_single_avatar_geometry(painter, use_shape, cx, cy, scale, use_pal, energy, mic_e, eff_state, bands)
+            if sl0 and sl0.get("speaker_name"):
+                tag = f"{'🔊 ' if eff_state == 'speaking' else ''}{sl0['speaker_name']}"
+                if sl0.get("persona_label"):
+                    tag = f"{tag} · {sl0['persona_label'].split('—', 1)[0].strip()}"
+                self._draw_avatar_label_pill(painter, cx, cy + scale * 1.18, tag, use_pal["primary"], True)
+            return
+
+        # Multi-Avatar Constellation Arc (2..4 AIs on stage with spotlight speaker scaling)
+        n = len(self._cast_slots)
+        base_scale = min(w / max(2.2, n * 1.35), h * 0.30) * 0.55
+        active_pos = next((i for i, sl in enumerate(self._cast_slots) if sl["slot_index"] == self._active_slot_index), 0)
+        x_lo = w * (0.24 if n == 2 else 0.16)
+        x_hi = w * (0.76 if n == 2 else 0.84)
+        zero_bands = np.zeros(16, dtype=np.float32)
+
+        # Paint inactive listeners first, then the active speaker on top for crisp layering
+        draw_order = [i for i in range(n) if i != active_pos] + [active_pos]
+        for pos in draw_order:
+            sl = self._cast_slots[pos]
+            is_act = (pos == active_pos)
+            frac = 0.5 if n == 1 else (pos / float(n - 1))
+            cx = x_lo + (x_hi - x_lo) * frac
+            # Gently pull active speaker toward center/foreground slightly
+            if is_act:
+                cx = cx * 0.82 + (w * 0.5) * 0.18
+            cy = h * (0.48 if is_act else (0.39 if (pos % 2 == 0) else 0.44))
+            mult = float(self._slot_scales.get(sl["slot_index"], 1.18 if is_act else 0.58))
+            slot_scale = max(24.0, base_scale * mult)
+            sl_pal = resolve_avatar_palette(sl["avatar_palette"], self._theme_dict, sl.get("provider_color", ""))
+            sl_energy = energy if is_act else 0.0
+            sl_mic = mic_e if is_act else 0.0
+            sl_state = eff_state if is_act else "idle"
+            sl_bands = bands if is_act else zero_bands
+            self._paint_single_avatar_geometry(
+                painter,
+                sl["avatar_shape"],
+                cx,
+                cy,
+                slot_scale,
+                sl_pal,
+                sl_energy,
+                sl_mic,
+                sl_state,
+                sl_bands,
+            )
+            lbl = sl["speaker_name"]
+            if is_act:
+                lbl = f"{'🔊 ' if eff_state == 'speaking' else '● '}{lbl}"
+                if sl.get("persona_label"):
+                    short_role = sl["persona_label"].split("—", 1)[0].strip()
+                    lbl = f"{lbl} · {short_role}"
+            self._draw_avatar_label_pill(painter, cx, cy + slot_scale * 1.15, lbl, sl_pal["primary"], is_act)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -502,8 +648,9 @@ class VoiceAvatarCanvas(QWidget):
                 ray_len = br * (0.70 + 0.18 * pulse) * float(weights[i])
                 a_ray = int(14 + 34 * pulse)
             elif eff_state == "listening":
-                ray_len = br * (0.72 + 0.20 * mic_e) * float(weights[i])
-                a_ray = int(14 + 36 * mic_e)
+                breath = 0.5 + 0.5 * math.sin(t * 1.4 + ang * 2.0)
+                ray_len = br * (0.64 + 0.10 * breath) * float(weights[i])
+                a_ray = int(12 + 12 * breath)
             else:
                 breath = 0.5 + 0.5 * math.sin(t * 1.4 + ang * 2.0)
                 ray_len = br * (0.64 + 0.10 * breath) * float(weights[i])
@@ -562,8 +709,8 @@ class VoiceAvatarCanvas(QWidget):
             squeeze = 0.86 + 0.06 * math.sin(t * 4.2)
             r_pts = r_pts * squeeze
         elif eff_state == "listening":
-            ripple = 1.0 - 0.08 * mic_e + 0.07 * mic_e * np.sin(radii * 6.0 - t * 6.0)
-            r_pts = r_pts * ripple[:, None]
+            breath = 1.0 + 0.035 * math.sin(t * 1.6)
+            r_pts = r_pts * breath
         else:
             breath = 1.0 + 0.035 * math.sin(t * 1.6)
             r_pts = r_pts * breath
@@ -784,7 +931,7 @@ class VoiceAvatarCanvas(QWidget):
         elif eff_state == "thinking":
             pts = verts * (0.74 + 0.08 * np.sin(t * 5.0 + phases)[:, None])
         elif eff_state == "listening":
-            pts = verts * (0.94 - 0.10 * mic_e + 0.06 * mic_e * np.cos(t * 4.0 + phases)[:, None])
+            pts = verts * (1.0 + 0.05 * np.sin(t * 1.8 + phases)[:, None])
         else:
             pts = verts * (1.0 + 0.05 * np.sin(t * 1.8 + phases)[:, None])
 
@@ -1057,12 +1204,11 @@ class VoiceAvatarStageWindow(QWidget):
         target = "fullscreen" if mode == "fullscreen" else "windowed"
         prev = self._stage_mode
         self._stage_mode = target
-        flags = Qt.WindowType.Window
-        if target == "windowed" and self._always_on_top:
-            flags |= Qt.WindowType.WindowStaysOnTopHint
-        if self.windowFlags() != flags:
+        want_on_top = bool(target == "windowed" and self._always_on_top)
+        has_on_top = bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        if has_on_top != want_on_top:
             was_vis = self.isVisible()
-            self.setWindowFlags(flags)
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, want_on_top)
             if was_vis:
                 self.show()
 
@@ -1145,6 +1291,10 @@ class VoiceAvatarStageWindow(QWidget):
             self.dock_cost_label.setText(str(cost_text))
         if has_visual_reply is not None:
             self.visual_chip_btn.setVisible(bool(has_visual_reply))
+
+    def set_cast_avatars(self, cast_slots: list[dict[str, Any]] | None, active_slot_index: int = 0) -> None:
+        """Update the 3D stage with 1..4 active AI voice avatars and speaker spotlight."""
+        self.canvas.set_cast_avatars(cast_slots, active_slot_index=active_slot_index)
 
     def _sync_dock_compact_buttons(self) -> None:
         """Ensure buttons fit comfortably in both Windowed and Full-Screen without clipping."""
@@ -1323,11 +1473,17 @@ class VoiceAvatarStageWindow(QWidget):
     def _pick_shape(self, shape_id: str) -> None:
         self._shape_id = shape_id
         self.canvas.set_shape(shape_id)
+        if getattr(self.canvas, "_cast_slots", None) and len(self.canvas._cast_slots) == 1:
+            self.canvas._cast_slots[0]["avatar_shape"] = shape_id
+            self.canvas.update()
         self.settings_changed.emit({"voice_avatar_shape": shape_id})
 
     def _pick_palette(self, palette_id: str) -> None:
         self._palette_id = palette_id
         self.canvas.set_palette_config(palette_id)
+        if getattr(self.canvas, "_cast_slots", None) and len(self.canvas._cast_slots) == 1:
+            self.canvas._cast_slots[0]["avatar_palette"] = palette_id
+            self.canvas.update()
         self.settings_changed.emit({"voice_avatar_palette": palette_id})
 
     def _toggle_always_on_top(self) -> None:

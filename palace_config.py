@@ -92,8 +92,8 @@ def _resolve_default_config_path() -> Path:
 
 CONFIG_PATH = _resolve_default_config_path()
 
-FAIRYBREAD_BASE_VERSION = "0.94"
-FAIRYBREAD_VERSION = "0.94"
+FAIRYBREAD_BASE_VERSION = "0.95"
+FAIRYBREAD_VERSION = "0.95"
 FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
@@ -221,7 +221,7 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "key_url": "https://platform.openai.com/api-keys",
         "default_base_url": "https://api.openai.com/v1",
         "default_model": "gpt-5-mini",
-        "suggested_models": ["gpt-5-mini", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-4o-mini"],
+        "suggested_models": ["gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-sol-pro", "gpt-6.2-astra", "gpt-6.2-astra-pro", "gpt-6.1-terra", "gpt-5-mini", "gpt-5.4", "gpt-4o-mini"],
         "billing_note": "Prepaid credit wallet (turn off auto-recharge for a strict spend cap).",
     },
     "anthropic": {
@@ -287,7 +287,7 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "key_url": "https://console.mistral.ai/api-keys/",
         "default_base_url": "",
         "default_model": "codestral-latest",
-        "suggested_models": ["codestral-latest", "mistral-large-latest", "mistral-small-latest"],
+        "suggested_models": ["codestral-latest", "pixtral-large-2502", "mistral-large-latest", "mistral-small-latest"],
         "billing_note": "Free Experiment tier available on La Plateforme, or prepaid/pay-as-you-go.",
     },
     "openrouter": {
@@ -298,7 +298,19 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "key_url": "https://openrouter.ai/settings/keys",
         "default_base_url": "https://openrouter.ai/api/v1",
         "default_model": "qwen/qwen3-32b",
-        "suggested_models": ["qwen/qwen3-32b", "anthropic/claude-3.7-sonnet", "deepseek/deepseek-r1", "google/gemini-2.5-pro"],
+        "suggested_models": [
+            "qwen/qwen3-32b",
+            "openai/gpt-6.2-sol-pro",
+            "openai/gpt-6.2-astra-pro",
+            "openai/gpt-6.2-astra",
+            "google/gemini-4-neon",
+            "mistralai/pixtral-large-2502",
+            "radixark/daisyrose-27b",
+            "thinkingmachines/inkling-2-mini",
+            "anthropic/claude-3.7-sonnet",
+            "deepseek/deepseek-r1",
+            "google/gemini-2.5-pro",
+        ],
         "billing_note": "Strict prepaid credit wallet + optional per-key dollar cap. Over 300 models with one key.",
     },
     "deepinfra": {
@@ -423,16 +435,103 @@ def estimate_call_cost_usd(
     return (max(0, input_tokens) * in_rate + max(0, output_tokens) * out_rate) / 1_000_000.0
 
 
-def format_democratic_roster(provider_names: list[str] | None = None) -> str:
+def clean_given_name(raw_name: Any) -> str:
+    """Sanitize a user-assigned AI given name/nickname (bounded plain display text)."""
+    txt = str(raw_name or "")
+    txt = re.sub(r"[\x00-\x1f\x7f\"'`<>]+", " ", txt)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt[:40]
+
+
+def get_provider_given_name(
+    provider_name: str,
+    config_path: Path = CONFIG_PATH,
+) -> str:
+    """Return the user-assigned custom given name/nickname for a provider, or '' if unset."""
+    clean = (provider_name or "").strip().lower()
+    if not clean:
+        return ""
+    entry = load_provider_configs(config_path=config_path).get(clean, {})
+    return clean_given_name(entry.get("given_name"))
+
+
+def get_provider_attribution(
+    provider_name: str,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    """Return the full editable attribution record for an AI provider."""
+    clean = (provider_name or "").strip().lower()
+    entry = load_provider_configs(config_path=config_path).get(clean, {})
+    cat = PROVIDER_CATALOG.get(clean, {})
+    base_role = DEFAULT_PROVIDER_PROFILES.get(clean, "General peer agent in the democratic council.")
+    role_attr = str(entry.get("role_attribution") or "").strip() or base_role
+    return {
+        "provider": clean,
+        "display_name": str(cat.get("display_name") or clean.capitalize()),
+        "given_name": clean_given_name(entry.get("given_name")),
+        "role_attribution": role_attr,
+        "default_role_attribution": base_role,
+        "voice_name": str(entry.get("voice_name") or "").strip(),
+        "avatar_shape": str(entry.get("avatar_shape") or "").strip().lower(),
+        "avatar_palette": str(entry.get("avatar_palette") or "").strip().lower(),
+        "conversational_mode": str(entry.get("conversational_mode") or "").strip().lower(),
+        "icon": str(entry.get("icon") or cat.get("icon") or "•").strip() or "•",
+        "color": str(entry.get("color") or cat.get("color") or "#6e7681").strip() or "#6e7681",
+        "model": str(entry.get("model") or cat.get("default_model") or "").strip(),
+    }
+
+
+def format_agent_identity_directive(
+    provider_name: str,
+    config_path: Path = CONFIG_PATH,
+) -> str:
+    """Return a clear non-conflicting identity block when the user gave an AI a custom name or attribution."""
+    clean = (provider_name or "").strip().lower()
+    if not clean:
+        return ""
+    attr = get_provider_attribution(clean, config_path=config_path)
+    gname = attr.get("given_name") or ""
+    role_attr = str(attr.get("role_attribution") or "").strip()
+    def_role = str(attr.get("default_role_attribution") or "").strip()
+    parts: list[str] = []
+    if gname:
+        parts.append(
+            f'Identity & Attribution: In Fairybread, the user has named you "{gname}" '
+            f"(running on {attr['display_name']}). Accept and answer to \"{gname}\" naturally when addressed or asked who you are; never adopt another speaker's name."
+        )
+    if role_attr and role_attr != def_role:
+        parts.append(f"Custom Role & Personality Attribution: {role_attr}")
+    return "\n".join(parts)
+
+
+def format_democratic_roster(
+    provider_names: list[str] | None = None,
+    *,
+    config_path: Path = CONFIG_PATH,
+) -> str:
     names = provider_names or list(DEFAULT_PROVIDER_PROFILES.keys())
+    cfgs = load_provider_configs(config_path=config_path)
     lines = []
     for name in names:
         clean = (name or "").strip().lower()
-        desc = DEFAULT_PROVIDER_PROFILES.get(
+        entry = cfgs.get(clean, {})
+        given = clean_given_name(entry.get("given_name"))
+        custom_desc = str(entry.get("role_attribution") or "").strip()
+        desc = custom_desc or DEFAULT_PROVIDER_PROFILES.get(
             clean,
             "General peer agent in the democratic council."
         )
-        lines.append(f"- {clean.upper()}: {desc}")
+        custom_mode = str(entry.get("conversational_mode") or "").strip()
+        icon_ov = str(entry.get("icon") or "").strip()
+        tags: list[str] = []
+        if given:
+            tags.append(f'Given Name: "{given}"')
+        if custom_mode:
+            tags.append(f'Mode: {custom_mode}')
+        if icon_ov:
+            tags.append(f'Symbol: {icon_ov}')
+        header = f"{clean.upper()} ({', '.join(tags)})" if tags else clean.upper()
+        lines.append(f"- {header}: {desc}")
     return "\n".join(lines)
 
 
@@ -587,6 +686,14 @@ def save_provider_config(
     base_url: str | None = None,
     config_path: Path = CONFIG_PATH,
     use_openrouter: bool | None = None,
+    given_name: str | None = None,
+    role_attribution: str | None = None,
+    voice_name: str | None = None,
+    avatar_shape: str | None = None,
+    avatar_palette: str | None = None,
+    conversational_mode: str | None = None,
+    icon: str | None = None,
+    color: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     normalized_name = provider_name.strip().lower()
     if not normalized_name:
@@ -615,9 +722,98 @@ def save_provider_config(
         else:
             entry.pop("use_openrouter", None)
 
+    if given_name is not None:
+        cleaned_gn = clean_given_name(given_name)
+        if cleaned_gn:
+            entry["given_name"] = cleaned_gn
+        else:
+            entry.pop("given_name", None)
+
+    if role_attribution is not None:
+        raw_ra = str(role_attribution or "").strip()
+        default_ra = DEFAULT_PROVIDER_PROFILES.get(normalized_name, "").strip()
+        if raw_ra and raw_ra != default_ra:
+            entry["role_attribution"] = raw_ra[:1600]
+        else:
+            entry.pop("role_attribution", None)
+
+    if voice_name is not None:
+        v_clean = str(voice_name or "").strip()
+        if v_clean:
+            entry["voice_name"] = v_clean
+        else:
+            entry.pop("voice_name", None)
+
+    if avatar_shape is not None:
+        sh_clean = str(avatar_shape or "").strip().lower()
+        if sh_clean:
+            entry["avatar_shape"] = sh_clean
+        else:
+            entry.pop("avatar_shape", None)
+
+    if avatar_palette is not None:
+        pal_clean = str(avatar_palette or "").strip().lower()
+        if pal_clean:
+            entry["avatar_palette"] = pal_clean
+        else:
+            entry.pop("avatar_palette", None)
+
+    if conversational_mode is not None:
+        cm_clean = str(conversational_mode or "").strip().lower()
+        if cm_clean:
+            entry["conversational_mode"] = cm_clean
+        else:
+            entry.pop("conversational_mode", None)
+
+    if icon is not None:
+        ic_clean = str(icon or "").strip()[:8]
+        def_ic = str(PROVIDER_CATALOG.get(normalized_name, {}).get("icon") or "").strip()
+        if ic_clean and ic_clean != def_ic:
+            entry["icon"] = ic_clean
+        else:
+            entry.pop("icon", None)
+
+    if color is not None:
+        col_clean = str(color or "").strip()
+        def_col = str(PROVIDER_CATALOG.get(normalized_name, {}).get("color") or "").strip()
+        if col_clean and col_clean.lower() != def_col.lower() and re.fullmatch(r"#[0-9a-fA-F]{6}", col_clean):
+            entry["color"] = col_clean
+        else:
+            entry.pop("color", None)
+
     providers[normalized_name] = entry
     _write_raw_config(data, config_path)
     return load_provider_configs(config_path=config_path)
+
+
+def save_provider_attribution(
+    provider_name: str,
+    updates: dict[str, Any],
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    """Update editable identity and attribution fields for one AI provider without altering its enabled flag."""
+    normalized_name = (provider_name or "").strip().lower()
+    if not normalized_name:
+        raise ValueError("Provider name cannot be empty.")
+    existing = load_provider_configs(config_path=config_path).get(normalized_name, {})
+    en = bool(updates.get("enabled", existing.get("enabled", False)))
+    save_provider_config(
+        normalized_name,
+        enabled=en,
+        model=updates.get("model"),
+        base_url=updates.get("base_url"),
+        use_openrouter=updates.get("use_openrouter"),
+        given_name=updates.get("given_name"),
+        role_attribution=updates.get("role_attribution"),
+        voice_name=updates.get("voice_name"),
+        avatar_shape=updates.get("avatar_shape"),
+        avatar_palette=updates.get("avatar_palette"),
+        conversational_mode=updates.get("conversational_mode"),
+        icon=updates.get("icon"),
+        color=updates.get("color"),
+        config_path=config_path,
+    )
+    return get_provider_attribution(normalized_name, config_path=config_path)
 
 
 OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
@@ -632,7 +828,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
     "balanced": {
         "claude": {"model": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5 (Warm & High-EQ)"},
         "gemini": {"model": "google/gemini-4-neon", "label": "Gemini 4 Neon"},
-        "openai": {"model": "openai/gpt-5-mini", "label": "GPT-5 Mini"},
+        "openai": {"model": "~openai/gpt-sol-latest", "label": "GPT-Sol Latest (~alias)"},
         "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
         "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
         "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
@@ -642,7 +838,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
     "flagship": {
         "claude": {"model": "anthropic/claude-sonnet-5.5", "label": "Claude Sonnet 5.5"},
         "gemini": {"model": "google/gemini-4-neon", "label": "Gemini 4 Neon"},
-        "openai": {"model": "openai/gpt-5", "label": "GPT-5"},
+        "openai": {"model": "openai/gpt-6.2-astra", "label": "GPT-6.2 Astra"},
         "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
         "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
         "mistral": {"model": "mistralai/codestral-2508", "label": "Codestral"},
@@ -891,6 +1087,16 @@ CONTEXT_DEPTH_LIMITS: dict[str, tuple[int, int]] = {
 }
 
 OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
+    "gpt-6.2-astra-pro": "openai/gpt-6.2-astra-pro",
+    "gpt-6.2-astra": "openai/gpt-6.2-astra",
+    "gpt-6.2-sol-pro": "openai/gpt-6.2-sol-pro",
+    "gpt-6.2-sol": "openai/gpt-6.2-sol",
+    "gpt-6.1-terra": "openai/gpt-6.1-terra",
+    "gpt-6-luna": "openai/gpt-6-luna",
+    "gpt-sol-latest": "~openai/gpt-sol-latest",
+    "pixtral-large-2502": "mistralai/pixtral-large-2502",
+    "daisyrose-27b": "radixark/daisyrose-27b",
+    "inkling-2-mini": "thinkingmachines/inkling-2-mini",
     "gpt-5.6-sol": "openai/gpt-5.6-sol",
     "gpt-5.6-luna": "openai/gpt-5.6-luna",
     "gpt-5.5": "openai/gpt-5.5",
@@ -917,31 +1123,39 @@ def resolve_profile_model_override(
     if not clean:
         return ""
     p_low = str(provider_name or "").strip().lower()
+    prefix_map = {
+        "openai": "openai",
+        "gemini": "google",
+        "deepseek": "deepseek",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "mistral": "mistralai",
+        "cohere": "cohere",
+        "xai": "x-ai",
+        "grok": "x-ai",
+    }
     if is_openrouter:
+        if clean.startswith("~"):
+            if "/" in clean:
+                return clean
+            vendor = prefix_map.get(p_low)
+            return f"~{vendor}/{clean[1:]}" if vendor else clean
         if "/" in clean:
             return clean
         mapped = OPENROUTER_MODEL_OVERRIDE_MAP.get(clean.lower())
         if mapped:
             return mapped
-        prefix_map = {
-            "openai": "openai",
-            "gemini": "google",
-            "deepseek": "deepseek",
-            "anthropic": "anthropic",
-            "claude": "anthropic",
-            "mistral": "mistralai",
-            "cohere": "cohere",
-            "xai": "x-ai",
-            "grok": "x-ai",
-        }
         vendor = prefix_map.get(p_low)
         return f"{vendor}/{clean}" if vendor else clean
-    if "/" in clean and p_low in {"openai", "gemini", "deepseek", "anthropic", "claude"}:
-        tail = clean.split("/", 1)[1]
+    bare = clean[1:] if clean.startswith("~") else clean
+    if "/" in bare and p_low in {"openai", "gemini", "deepseek", "anthropic", "claude"}:
+        tail = bare.split("/", 1)[1]
         if tail == "deepseek-r1-0528" and p_low == "deepseek":
             return "deepseek-reasoner"
+        if tail == "gpt-sol-latest" and p_low == "openai":
+            return "gpt-6.2-sol"
         return tail
-    return clean
+    return bare
 
 
 DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
@@ -971,7 +1185,7 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "max_ais": 0,
         "context_depth": "deep",
         "model_overrides": {
-            "openai": "gpt-5.6-sol",
+            "openai": "gpt-6.2-sol",
             "gemini": "gemini-4-carbon",
             "deepseek": "deepseek-reasoner",
             "anthropic": "claude-3-7-sonnet-latest",
@@ -1188,6 +1402,22 @@ def save_graphics_settings(
     return load_graphics_settings(config_path)
 
 
+COUNCIL_TIME_BUDGETS: dict[str, dict[str, int]] = {
+    "quick": {"round1_sec": 60, "round2_sec": 0, "synthesis_sec": 30},
+    "standard": {"round1_sec": 180, "round2_sec": 120, "synthesis_sec": 90},
+    "deep": {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 90},
+}
+
+
+def resolve_council_time_budget(mode: str = "standard", *, is_deep_task: bool = False, is_quick_task: bool = False) -> dict[str, int]:
+    key = (mode or "standard").strip().lower()
+    if is_deep_task or key == "deep":
+        return dict(COUNCIL_TIME_BUDGETS["deep"])
+    if is_quick_task or key == "quick":
+        return dict(COUNCIL_TIME_BUDGETS["quick"])
+    return dict(COUNCIL_TIME_BUDGETS["standard"])
+
+
 DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
     "approval_policy": "on_request",     # "on_request" | "auto_deploy" | "read_only"
     "sandbox_mode": "sandbox_write",     # "read_only" | "sandbox_write"
@@ -1197,8 +1427,9 @@ DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
     "synthesizer_mode": "auto_fast",     # "auto_fast" | "deepseek" | "gemini" | "openai" | "cerebras" | "match_primary"
     "smart_routing": True,
     "show_inline_status_messages": True,
-    "provider_timeout_sec": 45,
-    "straggler_grace_sec": 15,
+    "deliberation_budget": "standard",   # "quick" | "standard" | "deep"
+    "provider_timeout_sec": 180,
+    "straggler_grace_sec": 0,
 }
 
 
@@ -1240,12 +1471,12 @@ def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
 
     try:
         t_sec = int(raw.get("provider_timeout_sec", out["provider_timeout_sec"]))
-        out["provider_timeout_sec"] = max(15, min(120, t_sec))
+        out["provider_timeout_sec"] = max(15, min(600, t_sec))
     except (TypeError, ValueError):
         pass
     try:
         g_sec = int(raw.get("straggler_grace_sec", out["straggler_grace_sec"]))
-        out["straggler_grace_sec"] = max(0, min(60, g_sec))
+        out["straggler_grace_sec"] = max(0, min(300, g_sec))
     except (TypeError, ValueError):
         pass
     return out
@@ -1306,6 +1537,12 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "spellcheck_enabled": True,  # Live red-underline spellcheck + right-click suggestions in Composer
     "busy_submit_mode": "steer",  # "steer" | "queue" — persisted busy Enter action
     "setup_wizard_completed": False,  # True once first-run / setup wizard has been completed or dismissed
+    "home_location": "",  # User-entered city, suburb, or postcode (zero background Geo-IP tracking)
+    "weather_map_enabled": True,  # True = show OpenStreetMap + RainViewer radar PNG card; False = basic text forecast only
+    "bg_image_source": "none",  # "none" | "ambient" | "custom"
+    "bg_image_path": "",  # Local image path for washed-out background (never M: drive)
+    "bg_image_placement": "chat_sidebar",  # "chat" | "sidebar" | "chat_sidebar" | "all"
+    "bg_washout_percent": 90,  # 75..96 (% of theme base color composited over picture; 90 = 10% image wash)
 }
 
 
@@ -1349,6 +1586,23 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         edir = raw["custom_experimental_dir"].strip()
         if edir and not edir.upper().startswith("M:"):
             merged["custom_experimental_dir"] = edir
+    if isinstance(raw.get("home_location"), str):
+        merged["home_location"] = raw["home_location"].strip()[:120]
+    if "weather_map_enabled" in raw:
+        merged["weather_map_enabled"] = bool(raw["weather_map_enabled"])
+    if raw.get("bg_image_source") in {"none", "ambient", "custom"}:
+        merged["bg_image_source"] = str(raw["bg_image_source"])
+    if isinstance(raw.get("bg_image_path"), str):
+        bgp = raw["bg_image_path"].strip()
+        if bgp and not bgp.upper().startswith("M:"):
+            merged["bg_image_path"] = bgp
+    if raw.get("bg_image_placement") in {"chat", "sidebar", "chat_sidebar", "all"}:
+        merged["bg_image_placement"] = str(raw["bg_image_placement"])
+    if "bg_washout_percent" in raw:
+        try:
+            merged["bg_washout_percent"] = max(75, min(96, int(raw["bg_washout_percent"])))
+        except (TypeError, ValueError):
+            pass
     return merged
 
 
@@ -1384,6 +1638,21 @@ def save_ui_settings(
     if edir.upper().startswith("M:"):
         raise ValueError("M: drive is strictly off-limits for Experimental Palace storage.")
     current["custom_experimental_dir"] = edir
+    current["home_location"] = str(current.get("home_location") or "").strip()[:120]
+    current["weather_map_enabled"] = bool(current.get("weather_map_enabled", True))
+    if current.get("bg_image_source") not in {"none", "ambient", "custom"}:
+        current["bg_image_source"] = "none"
+    bgp_save = str(current.get("bg_image_path") or "").strip()
+    if bgp_save.upper().startswith("M:"):
+        raise ValueError("M: drive is strictly off-limits for Palace background images.")
+    current["bg_image_path"] = bgp_save
+    if current.get("bg_image_placement") not in {"chat", "sidebar", "chat_sidebar", "all"}:
+        current["bg_image_placement"] = "chat_sidebar"
+    try:
+        w_pct = int(current.get("bg_washout_percent", 90))
+    except (TypeError, ValueError):
+        w_pct = 90
+    current["bg_washout_percent"] = max(75, min(96, w_pct))
     data["ui_settings"] = current
     _write_raw_config(data, config_path)
     return load_ui_settings(config_path)
@@ -1550,6 +1819,7 @@ def format_personalization_prompt_block(
         format_humor_directive(humor_lvl),
         fmt_line,
         "- Friend & Speech Grammar Alignment: Talk naturally like a trusted friend and collaborator who remembers what we've worked on in Fairybread. Match the user's everyday phrasing, directness, and casual speech grammar cleanly — warm and personal without flattery, canned reassurance, or preachy caveats.",
+        "- Faith, Worldview & Belief Respect: Never denigrate, mock, dismiss, or refuse benign expressions of the user's religion, faith, sacred figures (such as Jesus, Allah, God, Muhammad, Buddha), scriptures, or spiritual/philosophical worldview (e.g., never issue cold refusals to devotional phrases like 'Jesus is Lord' or 'Inshallah'). Meet any shared belief (Christian, Muslim, Jewish, Hindu, Buddhist, spiritual, or secular) with genuine warmth, respect, and thoughtful curiosity that helps the user feel accepted.",
     ]
     gen_inst = (p.get("custom_instructions_general") or "").strip()
     if gen_inst:

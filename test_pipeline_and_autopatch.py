@@ -433,12 +433,12 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             self.assertEqual(saved["straggler_grace_sec"], 10)
 
             dlg_perm = ManageAIsDialog(config_path=cfg, initial_page="AI Access Permissions")
-            self.assertEqual(dlg_perm.nav_list.currentItem().text(), "AI Access Permissions")
+            self.assertIn("Access & Permissions", dlg_perm.nav_list.currentItem().text())
             self.assertEqual(dlg_perm.perm_mode_combo.currentData(), "turbo")
             dlg_perm.close()
 
             dlg = ManageAIsDialog(config_path=cfg, initial_page="Agent Defaults")
-            self.assertEqual(dlg.nav_list.currentItem().text(), "Agent Defaults")
+            self.assertIn("Routing & Defaults", dlg.nav_list.currentItem().text())
             self.assertEqual(dlg.ad_output_detail_combo.currentData(), "concise")
             idx_bal = dlg.ad_output_detail_combo.findData("balanced")
             dlg.ad_output_detail_combo.setCurrentIndex(idx_bal)
@@ -1379,7 +1379,7 @@ class PipelineAndAutopatchTests(unittest.TestCase):
             # Verify AI Access Permissions UI has zero leaked internal strings & saves unlimited exclusions cleanly
             app = QApplication.instance() or QApplication([])
             dlg = ManageAIsDialog(config_path=cfg, initial_page="AI Access Permissions")
-            self.assertEqual(dlg.nav_list.currentItem().text(), "AI Access Permissions")
+            self.assertIn("Access & Permissions", dlg.nav_list.currentItem().text())
             labels_text = "\n".join(
                 getattr(lbl, "text", lambda: "")()
                 for lbl in dlg.findChildren(type(dlg.perm_mode_desc_label))
@@ -4174,8 +4174,8 @@ class V092fConformanceWeatherAndIntegrityTests(unittest.TestCase):
         import catalog_sync
 
         self.assertEqual(version_to_windows_4part("0.92f"), "0.92.6.0")
-        self.assertEqual(version_to_windows_4part("0.94"), "0.94.0.0")
-        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.94.0.0")
+        self.assertEqual(version_to_windows_4part("0.95"), "0.95.0.0")
+        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.95.0.0")
         self.assertEqual(version_to_windows_4part("0.9.1a"), "0.9.1.1")
         self.assertFalse(DEFAULT_UI_SETTINGS["close_to_tray"])
         self.assertTrue((Path(__file__).with_name("PRIVACY.md")).is_file())
@@ -4758,8 +4758,8 @@ class V093ReleaseFeaturesTests(unittest.TestCase):
 
     def test_7_installer_iss_v093_and_update_only(self):
         iss = (Path(__file__).with_name("fairybread_setup.iss")).read_text(encoding="utf-8")
-        self.assertIn('AppDispVer "0.94"', iss)
-        self.assertIn('AppWinVer "0.94.0.0"', iss)
+        self.assertIn('AppDispVer "0.95"', iss)
+        self.assertIn('AppWinVer "0.95.0.0"', iss)
         self.assertIn("1. Update only (Recommended", iss)
         self.assertIn("/UPDATEONLY", iss)
         self.assertIn("ShouldAutoRelaunchUpdateOnly", iss)
@@ -5041,7 +5041,7 @@ class TangentHumorAndWeatherFixTests(unittest.TestCase):
                 self.assertIn("Humor (High Humor)", p_txt)
                 self.assertIn("side tangents", p_txt)
 
-            # Reset to average, then verify ManageAIsDialog selects 'high', audits unclipped, and auto-saves on reject()
+            # Reset to average, then verify Cancel/reject() reverts while OK/save_settings() persists
             save_personalization_settings({"humor": "average"}, config_path=temp_cfg)
             app = QApplication.instance() or QApplication([])
             dlg = ManageAIsDialog(config_path=temp_cfg, initial_page="Memory & Personalization")
@@ -5057,6 +5057,15 @@ class TangentHumorAndWeatherFixTests(unittest.TestCase):
                 app.processEvents()
             finally:
                 dlg.deleteLater()
+            self.assertEqual(load_personalization_settings(temp_cfg)["humor"], "average")
+
+            dlg2 = ManageAIsDialog(config_path=temp_cfg, initial_page="Memory & Personalization")
+            try:
+                dlg2.pers_humor_combo.setCurrentIndex(dlg2.pers_humor_combo.findData("high"))
+                dlg2.save_settings()
+                app.processEvents()
+            finally:
+                dlg2.deleteLater()
             self.assertEqual(load_personalization_settings(temp_cfg)["humor"], "high")
 
     def test_weather_place_extraction_ignores_show_and_rejects_fuzzy_mismatch(self):
@@ -5267,7 +5276,7 @@ class GraphicsOpenAIAndDeepChatProfileTests(unittest.TestCase):
             squads = load_ai_squads(cfg)
             self.assertEqual(list(squads.keys()), ["light_chat", "deep_chat", "code"])
             self.assertEqual(squads["deep_chat"]["context_depth"], "deep")
-            self.assertEqual(squads["deep_chat"]["model_overrides"]["openai"], "gpt-5.6-sol")
+            self.assertEqual(squads["deep_chat"]["model_overrides"]["openai"], "gpt-6.2-sol")
             self.assertEqual(squads["deep_chat"]["model_overrides"]["gemini"], "gemini-4-carbon")
             self.assertEqual(squads["deep_chat"]["model_overrides"]["deepseek"], "deepseek-reasoner")
             self.assertIn("claude", squads["deep_chat"]["model_overrides"])
@@ -5650,7 +5659,7 @@ class GraphicsOpenAIAndDeepChatProfileTests(unittest.TestCase):
                 aud_prof = audit_palace_window_geometry(dlg)
                 self.assertEqual(aud_prof["clipped_widget_count"], 0, msg=str(aud_prof.get("clipped_widgets")))
 
-                dlg.reject()
+                dlg.save_settings()
                 app.processEvents()
             finally:
                 dlg.deleteLater()

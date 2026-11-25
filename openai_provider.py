@@ -2,6 +2,7 @@ import base64
 from pathlib import Path
 from typing import Any
 
+import httpx
 from openai import OpenAI
 
 from cost_service import extract_sdk_usage_tokens
@@ -19,6 +20,16 @@ def _guess_image_mime(path: Path) -> str:
     return "image/png"
 
 
+_RETIRED_OPENAI_MODEL_MAP: dict[str, str] = {
+    "gpt-5": "gpt-6.2-sol",
+    "gpt-5-mini": "gpt-6-luna",
+    "gpt-5-nano": "gpt-6-luna",
+    "gpt-5-pro": "gpt-6.2-sol",
+    "o3": "gpt-6.2-astra",
+    "o3-pro": "gpt-6.2-astra",
+}
+
+
 class OpenAIProvider(AIProvider):
     def __init__(
         self,
@@ -27,14 +38,19 @@ class OpenAIProvider(AIProvider):
         base_url: str | None = None,
         provider_name: str = "openai",
         max_tokens: int | None = None,
-        timeout: float = 60.0,
+        timeout: float = 300.0,
         max_retries: int = 0,
     ):
+        eff_timeout: Any = (
+            httpx.Timeout(float(timeout), connect=min(15.0, float(timeout)))
+            if isinstance(timeout, (int, float)) and float(timeout) > 15.0
+            else timeout
+        )
         if base_url:
             kw: dict[str, Any] = {
                 "api_key": api_key,
                 "base_url": base_url,
-                "timeout": timeout,
+                "timeout": eff_timeout,
                 "max_retries": max_retries,
             }
             if "openrouter.ai" in str(base_url).lower():
@@ -44,7 +60,7 @@ class OpenAIProvider(AIProvider):
                 }
             self.client = OpenAI(**kw)
         else:
-            self.client = OpenAI(api_key=api_key, timeout=timeout, max_retries=max_retries)
+            self.client = OpenAI(api_key=api_key, timeout=eff_timeout, max_retries=max_retries)
         self.model = model
         self.base_url = base_url
         self.provider_name = provider_name
@@ -101,7 +117,7 @@ class OpenAIProvider(AIProvider):
 
         if self.base_url:
             chat_image_items: list[dict[str, Any]] = []
-            for raw_p in (images or [])[:3]:
+            for raw_p in (images or []):
                 try:
                     p = Path(raw_p)
                     if p.is_file() and 0 < p.stat().st_size <= 6 * 1024 * 1024:
@@ -184,7 +200,7 @@ class OpenAIProvider(AIProvider):
             )
 
         image_items: list[dict[str, str]] = []
-        for raw_p in (images or [])[:3]:
+        for raw_p in (images or []):
             try:
                 p = Path(raw_p)
                 if p.is_file() and 0 < p.stat().st_size <= 6 * 1024 * 1024:
@@ -215,7 +231,18 @@ class OpenAIProvider(AIProvider):
         else:
             resp_kw["input"] = prompt
 
-        response = self.client.responses.create(**resp_kw)
+        try:
+            response = self.client.responses.create(**resp_kw)
+        except Exception as exc:
+            if isinstance(exc, AssertionError):
+                raise
+            fallback_model = _RETIRED_OPENAI_MODEL_MAP.get(str(eff_model or "").strip().lower())
+            if not fallback_model:
+                raise
+            eff_model = fallback_model
+            self.model = fallback_model
+            resp_kw["model"] = eff_model
+            response = self.client.responses.create(**resp_kw)
         out_text = getattr(response, "output_text", None) or ""
         if not out_text.strip():
             raise RuntimeError(f"{self.provider_name} ({eff_model}) returned empty output")

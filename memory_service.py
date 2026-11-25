@@ -75,6 +75,8 @@ _TRIVIAL_EXCHANGE_RE = re.compile(
 )
 _CANONICAL_PROFILE_CATEGORIES = (
     "Overview",
+    "How You Think & Communicate",
+    "Personal Interests, Values & Ongoing Threads",
     "How You Like to Work",
     "Speech & Communication Style",
     "Software & Creative Projects",
@@ -198,7 +200,11 @@ def _normalize_profile_category(raw_cat: str, fact_text: str = "") -> str:
         return raw_cat.strip()
     if any(k in txt for k in ("speech", "grammar", "tone", "warm", "friendly", "banter", "flatter", "slang", "idiolect", "talk", "policing", "concise")):
         return "Speech & Communication Style"
-    if any(k in txt for k in ("project", "fairybread", "evidencebench", "duk", "shadow", "palace", "software", "creative", "comedy", "music", "health", "ginger")):
+    if any(k in txt for k in ("think", "cognitive", "logic", "pattern", "debate", "sparring", "cadence", "humor", "humour", "relax", "decompress", "mindset")):
+        return "How You Think & Communicate"
+    if any(k in txt for k in ("interest", "value", "hobby", "family", "pet", "movie", "book", "music", "philosophy", "ongoing", "thread", "weekend", "christian", "muslim", "islam", "jesus", "allah", "god", "church", "mosque", "bible", "quran", "faith", "religion", "spiritual", "belief", "pray")):
+        return "Personal Interests, Values & Ongoing Threads"
+    if any(k in txt for k in ("project", "fairybread", "evidencebench", "duk", "shadow", "palace", "software", "creative", "comedy", "health", "ginger")):
         return "Software & Creative Projects"
     if any(k in txt for k in ("work", "workflow", "autopatch", "review", "plan", "git", "drive", "edit", "notepad", "visual studio", "test")):
         return "How You Like to Work"
@@ -776,12 +782,16 @@ DEFAULT_MEMORY_SUMMARY_MARKDOWN = (
     "### Overview\n"
     "Welcome to Fairybread! This Memory Summary is your private, 100% local profile shared across your chosen AI providers. "
     "You can edit these notes anytime, or let Fairybread update them naturally from your conversations.\n\n"
+    "### How You Think & Communicate\n"
+    "- Add how you naturally think, reason, debate, unwind, and use humor so your companions meet you on your real wavelength.\n\n"
+    "### Personal Interests, Values & Ongoing Threads\n"
+    "- Personal hobbies, recurring themes, people/stories you care about, and topics you enjoy exploring.\n\n"
     "### How You Like to Work\n"
     "- Prefer direct, helpful responses tailored to your workflow.\n"
     "- Keep technical details concise when browsing and thorough when debugging.\n\n"
     "### Speech & Communication Style\n"
     "- Everyday conversational phrasing works best; avoid filler and unnecessary disclaimers.\n\n"
-    "### Active Projects & Interests\n"
+    "### Software & Creative Projects\n"
     "- Add your active projects, hardware/OS setup, writing preferences, or recurring topics here."
 )
 
@@ -996,6 +1006,8 @@ def auto_evolve_user_profile_from_turn(
         "i ", "i'm", "im ", "my ", "we ", "prefer", "working on", "building",
         "always ", "never ", "like to", "live in", "years old", "project", "hobby",
         "talk ", "tone", "grammar", "line spacing", "friendly", "warm", "banter", "address", "call me",
+        "christian", "muslim", "islam", "jesus", "allah", "god", "church", "mosque", "bible", "quran",
+        "faith", "religion", "spiritual", "belief", "pray",
     )
     if not any(sig in lower_msg for sig in personal_signals):
         return []
@@ -1009,11 +1021,11 @@ def auto_evolve_user_profile_from_turn(
 
     sys_prompt = (
         "You are Fairybread's Rich User Profile Extractor. Analyze the user's message and extract ONLY "
-        "explicit, durable personal facts, speech/tone/grammar preferences, workflow rules, or project details stated by the user.\n"
+        "explicit, durable personal facts, faith/religious/worldview beliefs, speech/tone/grammar preferences, workflow rules, or project details stated by the user.\n"
         "STRICT ANTI-HALLUCINATION RULES:\n"
         "1. NEVER guess, infer, or extrapolate traits from general questions.\n"
         "2. Every extracted item MUST include 'evidence': an exact verbatim substring copied directly from the user's message.\n"
-        "3. Choose EXACTLY ONE canonical 'category' from: Overview | How You Like to Work | Speech & Communication Style | Software & Creative Projects (never join with '|').\n"
+        "3. Choose EXACTLY ONE canonical 'category' from: Overview | How You Think & Communicate | Personal Interests, Values & Ongoing Threads | How You Like to Work | Speech & Communication Style | Software & Creative Projects (never join with '|').\n"
         "4. Output ONLY a valid JSON array (or [] if no durable personal fact was stated):\n"
         '[{"category": "Overview", "fact": "Concise second-person fact (You...)", "evidence": "exact verbatim quote"}]'
     )
@@ -1106,6 +1118,141 @@ def auto_evolve_user_profile_from_turn(
             importance=5,
             scope="global",
             source={"kind": "auto_profile_fact", "category": cat, "evidence": ev},
+        )
+
+    if verified and updated_summary != cur_summary:
+        save_memory_summary(updated_summary, db_path=db_path)
+    return verified
+
+
+def evolve_conversational_signature_from_turns(
+    recent_turns: list[tuple[str, str]],
+    *,
+    db_path: Path | None = None,
+    credential_store: Any = None,
+    llm_callable: Any = None,
+) -> list[dict[str, str]]:
+    """Analyze a multi-turn conversation window to learn how the user thinks, jokes, phrases ideas, and bonds."""
+    clean_utts = [
+        (u or "").lstrip("🎙 ").strip()
+        for u, _a in (recent_turns or [])[-8:]
+        if (u or "").strip() and not _is_trivial_exchange((u or "").lstrip("🎙 ").strip())
+    ]
+    if len(clean_utts) < 2:
+        return []
+    combined_user_text = "\n".join(f"- {u[:320]}" for u in clean_utts)
+    lower_combined = "\n".join(clean_utts).lower()
+    if len(lower_combined) < 40:
+        return []
+
+    try:
+        from palace_config import load_personalization_settings
+        if not load_personalization_settings().get("auto_evolve_profile", True):
+            return []
+    except Exception:
+        pass
+
+    sys_prompt = (
+        "You maintain Fairybread's Living Cognitive & Conversational Signature so AI companions genuinely understand "
+        "how this specific human thinks, talks, jokes, and relaxes.\n"
+        "Review ONLY the user's own statements below and extract 0 to 3 durable, insightful observations across:\n"
+        "- 'How You Think & Communicate' (reasoning patterns, preference for debate vs gentle listening, humor style, vocabulary/cadence, dislikes in AI behavior)\n"
+        "- 'Personal Interests, Values & Ongoing Threads' (topics, beliefs, recurring personal themes or creative interests)\n"
+        "- 'Speech & Communication Style' (wording, everyday grammar, directness)\n"
+        "STRICT ANTI-HALLUCINATION RULES:\n"
+        "1. Every observation MUST cite 'evidence': an exact verbatim 5+ character substring copied from one of the user's statements.\n"
+        "2. Do NOT invent biographical facts or extrapolate beyond what the user's wording genuinely shows.\n"
+        "3. Output ONLY a valid JSON array (or [] if nothing durable stands out):\n"
+        '[{"category": "How You Think & Communicate", "fact": "Concise second-person insight (You...)", "evidence": "exact verbatim quote"}]'
+    )
+
+    raw_json = ""
+    if llm_callable is not None:
+        try:
+            raw_json = str(llm_callable(f"{sys_prompt}\n\nUSER UTTERANCES:\n{combined_user_text}") or "").strip()
+        except Exception:
+            raw_json = ""
+    else:
+        try:
+            from credential_store import CredentialStore
+            store = credential_store or CredentialStore()
+        except Exception:
+            return []
+        g_key = store.get_api_key("groq") if store else ""
+        if g_key and not raw_json:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=g_key, base_url="https://api.groq.com/openai/v1", timeout=15.0, max_retries=0)
+                resp = client.chat.completions.create(
+                    model="qwen/qwen3.8-27b",
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": f"USER UTTERANCES:\n{combined_user_text}"},
+                    ],
+                    temperature=0.2,
+                )
+                raw_json = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                pass
+        o_key = store.get_api_key("openai") if store else ""
+        if o_key and not raw_json:
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=o_key, timeout=15.0, max_retries=0)
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": f"USER UTTERANCES:\n{combined_user_text}"},
+                    ],
+                    temperature=0.2,
+                )
+                raw_json = (resp.choices[0].message.content or "").strip()
+            except Exception:
+                pass
+
+    if not raw_json:
+        return []
+    m_arr = re.search(r"\[.*\]", raw_json, flags=re.DOTALL)
+    if not m_arr:
+        return []
+    try:
+        items = json.loads(m_arr.group(0))
+    except Exception:
+        return []
+    if not isinstance(items, list) or not items:
+        return []
+
+    verified: list[dict[str, str]] = []
+    cur_summary = load_memory_summary(db_path).get("text", "")
+    updated_summary = cur_summary
+    idx = SQLiteMemoryIndex(db_path=db_path)
+
+    for it in items[:3]:
+        if not isinstance(it, dict):
+            continue
+        fact = str(it.get("fact") or "").strip()
+        ev = str(it.get("evidence") or "").strip()
+        cat = _normalize_profile_category(str(it.get("category") or "How You Think & Communicate"), fact)
+        if not fact or not ev or len(ev) < 5 or ev.lower() not in lower_combined:
+            continue
+        if fact.lower() in updated_summary.lower():
+            continue
+        verified.append({"category": cat, "fact": fact, "evidence": ev})
+        bullet = f"- {fact} *(from: \"{ev[:80]}\")*"
+        heading = f"### {cat}"
+        if heading in updated_summary:
+            updated_summary = updated_summary.replace(heading, f"{heading}\n{bullet}", 1)
+        else:
+            updated_summary = updated_summary.rstrip() + f"\n\n### {cat}\n{bullet}"
+        m_type = "idiolect" if cat in {"Speech & Communication Style", "How You Think & Communicate"} else "standing"
+        idx.upsert(
+            summary=fact[:120],
+            body=f"{fact}\nVerbatim evidence: \"{ev}\"",
+            memory_type=m_type,
+            importance=5,
+            scope="global",
+            source={"kind": "conversational_signature", "category": cat, "evidence": ev},
         )
 
     if verified and updated_summary != cur_summary:

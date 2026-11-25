@@ -23,10 +23,10 @@ except Exception:
     QLocalServer = None
     QLocalSocket = None
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
-    QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from access_policy import (
@@ -63,9 +63,12 @@ from palace_config import (
     OPENROUTER_PRESET_TIERS,
     PRIMARY_IMAGE_ENGINE_CHOICES,
     PROVIDER_CATALOG,
+    clean_given_name,
     get_app_install_dir,
     get_appdata_root,
     get_experimental_data_root,
+    get_provider_attribution,
+    get_provider_given_name,
     get_resource_path,
     is_frozen_app,
     is_msix_packaged,
@@ -166,31 +169,29 @@ def has_any_configured_ai_agents(
     cfgs_lower = {str(k).strip().lower(): v for k, v in (cfgs or {}).items() if isinstance(v, dict)}
 
     try:
-        from provider_loader import load_configured_providers
-        loaded = load_configured_providers(
-            creds,
-            provider_configs=cfgs,
-            config_path=config_path,
-            include_local_cli=True,
-        )
-        if bool(loaded):
-            return True
-    except Exception:
-        pass
-
-    try:
         stored = [str(p).strip().lower() for p in creds.list_providers()]
     except Exception:
         stored = []
     for pname in stored:
         if pname in _NON_AI_CREDENTIAL_KEYS:
             continue
-        if pname in PROVIDER_CATALOG or pname in cfgs_lower:
+        if pname in PROVIDER_CATALOG or pname in cfgs_lower or pname == "openrouter":
             return True
 
     ollama_cfg = cfgs_lower.get("ollama")
     if isinstance(ollama_cfg, dict) and bool(ollama_cfg.get("enabled", False)):
         return True
+
+    try:
+        from fairybread_mcp import get_council_cli_platforms
+        from local_cli_provider import find_cli_binary, get_mcp_depth
+
+        if get_mcp_depth() < 1:
+            for platform_key in get_council_cli_platforms(config_path=config_path):
+                if find_cli_binary(platform_key):
+                    return True
+    except Exception:
+        pass
 
     return False
 
@@ -231,6 +232,7 @@ from palace_theme import (
     provider_bg_color,
     provider_color,
     provider_display_name,
+    provider_given_name,
     provider_icon,
     provider_qicon,
     provider_token_qicon,
@@ -683,6 +685,64 @@ class ResponsiveBarLabel(QLabel):
             self._updating_elide = False
 
 
+class BackdropPanelWidget(QFrame):
+    """HiDPI pre-baked 90%-washed-out background container for Left Sidebar and Right Memory Panel."""
+
+    def __init__(self, parent=None, *, border_side: str = 'right'):
+        super().__init__(parent)
+        self._border_side = border_side  # 'right' | 'left' | 'none'
+        self._source_img: QImage | None = None
+        self._base_hex = '#11161d'
+        self._border_hex = '#21262d'
+        self._washout_pct = 90
+        self._cached_pix: QPixmap | None = None
+        self._cached_key: tuple | None = None
+
+    def set_washed_backdrop(
+        self,
+        source_img: QImage | None,
+        *,
+        base_hex: str,
+        border_hex: str,
+        washout_pct: int = 90,
+    ) -> None:
+        self._source_img = source_img if (source_img is not None and not source_img.isNull()) else None
+        self._base_hex = str(base_hex or '#11161d')
+        self._border_hex = str(border_hex or '#21262d')
+        self._washout_pct = max(75, min(96, int(washout_pct or 90)))
+        self._cached_pix = None
+        self._cached_key = None
+        self.update()
+
+    def resizeEvent(self, event):
+        self._cached_pix = None
+        self._cached_key = None
+        super().resizeEvent(event)
+
+    def paintEvent(self, event):
+        if self._source_img is not None and self.width() > 2 and self.height() > 2:
+            from palace_theme import bake_washed_backdrop_pixmap
+            dpr = float(self.devicePixelRatioF() or 1.0)
+            key = (self.width(), self.height(), round(dpr, 2), self._base_hex, self._washout_pct, int(self._source_img.cacheKey()))
+            if self._cached_pix is None or self._cached_key != key:
+                self._cached_pix = bake_washed_backdrop_pixmap(
+                    self._source_img,
+                    self.size(),
+                    dpr,
+                    self._base_hex,
+                    self._washout_pct,
+                )
+                self._cached_key = key
+            p = QPainter(self)
+            p.drawPixmap(0, 0, self._cached_pix)
+            if self._border_side in {'right', 'left'}:
+                p.setPen(QPen(QColor(self._border_hex), 1))
+                bx = (self.width() - 1) if self._border_side == 'right' else 0
+                p.drawLine(bx, 0, bx, self.height())
+            p.end()
+        super().paintEvent(event)
+
+
 class ChatBrowser(QTextBrowser):
     """QTextBrowser subclass that paints true anti-aliased 14px rounded pills behind user prompt tables
     (working around Qt QTextDocument's CSS border-radius limitation while keeping text 100% selectable).
@@ -694,6 +754,36 @@ class ChatBrowser(QTextBrowser):
         self.user_bubble_bg = '#1c2128'
         self.user_bubble_border = '#30363d'
         self.sprinkles_enabled = False
+        self._backdrop_img: QImage | None = None
+        self._backdrop_base_hex = '#0d1117'
+        self._backdrop_washout_pct = 90
+        self._backdrop_pix_cache: QPixmap | None = None
+        self._backdrop_cache_key: tuple | None = None
+        # Prevent QAbstractScrollArea scroll-blit ("venetian blind") smearing when stationary wallpaper is active
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll_repaint_backdrop)
+        self.horizontalScrollBar().valueChanged.connect(self._on_scroll_repaint_backdrop)
+
+    def _on_scroll_repaint_backdrop(self, _val: int = 0):
+        if self._backdrop_img is not None:
+            self.viewport().update()
+
+    def set_washed_backdrop(self, source_img: QImage | None, *, base_hex: str, washout_pct: int = 90) -> None:
+        self._backdrop_img = source_img if (source_img is not None and not source_img.isNull()) else None
+        self._backdrop_base_hex = str(base_hex or '#0d1117')
+        self._backdrop_washout_pct = max(75, min(96, int(washout_pct or 90)))
+        self._backdrop_pix_cache = None
+        self._backdrop_cache_key = None
+        if self._backdrop_img is not None:
+            self.viewport().setAutoFillBackground(False)
+            self.setStyleSheet('QTextBrowser#chatView { background: transparent; border: none; }')
+        else:
+            self.setStyleSheet('')
+        self.viewport().update()
+
+    def resizeEvent(self, event):
+        self._backdrop_pix_cache = None
+        self._backdrop_cache_key = None
+        super().resizeEvent(event)
 
     def contextMenuEvent(self, event):
         import urllib.parse
@@ -732,10 +822,28 @@ class ChatBrowser(QTextBrowser):
 
     def paintEvent(self, event):
         try:
+            vp = self.viewport()
+            if self._backdrop_img is not None and vp.width() > 2 and vp.height() > 2:
+                from palace_theme import bake_washed_backdrop_pixmap
+                dpr = float(self.devicePixelRatioF() or 1.0)
+                key = (vp.width(), vp.height(), round(dpr, 2), self._backdrop_base_hex, self._backdrop_washout_pct, int(self._backdrop_img.cacheKey()))
+                if self._backdrop_pix_cache is None or self._backdrop_cache_key != key:
+                    self._backdrop_pix_cache = bake_washed_backdrop_pixmap(
+                        self._backdrop_img,
+                        vp.size(),
+                        dpr,
+                        self._backdrop_base_hex,
+                        self._backdrop_washout_pct,
+                    )
+                    self._backdrop_cache_key = key
+                bg_painter = QPainter(vp)
+                bg_painter.drawPixmap(0, 0, self._backdrop_pix_cache)
+                bg_painter.end()
+
             doc = self.document()
             layout = doc.documentLayout() if doc is not None else None
             if doc is not None and layout is not None:
-                painter = QPainter(self.viewport())
+                painter = QPainter(vp)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                 hx = self.horizontalScrollBar().value()
                 vy = self.verticalScrollBar().value()
@@ -825,6 +933,7 @@ class VoiceCompanionWorker(QThread):
         allow_memory_write: bool = True,
         session_gen: int = 0,
         memory_db_path: Path | None = None,
+        include_palace_code: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -841,6 +950,7 @@ class VoiceCompanionWorker(QThread):
         self.allow_memory_write = bool(allow_memory_write)
         self.session_gen = int(session_gen)
         self.memory_db_path = memory_db_path
+        self.include_palace_code = bool(include_palace_code)
 
     def run(self):
         try:
@@ -874,8 +984,15 @@ class VoiceCompanionWorker(QThread):
                         _log_voice_diagnostic(f"VoiceCompanionWorker memory lookup failed: {exc}")
                     except Exception:
                         pass
-            try:
-                decision = self.companion.respond(
+            living_prof = ""
+            if self.allow_memory_write:
+                try:
+                    from memory_service import load_memory_summary
+                    living_prof = str(load_memory_summary(self.memory_db_path).get("text") or "").strip()
+                except Exception:
+                    living_prof = ""
+            if hasattr(self.companion, "respond_quorum"):
+                decision = self.companion.respond_quorum(
                     transcript,
                     background_busy=self.background_busy,
                     background_status=self.background_status,
@@ -884,42 +1001,57 @@ class VoiceCompanionWorker(QThread):
                     talk_only=self.talk_only,
                     memory_context=mem_ctx,
                     allow_memory_write=self.allow_memory_write,
+                    living_profile_text=living_prof,
+                    include_palace_code=self.include_palace_code,
                 )
-            except TypeError:
-                # NOTE: We reach this branch only if the modern call above raised
-                # TypeError. That may be a real internal bug in respond(), not a
-                # signature mismatch. Probe once; only retry with legacy args if
-                # the signature genuinely does not accept our kwargs.
-                import inspect as _inspect
-                _modern_ok = True
+            else:
                 try:
-                    _sig = _inspect.signature(self.companion.respond)
-                    _params = _sig.parameters
-                    _required_kwargs = (
-                        "talk_only",
-                        "memory_context",
-                        "allow_memory_write",
-                    )
-                    _modern_ok = all(
-                        (k in _params) or any(
-                            p.kind == _inspect.Parameter.VAR_KEYWORD
-                            for p in _params.values()
-                        )
-                        for k in _required_kwargs
-                    )
-                except (TypeError, ValueError):
-                    _modern_ok = True
-                if not _modern_ok:
                     decision = self.companion.respond(
                         transcript,
                         background_busy=self.background_busy,
                         background_status=self.background_status,
                         background_question=self.background_question,
                         recent_chat_snippet=self.recent_chat_snippet,
+                        talk_only=self.talk_only,
+                        memory_context=mem_ctx,
+                        allow_memory_write=self.allow_memory_write,
+                        include_palace_code=self.include_palace_code,
                     )
-                else:
-                    # Genuine TypeError inside respond() — propagate, do not retry.
-                    raise
+                except TypeError:
+                    # NOTE: We reach this branch only if the modern call above raised
+                    # TypeError. That may be a real internal bug in respond(), not a
+                    # signature mismatch. Probe once; only retry with legacy args if
+                    # the signature genuinely does not accept our kwargs.
+                    import inspect as _inspect
+                    _modern_ok = True
+                    try:
+                        _sig = _inspect.signature(self.companion.respond)
+                        _params = _sig.parameters
+                        _required_kwargs = (
+                            "talk_only",
+                            "memory_context",
+                            "allow_memory_write",
+                        )
+                        _modern_ok = all(
+                            (k in _params) or any(
+                                p.kind == _inspect.Parameter.VAR_KEYWORD
+                                for p in _params.values()
+                            )
+                            for k in _required_kwargs
+                        )
+                    except (TypeError, ValueError):
+                        _modern_ok = True
+                    if not _modern_ok:
+                        decision = self.companion.respond(
+                            transcript,
+                            background_busy=self.background_busy,
+                            background_status=self.background_status,
+                            background_question=self.background_question,
+                            recent_chat_snippet=self.recent_chat_snippet,
+                        )
+                    else:
+                        # Genuine TypeError inside respond() — propagate, do not retry.
+                        raise
             self.completed.emit(decision, transcript)
         except Exception as exc:
             self.failed.emit(str(exc) or type(exc).__name__)
@@ -954,11 +1086,106 @@ class VoiceSummaryWorker(QThread):
             pass
 
 
-def _style_settings_card(card: QFrame, obj_name: str, lay=None, pad_h: int = 12, pad_v: int = 10) -> QFrame:
-    """Apply scoped QFrame border styling so child QLabels never inherit card borders."""
+# ── Theme token source-of-truth ────────────────────────────────────────────
+# Every color used by QSS *and* by RichText/HTML renderers must come from
+# here so switching between 'light' (Clean Daylight) and 'midnight' themes
+# updates assistant reply text, settings cards, and inline HTML in lockstep.
+# Keeping this as a dict (not per-widget constants) lets settings.py, the
+# transcript renderer, and _style_settings_card all read the same values.
+def _theme_tokens(theme_name: str | None = None) -> dict:
+    """Return the active color token map for the given theme name.
+
+    theme_name falls back to the current app-level theme when None. Tokens
+    are intentionally primitive strings (hex or rgba()) so they can be
+    embedded directly into QSS and f-string HTML.
+    """
+    name = (theme_name or '').strip().lower()
+    if not name:
+        try:
+            name = str(_current_theme_name()).lower()
+        except Exception:
+            name = 'midnight'
+    if name in ('light', 'clean day', 'clean-daylight', 'daylight'):
+        return {
+            'bg':            '#ffffff',
+            'bg_alt':        '#f6f8fa',
+            'surface':       '#ffffff',
+            'surface_card':  '#f3f5f8',
+            'card_border':   '#d0d7de',
+            'text_primary':  '#1f2328',
+            'text_secondary':'#57606a',
+            'text_muted':    '#6e7781',
+            'text_on_dark':  '#ffffff',
+            'accent':        '#0969da',
+            'accent_hover':  '#0a5fc4',
+            'input_bg':      '#ffffff',
+            'input_border':  '#d0d7de',
+            'table_bg':      '#ffffff',
+            'table_alt':     '#f6f8fa',
+            'table_header':  '#f6f8fa',
+            'table_grid':    '#d8dee4',
+            'chip_bg':       '#eff2f5',
+            'chip_border':   '#d0d7de',
+            'chip_text':     '#1f2328',
+            'success':       '#1a7f37',
+            'warning':       '#9a6700',
+            'danger':        '#cf222e',
+            'menu_bg':       '#ffffff',
+            'menu_text':     '#1f2328',
+            'menu_border':   '#d0d7de',
+            'progress_bg':   '#eaeef2',
+            'progress_text': '#1f2328',
+            'progress_chunk':'#1a7f37',
+        }
+    # midnight (default dark theme)
+    return {
+        'bg':            '#0d1117',
+        'bg_alt':        '#111318',
+        'surface':       '#161b22',
+        'surface_card':  'rgba(22, 27, 34, 0.55)',
+        'card_border':   '#262b36',
+        'text_primary':  '#e6edf3',
+        'text_secondary':'#8b949e',
+        'text_muted':    '#6e7681',
+        'text_on_dark':  '#ffffff',
+        'accent':        '#2f81f7',
+        'accent_hover':  '#4493f8',
+        'input_bg':      '#0d1117',
+        'input_border':  '#30363d',
+        'table_bg':      '#0d1117',
+        'table_alt':     '#131720',
+        'table_header':  '#161b22',
+        'table_grid':    '#21262d',
+        'chip_bg':       '#21262d',
+        'chip_border':   '#30363d',
+        'chip_text':     '#e6edf3',
+        'success':       '#22c55e',
+        'warning':       '#eab308',
+        'danger':        '#da3633',
+        'menu_bg':       '#161922',
+        'menu_text':     '#e6edf3',
+        'menu_border':   '#2b313e',
+        'progress_bg':   '#0d1117',
+        'progress_text': '#e6edf3',
+        'progress_chunk':'#22c55e',
+    }
+
+
+def _current_theme_name() -> str:
+    """Best-effort lookup of the active UI theme name; safe when called early."""
+    try:
+        cfg = load_ui_settings() or {}
+        return str(cfg.get('theme') or 'dark')
+    except Exception:
+        return 'dark'
+
+
+def _style_settings_card(card: QFrame, obj_name: str, lay=None, pad_h: int = 4, pad_v: int = 6) -> QFrame:
+    """Apply flat LibreOffice Options section styling (no heavy nested dark card boxes)."""
     card.setObjectName(obj_name)
+    card.setProperty('settingsSection', True)
     card.setStyleSheet(
-        f'QFrame#{obj_name} {{ background:#131720; border:1px solid #262c3a; border-radius:8px; }}'
+        f'QFrame#{obj_name} {{ background: transparent; border: none; border-radius: 0px; }}'
     )
     if lay is not None:
         lay.setContentsMargins(pad_h, pad_v, pad_h, pad_v)
@@ -970,15 +1197,19 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
 
     def __init__(self, document, *, checker=None, enabled: bool = True):
         super().__init__(document)
-        from spellcheck_service import get_spellchecker
-
-        self._checker = checker if checker is not None else get_spellchecker()
+        self._checker = checker
         self.enabled = bool(enabled)
         self._active_block = -1
         self._active_col = -1
         self._error_fmt = QTextCharFormat()
         self._error_fmt.setUnderlineColor(QColor('#f85149'))
         self._error_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+
+    def _get_checker(self):
+        if self._checker is None:
+            from spellcheck_service import get_spellchecker
+            self._checker = get_spellchecker()
+        return self._checker
 
     def set_enabled(self, enabled: bool) -> None:
         val = bool(enabled)
@@ -993,10 +1224,11 @@ class SpellCheckHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text: str) -> None:
         if not self.enabled or not text:
             return
-        if not getattr(self._checker, 'available', False):
+        checker = self._get_checker()
+        if not getattr(checker, 'available', False):
             return
         skip_col = self._active_col if self.currentBlock().blockNumber() == self._active_block else None
-        for start, length, _word in self._checker.find_misspelled_spans(text, skip_cursor_col=skip_col):
+        for start, length, _word in checker.find_misspelled_spans(text, skip_cursor_col=skip_col):
             self.setFormat(start, length, self._error_fmt)
 
 
@@ -1059,8 +1291,9 @@ class Composer(QTextEdit):
 
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu(event.pos())
-        checker = getattr(getattr(self, '_spell_highlighter', None), '_checker', None)
-        sp_enabled = bool(getattr(getattr(self, '_spell_highlighter', None), 'enabled', False))
+        sp_hl = getattr(self, '_spell_highlighter', None)
+        sp_enabled = bool(getattr(sp_hl, 'enabled', False))
+        checker = sp_hl._get_checker() if (sp_enabled and sp_hl is not None) else None
         if sp_enabled and checker is not None and getattr(checker, 'available', False):
             from spellcheck_service import WORD_RE, should_skip_word
 
@@ -1208,6 +1441,21 @@ class Composer(QTextEdit):
         super().keyPressEvent(event)
 
 
+def _apply_windows_dialog_flags(dlg: QDialog, *, resizable: bool = True, allow_minimize: bool = False) -> None:
+    """Guarantee Microsoft Windows compliant titlebar controls (Close X always active; Maximize on resizable dialogs)."""
+    flags = (
+        dlg.windowFlags()
+        | Qt.WindowType.WindowTitleHint
+        | Qt.WindowType.WindowSystemMenuHint
+        | Qt.WindowType.WindowCloseButtonHint
+    ) & ~Qt.WindowType.WindowContextHelpButtonHint
+    if resizable:
+        flags |= Qt.WindowType.WindowMaximizeButtonHint
+    if allow_minimize:
+        flags |= Qt.WindowType.WindowMinimizeButtonHint
+    dlg.setWindowFlags(flags)
+
+
 class CustomAIPickerDialog(QDialog):
     """Custom selection dialog when the user chooses 'Custom Selection…' from the Squad dropdown."""
 
@@ -1220,6 +1468,7 @@ class CustomAIPickerDialog(QDialog):
         config_path: Path = CONFIG_PATH,
     ):
         super().__init__(parent)
+        _apply_windows_dialog_flags(self, resizable=False)
         self.setWindowTitle('Custom AI Squad Selection')
         self.setMinimumWidth(380)
         lay = QVBoxLayout(self)
@@ -1296,6 +1545,7 @@ class RestoreDefaultSettingsDialog(QDialog):
         self.reset_result: dict[str, Any] = {}
 
         self.setWindowTitle('Restore Default Settings')
+        _apply_windows_dialog_flags(self, resizable=False)
         self.resize(560, 400)
         self.setModal(True)
 
@@ -1376,6 +1626,8 @@ class RestoreDefaultSettingsDialog(QDialog):
 class ManageAIsDialog(QDialog):
     """Multi-page Palace Settings dialog (including AI Providers and dedicated Idle Mode page)."""
 
+    _ui_call_signal = Signal(object)
+
     SETTINGS_PAGES = [
         'General',
         'AI Access Permissions',
@@ -1402,6 +1654,7 @@ class ManageAIsDialog(QDialog):
         bridge_appdata_dir: Path | None = None,
     ):
         super().__init__(parent)
+        self._ui_call_signal.connect(self._on_ui_call)
         self.config_path = config_path
         self.credential_store = credential_store or CredentialStore()
         self.idle_memory = idle_memory or IdleMemoryStore()
@@ -1417,25 +1670,52 @@ class ManageAIsDialog(QDialog):
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.setInterval(250)
         self._autosave_timer.timeout.connect(self._flush_autosave)
-        self.setWindowTitle('Fairybread Settings')
-        self.resize(960, 720)
+        init_ui_snap = load_ui_settings(self.config_path)
+        self._committed_theme_id = str(init_ui_snap.get('theme') or 'dark')
+        self._committed_bg_snap = {
+            'bg_image_source': str(init_ui_snap.get('bg_image_source') or 'none'),
+            'bg_image_path': str(init_ui_snap.get('bg_image_path') or ''),
+            'bg_image_placement': str(init_ui_snap.get('bg_image_placement') or 'chat_sidebar'),
+            'bg_washout_percent': int(init_ui_snap.get('bg_washout_percent', 90)),
+        }
+        self.setWindowTitle('Options — Fairybread')
+        _apply_windows_dialog_flags(self, resizable=True)
+        self.resize(1040, 720)
         self.setMinimumSize(760, 460)
 
         root_layout = QHBoxLayout(self)
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(16)
 
-        # Left navigation list
+        # Left navigation tree (LibreOffice Options expandable category tree)
+        self._voice_nav_expanded = False
+        self._tree_expanded_groups: dict[str, bool] = {
+            'Fairybread': True,
+            'Council': True,
+            'Providers': True,
+            'Voice & Audio': False,
+            'Image Engine': False,
+            'Memory Palace': False,
+        }
+        self._nav_rebuilding = False
+        left_nav_col = QVBoxLayout()
+        left_nav_col.setContentsMargins(0, 0, 0, 0)
+        left_nav_col.setSpacing(6)
+        self.nav_search_edit = QLineEdit(self)
+        self.nav_search_edit.setPlaceholderText('Type to search…')
+        self.nav_search_edit.setClearButtonEnabled(True)
+        self.nav_search_edit.setFixedWidth(220)
+        self.nav_search_edit.setToolTip('Filter Options categories and pages by keyword')
+        left_nav_col.addWidget(self.nav_search_edit)
         self.nav_list = QListWidget()
         self.nav_list.setObjectName('sidebarList')
-        self.nav_list.setFixedWidth(205)
-        for page_name in self.SETTINGS_PAGES:
-            self.nav_list.addItem(page_name)
-        root_layout.addWidget(self.nav_list)
+        self.nav_list.setFixedWidth(220)
+        left_nav_col.addWidget(self.nav_list, 1)
+        root_layout.addLayout(left_nav_col)
 
-        # Right content area + bottom auto-save bar
+        # Right content area + LibreOffice Options footer
         right_col = QVBoxLayout()
-        self.pages = QStackedWidget()
+        self.pages = QStackedWidget(self)
         right_col.addWidget(self.pages, 1)
 
         self._build_general_page()
@@ -1454,44 +1734,111 @@ class ManageAIsDialog(QDialog):
         self._polish_settings_forms_and_combos()
         self._install_page_wheel_guards()
 
+        footer_div = QFrame(self)
+        footer_div.setFrameShape(QFrame.Shape.HLine)
+        footer_div.setFixedHeight(1)
+        right_col.addWidget(footer_div)
+
         buttons = QHBoxLayout()
-        self._autosave_status_label = QLabel('✓ Changes save automatically')
-        self._autosave_status_label.setStyleSheet('color: #90d7c1; font-size: 12px; font-weight: 600;')
+        buttons.setSpacing(6)
+        help_btn = QPushButton('Help')
+        help_btn.setFixedSize(84, 26)
+        help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        help_btn.setToolTip('Open the built-in Fairybread User Guide & Drawing Instructions')
+        help_btn.clicked.connect(self._open_options_help_dialog)
+        buttons.addWidget(help_btn)
+
+        self._autosave_status_label = QLabel('')
+        self._autosave_status_label.setObjectName('muted')
+        self._autosave_status_label.hide()
         buttons.addWidget(self._autosave_status_label)
         buttons.addStretch()
-        done_btn = QPushButton('Done')
+
+        reset_btn = QPushButton('Reset Page')
+        reset_btn.setFixedSize(90, 26)
+        reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_btn.setToolTip('Reload saved values for the currently selected Options page')
+        reset_btn.clicked.connect(self._reset_current_page_to_saved)
+        buttons.addWidget(reset_btn)
+
+        cancel_btn = QPushButton('Cancel')
+        cancel_btn.setFixedSize(84, 26)
+        cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel_btn.setToolTip('Discard unapplied changes and close Options')
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(cancel_btn)
+
+        apply_btn = QPushButton('Apply')
+        apply_btn.setFixedSize(84, 26)
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        apply_btn.setToolTip('Apply and save changes without closing Options')
+        apply_btn.clicked.connect(self.apply_settings)
+        buttons.addWidget(apply_btn)
+
+        done_btn = QPushButton('OK')
+        done_btn.setFixedSize(84, 26)
         done_btn.setDefault(True)
         done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        done_btn.setToolTip('Close Settings (all changes are saved automatically)')
+        done_btn.setToolTip('Save changes and close Options')
         done_btn.clicked.connect(self.save_settings)
         buttons.addWidget(done_btn)
         right_col.addLayout(buttons)
 
         root_layout.addLayout(right_col, 1)
+        try:
+            init_tid = str(load_ui_settings(self.config_path).get('theme') or 'dark')
+            self._apply_libreoffice_dialog_theme(init_tid)
+        except Exception:
+            pass
 
-        self.nav_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+        self.nav_search_edit.textChanged.connect(self._on_nav_search_changed)
+        self.nav_list.currentRowChanged.connect(self._on_nav_row_changed)
+        self.nav_list.itemClicked.connect(self._on_nav_item_clicked)
         page_aliases = {
             'Permissions': 'AI Access Permissions',
             'Approval': 'AI Access Permissions',
             'Access Permissions': 'AI Access Permissions',
+            'Access & Permissions': 'AI Access Permissions',
             'Work Mode & Tools': 'AI Access Permissions',
             'Work Mode': 'AI Access Permissions',
             'Configuration': 'Agent Defaults',
             'Control Panel': 'Agent Defaults',
             'Defaults': 'Agent Defaults',
+            'Council': 'Agent Defaults',
+            'Routing': 'Agent Defaults',
+            'Response Timing': 'Agent Defaults',
+            'Image Engine': 'Agent Defaults',
             'Voice': 'Voice & Audio',
             'Audio': 'Voice & Audio',
             'Microphone': 'Voice & Audio',
+            'Voice Cast': 'Voice & Audio',
+            'Voice Cast & Multi-AI': 'Voice & Audio',
+            'Roleplay Personas': 'Voice & Audio',
+            'Voice Personas': 'Voice & Audio',
+            'Audio, Voices & Mic': 'Voice & Audio',
             'Notifications': 'Email & Notifications',
             'Email': 'Email & Notifications',
+            'Email & Alerts': 'Email & Notifications',
             'Agent Bridge': 'External Agent Bridge (MCP)',
+            'External Apps (MCP)': 'External Agent Bridge (MCP)',
             'Agent Bridge & Permissions': 'External Agent Bridge (MCP)',
             'Idle Mode': 'Experimental Mode',
             'Idle': 'Experimental Mode',
             'Experimental': 'Experimental Mode',
             'Memory & History': 'Memory & Personalization',
+            'Memory & Profile': 'Memory & Personalization',
             'Personalization': 'Memory & Personalization',
             'Memory': 'Memory & Personalization',
+            'Storage & Backup': 'Backup & Restore',
+        }
+        voice_sub_map = {
+            'Voice Cast': 1,
+            'Voice Cast & Multi-AI': 1,
+            'Roleplay Personas': 2,
+            'Voice Personas': 2,
+            'Audio, Voices & Mic': 0,
+            'Response Timing': 1,
+            'Image Engine': 2,
         }
         resolved_page = page_aliases.get(initial_page, initial_page)
         target_idx = (
@@ -1499,10 +1846,263 @@ class ManageAIsDialog(QDialog):
             if resolved_page in self.SETTINGS_PAGES
             else self.SETTINGS_PAGES.index('AI Providers')
         )
-        self.nav_list.setCurrentRow(target_idx)
+        voice_page_idx = self.SETTINGS_PAGES.index('Voice & Audio')
+        council_page_idx = self.SETTINGS_PAGES.index('Agent Defaults')
+        init_sub = voice_sub_map.get(initial_page, 0)
+        self._voice_nav_expanded = (target_idx == voice_page_idx)
+        if target_idx == voice_page_idx:
+            self._tree_expanded_groups['Voice & Audio'] = True
+        elif target_idx == council_page_idx and init_sub == 2:
+            self._tree_expanded_groups['Image Engine'] = True
+        elif target_idx in (
+            self.SETTINGS_PAGES.index('Memory & Personalization'),
+            self.SETTINGS_PAGES.index('Email & Notifications'),
+            self.SETTINGS_PAGES.index('Experimental Mode'),
+        ):
+            self._tree_expanded_groups['Memory Palace'] = True
+        self._rebuild_nav_list(target_page_idx=target_idx, voice_sub_idx=init_sub)
+        if target_idx == voice_page_idx and hasattr(self, '_select_voice_subpage'):
+            self._select_voice_subpage(init_sub)
+        elif target_idx == council_page_idx and hasattr(self, '_select_council_subpage'):
+            self._select_council_subpage(init_sub)
+        if target_idx == self.SETTINGS_PAGES.index('Backup & Restore'):
+            self._ensure_backup_storage_loaded()
         self._fit_to_available_screen()
         self._wire_autosave_signals()
         self._init_complete = True
+
+    def _apply_libreoffice_dialog_theme(self, theme_id: str = 'dark'):
+        t_dict = load_theme_dict(theme_id)
+        is_light = _is_light_theme(t_dict)
+        bg_dlg = '#ffffff' if is_light else '#1e1e1e'
+        bg_tree = '#f8f9fa' if is_light else '#171717'
+        bg_ctrl = '#ffffff' if is_light else '#262626'
+        fg_main = '#1f2328' if is_light else '#f0f0f0'
+        fg_muted = '#57606a' if is_light else '#a0a0a0'
+        bd_col = '#c8ccd0' if is_light else '#454545'
+        sel_bg = '#0078d4'
+        self.setStyleSheet(
+            f'QDialog {{ background: {bg_dlg}; color: {fg_main}; font-family: "Segoe UI", sans-serif; font-size: 12px; }} '
+            f'QDialog QWidget {{ color: {fg_main}; font-size: 12px; }} '
+            f'QDialog QScrollArea, QDialog QScrollArea > QWidget, QDialog QScrollArea > QWidget > QWidget, QDialog QStackedWidget {{ background: {bg_dlg}; border: none; }} '
+            f'QDialog QLabel {{ background: transparent; color: {fg_main}; border: none; }} '
+            f'QDialog QLabel#muted {{ color: {fg_muted}; font-size: 11.5px; }} '
+            f'QDialog QListWidget#sidebarList {{ background: {bg_tree}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 0px; padding: 2px 0px; font-size: 11.5px; outline: none; }} '
+            f'QDialog QListWidget#sidebarList::item {{ padding: 4px 8px; border-radius: 0px; margin: 0px; color: {fg_main}; }} '
+            f'QDialog QListWidget#sidebarList::item:selected {{ background: {sel_bg}; color: #ffffff; font-weight: 600; }} '
+            f'QDialog QListWidget#sidebarList::item:hover:!selected {{ background: {"#e8eef5" if is_light else "#2b2b2b"}; }} '
+            f'QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox, QDialog QTextEdit {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 2px; padding: 3px 6px; min-height: 22px; }} '
+            f'QDialog QPushButton {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 3px; padding: 3px 10px; }} '
+            f'QDialog QPushButton:hover {{ border-color: {sel_bg}; background: {"#eef4fb" if is_light else "#2f343d"}; }} '
+            f'QDialog QPushButton:default {{ border: 1px solid {sel_bg}; font-weight: 600; }} '
+            f'QDialog QCheckBox {{ color: {fg_main}; spacing: 7px; }} '
+            f'QDialog QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {bd_col}; border-radius: 2px; background: {bg_ctrl}; }} '
+            f'QDialog QCheckBox::indicator:checked {{ background: {sel_bg}; border-color: {sel_bg}; }} '
+            f'QDialog QTableWidget {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; gridline-color: {bd_col}; }} '
+            f'QDialog QHeaderView::section {{ background: {bg_tree}; color: {fg_main}; border: 1px solid {bd_col}; padding: 4px 6px; font-weight: 600; }}'
+        )
+
+    @Slot(object)
+    def _on_ui_call(self, fn):
+        if getattr(self, '_voice_dlg_closed', False):
+            return
+        if callable(fn):
+            fn()
+
+    def _ensure_backup_storage_loaded(self):
+        if getattr(self, '_backup_storage_loaded', False):
+            return
+        self._backup_storage_loaded = True
+        ref_fn = getattr(self, '_refresh_backup_storage_ui', None)
+        if callable(ref_fn):
+            ref_fn()
+
+    def _on_nav_search_changed(self, _text: str = ''):
+        cur_p = self.pages.currentIndex() if hasattr(self, 'pages') else 0
+        cur_sub = None
+        if cur_p == self.SETTINGS_PAGES.index('Voice & Audio') and hasattr(self, 'voice_sub_pages'):
+            cur_sub = self.voice_sub_pages.currentIndex()
+        elif cur_p == self.SETTINGS_PAGES.index('Agent Defaults') and hasattr(self, 'council_sub_pages'):
+            cur_sub = self.council_sub_pages.currentIndex()
+        self._rebuild_nav_list(target_page_idx=max(0, cur_p), voice_sub_idx=cur_sub)
+
+    def _get_libreoffice_tree_groups(self) -> list[tuple[str, str, list[tuple[int, int | None, str, str, str]]]]:
+        p_idx = self.SETTINGS_PAGES.index
+        return [
+            (
+                'Fairybread',
+                'Core application settings, appearance, access permissions, and storage backups',
+                [
+                    (p_idx('General'), None, 'General', 'Startup behavior, tray, Enter key rule & Home Location', 'general startup tray catalog spellcheck enter weather location radar home'),
+                    (p_idx('Appearance'), None, 'Appearance', 'Color theme, agent chip style & reply card contributor badges', 'appearance theme dark light cyberpunk chip badge icon'),
+                    (p_idx('AI Access Permissions'), None, 'Access & Permissions', 'Permission mode (Request Review, Default, Auto, Turbo) & Write Exclusions', 'permissions access execution mode turbo auto request review write exclusion folder drive tools shell'),
+                    (p_idx('Backup & Restore'), None, 'Storage & Backup', 'Database locations, storage caps & AES-256 encrypted backups', 'backup restore zip export import password aes storage folder database reset'),
+                ],
+            ),
+            (
+                'Council',
+                'Multi-AI routing, response style, and phase/provider time ceilings',
+                [
+                    (p_idx('Agent Defaults'), 0, 'Routing & Defaults', 'Web search depth, output detail, reasoning style & Primary Synthesizer', 'council routing agent defaults web search output detail reasoning synthesizer'),
+                    (p_idx('Agent Defaults'), 1, 'Response Timing', 'Round 1, Round 2, Synthesis maximum waits & per-provider ceilings', 'council response timing timeout straggler quick standard deep round 1 round 2 synthesis'),
+                ],
+            ),
+            (
+                'Providers',
+                'API keys, active models, custom squads, and external app connections',
+                [
+                    (p_idx('AI Providers'), None, 'AI Providers & Keys', 'API keys (Windows DPAPI vault), OpenRouter Hub & model selection', 'providers api key dpapi openrouter gemini openai deepseek groq qwen cohere mistral cerebras model'),
+                    (p_idx('Profiles'), None, 'Profiles & Squads', 'Custom AI squads, model overrides & deliberation depth presets', 'profiles squad preset deliberation code'),
+                    (p_idx('External Agent Bridge (MCP)'), None, 'External Apps (MCP)', 'Let ChatGPT Desktop, Google Antigravity, Grok, or Claude drive Fairybread', 'external agent bridge mcp claude codex antigravity grok foreman'),
+                ],
+            ),
+            (
+                'Voice & Audio',
+                'Microphone, text-to-speech voice engines, Table Quorum cast, and Roleplay Personas',
+                [
+                    (p_idx('Voice & Audio'), 0, 'Audio & Mic', 'Thinking AI, speaking voice, mic level & 3D avatar mode', 'audio voice mic microphone tts deepgram cartesia elevenlabs avatar'),
+                    (p_idx('Voice & Audio'), 1, 'Voice Cast', '1–4 AI slots, distinct voices, Table Quorum & Mode presets', 'voice cast multi ai table quorum slots preset'),
+                    (p_idx('Voice & Audio'), 2, 'Personas', 'Editable roleplay blueprints & profile learning', 'roleplay persona character blueprint speaker'),
+                ],
+            ),
+            (
+                'Image Engine',
+                'High-resolution primary renderer, fast draft model, and image pipeline mode',
+                [
+                    (p_idx('Agent Defaults'), 2, 'Renderer & Pipeline', 'Primary image engine, draft image engine & graphics pipeline mode', 'image engine graphics primary draft renderer sunburst flare gemini'),
+                ],
+            ),
+            (
+                'Memory Palace',
+                'Shared Memory Palace, Living User Profile, Email Connector, and Experimental Sandbox',
+                [
+                    (p_idx('Memory & Personalization'), None, 'Memory & Profile', 'Living User Profile, tone/humor controls & reference photos', 'memory personalization living user profile photo tone style humor instructions'),
+                    (p_idx('Email & Notifications'), None, 'Email & Alerts', 'Gmail/Outlook/IMAP email search connector & completion notifications', 'email notifications gmail outlook imap smtp toast alert'),
+                    (p_idx('Experimental Mode'), None, 'Experimental', 'Isolated Experimental Sandbox & idle autonomous workshop settings', 'experimental idle autonomous council mirror ethics token cap'),
+                ],
+            ),
+        ]
+
+    def _rebuild_nav_list(self, *, target_page_idx: int = 0, voice_sub_idx: int | None = None):
+        query = self.nav_search_edit.text().strip().lower() if hasattr(self, 'nav_search_edit') else ''
+        tree_groups = self._get_libreoffice_tree_groups()
+        if not hasattr(self, '_tree_expanded_groups'):
+            self._tree_expanded_groups = {g[0]: (g[0] in {'Fairybread', 'Council', 'Providers'}) for g in tree_groups}
+        self._tree_expanded_groups['Voice & Audio'] = bool(self._voice_nav_expanded or self._tree_expanded_groups.get('Voice & Audio'))
+
+        # Ensure the group containing (target_page_idx, voice_sub_idx) is expanded
+        active_group_name = 'Fairybread'
+        active_child_label = 'General'
+        for g_name, _g_tip, children in tree_groups:
+            for c_pidx, c_sub, c_lbl, _c_tip, _c_kw in children:
+                if c_pidx == target_page_idx and (c_sub is None or voice_sub_idx is None or c_sub == voice_sub_idx):
+                    self._tree_expanded_groups[g_name] = True
+                    if g_name == 'Voice & Audio':
+                        self._voice_nav_expanded = True
+                    active_group_name = g_name
+                    active_child_label = c_lbl
+                    break
+
+        self._nav_rebuilding = True
+        try:
+            self.nav_list.blockSignals(True)
+            self.nav_list.clear()
+            selected_row = -1
+            for g_name, g_tip, children in tree_groups:
+                matched_children = [
+                    c for c in children
+                    if not query or (query in f'{g_name.lower()} {c[2].lower()} {c[4]}')
+                ]
+                if not matched_children:
+                    continue
+                is_exp = True if query else bool(self._tree_expanded_groups.get(g_name, False))
+                prefix = '▾ ' if is_exp else '▸ '
+                first_c = matched_children[0]
+                hdr_it = QListWidgetItem(f'{prefix}{g_name}')
+                hdr_it.setData(Qt.ItemDataRole.UserRole, (first_c[0], first_c[1], g_name, True))
+                hdr_it.setToolTip(g_tip)
+                self.nav_list.addItem(hdr_it)
+                if not is_exp:
+                    for c_pidx, c_sub, _c_lbl, _c_tip, _c_kw in matched_children:
+                        if c_pidx == target_page_idx and (c_sub is None or voice_sub_idx is None or c_sub == voice_sub_idx):
+                            selected_row = self.nav_list.count() - 1
+                else:
+                    for c_i, (c_pidx, c_sub, c_lbl, c_tip, _c_kw) in enumerate(matched_children):
+                        branch_glyph = '  └─ ' if c_i == len(matched_children) - 1 else '  ├─ '
+                        child_it = QListWidgetItem(f'{branch_glyph}{c_lbl}')
+                        child_it.setData(Qt.ItemDataRole.UserRole, (c_pidx, c_sub, g_name, False))
+                        child_it.setToolTip(c_tip)
+                        self.nav_list.addItem(child_it)
+                        if c_pidx == target_page_idx and (
+                            (c_sub is None and (voice_sub_idx is None or c_pidx not in (self.SETTINGS_PAGES.index('Voice & Audio'), self.SETTINGS_PAGES.index('Agent Defaults'))))
+                            or (c_sub is not None and (voice_sub_idx == c_sub or (voice_sub_idx is None and c_sub == 0)))
+                        ):
+                            selected_row = self.nav_list.count() - 1
+
+            if selected_row >= 0:
+                self.nav_list.setCurrentRow(selected_row)
+                self.pages.setCurrentIndex(target_page_idx)
+            elif self.nav_list.count() > 0:
+                self.nav_list.setCurrentRow(0)
+                self.pages.setCurrentIndex(target_page_idx)
+            self.setWindowTitle(f'Options — Fairybread — {active_group_name} — {active_child_label}')
+        finally:
+            self.nav_list.blockSignals(False)
+            self._nav_rebuilding = False
+
+    def _on_nav_row_changed(self, row: int):
+        if getattr(self, '_nav_rebuilding', False) or row < 0:
+            return
+        item = self.nav_list.item(row)
+        if item is None:
+            return
+        raw_item_txt = item.text()
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(meta, tuple) or len(meta) < 2:
+            self.pages.setCurrentIndex(max(0, min(self.pages.count() - 1, row)))
+            return
+        page_idx, sub_idx = meta[0], meta[1]
+        g_name = meta[2] if len(meta) >= 3 else 'Fairybread'
+        is_hdr = bool(meta[3]) if len(meta) >= 4 else False
+        voice_page_idx = self.SETTINGS_PAGES.index('Voice & Audio')
+        council_page_idx = self.SETTINGS_PAGES.index('Agent Defaults')
+        if is_hdr and not self._tree_expanded_groups.get(g_name, False):
+            self._tree_expanded_groups[g_name] = True
+            if g_name == 'Voice & Audio':
+                self._voice_nav_expanded = True
+            self._rebuild_nav_list(target_page_idx=page_idx, voice_sub_idx=sub_idx)
+        self.pages.setCurrentIndex(page_idx)
+        if page_idx == voice_page_idx and hasattr(self, '_select_voice_subpage'):
+            self._select_voice_subpage(0 if sub_idx is None else int(sub_idx))
+        elif page_idx == council_page_idx and hasattr(self, '_select_council_subpage'):
+            self._select_council_subpage(0 if sub_idx is None else int(sub_idx))
+        if page_idx == self.SETTINGS_PAGES.index('Backup & Restore'):
+            self._ensure_backup_storage_loaded()
+        clean_lbl = raw_item_txt.replace('▾ ', '').replace('▸ ', '').replace('├─ ', '').replace('└─ ', '').strip()
+        if is_hdr:
+            self.setWindowTitle(f'Options — Fairybread — {g_name}')
+        else:
+            self.setWindowTitle(f'Options — Fairybread — {g_name} — {clean_lbl}')
+
+    def _on_nav_item_clicked(self, item: QListWidgetItem | None):
+        if item is None or getattr(self, '_nav_rebuilding', False):
+            return
+        meta = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(meta, tuple) or len(meta) < 2:
+            return
+        page_idx, sub_idx = meta[0], meta[1]
+        g_name = meta[2] if len(meta) >= 3 else ''
+        is_hdr = bool(meta[3]) if len(meta) >= 4 else (sub_idx is None)
+        if is_hdr and g_name:
+            if getattr(self, '_last_clicked_tree_hdr', '') == g_name:
+                new_exp = not bool(self._tree_expanded_groups.get(g_name, True))
+                self._tree_expanded_groups[g_name] = new_exp
+                if g_name == 'Voice & Audio':
+                    self._voice_nav_expanded = new_exp
+                self._rebuild_nav_list(target_page_idx=page_idx, voice_sub_idx=sub_idx)
+            self._last_clicked_tree_hdr = g_name
+        else:
+            self._last_clicked_tree_hdr = ''
 
     def _wrap_pages_in_scroll_areas(self):
         """Wrap non-scrolled Settings pages in QScrollArea so smaller displays can scroll cleanly."""
@@ -1510,16 +2110,19 @@ class ManageAIsDialog(QDialog):
         for idx, pg in enumerate(widgets):
             if pg is None or isinstance(pg, QScrollArea) or pg.findChild(QScrollArea) is not None:
                 continue
+            pg.hide()
             self.pages.removeWidget(pg)
-            sa = QScrollArea()
+            sa = QScrollArea(self.pages)
             sa.setObjectName('settingsPageScroll')
             sa.setWidgetResizable(True)
             sa.setFrameShape(QFrame.Shape.NoFrame)
-            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            sa.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+            sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             pg.setMinimumWidth(0)
             sa.setWidget(pg)
             self.pages.insertWidget(idx, sa)
+        for sa_any in self.pages.findChildren(QScrollArea):
+            sa_any.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sa_any.setStyleSheet('')
 
     def _install_page_wheel_guards(self):
         if getattr(self, '_wheel_guard', None) is None:
@@ -1572,7 +2175,7 @@ class ManageAIsDialog(QDialog):
                 self.resize(new_w, new_h)
         else:
             target_h = min(720, max_h)
-            target_w = 960 if keep_offscreen_w else min(960, max_w)
+            target_w = 1040 if keep_offscreen_w else min(1040, max_w)
             if target_h < self.minimumHeight() or target_w < self.minimumWidth():
                 self.setMinimumSize(min(760, target_w), min(460, target_h))
             self.resize(target_w, target_h)
@@ -1602,23 +2205,30 @@ class ManageAIsDialog(QDialog):
             return
         self._autosave_dirty = True
         if hasattr(self, '_autosave_status_label'):
-            self._autosave_status_label.setText('● Saving…')
-        if hasattr(self, '_autosave_timer'):
-            self._autosave_timer.start()
+            self._autosave_status_label.setText('● Unsaved changes')
+            self._autosave_status_label.show()
 
     def _flush_autosave(self):
         tmr = getattr(self, '_autosave_timer', None)
         if tmr is not None and tmr.isActive():
             tmr.stop()
-        if getattr(self, '_autosave_dirty', False):
-            self._persist_all_settings(show_warnings=False)
 
     def _wire_autosave_signals(self):
         excluded = {
             getattr(self, 'provider_combo', None),
             getattr(self, 'mic_live_test_btn', None),
             getattr(self, 'api_key_edit', None),
+            getattr(self, 'or_hub_key_edit', None),
             getattr(self, 'excl_path_input', None),
+            getattr(self, 'persona_editor_combo', None),
+            getattr(self, 'persona_label_edit', None),
+            getattr(self, 'persona_speaker_edit', None),
+            getattr(self, 'persona_voice_combo', None),
+            getattr(self, 'persona_shape_combo', None),
+            getattr(self, 'persona_palette_combo', None),
+            getattr(self, 'persona_evolve_check', None),
+            getattr(self, 'persona_blueprint_edit', None),
+            getattr(self, 'voice_preset_manage_combo', None),
         }
         for chk in self.pages.findChildren(QCheckBox):
             if chk not in excluded:
@@ -1667,27 +2277,174 @@ class ManageAIsDialog(QDialog):
         if hasattr(self, 'mic_live_test_btn'):
             self.mic_live_test_btn.blockSignals(True)
             self.mic_live_test_btn.setChecked(False)
-            self.mic_live_test_btn.setText('🎤 Start Live Mic Level Test')
+            self.mic_live_test_btn.setText('🎤 Test Mic')
             self.mic_live_test_btn.blockSignals(False)
 
+    def _open_options_help_dialog(self):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, 'show_user_guide_dialog'):
+            parent.show_user_guide_dialog(parent_widget=self)
+            return
+        guide_path = get_resource_path('USER_GUIDE.md')
+        md_text = guide_path.read_text(encoding='utf-8', errors='replace') if guide_path.exists() else '# Fairybread User Guide'
+        dlg = QDialog(self)
+        _apply_windows_dialog_flags(dlg, resizable=True)
+        dlg.setWindowTitle('Fairybread — User Guide & Drawing Instructions')
+        dlg.resize(860, 680)
+        v = QVBoxLayout(dlg)
+        browser = QTextBrowser(dlg)
+        browser.setOpenExternalLinks(True)
+        browser.setMarkdown(md_text)
+        v.addWidget(browser, 1)
+        close_btn = QPushButton('Close', dlg)
+        close_btn.clicked.connect(dlg.accept)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(close_btn)
+        v.addLayout(row)
+        dlg.exec()
+
+    def _reset_current_page_to_saved(self):
+        """Reload saved values from palace_config.json onto the active Options page."""
+        self._init_complete = False
+        try:
+            ui_cfg = load_ui_settings(self.config_path)
+            if hasattr(self, 'close_to_tray_check'):
+                self.close_to_tray_check.setChecked(bool(ui_cfg.get('close_to_tray', False)))
+            if hasattr(self, 'auto_refresh_catalog_check'):
+                self.auto_refresh_catalog_check.setChecked(bool(ui_cfg.get('auto_refresh_catalog', True)))
+            if hasattr(self, 'spellcheck_check'):
+                self.spellcheck_check.setChecked(bool(ui_cfg.get('spellcheck_enabled', True)))
+            if hasattr(self, 'enter_mode_combo'):
+                self.enter_mode_combo.setCurrentIndex(0 if ui_cfg.get('enter_to_send', True) else 1)
+            if hasattr(self, 'home_location_edit'):
+                self.home_location_edit.setText(str(ui_cfg.get('home_location') or ''))
+            if hasattr(self, 'weather_display_combo'):
+                self.weather_display_combo.setCurrentIndex(0 if ui_cfg.get('weather_map_enabled', True) else 1)
+            if hasattr(self, 'theme_combo'):
+                ti = self.theme_combo.findData(str(ui_cfg.get('theme') or 'dark'))
+                if ti >= 0:
+                    self.theme_combo.setCurrentIndex(ti)
+            if hasattr(self, 'badge_mode_combo'):
+                bi = self.badge_mode_combo.findData(str(ui_cfg.get('badge_display_mode') or 'icons_only'))
+                if bi >= 0:
+                    self.badge_mode_combo.setCurrentIndex(bi)
+            if hasattr(self, 'bg_source_combo'):
+                bsi = self.bg_source_combo.findData(str(ui_cfg.get('bg_image_source') or 'none'))
+                if bsi >= 0:
+                    self.bg_source_combo.setCurrentIndex(bsi)
+            if hasattr(self, 'bg_placement_combo'):
+                bpi = self.bg_placement_combo.findData(str(ui_cfg.get('bg_image_placement') or 'chat_sidebar'))
+                if bpi >= 0:
+                    self.bg_placement_combo.setCurrentIndex(bpi)
+            if hasattr(self, 'bg_washout_slider'):
+                self.bg_washout_slider.setValue(int(ui_cfg.get('bg_washout_percent', 90)))
+            if hasattr(self, 'bg_path_edit'):
+                self.bg_path_edit.setText(str(ui_cfg.get('bg_image_path') or ''))
+            ad_cfg = load_agent_defaults(self.config_path)
+            for attr_nm, cfg_k in (
+                ('ad_web_search_combo', 'web_search_default'),
+                ('ad_output_detail_combo', 'output_detail'),
+                ('ad_reasoning_combo', 'reasoning_summary'),
+                ('ad_synth_combo', 'synthesizer_mode'),
+            ):
+                cb = getattr(self, attr_nm, None)
+                if cb is not None:
+                    ci = cb.findData(str(ad_cfg.get(cfg_k, '')))
+                    if ci >= 0:
+                        cb.setCurrentIndex(ci)
+            if hasattr(self, 'ad_smart_routing_check'):
+                self.ad_smart_routing_check.setChecked(bool(ad_cfg.get('smart_routing', True)))
+            if hasattr(self, 'ad_timeout_spin'):
+                self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 180)))
+            if hasattr(self, 'ad_straggler_spin'):
+                self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 0)))
+            g_cfg = load_graphics_settings(self.config_path)
+            for attr_nm, cfg_k in (
+                ('ad_primary_img_combo', 'primary_image_engine'),
+                ('ad_draft_img_combo', 'draft_image_engine'),
+                ('ad_graphics_pipe_combo', 'pipeline_mode'),
+            ):
+                cb = getattr(self, attr_nm, None)
+                if cb is not None:
+                    ci = cb.findData(str(g_cfg.get(cfg_k, '')))
+                    if ci >= 0:
+                        cb.setCurrentIndex(ci)
+            if hasattr(self, '_load_selected_provider'):
+                self._load_selected_provider(getattr(self, '_active_provider_slug', 'openai'))
+            self._autosave_dirty = False
+            if hasattr(self, '_autosave_status_label'):
+                self._autosave_status_label.setText('↺ Page reset to saved settings')
+                self._autosave_status_label.show()
+        finally:
+            self._init_complete = True
+
+    def _revert_preview_theme_if_needed(self):
+        committed_tid = getattr(self, '_committed_theme_id', None)
+        committed_bg = getattr(self, '_committed_bg_snap', None)
+        if not committed_tid:
+            return
+        cur_ui = load_ui_settings(self.config_path)
+        restore_payload: dict[str, Any] = {}
+        if str(cur_ui.get('theme') or 'dark') != committed_tid:
+            restore_payload['theme'] = committed_tid
+        if isinstance(committed_bg, dict):
+            for bk, bv in committed_bg.items():
+                if cur_ui.get(bk) != bv:
+                    restore_payload[bk] = bv
+        if restore_payload:
+            save_ui_settings(restore_payload, config_path=self.config_path)
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'apply_theme'):
+                parent.apply_theme(committed_tid)
+
+    def apply_settings(self):
+        tmr = getattr(self, '_autosave_timer', None)
+        if tmr is not None and tmr.isActive():
+            tmr.stop()
+        if not self._persist_all_settings(show_warnings=True):
+            return False
+        cur_ui = load_ui_settings(self.config_path)
+        self._committed_theme_id = str(cur_ui.get('theme') or 'dark')
+        self._committed_bg_snap = {
+            'bg_image_source': str(cur_ui.get('bg_image_source') or 'none'),
+            'bg_image_path': str(cur_ui.get('bg_image_path') or ''),
+            'bg_image_placement': str(cur_ui.get('bg_image_placement') or 'chat_sidebar'),
+            'bg_washout_percent': int(cur_ui.get('bg_washout_percent', 90)),
+        }
+        parent = self.parent()
+        if parent is not None and hasattr(parent, 'apply_theme'):
+            parent.apply_theme(self._committed_theme_id, render_chat=False)
+        if hasattr(self, '_autosave_status_label'):
+            self._autosave_status_label.setText('✓ Changes applied')
+            self._autosave_status_label.show()
+        return True
+
     def reject(self):
-        if getattr(self, '_autosave_dirty', False):
-            self._flush_autosave()
+        tmr = getattr(self, '_autosave_timer', None)
+        if tmr is not None and tmr.isActive():
+            tmr.stop()
+        self._autosave_dirty = False
+        self._revert_preview_theme_if_needed()
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         super().reject()
 
     def closeEvent(self, event):
-        if getattr(self, '_autosave_dirty', False):
-            self._flush_autosave()
+        tmr = getattr(self, '_autosave_timer', None)
+        if tmr is not None and tmr.isActive():
+            tmr.stop()
+        if self.result() != QDialog.DialogCode.Accepted:
+            self._autosave_dirty = False
+            self._revert_preview_theme_if_needed()
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         super().closeEvent(event)
 
     def _make_simple_page(self, title: str, subtitle: str) -> tuple[QWidget, QVBoxLayout]:
-        w = QWidget()
+        w = QWidget(self.pages)
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setContentsMargins(12, 10, 12, 8)
         lay.setSpacing(10)
         h = QLabel(title)
         h.setObjectName('sectionTitle')
@@ -1699,82 +2456,162 @@ class ManageAIsDialog(QDialog):
         return w, lay
 
     def _polish_settings_forms_and_combos(self):
-        """Ensure every QFormLayout aligns along a single vertical axis and every QComboBox popup shows full text without '...' truncation."""
+        """Apply LibreOffice Options tidy form widths, compact left-aligned controls, and clean combos without stretching across the dialog."""
+        def _cap_control_widget(w: QWidget) -> None:
+            if isinstance(w, QComboBox):
+                def _fit_combo_to_active_text(cb: QComboBox = w) -> None:
+                    max_len = max(
+                        [len(cb.currentText() or "")]
+                        + [len(cb.itemText(i) or "") for i in range(cb.count())]
+                    )
+                    req_c = max(140, min(500, int(max_len * 6.6 + 26)))
+                    cb.setFixedWidth(req_c)
+
+                w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                w.setMinimumContentsLength(6)
+                w.setMinimumHeight(25)
+                w.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+                _fit_combo_to_active_text(w)
+                if not getattr(w, "_libre_width_hooked", False):
+                    w._libre_width_hooked = True
+                    w.currentTextChanged.connect(lambda _t, cb=w: _fit_combo_to_active_text(cb))
+                    w.currentIndexChanged.connect(lambda _i, cb=w: _fit_combo_to_active_text(cb))
+                    mdl = w.model()
+                    if mdl is not None:
+                        mdl.rowsInserted.connect(lambda *_a, cb=w: _fit_combo_to_active_text(cb))
+                        mdl.rowsRemoved.connect(lambda *_a, cb=w: _fit_combo_to_active_text(cb))
+                view = w.view()
+                if view is not None:
+                    view.setTextElideMode(Qt.TextElideMode.ElideNone)
+            elif isinstance(w, QLineEdit):
+                tooltip_txt = (f"{w.toolTip()} {w.placeholderText()}").lower()
+                is_wide = any(k in tooltip_txt for k in ('path', 'folder', 'directory', 'key', 'url', 'endpoint', 'override'))
+                w.setMinimumWidth(150 if is_wide else 130)
+                w.setMaximumWidth(340 if is_wide else 250)
+                w.setMinimumHeight(25)
+                w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+                w.setMaximumWidth(130)
+                w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+            elif isinstance(w, QCheckBox):
+                w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            elif isinstance(w, (QPushButton, QToolButton)):
+                if w.maximumWidth() > 240:
+                    w.setMaximumWidth(220)
+                w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            elif isinstance(w, QTextEdit):
+                if w.maximumWidth() > 540:
+                    w.setMaximumWidth(520)
+
+        def _cap_layout_items(lay_obj) -> None:
+            if lay_obj is None:
+                return
+            has_stretch = False
+            for i in range(lay_obj.count()):
+                it = lay_obj.itemAt(i)
+                if it is None:
+                    continue
+                if it.widget() is not None:
+                    _cap_control_widget(it.widget())
+                elif it.layout() is not None:
+                    _cap_layout_items(it.layout())
+                elif it.spacerItem() is not None:
+                    has_stretch = True
+            if isinstance(lay_obj, QHBoxLayout) and not has_stretch:
+                lay_obj.addStretch(1)
+
         for form in self.findChildren(QFormLayout):
-            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
             form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            form.setHorizontalSpacing(16)
-            form.setVerticalSpacing(10)
+            form.setHorizontalSpacing(12)
+            form.setVerticalSpacing(7)
             for row in range(form.rowCount()):
                 lbl_item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
                 if lbl_item is not None and lbl_item.widget() is not None:
                     lbl_w = lbl_item.widget()
-                    lbl_w.setFixedWidth(210)
+                    lbl_w.setFixedWidth(165)
+                    if isinstance(lbl_w, QLabel) and not lbl_w.wordWrap():
+                        lbl_w.setWordWrap(True)
+                fld_item = form.itemAt(row, QFormLayout.ItemRole.FieldRole)
+                if fld_item is not None:
+                    if fld_item.widget() is not None:
+                        _cap_control_widget(fld_item.widget())
+                    elif fld_item.layout() is not None:
+                        _cap_layout_items(fld_item.layout())
 
-        for combo in self.findChildren(QComboBox):
-            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            combo.setMinimumHeight(30)
-            view = combo.view()
-            if view is not None:
-                view.setTextElideMode(Qt.TextElideMode.ElideNone)
-                fm = combo.fontMetrics()
-                max_px = max(
-                    [fm.horizontalAdvance(combo.itemText(i)) for i in range(combo.count())] or [320]
-                )
-                view.setMinimumWidth(max(420, max_px + 56))
+        for lbl in self.pages.findChildren(QLabel):
+            if lbl.minimumWidth() == 0 and lbl.maximumWidth() > 220 and len(lbl.text()) > 24:
+                lbl.setWordWrap(True)
+            st_low = (lbl.styleSheet() or '').lower()
+            if 'color:#c9d1d9' in st_low.replace(' ', '') or 'color:#e6edf3' in st_low.replace(' ', ''):
+                lbl.setStyleSheet('')
+
+        for w_ctrl in self.pages.findChildren(QWidget):
+            if isinstance(w_ctrl, (QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QPushButton, QToolButton, QTextEdit)):
+                _cap_control_widget(w_ctrl)
+            elif isinstance(w_ctrl, QTableWidget):
+                w_ctrl.setStyleSheet('')
+                if w_ctrl.maximumWidth() > 680:
+                    w_ctrl.setMaximumWidth(640)
+            elif isinstance(w_ctrl, QFrame):
+                st_f = (w_ctrl.styleSheet() or '').lower().replace(' ', '')
+                if 'background:#0d1117' in st_f or 'background:#161b22' in st_f:
+                    w_ctrl.setStyleSheet('')
 
     def _build_general_page(self):
-        w, lay = self._make_simple_page('General', 'Startup behavior, system tray behavior, and composer preferences.')
-        lay.addWidget(QCheckBox('Restore last active conversation on startup', checked=True))
+        w, lay = self._make_simple_page('General', 'Startup behavior, system tray behavior, location & composer preferences.')
+        restore_chk = QCheckBox('Restore last active conversation on startup', checked=True)
+        restore_chk.setToolTip('Automatically reopens your most recent conversation when Fairybread starts')
+        lay.addWidget(restore_chk)
 
         ui_cfg = load_ui_settings(self.config_path)
         self.close_to_tray_check = QCheckBox(
-            'Close button (✕) minimizes Fairybread to the Windows System Tray (right-click tray icon to Expand or Exit)',
+            'Minimize to System Tray on close (✕)',
             checked=bool(ui_cfg.get('close_to_tray', False)),
         )
-        self.close_to_tray_check.setToolTip('Keep Fairybread running in the system tray instead of exiting when clicking ✕')
+        self.close_to_tray_check.setToolTip('Keep Fairybread running in the Windows System Tray instead of exiting when clicking ✕ (right-click tray icon to Expand or Exit)')
         lay.addWidget(self.close_to_tray_check)
 
         self.auto_refresh_catalog_check = QCheckBox(
-            'Auto-refresh model list, pricing rates && update notices from fairybread.me (JSON only, no telemetry)',
+            'Auto-refresh model catalog & pricing on startup',
             checked=bool(ui_cfg.get('auto_refresh_catalog', True)),
         )
-        self.auto_refresh_catalog_check.setToolTip('Silently refreshes token/voice/image rate tables & checks for new Fairybread releases on startup (6h cache)')
+        self.auto_refresh_catalog_check.setToolTip('Silently refreshes token/voice/image rate tables & checks for new Fairybread releases from fairybread.me (JSON only, no telemetry)')
         lay.addWidget(self.auto_refresh_catalog_check)
 
         self.spellcheck_check = QCheckBox(
-            'Automatic red-underline spellcheck && right-click suggestions in chat box (Windows en-AU / system dictionary)',
+            'Enable live spellcheck in chat composer',
             checked=bool(ui_cfg.get('spellcheck_enabled', True)),
         )
-        self.spellcheck_check.setToolTip('Highlights spelling mistakes in red while typing (skips commands, URLs, file paths, and code) with right-click suggestions')
+        self.spellcheck_check.setToolTip('Highlights spelling mistakes in red while typing using your Windows dictionary (skips commands, URLs, file paths, and code) with right-click suggestions')
         lay.addWidget(self.spellcheck_check)
 
         enter_form = QFormLayout()
         self.enter_mode_combo = QComboBox()
-        self.enter_mode_combo.addItem('Enter submits message · Shift+Enter adds new line (Default)', True)
-        self.enter_mode_combo.addItem('Shift+Enter submits message · Enter adds new line', False)
+        self.enter_mode_combo.setToolTip('Choose whether pressing Enter sends your message immediately or inserts a new line')
+        self.enter_mode_combo.addItem('Enter sends · Shift+Enter new line (Default)', True)
+        self.enter_mode_combo.addItem('Shift+Enter sends · Enter new line', False)
         self.enter_mode_combo.setCurrentIndex(0 if ui_cfg.get('enter_to_send', True) else 1)
-        enter_form.addRow('Composer Enter key behavior:', self.enter_mode_combo)
+        enter_form.addRow('Composer Enter key:', self.enter_mode_combo)
+
+        self.home_location_edit = QLineEdit(str(ui_cfg.get('home_location') or ''))
+        self.home_location_edit.setPlaceholderText('e.g. Adelaide, South Australia or 5075')
+        self.home_location_edit.setToolTip(
+            'Your home city, suburb, or postcode for local weather radar and location-aware queries (100% local — no automatic Geo-IP tracking)'
+        )
+        enter_form.addRow('📍 Home Location:', self.home_location_edit)
+
+        self.weather_display_combo = QComboBox()
+        self.weather_display_combo.addItem('Radar Map + Text (Free · No Key)', True)
+        self.weather_display_combo.addItem('Basic Text Forecast Only (No Map)', False)
+        self.weather_display_combo.setCurrentIndex(0 if ui_cfg.get('weather_map_enabled', True) else 1)
+        self.weather_display_combo.setToolTip(
+            'Choose between a free dark radar map card (ArcGIS Dark Gray + RainViewer + Open-Meteo/BOM, zero API key needed) or basic text-only weather forecasts'
+        )
+        enter_form.addRow('🌦️ Weather Display:', self.weather_display_combo)
         lay.addLayout(enter_form)
-
-        jump_perm_btn = QPushButton('🛡 AI Access Permissions (Request Review / Default / Auto / Turbo && Write Exclusions)…')
-        jump_perm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        jump_perm_btn.setToolTip('Configure execution permissions, Write Exclusion List, and project tool capabilities')
-        jump_perm_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('AI Access Permissions')))
-        lay.addWidget(jump_perm_btn)
-
-        jump_defaults_btn = QPushButton('⚙ Open Agent Defaults (Web Search, Detail, Reasoning && Speed)…')
-        jump_defaults_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        jump_defaults_btn.setToolTip('Configure web search depth, output detail, reasoning summary, synthesizer, and timeouts')
-        jump_defaults_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Agent Defaults')))
-        lay.addWidget(jump_defaults_btn)
-
-        jump_voice_btn = QPushButton('🎙️ Open Voice && Audio Settings (Human Voice, Accent, Microphone && Companion)…')
-        jump_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        jump_voice_btn.setToolTip('Choose your neural voice, accent/style, speed, companion mode, and test your microphone & speaker')
-        jump_voice_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('Voice & Audio')))
-        lay.addWidget(jump_voice_btn)
 
         lay.addStretch()
         self.pages.addWidget(w)
@@ -1787,11 +2624,11 @@ class ManageAIsDialog(QDialog):
         ap_cfg = load_access_permissions(self.config_path)
         tool_cfg = load_tool_settings(self.config_path)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(w)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-        inner = QWidget()
+        inner = QWidget(scroll)
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 8, 4)
         lay.setSpacing(10)
@@ -1808,9 +2645,17 @@ class ManageAIsDialog(QDialog):
         form_mode = QFormLayout()
         self.perm_mode_combo = QComboBox()
         self.perm_mode_combo.setToolTip('Select how Fairybread handles file edits, patches, and shell commands')
+        _compact_mode_labels = {
+            'request_review': 'Request Review (Ask Every Time)',
+            'default': 'Default (Ask for Edits & Commands)',
+            'auto': 'Auto (Run Safe · Ask Destructive)',
+            'turbo': 'Turbo (Unrestricted · Exclusions Ask)',
+        }
         for mk in PERMISSION_MODES:
             meta = PERMISSION_MODE_META[mk]
-            self.perm_mode_combo.addItem(f"{meta['label']} — {meta['description']}", mk)
+            self.perm_mode_combo.addItem(_compact_mode_labels.get(mk, meta['label']), mk)
+            idx_m = self.perm_mode_combo.count() - 1
+            self.perm_mode_combo.setItemData(idx_m, f"{meta['label']} — {meta['description']}", Qt.ItemDataRole.ToolTipRole)
         cur_pm = normalize_permission_mode(ap_cfg.get('permission_mode', 'default'))
         pm_idx = self.perm_mode_combo.findData(cur_pm)
         if pm_idx >= 0:
@@ -1860,23 +2705,23 @@ class ManageAIsDialog(QDialog):
         self.excl_path_input.setToolTip('Type or paste any drive letter or folder path to add to the Write Exclusion List')
         add_row.addWidget(self.excl_path_input, 1)
 
-        self.excl_add_btn = QPushButton('Add Path')
+        self.excl_add_btn = QPushButton('+ Add')
         self.excl_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.excl_add_btn.setToolTip('Add the typed path to the Write Exclusion List')
+        self.excl_add_btn.setToolTip('Add the typed folder or drive path to the Write Exclusion List')
         add_row.addWidget(self.excl_add_btn)
 
-        self.excl_browse_btn = QPushButton('Browse Folder…')
+        self.excl_browse_btn = QPushButton('Browse…')
         self.excl_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.excl_browse_btn.setToolTip('Choose a folder or drive root via folder picker')
+        self.excl_browse_btn.setToolTip('Choose a folder or drive root via Windows folder picker')
         add_row.addWidget(self.excl_browse_btn)
 
-        self.excl_drive_btn = QPushButton('Add Drive ▾')
+        self.excl_drive_btn = QPushButton('Drive ▾')
         self.excl_drive_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.excl_drive_btn.setToolTip('Pick an available local drive root without browsing its contents')
         add_row.addWidget(self.excl_drive_btn)
         ec_lay.addLayout(add_row)
 
-        self.excl_table = QTableWidget(0, 3)
+        self.excl_table = QTableWidget(0, 3, inner)
         self.excl_table.setHorizontalHeaderLabels(['Protected Folder or Drive', 'Include Subdirectories', 'Action'])
         self.excl_table.verticalHeader().setVisible(False)
         self.excl_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -1982,25 +2827,28 @@ class ManageAIsDialog(QDialog):
         cc_hdr.setTextFormat(Qt.TextFormat.RichText)
         cc_lay.addWidget(cc_hdr)
 
-        self.cap_workspace_writes_check = QCheckBox('📁 Project File Editing (Read, write & patch files in user projects)')
+        self.cap_workspace_writes_check = QCheckBox('📁 Project File Editing')
+        self.cap_workspace_writes_check.setToolTip('Allow agents to read, write, and patch files inside attached user project folders')
         self.cap_workspace_writes_check.setChecked(bool(ap_cfg.get('allow_workspace_writes', True)))
         cc_lay.addWidget(self.cap_workspace_writes_check)
 
-        self.cap_shell_cmds_check = QCheckBox('💻 Terminal / Shell Commands (Run build, test & workspace commands)')
+        self.cap_shell_cmds_check = QCheckBox('💻 Terminal / Shell Commands')
+        self.cap_shell_cmds_check.setToolTip('Allow agents to run build, test, and shell commands in workspaces')
         self.cap_shell_cmds_check.setChecked(bool(ap_cfg.get('allow_shell_commands', True)))
         cc_lay.addWidget(self.cap_shell_cmds_check)
 
         self.tool_checks: dict[str, QCheckBox] = {}
         items = [
-            ('palace_source_tool', '🔧 App Source Code Inspection (Read-only inspection of Fairybread source)'),
-            ('shared_palace_files_tool', '🏛 Shared Memory File Tools (Read/write persistent notes & proposals)'),
-            ('project_folder_tool', '📂 Attached Project Folder Context (Index attached project folders)'),
-            ('owner_email_tool', '✉ Agent-to-Owner Email Tool (Send requests & file links to Agent Mail)'),
-            ('github_tool', '🐙 GitHub & Git Workflow Tools'),
-            ('external_mail_tool', '📬 External Mail & Web Research Tools'),
+            ('palace_source_tool', '🔧 App Source Code Inspection', 'Allow read-only inspection of Fairybread source code'),
+            ('shared_palace_files_tool', '🏛 Shared Memory File Tools', 'Allow reading and writing persistent shared notes & proposals'),
+            ('project_folder_tool', '📂 Attached Project Folder Context', 'Index and search files in attached project folders'),
+            ('owner_email_tool', '✉ Agent-to-Owner Email Tool', 'Send requests and proposal file links to Agent Mail'),
+            ('github_tool', '🐙 GitHub & Git Workflow Tools', 'Allow Git status, diff, and repository workflow helpers'),
+            ('external_mail_tool', '📬 External Mail & Web Research Tools', 'Allow IMAP/SMTP mail lookups and multi-tier web research'),
         ]
-        for key, label in items:
+        for key, label, tip in items:
             chk = QCheckBox(label)
+            chk.setToolTip(tip)
             chk.setChecked(bool(tool_cfg.get(key, False)))
             self.tool_checks[key] = chk
             cc_lay.addWidget(chk)
@@ -2037,18 +2885,33 @@ class ManageAIsDialog(QDialog):
         return rows
 
     def _build_agent_defaults_page(self):
-        w, lay = self._make_simple_page(
-            'Agent Defaults',
-            'Configure web search defaults, output detail, reasoning style, and speed routing without needing / switches.'
-        )
+        w = QWidget(self.pages)
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.council_sub_pages = QStackedWidget(w)
+        lay.addWidget(self.council_sub_pages, 1)
+
         ad_cfg = load_agent_defaults(self.config_path)
 
-        # Card 1: Response, Web Search, Output Detail & Reasoning Summary
+        # --- SUBPAGE 0: Council -> Routing & Defaults ---
+        sub_routing = QWidget(self.council_sub_pages)
+        r_lay = QVBoxLayout(sub_routing)
+        r_lay.setContentsMargins(4, 2, 8, 4)
+        r_lay.setSpacing(10)
+        r_title = QLabel('<b>Routing &amp; Defaults</b>')
+        r_title.setStyleSheet('font-size: 15px; font-weight: 700;')
+        r_lay.addWidget(r_title)
+        r_div = QFrame()
+        r_div.setFrameShape(QFrame.Shape.HLine)
+        r_div.setFixedHeight(1)
+        r_lay.addWidget(r_div)
+
         core_card = QFrame()
         c_lay = QVBoxLayout(core_card)
-        _style_settings_card(core_card, 'agentDefaultsCoreCard', c_lay, pad_h=12, pad_v=12)
+        _style_settings_card(core_card, 'agentDefaultsCoreCard', c_lay, pad_h=0, pad_v=4)
         c_lay.setSpacing(8)
-        c_hdr = QLabel('<b>Response Style &amp; Web Search Defaults</b>')
+        c_hdr = QLabel('<b>Response Style &amp; Web Search</b>')
         c_hdr.setTextFormat(Qt.TextFormat.RichText)
         c_lay.addWidget(c_hdr)
 
@@ -2083,24 +2946,7 @@ class ManageAIsDialog(QDialog):
         if rs_idx >= 0:
             self.ad_reasoning_combo.setCurrentIndex(rs_idx)
         form1.addRow('Reasoning summary:', self.ad_reasoning_combo)
-        c_lay.addLayout(form1)
 
-        perm_jump_btn = QPushButton('🛡 AI Access Permissions (Request Review / Default / Auto / Turbo && Write Exclusions) →')
-        perm_jump_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        perm_jump_btn.clicked.connect(lambda: self.nav_list.setCurrentRow(self.SETTINGS_PAGES.index('AI Access Permissions')))
-        c_lay.addWidget(perm_jump_btn)
-        lay.addWidget(core_card)
-
-        # Card 2: Performance, Fast Synthesizer & Smart Intent Routing
-        perf_card = QFrame()
-        p_lay = QVBoxLayout(perf_card)
-        _style_settings_card(perf_card, 'agentDefaultsPerfCard', p_lay, pad_h=12, pad_v=12)
-        p_lay.setSpacing(8)
-        p_hdr = QLabel('<b>Speed, Synthesizer &amp; Smart Intent Routing</b>')
-        p_hdr.setTextFormat(Qt.TextFormat.RichText)
-        p_lay.addWidget(p_hdr)
-
-        form2 = QFormLayout()
         self.ad_synth_combo = QComboBox()
         self.ad_synth_combo.setToolTip('Model used to merge multi-AI council replies at the end of a turn')
         self.ad_synth_combo.addItem('Auto Fast (DeepSeek / Cerebras / fastest enabled)', 'auto_fast')
@@ -2112,45 +2958,147 @@ class ManageAIsDialog(QDialog):
         sm_idx = self.ad_synth_combo.findData(str(ad_cfg.get('synthesizer_mode', 'auto_fast')))
         if sm_idx >= 0:
             self.ad_synth_combo.setCurrentIndex(sm_idx)
-        form2.addRow('Fast Synthesizer:', self.ad_synth_combo)
+        form1.addRow('Primary Synthesizer:', self.ad_synth_combo)
+        c_lay.addLayout(form1)
 
-        self.ad_smart_routing_check = QCheckBox('Enabled (Use 2 fast AIs for quick lookups, 3–4 specialists for code/graphics)')
+        self.ad_smart_routing_check = QCheckBox('Hybrid / Smart Intent Routing (Auto-route fast AIs vs. specialists)')
         self.ad_smart_routing_check.setChecked(bool(ad_cfg.get('smart_routing', True)))
-        self.ad_smart_routing_check.setToolTip('Avoids waking all 8 AIs when a quick lookup or focused coding task only needs 2–4 specialists')
-        form2.addRow('Smart intent routing:', self.ad_smart_routing_check)
+        self.ad_smart_routing_check.setToolTip('Uses 2 fast AIs for quick lookups and 3–4 specialists for coding/graphics instead of waking all AIs on every prompt')
+        c_lay.addWidget(self.ad_smart_routing_check)
+
+        self.ad_inline_status_check = QCheckBox('Show inline AI status && failover notices in chat')
+        self.ad_inline_status_check.setChecked(bool(ad_cfg.get('show_inline_status_messages', True)))
+        self.ad_inline_status_check.setToolTip('Shows a short status line when a provider hits rate limits or falls back')
+        c_lay.addWidget(self.ad_inline_status_check)
+        r_lay.addWidget(core_card)
+        r_lay.addStretch(1)
+        self.council_sub_pages.addWidget(sub_routing)
+
+        # --- SUBPAGE 1: Council -> Response Timing (View 3 of Council LibreOffice Mockup) ---
+        sub_timing = QWidget()
+        t_lay = QVBoxLayout(sub_timing)
+        t_lay.setContentsMargins(4, 2, 8, 4)
+        t_lay.setSpacing(10)
+        t_title = QLabel('<b>Response Timing</b>')
+        t_title.setStyleSheet('font-size: 15px; font-weight: 700;')
+        t_lay.addWidget(t_title)
+        t_sub = QLabel('Set maximum response times for each discussion phase.')
+        t_sub.setObjectName('muted')
+        t_lay.addWidget(t_sub)
+        t_div = QFrame()
+        t_div.setFrameShape(QFrame.Shape.HLine)
+        t_div.setFixedHeight(1)
+        t_lay.addWidget(t_div)
+
+        perf_card = QFrame()
+        p_lay = QVBoxLayout(perf_card)
+        _style_settings_card(perf_card, 'agentDefaultsPerfCard', p_lay, pad_h=0, pad_v=4)
+        p_lay.setSpacing(8)
+
+        form2 = QFormLayout()
+        self.ad_timing_profile_combo = QComboBox()
+        self.ad_timing_profile_combo.setToolTip('Select a preset Council phase time budget (Quick, Standard, or Deep)')
+        self.ad_timing_profile_combo.addItem('Standard (180s / 120s / 90s)', 'standard')
+        self.ad_timing_profile_combo.addItem('Deep — Code & Architecture (300s / 240s / 90s)', 'deep')
+        self.ad_timing_profile_combo.addItem('Quick — Fast Lookups (60s / Off / 30s)', 'quick')
+        cur_bud = str(ad_cfg.get('deliberation_budget', 'standard') or 'standard')
+        b_idx = self.ad_timing_profile_combo.findData(cur_bud)
+        if b_idx >= 0:
+            self.ad_timing_profile_combo.setCurrentIndex(b_idx)
+        form2.addRow('Timing profile:', self.ad_timing_profile_combo)
 
         self.ad_timeout_spin = QSpinBox()
-        self.ad_timeout_spin.setRange(15, 120)
-        self.ad_timeout_spin.setSuffix(' s')
-        self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 45)))
-        self.ad_timeout_spin.setToolTip('Hard per-provider HTTP timeout so a stalled upstream model never hangs a turn')
-        form2.addRow('Provider timeout:', self.ad_timeout_spin)
+        self.ad_timeout_spin.setRange(15, 600)
+        self.ad_timeout_spin.setSuffix(' sec')
+        self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 180)))
+        self.ad_timeout_spin.setToolTip('Round 1 maximum wait for independent answers (moves on immediately as soon as all replies land)')
+        form2.addRow('Round 1 — Independent answers:', self.ad_timeout_spin)
+
+        self.ad_round2_timeout_spin = QSpinBox()
+        self.ad_round2_timeout_spin.setRange(0, 600)
+        self.ad_round2_timeout_spin.setSuffix(' sec')
+        self.ad_round2_timeout_spin.setValue(120)
+        self.ad_round2_timeout_spin.setToolTip('Round 2 maximum wait for peer critique & follow-up')
+        form2.addRow('Round 2 — Critique & follow-up:', self.ad_round2_timeout_spin)
+
+        self.ad_synth_timeout_spin = QSpinBox()
+        self.ad_synth_timeout_spin.setRange(30, 600)
+        self.ad_synth_timeout_spin.setSuffix(' sec')
+        self.ad_synth_timeout_spin.setValue(90)
+        self.ad_synth_timeout_spin.setToolTip('Final combined reply synthesis maximum wait')
+        form2.addRow('Final synthesis:', self.ad_synth_timeout_spin)
 
         self.ad_straggler_spin = QSpinBox()
-        self.ad_straggler_spin.setRange(0, 60)
+        self.ad_straggler_spin.setRange(0, 300)
         self.ad_straggler_spin.setSuffix(' s (0 = off)')
-        self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 15)))
-        self.ad_straggler_spin.setToolTip('After majority quorum succeeds, wait at most this many seconds for slow stragglers')
-        form2.addRow('Straggler cutoff:', self.ad_straggler_spin)
+        self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 0)))
+        self.ad_straggler_spin.setToolTip('Optional early straggler cutoff after majority quorum (0 = Off — never cut off thinking agents early)')
+        form2.addRow('Early straggler cutoff:', self.ad_straggler_spin)
+
+        def _on_timing_profile_picked(_i: int = 0):
+            prof = str(self.ad_timing_profile_combo.currentData() or 'standard')
+            if prof == 'quick':
+                self.ad_timeout_spin.setValue(60)
+                self.ad_round2_timeout_spin.setValue(0)
+                self.ad_synth_timeout_spin.setValue(30)
+            elif prof == 'deep':
+                self.ad_timeout_spin.setValue(300)
+                self.ad_round2_timeout_spin.setValue(240)
+                self.ad_synth_timeout_spin.setValue(90)
+            else:
+                self.ad_timeout_spin.setValue(180)
+                self.ad_round2_timeout_spin.setValue(120)
+                self.ad_synth_timeout_spin.setValue(90)
+
+        self.ad_timing_profile_combo.currentIndexChanged.connect(_on_timing_profile_picked)
         p_lay.addLayout(form2)
 
-        self.ad_inline_status_check = QCheckBox(
-            'Show inline AI status && failure messages in chat (always ON in Voice Mode)'
-        )
-        self.ad_inline_status_check.setChecked(bool(ad_cfg.get('show_inline_status_messages', True)))
-        self.ad_inline_status_check.setToolTip(
-            'Injects compact UI-only italic status lines directly in chat when a provider hits rate limits (429), times out, fails, or falls back (never saved to AI memory)'
-        )
-        p_lay.addWidget(self.ad_inline_status_check)
-        lay.addWidget(perf_card)
+        ceil_note = QLabel('<i>Maximum waits, not countdowns. Each phase moves on as soon as all replies land.</i>')
+        ceil_note.setObjectName('muted')
+        p_lay.addWidget(ceil_note)
 
-        # Card 3: Graphics & Image Generation (Primary, Draft & Pipeline Mode)
+        ceil_hdr = QLabel('<b>Provider Ceilings (HTTP Socket &amp; Liveness Caps)</b>')
+        p_lay.addWidget(ceil_hdr)
+        ceil_tbl = QTableWidget(4, 2, perf_card)
+        ceil_tbl.setHorizontalHeaderLabels(['Provider (or Group)', 'Maximum Wait'])
+        ceil_tbl.verticalHeader().setVisible(False)
+        ceil_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        ceil_tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        ceil_tbl.setFixedHeight(138)
+        ceil_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        ceil_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        for r_i, (p_grp, p_wait) in enumerate([
+            ('Cerebras / Groq (Fast Inference)', '120 sec (15s handshake)'),
+            ('Mistral / Cohere / Qwen', '180 sec (15s handshake)'),
+            ('DeepSeek / OpenAI', '300 sec (15s handshake)'),
+            ('Gemini High / Vision & Graphics', '300 sec (15s handshake)'),
+        ]):
+            ceil_tbl.setItem(r_i, 0, QTableWidgetItem(p_grp))
+            ceil_tbl.setItem(r_i, 1, QTableWidgetItem(p_wait))
+        p_lay.addWidget(ceil_tbl)
+        t_lay.addWidget(perf_card)
+        t_lay.addStretch(1)
+        self.council_sub_pages.addWidget(sub_timing)
+
+        # --- SUBPAGE 2: Image Engine -> Renderer & Pipeline ---
+        sub_gfx = QWidget()
+        gx_lay = QVBoxLayout(sub_gfx)
+        gx_lay.setContentsMargins(4, 2, 8, 4)
+        gx_lay.setSpacing(10)
+        gx_title = QLabel('<b>Image Engine</b>')
+        gx_title.setStyleSheet('font-size: 15px; font-weight: 700;')
+        gx_lay.addWidget(gx_title)
+        gx_div = QFrame()
+        gx_div.setFrameShape(QFrame.Shape.HLine)
+        gx_div.setFixedHeight(1)
+        gx_lay.addWidget(gx_div)
+
         g_cfg = load_graphics_settings(self.config_path)
         gfx_card = QFrame()
         g_lay = QVBoxLayout(gfx_card)
-        _style_settings_card(gfx_card, 'agentDefaultsGraphicsCard', g_lay, pad_h=12, pad_v=12)
+        _style_settings_card(gfx_card, 'agentDefaultsGraphicsCard', g_lay, pad_h=0, pad_v=4)
         g_lay.setSpacing(8)
-        g_hdr = QLabel('<b>🎨 Graphics &amp; Image Generation</b>')
+        g_hdr = QLabel('<b>Renderer &amp; Pipeline Mode</b>')
         g_hdr.setTextFormat(Qt.TextFormat.RichText)
         g_lay.addWidget(g_hdr)
 
@@ -2189,8 +3137,15 @@ class ManageAIsDialog(QDialog):
         self.ad_graphics_pipe_combo.setToolTip(
             'Controls how image requests flow: Direct straight to the image model, Single Vision Optimizer, or 2-AI Prompt Duo'
         )
+        _compact_pipe_labels = {
+            'single_vision': 'Single Vision Optimizer (Recommended)',
+            'direct': 'Direct to Image Model (Fastest)',
+            'council_duo': '2-AI Visual Prompt Duo (Max Detail)',
+        }
         for pm_id, pm_lbl in GRAPHICS_PIPELINE_MODES:
-            self.ad_graphics_pipe_combo.addItem(pm_lbl, pm_id)
+            self.ad_graphics_pipe_combo.addItem(_compact_pipe_labels.get(pm_id, pm_lbl), pm_id)
+            pidx_t = self.ad_graphics_pipe_combo.count() - 1
+            self.ad_graphics_pipe_combo.setItemData(pidx_t, pm_lbl, Qt.ItemDataRole.ToolTipRole)
         cur_pm = str(g_cfg.get('pipeline_mode') or 'single_vision').strip().lower()
         pm_idx = self.ad_graphics_pipe_combo.findData(cur_pm)
         if pm_idx >= 0:
@@ -2201,30 +3156,28 @@ class ManageAIsDialog(QDialog):
         self.ad_primary_img_combo.currentIndexChanged.connect(self._schedule_autosave)
         self.ad_draft_img_combo.currentIndexChanged.connect(self._schedule_autosave)
         self.ad_graphics_pipe_combo.currentIndexChanged.connect(self._schedule_autosave)
-        lay.addWidget(gfx_card)
+        gx_lay.addWidget(gfx_card)
+        gx_lay.addStretch(1)
+        self.council_sub_pages.addWidget(sub_gfx)
 
-        organic_hint = QLabel(
-            '<span style="color:#8b949e; font-size:11.5px;">'
-            '💡 <b>Organic Intent Understanding:</b> Even with <i>Default</i> mode active, natural phrases like '
-            '<i>"no need to ask for approval"</i>, <i>"just fix it"</i>, or <i>"keep it short"</i> are understood automatically without typing <code>/</code> switches.'
-            '</span>'
-        )
-        organic_hint.setWordWrap(True)
-        organic_hint.setTextFormat(Qt.TextFormat.RichText)
-        lay.addWidget(organic_hint)
-
-        lay.addStretch()
+        self._select_council_subpage = lambda idx: self.council_sub_pages.setCurrentIndex(max(0, min(2, int(idx))))
         self.pages.addWidget(w)
 
     def _build_voice_audio_page(self):
         from voice_service import (
+            DEFAULT_VOICE_CAST_SLOTS,
+            DEFAULT_VOICE_MODE_PRESETS,
             DEFAULT_VOICE_SETTINGS,
             GEMINI_TTS_VOICES,
+            OPENAI_TTS_VOICES,
             TTS_ENGINE_SHORT_LABELS,
             TTS_ENGINES,
             TTS_EXTERNAL_KEY_META,
             VOICE_STYLE_PRESETS,
+            BUILTIN_VOICE_PERSONAS,
             LiveAudioSession,
+            delete_voice_mode_preset,
+            delete_voice_persona,
             fetch_remote_tts_voices,
             fetch_tts_account_balance,
             get_last_tts_status,
@@ -2233,7 +3186,11 @@ class ManageAIsDialog(QDialog):
             is_tts_engine_ready,
             list_audio_input_devices,
             list_voices_for_engine,
+            load_voice_personas,
             load_voice_settings,
+            reset_voice_persona,
+            save_voice_mode_preset,
+            save_voice_persona,
             save_voice_settings,
             set_live_volume,
             speak_agent_response,
@@ -2242,17 +3199,46 @@ class ManageAIsDialog(QDialog):
         )
 
         w, outer_lay = self._make_simple_page(
-            '🎙️ Voice & Audio (🧠 Thinking AI · 🔊 Speaking Voice · 🎤 Microphone)',
-            'Pick which AI handles your voice conversations (🧠), choose any voice engine you enjoy listening to (🔊), and adjust volume live.'
+            '🎙️ Voice & Audio (🔊 Audio · 🗣️ Voice Cast · 🎭 Roleplay Personas)',
+            'Configure your speaking voice & microphone, build a 1–4 AI Voice Cast with Table Quorum, and customize rich Roleplay Personas.'
         )
         v_cfg = load_voice_settings(self.config_path)
         self._wheel_guard = _NoScrollWheelFilter(self)
 
-        scroll = QScrollArea()
+        # Compact 3-button sub-nav bar synced with collapsible left-sidebar items
+        sub_nav_row = QHBoxLayout()
+        sub_nav_row.setContentsMargins(0, 0, 0, 4)
+        sub_nav_row.setSpacing(6)
+        self._voice_sub_tab_btns: list[QPushButton] = []
+        sub_tab_specs = [
+            (0, '🔊 Audio && Mic', 'Thinking AI, speaking voice, mic level & 3D avatar mode'),
+            (1, '🗣️ Voice Cast', 'Enable Multi-AI Table Quorum (1–4 AI slots, voices, personas) & save Mode presets'),
+            (2, '🎭 Personas', 'Inspect & edit in-depth Roleplay Personas and profile learning'),
+        ]
+        for s_idx, s_lbl, s_tip in sub_tab_specs:
+            b = QPushButton(s_lbl)
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(s_tip)
+            b.setStyleSheet(
+                'QPushButton { background:#161b22; color:#8b949e; border:1px solid #2b313e; border-radius:6px; padding:4px 10px; font-size:12px; font-weight:600; }'
+                'QPushButton:checked { background:#132238; color:#7dd3fc; border-color:#38bdf8; }'
+                'QPushButton:hover { color:#f0f6fc; border-color:#58a6ff; }'
+            )
+            b.clicked.connect(lambda _c=False, idx=s_idx: self._select_voice_subpage(idx, sync_sidebar=True))
+            sub_nav_row.addWidget(b)
+            self._voice_sub_tab_btns.append(b)
+        sub_nav_row.addStretch(1)
+        outer_lay.addLayout(sub_nav_row)
+
+        self.voice_sub_pages = QStackedWidget()
+        outer_lay.addWidget(self.voice_sub_pages, 1)
+
+        scroll = QScrollArea(self.voice_sub_pages)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-        scroll_inner = QWidget()
+        scroll_inner = QWidget(scroll)
         lay = QVBoxLayout(scroll_inner)
         lay.setContentsMargins(0, 0, 6, 0)
         lay.setSpacing(10)
@@ -2271,7 +3257,7 @@ class ManageAIsDialog(QDialog):
         bc_lay.addWidget(bc_sub)
 
         b_form = QFormLayout()
-        all_brain_keys = ['gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral', 'cerebras']
+        all_brain_keys = ['gemini', 'openai', 'xai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral', 'cerebras']
         self.voice_llm_combo = QComboBox()
         self.voice_llm_combo.setToolTip('Primary AI that answers you in Talk Mode Only and Voice Companion')
         self.voice_llm_combo.addItem('✓ Auto — Fastest Ready AI (Recommended)', 'auto')
@@ -2282,7 +3268,7 @@ class ManageAIsDialog(QDialog):
             except Exception:
                 has_k = False
             tag = '✓ Ready' if has_k else '🔑 Needs API key'
-            self.voice_llm_combo.addItem(f'{provider_icon(pk)} {provider_display_name(pk)} ({tag})', pk)
+            self.voice_llm_combo.addItem(f'{provider_icon(pk)} {provider_display_name(pk, config_path=self.config_path)} ({tag})', pk)
         cur_brain = str(v_cfg.get('voice_llm_provider', 'auto') or 'auto').lower()
         bi = self.voice_llm_combo.findData(cur_brain)
         if bi >= 0:
@@ -2294,7 +3280,7 @@ class ManageAIsDialog(QDialog):
         self.voice_llm_fallback_combo.addItem('✓ Auto — Next Ready AI (Recommended)', 'auto')
         self.voice_llm_fallback_combo.addItem('✕ None — Never auto-switch (tell me if it fails)', 'none')
         for pk in all_brain_keys:
-            self.voice_llm_fallback_combo.addItem(f'{provider_icon(pk)} {provider_display_name(pk)}', pk)
+            self.voice_llm_fallback_combo.addItem(f'{provider_icon(pk)} {provider_display_name(pk, config_path=self.config_path)}', pk)
         cur_brain_fb = str(v_cfg.get('voice_llm_fallback', 'auto') or 'auto').lower()
         bfi = self.voice_llm_fallback_combo.findData(cur_brain_fb)
         if bfi >= 0:
@@ -2313,29 +3299,29 @@ class ManageAIsDialog(QDialog):
         bc_lay.addLayout(b_form)
 
         self.voice_companion_check = QCheckBox(
-            'Conversational Voice Companion: keep talking naturally while background AIs work, delegate complex tasks & live-steer them',
+            'Conversational Voice Companion (background specialists)',
             checked=bool(v_cfg.get('voice_companion_enabled', True)),
         )
-        self.voice_companion_check.setToolTip('When enabled in Live Voice Mode, Fairybread talks back in ~1–2s and hands heavy tasks to the AI crew in the background')
+        self.voice_companion_check.setToolTip('Keep talking naturally in Live Voice Mode (~1–2s reply) while background AIs handle heavy work & accept live-steering')
         bc_lay.addWidget(self.voice_companion_check)
 
         self.spoken_summary_check = QCheckBox(
-            'Speak concise human summaries when background tasks finish (instead of reading raw markdown/code aloud)',
+            'Speak concise human summaries when tasks finish',
             checked=bool(v_cfg.get('spoken_summary_for_background', True)),
         )
-        self.spoken_summary_check.setToolTip('Reads a friendly 2–3 sentence summary aloud while showing the full details on screen')
+        self.spoken_summary_check.setToolTip('Reads a friendly 2–3 sentence summary aloud instead of raw markdown/code while showing full details on screen')
         bc_lay.addWidget(self.spoken_summary_check)
 
         self.auto_speak_check = QCheckBox(
-            'Always read final synthesized agent responses aloud (Note: Live Voice Mode automatically speaks replies aloud even if this is unchecked)',
+            'Always read final chat replies aloud',
             checked=bool(v_cfg.get('auto_speak_responses', False)),
         )
-        self.auto_speak_check.setToolTip('When checked, even typed prompts will have their final answer read aloud automatically')
+        self.auto_speak_check.setToolTip('Even typed prompts will have their final answer read aloud automatically (Live Voice Mode always speaks replies aloud)')
         bc_lay.addWidget(self.auto_speak_check)
         lay.addWidget(brain_card)
 
         # --- SECTION 2: SPEAKING VOICE, ENGINE SELECTION & INLINE KEY SETUP ---
-        spk_card = QFrame()
+        spk_card = QFrame(scroll_inner)
         sc_lay = QVBoxLayout(spk_card)
         _style_settings_card(spk_card, 'voiceSpeakerCard', sc_lay, pad_h=10, pad_v=10)
         sc_lay.setSpacing(8)
@@ -2348,6 +3334,7 @@ class ManageAIsDialog(QDialog):
         sc_lay.addWidget(sc_sub)
 
         s_form = QFormLayout()
+        sc_lay.addLayout(s_form)
 
         self.tts_engine_combo = QComboBox()
         self.tts_engine_combo.setToolTip('Primary voice engine used to speak replies aloud')
@@ -2374,6 +3361,7 @@ class ManageAIsDialog(QDialog):
             if not meta:
                 return
             dlg = QDialog(self)
+            _apply_windows_dialog_flags(dlg, resizable=False)
             dlg.setWindowTitle(f"{meta.get('display_name', eid.title())} — Website Setup & Pricing Guide")
             dlg.resize(620, 460)
             dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
@@ -2417,17 +3405,10 @@ class ManageAIsDialog(QDialog):
             dv.addLayout(btn_row)
             dlg.exec()
 
-        tts_eng_row = QHBoxLayout()
-        tts_eng_row.addWidget(self.tts_engine_combo, 1)
-        self.tts_setup_guide_btn = QPushButton('📖 Setup && Pricing')
-        self.tts_setup_guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tts_setup_guide_btn.setToolTip('Step-by-step website navigation, API key creation, plans, and billing tips')
-        self.tts_setup_guide_btn.clicked.connect(lambda: _open_tts_setup_guide())
-        tts_eng_row.addWidget(self.tts_setup_guide_btn)
-        s_form.addRow('Speaking Engine:', tts_eng_row)
+        s_form.addRow('Speaking Engine:', self.tts_engine_combo)
 
         # Inline Progressive Key Setup Card (shown ONLY when selecting an unconfigured external TTS service)
-        self.tts_inline_key_frame = QFrame()
+        self.tts_inline_key_frame = QFrame(spk_card)
         self.tts_inline_key_frame.setStyleSheet(
             'QFrame { background: #1a1f2b; border: 1px solid #eab308; border-radius: 6px; padding: 8px; }'
         )
@@ -2444,15 +3425,18 @@ class ManageAIsDialog(QDialog):
         self.tts_inline_key_edit = QLineEdit()
         self.tts_inline_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.tts_inline_key_edit.setPlaceholderText('Paste API key here…')
-        self.tts_inline_key_link_btn = QPushButton('Get API key ↗')
+        self.tts_inline_key_link_btn = QPushButton('Key ↗', self.tts_inline_key_frame)
         self.tts_inline_key_link_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tts_inline_key_save_btn = QPushButton('Save Key && Test Voice')
+        self.tts_inline_key_link_btn.setToolTip('Open this voice provider’s API key page in your browser')
+        self.tts_inline_key_save_btn = QPushButton('Save && Test', self.tts_inline_key_frame)
         self.tts_inline_key_save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tts_inline_key_save_btn.setToolTip('Save API key in Windows DPAPI vault and immediately test voice playback')
         self.tts_inline_key_save_btn.setStyleSheet(
             'QPushButton { background: #166534; color: #ffffff; border: 1px solid #22c55e; border-radius: 5px; padding: 4px 10px; font-weight: 600; }'
         )
-        self.tts_inline_key_revert_btn = QPushButton('← Revert to Ready')
+        self.tts_inline_key_revert_btn = QPushButton('← Revert', self.tts_inline_key_frame)
         self.tts_inline_key_revert_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tts_inline_key_revert_btn.setToolTip('Revert back to an already-ready speaking engine')
         ik_row.addWidget(self.tts_inline_key_edit, 1)
         ik_row.addWidget(self.tts_inline_key_link_btn)
         ik_row.addWidget(self.tts_inline_key_save_btn)
@@ -2503,9 +3487,6 @@ class ManageAIsDialog(QDialog):
             view = combo_box.view()
             if view is not None:
                 view.setTextElideMode(Qt.TextElideMode.ElideNone)
-                fm = combo_box.fontMetrics()
-                max_px = max([fm.horizontalAdvance(combo_box.itemText(i)) for i in range(combo_box.count())] or [320])
-                view.setMinimumWidth(max(420, max_px + 56))
 
         def _target_voice_for_engine(eng_id: str) -> str:
             if eng_id == 'gemini':
@@ -2591,7 +3572,7 @@ class ManageAIsDialog(QDialog):
             _sync_inline_key_prompt()
             _sync_deepgram_controls()
 
-        self.fetch_voices_btn = QPushButton('↻ Refresh Voices')
+        self.fetch_voices_btn = QPushButton('↻ Voices', spk_card)
         self.fetch_voices_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.fetch_voices_btn.setToolTip('Load all live voices from your Deepgram, Cartesia, or ElevenLabs account')
 
@@ -2677,20 +3658,29 @@ class ManageAIsDialog(QDialog):
         self.tts_inline_key_save_btn.clicked.connect(_save_inline_tts_key)
         self.tts_inline_key_revert_btn.clicked.connect(_revert_to_ready_tts)
 
-        test_voice_btn = QPushButton('🔊 Test Voice')
+        test_voice_btn = QPushButton('🔊 Test')
         test_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         test_voice_btn.setToolTip('Synthesize and play a sample using your selected speaking engine, voice, and speed')
 
-        stop_voice_btn = QPushButton('⏹ Stop Voice')
+        stop_voice_btn = QPushButton('⏹ Stop')
         stop_voice_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         stop_voice_btn.setToolTip('Immediately interrupt any active spoken response')
         stop_voice_btn.clicked.connect(stop_speaking)
 
-        voice_row.addWidget(self.voice_name_combo, 1)
-        voice_row.addWidget(self.fetch_voices_btn)
-        voice_row.addWidget(test_voice_btn)
-        voice_row.addWidget(stop_voice_btn)
-        s_form.addRow('Voice Character:', voice_row)
+        self.tts_setup_guide_btn = QPushButton('📖 Guide', spk_card)
+        self.tts_setup_guide_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tts_setup_guide_btn.setToolTip('Open step-by-step website navigation, API key creation, plans, and billing tips')
+        self.tts_setup_guide_btn.clicked.connect(lambda: _open_tts_setup_guide())
+
+        s_form.addRow('Voice Character:', self.voice_name_combo)
+        voice_btn_row = QHBoxLayout()
+        voice_btn_row.setSpacing(6)
+        voice_btn_row.addWidget(test_voice_btn)
+        voice_btn_row.addWidget(stop_voice_btn)
+        voice_btn_row.addWidget(self.fetch_voices_btn)
+        voice_btn_row.addWidget(self.tts_setup_guide_btn)
+        voice_btn_row.addStretch(1)
+        s_form.addRow('', voice_btn_row)
         s_form.addRow('Fallback Gemini Voice:', self.gemini_voice_combo)
 
         self.voice_style_combo = QComboBox()
@@ -2721,7 +3711,7 @@ class ManageAIsDialog(QDialog):
         speed_row.addWidget(self.voice_speed_label)
         s_form.addRow('Speaking Speed:', speed_row)
 
-        self.deepgram_expressivity_combo = QComboBox()
+        self.deepgram_expressivity_combo = QComboBox(spk_card)
         for expr_val, expr_lbl in (
             (-2, '-2 — Calm / Flat'),
             (-1, '-1 — Subdued'),
@@ -2767,7 +3757,6 @@ class ManageAIsDialog(QDialog):
         vol_row.addWidget(self.voice_vol_slider, 1)
         vol_row.addWidget(self.voice_vol_label)
         s_form.addRow('Speaker Volume (Live):', vol_row)
-        sc_lay.addLayout(s_form)
 
         self.tts_test_status_label = QLabel('Volume adjusts in real time without Save. OpenAI / Gemini / Groq Orpheus work with your existing keys.')
         self.tts_test_status_label.setWordWrap(True)
@@ -2790,10 +3779,10 @@ class ManageAIsDialog(QDialog):
         self.tts_balance_label = QLabel('')
         self.tts_balance_label.setWordWrap(True)
         self.tts_balance_label.setStyleSheet('font-size: 11.5px; color: #8b949e; border: none;')
-        self.tts_check_balance_btn = QPushButton('↻ Balance')
+        self.tts_check_balance_btn = QPushButton('↻ Balance', spk_card)
         self.tts_check_balance_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tts_check_balance_btn.setToolTip('Query provider account credits / balance when supported (ElevenLabs, Deepgram)')
-        self.tts_open_billing_btn = QPushButton('Billing ↗')
+        self.tts_open_billing_btn = QPushButton('Billing ↗', spk_card)
         self.tts_open_billing_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.tts_open_billing_btn.setToolTip('Open this voice provider\'s billing and credit balance page in your browser')
         bal_row.addWidget(self.tts_balance_label, 1)
@@ -2804,7 +3793,7 @@ class ManageAIsDialog(QDialog):
         lay.addWidget(spk_card)
 
         # --- SECTION 3: MICROPHONE & LIVE VOICE INPUT ---
-        mic_card = QFrame()
+        mic_card = QFrame(scroll_inner)
         mc_lay = QVBoxLayout(mic_card)
         _style_settings_card(mic_card, 'voiceMicCard', mc_lay, pad_h=10, pad_v=10)
         mc_lay.setSpacing(8)
@@ -2823,7 +3812,7 @@ class ManageAIsDialog(QDialog):
         if m_idx >= 0:
             self.mic_device_combo.setCurrentIndex(m_idx)
 
-        refresh_mics_btn = QPushButton('↻ Refresh Mics')
+        refresh_mics_btn = QPushButton('↻ Mics')
         refresh_mics_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         refresh_mics_btn.setToolTip('Re-scan connected USB, Bluetooth, or headset microphones')
 
@@ -2842,7 +3831,8 @@ class ManageAIsDialog(QDialog):
         m_form.addRow('Microphone Device:', mic_row)
 
         self.mic_loopback_warn_lbl = QLabel(
-            '⚠ Selected input looks like speaker loopback ("Stereo Mix"), NOT a microphone — Talk Mode will not hear your voice. Pick "System default" or your real mic.'
+            '⚠ Selected input looks like speaker loopback ("Stereo Mix"), NOT a microphone — Talk Mode will not hear your voice. Pick "System default" or your real mic.',
+            mic_card,
         )
         self.mic_loopback_warn_lbl.setWordWrap(True)
         self.mic_loopback_warn_lbl.setStyleSheet(
@@ -2884,7 +3874,7 @@ class ManageAIsDialog(QDialog):
         mc_lay.addLayout(m_form)
 
         self.barge_in_check = QCheckBox(
-            'Interrupt AI when I start talking (Barge-in — best with headphones)',
+            'Interrupt AI when I start talking (Barge-in)',
             checked=bool(v_cfg.get('barge_in_enabled', True)),
         )
         self.barge_in_check.setToolTip(
@@ -2908,12 +3898,12 @@ class ManageAIsDialog(QDialog):
         self.mic_wave_lbl.setStyleSheet('font-family: Consolas, monospace; font-size: 15px; color: #22c55e; min-width: 70px;')
         self.mic_wave_lbl.setToolTip('Live soundwave indicator')
 
-        self.mic_live_test_btn = QPushButton('🎤 Start Live Mic Level Test')
+        self.mic_live_test_btn = QPushButton('🎤 Test Mic')
         self.mic_live_test_btn.setCheckable(True)
         self.mic_live_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_live_test_btn.setToolTip('Click and speak into your microphone to watch the green level meter move in real time')
 
-        self.mic_transcribe_test_btn = QPushButton('🧪 Record 3s && Test Transcription')
+        self.mic_transcribe_test_btn = QPushButton('🧪 Test 3s STT')
         self.mic_transcribe_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mic_transcribe_test_btn.setToolTip('Record 3 seconds of your voice and transcribe it live to verify end-to-end voice input')
 
@@ -2923,10 +3913,28 @@ class ManageAIsDialog(QDialog):
         meter_row.addWidget(self.mic_transcribe_test_btn)
         mc_lay.addLayout(meter_row)
 
-        self.mic_test_status_label = QLabel('Tip: Click "🎤 Start Live Mic Level Test" and speak — the green bar will bounce if your mic hears you.')
+        self.mic_test_status_label = QLabel('Tip: Click "🎤 Test Mic" and speak — the green bar will bounce if your mic hears you.')
         self.mic_test_status_label.setWordWrap(True)
         self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
         mc_lay.addWidget(self.mic_test_status_label)
+
+        def _collect_voice_slots_payload() -> list[dict]:
+            slot_widgets = getattr(self, '_voice_cast_slot_widgets', None)
+            if not slot_widgets:
+                return list(v_cfg.get('voice_cast_slots') or DEFAULT_VOICE_CAST_SLOTS)
+            out_slots: list[dict] = []
+            for idx, sw in enumerate(slot_widgets[:4]):
+                out_slots.append({
+                    'slot': idx + 1,
+                    'provider': str(sw['provider'].currentData() or ''),
+                    'model': str(sw['model'].text() or '').strip(),
+                    'persona_id': str(sw['persona'].currentData() or 'normal_female'),
+                    'speaker_name': str(sw['speaker'].text() or '').strip() or f'AI {idx + 1}',
+                    'voice_name': str(sw['voice'].currentData() or 'coral'),
+                    'avatar_shape': str(sw['shape'].currentData() or 'neural_core'),
+                    'avatar_palette': str(sw['palette'].currentData() or 'tulsa_cyan'),
+                })
+            return out_slots
 
         def _collect_voice_payload() -> dict:
             eng = str(self.tts_engine_combo.currentData() or 'auto')
@@ -2938,6 +3946,8 @@ class ManageAIsDialog(QDialog):
             elev_voice = chosen_voice if eng == 'elevenlabs' else self._saved_eleven_voice
             dg_voice = chosen_voice if eng == 'deepgram' else self._saved_deepgram_voice
             sys_voice = chosen_voice if eng == 'system' else self._saved_system_voice
+            cast_slots = _collect_voice_slots_payload()
+            active_persona_id = str(cast_slots[0].get('persona_id') or 'normal_female') if cast_slots else str(v_cfg.get('active_voice_persona') or 'normal_female')
             return {
                 'tts_engine': eng,
                 'tts_fallback_engine': str(self.tts_fallback_combo.currentData() or 'auto'),
@@ -2972,6 +3982,10 @@ class ManageAIsDialog(QDialog):
                 'voice_avatar_palette': str(self.voice_avatar_palette_combo.currentData() or 'tulsa_cyan') if hasattr(self, 'voice_avatar_palette_combo') else 'tulsa_cyan',
                 'voice_avatar_always_on_top': bool(self.voice_avatar_on_top_check.isChecked()) if hasattr(self, 'voice_avatar_on_top_check') else True,
                 'voice_avatar_show_activity': bool(self.voice_avatar_activity_check.isChecked()) if hasattr(self, 'voice_avatar_activity_check') else True,
+                'active_voice_persona': active_persona_id,
+                'multi_ai_voice_enabled': bool(self.multi_ai_voice_check.isChecked()) if hasattr(self, 'multi_ai_voice_check') else False,
+                'multi_ai_max_volleys': int(self.multi_ai_volleys_combo.currentData() or 3) if hasattr(self, 'multi_ai_volleys_combo') else 3,
+                'voice_cast_slots': cast_slots,
             }
 
         self._collect_voice_payload = _collect_voice_payload
@@ -3028,7 +4042,7 @@ class ManageAIsDialog(QDialog):
                         self._active_billing_url = str(res.get('billing_url') or '')
                         self.tts_open_billing_btn.setVisible(bool(self._active_billing_url))
 
-                    QTimer.singleShot(0, _apply_bal)
+                    self._ui_call_signal.emit(_apply_bal)
 
                 threading.Thread(target=_bal_worker, daemon=True, name='FairybreadTtsBalance').start()
             elif is_live_bal_provider:
@@ -3067,7 +4081,7 @@ class ManageAIsDialog(QDialog):
                         self.tts_test_status_label.setText(f'🔊 Speaking via {eng_label}')
                     _refresh_active_tts_and_balance(trigger_remote=False)
 
-                QTimer.singleShot(0, _apply_eng)
+                self._ui_call_signal.emit(_apply_eng)
 
             def _on_meta(meta: dict):
                 if meta.get('fell_back'):
@@ -3081,7 +4095,7 @@ class ManageAIsDialog(QDialog):
                         self.tts_test_status_label.setText(m)
                         _refresh_active_tts_and_balance(trigger_remote=False)
 
-                    QTimer.singleShot(0, _apply_fb)
+                    self._ui_call_signal.emit(_apply_fb)
 
             def _on_err(err_msg: str):
                 def _apply_err(m=err_msg):
@@ -3091,7 +4105,7 @@ class ManageAIsDialog(QDialog):
                     self.tts_test_status_label.setText(f'🔇 Voice playback failed: {m}')
                     _refresh_active_tts_and_balance(trigger_remote=False)
 
-                QTimer.singleShot(0, _apply_err)
+                self._ui_call_signal.emit(_apply_err)
 
             speak_agent_response(
                 "Hey Brett, Fairybread's human voice and conversational companion are ready whenever you want to talk.",
@@ -3270,7 +4284,639 @@ class ManageAIsDialog(QDialog):
         lay.addStretch()
 
         scroll.setWidget(scroll_inner)
-        outer_lay.addWidget(scroll, 1)
+        self.voice_sub_pages.addWidget(scroll)
+
+        # --- SUB-PAGE 1: VOICE CAST & MULTI-AI TABLE QUORUM ---
+        cast_scroll = QScrollArea(self.voice_sub_pages)
+        cast_scroll.setWidgetResizable(True)
+        cast_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        cast_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        cast_inner = QWidget(cast_scroll)
+        cast_lay = QVBoxLayout(cast_inner)
+        cast_lay.setContentsMargins(0, 0, 6, 0)
+        cast_lay.setSpacing(10)
+
+        quorum_card = QFrame()
+        qc_lay = QVBoxLayout(quorum_card)
+        _style_settings_card(quorum_card, 'voiceCastCard', qc_lay, pad_h=10, pad_v=10)
+        qc_lay.setSpacing(8)
+        qc_hdr = QLabel('<b>🗣️ Multi-AI Voice Cast &amp; Table Quorum (1–4 AIs)</b>')
+        qc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        qc_lay.addWidget(qc_hdr)
+        qc_sub = QLabel(
+            'When Multi-AI Table Quorum is enabled, 2–4 fast AI companions sit around the table with distinct voices, '
+            'Roleplay Personas, and 3D avatars — reacting to each other by name without talking over one another.'
+        )
+        qc_sub.setWordWrap(True)
+        qc_sub.setStyleSheet('font-size: 12px; color: #8b949e;')
+        qc_lay.addWidget(qc_sub)
+
+        top_q_row = QHBoxLayout()
+        self.multi_ai_voice_check = QCheckBox(
+            'Enable Multi-AI Voice Chat (Table Quorum)',
+            checked=bool(v_cfg.get('multi_ai_voice_enabled', False)),
+        )
+        self.multi_ai_voice_check.setToolTip(
+            'Off = Solo voice companion (1st AI). On = 2–4 active slots converse, debate & riff together cleanly.'
+        )
+        top_q_row.addWidget(self.multi_ai_voice_check)
+        top_q_row.addStretch(1)
+        top_q_row.addWidget(QLabel('Max Volleys Before Pause:'))
+        self.multi_ai_volleys_combo = QComboBox()
+        self.multi_ai_volleys_combo.setMinimumWidth(175)
+        self.multi_ai_volleys_combo.setToolTip(
+            'Anti-loop brake: max AI turns per volley before pausing so you can always jump in naturally'
+        )
+        for v_cnt, v_lbl in ((1, '1 Beat (Solo)'), (2, '2 Beats'), (3, '3 Beats (Recommended)'), (4, '4 Beats')):
+            self.multi_ai_volleys_combo.addItem(v_lbl, v_cnt)
+        cur_v_cnt = int(v_cfg.get('multi_ai_max_volleys', 3) or 3)
+        v_cnt_idx = self.multi_ai_volleys_combo.findData(cur_v_cnt)
+        if v_cnt_idx >= 0:
+            self.multi_ai_volleys_combo.setCurrentIndex(v_cnt_idx)
+        top_q_row.addWidget(self.multi_ai_volleys_combo)
+        qc_lay.addLayout(top_q_row)
+
+        personas_map = load_voice_personas(self.config_path)
+        saved_slots = list(v_cfg.get('voice_cast_slots') or DEFAULT_VOICE_CAST_SLOTS)
+        slot_provider_choices = [
+            ('auto', '✓ Auto (Fast)'),
+            ('gemini', '◆ Gemini'),
+            ('openai', '● OpenAI'),
+            ('xai', '𝕏 xAI (Grok)'),
+            ('deepseek', '❖ DeepSeek'),
+            ('groq', '⚡ Groq'),
+            ('qwen', '✦ Qwen'),
+            ('cohere', '◎ Cohere'),
+            ('mistral', '▲ Mistral'),
+            ('cerebras', '◈ Cerebras'),
+            ('openrouter', '⊕ OpenRouter'),
+        ]
+        self._voice_cast_slot_widgets: list[dict[str, Any]] = []
+        for idx in range(4):
+            s_data = saved_slots[idx] if idx < len(saved_slots) else DEFAULT_VOICE_CAST_SLOTS[idx]
+            slot_box = QFrame()
+            slot_box.setStyleSheet('QFrame { background:#0d1117; border:1px solid #262c3a; border-radius:6px; }')
+            sb_v = QVBoxLayout(slot_box)
+            sb_v.setContentsMargins(8, 6, 8, 6)
+            sb_v.setSpacing(4)
+
+            row_a = QHBoxLayout()
+            row_a.setSpacing(6)
+            slot_lbl = QLabel(f'<b>{"1st AI (Lead)" if idx == 0 else f"{idx + 1}th AI" if idx == 3 else ("2nd AI" if idx == 1 else "3rd AI")}:</b>')
+            slot_lbl.setFixedWidth(74)
+            slot_lbl.setStyleSheet('border:none; font-size:12px;')
+            row_a.addWidget(slot_lbl)
+
+            prov_cb = QComboBox()
+            prov_cb.setToolTip('AI provider for this voice seat (set Slots 2–4 to Blank / Off to exclude)')
+            if idx > 0:
+                prov_cb.addItem('— Blank / Off —', '')
+            for pid_opt, plbl_opt in slot_provider_choices:
+                if idx > 0 and pid_opt == 'auto':
+                    continue
+                prov_cb.addItem(plbl_opt, pid_opt)
+            cur_sp = str(s_data.get('provider') or ('auto' if idx == 0 else '')).strip().lower()
+            sp_idx = prov_cb.findData(cur_sp)
+            if sp_idx >= 0:
+                prov_cb.setCurrentIndex(sp_idx)
+            prov_cb.setMinimumWidth(122)
+            row_a.addWidget(prov_cb, 1)
+
+            voice_cb = QComboBox()
+            voice_cb.setMinimumWidth(100)
+            voice_cb.setToolTip('Distinct speaking voice for this seat so you recognize who is talking immediately')
+            for vid, vlbl in OPENAI_TTS_VOICES:
+                voice_cb.addItem(vlbl.split('—', 1)[0].strip(), vid)
+            cur_sv = str(s_data.get('voice_name') or 'coral').strip()
+            sv_idx = voice_cb.findData(cur_sv)
+            if sv_idx >= 0:
+                voice_cb.setCurrentIndex(sv_idx)
+            row_a.addWidget(voice_cb, 0)
+
+            shape_cb = QComboBox()
+            shape_cb.setMinimumWidth(182)
+            shape_cb.setToolTip('3D Avatar geometric shape for this AI seat')
+            for sid, slbl in AVATAR_SHAPES:
+                shape_cb.addItem(slbl, sid)
+            cur_sh = str(s_data.get('avatar_shape') or 'neural_core')
+            sh_i = shape_cb.findData(cur_sh)
+            if sh_i >= 0:
+                shape_cb.setCurrentIndex(sh_i)
+            row_a.addWidget(shape_cb, 2)
+
+            pal_cb = QComboBox()
+            pal_cb.setMinimumWidth(155)
+            pal_cb.setToolTip('3D Avatar glow color palette for this AI seat')
+            for pid_c, plbl_c in AVATAR_PALETTES:
+                pal_cb.addItem(plbl_c, pid_c)
+            cur_pal = str(s_data.get('avatar_palette') or 'tulsa_cyan')
+            pal_i = pal_cb.findData(cur_pal)
+            if pal_i >= 0:
+                pal_cb.setCurrentIndex(pal_i)
+            row_a.addWidget(pal_cb, 1)
+            sb_v.addLayout(row_a)
+
+            row_b = QHBoxLayout()
+            row_b.setSpacing(6)
+            spacer_lbl = QLabel('Persona:')
+            spacer_lbl.setFixedWidth(74)
+            spacer_lbl.setStyleSheet('border:none; font-size:11.5px; color:#8b949e;')
+            row_b.addWidget(spacer_lbl)
+
+            persona_cb = QComboBox()
+            persona_cb.setToolTip('Roleplay Persona attached to this AI seat')
+            for pid_p, p_obj in personas_map.items():
+                persona_cb.addItem(str(p_obj.get('label') or pid_p), pid_p)
+            cur_pid = str(s_data.get('persona_id') or 'normal_female').strip()
+            p_idx = persona_cb.findData(cur_pid)
+            if p_idx >= 0:
+                persona_cb.setCurrentIndex(p_idx)
+            row_b.addWidget(persona_cb, 2)
+
+            model_ed = QLineEdit(str(s_data.get('model') or ''))
+            model_ed.setMaximumWidth(120)
+            model_ed.setPlaceholderText('Model (fast)')
+            model_ed.setToolTip('Optional pinned model for this seat (e.g. gpt-6-luna, gpt-6.2-sol, deepseek-chat, gemini-4-hydrogen)')
+            row_b.addWidget(model_ed)
+
+            speaker_ed = QLineEdit(str(s_data.get('speaker_name') or ''))
+            speaker_ed.setMaximumWidth(105)
+            speaker_ed.setPlaceholderText('Name')
+            speaker_ed.setToolTip('Speaker name used at the table (peers address each other by this name)')
+            row_b.addWidget(speaker_ed)
+            sb_v.addLayout(row_b)
+
+            def _on_slot_persona_picked(_i=0, _pcb=persona_cb, _provcb=prov_cb, _vcb=voice_cb, _sed=speaker_ed, _shcb=shape_cb, _palcb=pal_cb):
+                if getattr(self, '_loading_voice_cast_ui', False):
+                    return
+                pid_sel = str(_pcb.currentData() or '')
+                p_all = load_voice_personas(self.config_path)
+                p_info = p_all.get(pid_sel)
+                if not p_info:
+                    return
+                prov_sel = str(_provcb.currentData() or '').strip().lower()
+                prov_given = get_provider_given_name(prov_sel, config_path=self.config_path) if (prov_sel and prov_sel != 'auto') else ''
+                _placeholders = {'', 'maya', 'liam', 'chloe', 'ethan', 'elena', 'jack', 'marcus', 'seat 1', 'seat 2', 'seat 3', 'seat 4'}
+                self._loading_voice_cast_ui = True
+                try:
+                    cur_sp = _sed.text().strip()
+                    if prov_given:
+                        _sed.setText(prov_given)
+                    elif cur_sp.lower() in _placeholders:
+                        _sed.setText(str(p_info.get('speaker_name') or cur_sp))
+                    oai_hint = str((p_info.get('voice_hints') or {}).get('openai') or '')
+                    if oai_hint:
+                        vi = _vcb.findData(oai_hint)
+                        if vi >= 0:
+                            _vcb.setCurrentIndex(vi)
+                    shi = _shcb.findData(str(p_info.get('avatar_shape') or 'neural_core'))
+                    if shi >= 0:
+                        _shcb.setCurrentIndex(shi)
+                    pli = _palcb.findData(str(p_info.get('avatar_palette') or 'tulsa_cyan'))
+                    if pli >= 0:
+                        _palcb.setCurrentIndex(pli)
+                finally:
+                    self._loading_voice_cast_ui = False
+                self._schedule_autosave()
+
+            persona_cb.currentIndexChanged.connect(_on_slot_persona_picked)
+
+            def _sync_slot_enabled(_i=0, _idx=idx, _pcb=prov_cb, _wlist=(model_ed, voice_cb, persona_cb, speaker_ed, shape_cb, pal_cb)):
+                is_on = (_idx == 0) or bool(str(_pcb.currentData() or '').strip())
+                for w_item in _wlist:
+                    w_item.setEnabled(is_on)
+
+            def _on_slot_provider_picked(
+                _i=0,
+                _idx=idx,
+                _provcb=prov_cb,
+                _pcb=persona_cb,
+                _vcb=voice_cb,
+                _sed=speaker_ed,
+                _shcb=shape_cb,
+                _palcb=pal_cb,
+                _sync=_sync_slot_enabled,
+            ):
+                _sync()
+                if getattr(self, '_loading_voice_cast_ui', False):
+                    return
+                prov_sel = str(_provcb.currentData() or '').strip().lower()
+                if not prov_sel or prov_sel == 'auto':
+                    self._schedule_autosave()
+                    return
+                attr = get_provider_attribution(prov_sel, config_path=self.config_path)
+                self._loading_voice_cast_ui = True
+                try:
+                    if attr.get('given_name'):
+                        _sed.setText(str(attr['given_name']))
+                    if attr.get('voice_name'):
+                        vi = _vcb.findData(str(attr['voice_name']))
+                        if vi >= 0:
+                            _vcb.setCurrentIndex(vi)
+                    if attr.get('avatar_shape'):
+                        si = _shcb.findData(str(attr['avatar_shape']))
+                        if si >= 0:
+                            _shcb.setCurrentIndex(si)
+                    if attr.get('avatar_palette'):
+                        pi = _palcb.findData(str(attr['avatar_palette']))
+                        if pi >= 0:
+                            _palcb.setCurrentIndex(pi)
+                    if attr.get('conversational_mode'):
+                        mi = _pcb.findData(str(attr['conversational_mode']))
+                        if mi >= 0:
+                            _pcb.setCurrentIndex(mi)
+                finally:
+                    self._loading_voice_cast_ui = False
+                self._schedule_autosave()
+
+            prov_cb.currentIndexChanged.connect(_on_slot_provider_picked)
+            _sync_slot_enabled()
+
+            self._voice_cast_slot_widgets.append({
+                'provider': prov_cb,
+                'model': model_ed,
+                'voice': voice_cb,
+                'persona': persona_cb,
+                'speaker': speaker_ed,
+                'shape': shape_cb,
+                'palette': pal_cb,
+            })
+            qc_lay.addWidget(slot_box)
+
+        # Mode Menu Preset Manager row
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        self.voice_preset_manage_combo = QComboBox()
+        self.voice_preset_manage_combo.setToolTip('Voice Mode presets currently injected into Mode -> Voice Mode')
+        save_preset_btn = QPushButton('+ Save Preset…')
+        save_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_preset_btn.setToolTip('Save the current 1–4 AI Voice Cast & Quorum setup as a quick preset in Mode -> Voice Mode')
+        del_preset_btn = QPushButton('🗑 Remove')
+        del_preset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_preset_btn.setToolTip('Remove selected custom Voice Mode preset (built-ins remain available)')
+
+        def _refresh_voice_preset_combo():
+            cur_d = str(self.voice_preset_manage_combo.currentData() or '')
+            self.voice_preset_manage_combo.blockSignals(True)
+            self.voice_preset_manage_combo.clear()
+            presets = load_voice_settings(self.config_path).get('voice_mode_presets') or {}
+            for k_p, v_p in presets.items():
+                tag = '' if v_p.get('is_builtin') else ' [Custom]'
+                self.voice_preset_manage_combo.addItem(f"{v_p.get('label', k_p)}{tag}", k_p)
+            idx_p = self.voice_preset_manage_combo.findData(cur_d)
+            if idx_p >= 0:
+                self.voice_preset_manage_combo.setCurrentIndex(idx_p)
+            self.voice_preset_manage_combo.blockSignals(False)
+
+        def _save_cast_as_mode_preset():
+            lbl, ok = QInputDialog.getText(
+                self,
+                'Save Voice Mode Preset',
+                'Preset name for Mode -> Voice Mode dropdown:',
+                text='My Custom Voice Cast',
+            )
+            if not ok or not lbl.strip():
+                return
+            clean_lbl = lbl.strip()
+            slug = re.sub(r'[^a-zA-Z0-9_-]+', '_', clean_lbl.lower()).strip('_') or 'custom_cast'
+            slots_now = _collect_voice_slots_payload()
+            save_voice_mode_preset(
+                slug,
+                {
+                    'label': clean_lbl,
+                    'multi_ai_voice_enabled': bool(self.multi_ai_voice_check.isChecked()),
+                    'active_voice_persona': str(slots_now[0].get('persona_id') or 'normal_female'),
+                    'max_volleys': int(self.multi_ai_volleys_combo.currentData() or 3),
+                    'slots': slots_now,
+                },
+                config_path=self.config_path,
+            )
+            _refresh_voice_preset_combo()
+            idx_n = self.voice_preset_manage_combo.findData(slug)
+            if idx_n >= 0:
+                self.voice_preset_manage_combo.setCurrentIndex(idx_n)
+
+        def _delete_custom_voice_preset():
+            pid_del = str(self.voice_preset_manage_combo.currentData() or '').strip()
+            if not pid_del or pid_del in DEFAULT_VOICE_MODE_PRESETS:
+                return
+            delete_voice_mode_preset(pid_del, config_path=self.config_path)
+            _refresh_voice_preset_combo()
+
+        _refresh_voice_preset_combo()
+        save_preset_btn.clicked.connect(_save_cast_as_mode_preset)
+        del_preset_btn.clicked.connect(_delete_custom_voice_preset)
+        preset_row.addWidget(QLabel('Presets:'))
+        preset_row.addWidget(self.voice_preset_manage_combo, 1)
+        preset_row.addWidget(save_preset_btn)
+        preset_row.addWidget(del_preset_btn)
+        qc_lay.addLayout(preset_row)
+
+        cast_lay.addWidget(quorum_card)
+        cast_lay.addStretch(1)
+        cast_scroll.setWidget(cast_inner)
+        self.voice_sub_pages.addWidget(cast_scroll)
+
+        # --- SUB-PAGE 2: EDITABLE ROLEPLAY PERSONAS ---
+        pers_scroll = QScrollArea(self.voice_sub_pages)
+        pers_scroll.setWidgetResizable(True)
+        pers_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        pers_scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
+        pers_inner = QWidget(pers_scroll)
+        pers_lay = QVBoxLayout(pers_inner)
+        pers_lay.setContentsMargins(0, 0, 6, 0)
+        pers_lay.setSpacing(10)
+
+        p_card = QFrame()
+        pc_lay = QVBoxLayout(p_card)
+        _style_settings_card(p_card, 'voicePersonaCard', pc_lay, pad_h=10, pad_v=10)
+        pc_lay.setSpacing(8)
+        pc_hdr = QLabel('<b>🎭 Roleplay Personas (Built-In &amp; Custom Editable Blueprints)</b>')
+        pc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        pc_lay.addWidget(pc_hdr)
+        pc_sub = QLabel(
+            'Every Roleplay Persona ships with an in-depth personality & active-listening blueprint and is 100% editable. '
+            'Personas automatically reference your Living User Profile and enrich it as you talk.'
+        )
+        pc_sub.setWordWrap(True)
+        pc_sub.setStyleSheet('font-size: 12px; color: #8b949e;')
+        pc_lay.addWidget(pc_sub)
+
+        p_sel_row = QHBoxLayout()
+        self.persona_editor_combo = QComboBox()
+        self.persona_editor_combo.setToolTip('Select any built-in or custom Roleplay Persona to inspect or customize')
+        new_pers_btn = QPushButton('+ New')
+        new_pers_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_pers_btn.setToolTip('Create a new custom Roleplay Persona with a custom speaker name, traits & blueprint')
+        reset_pers_btn = QPushButton('↺ Reset')
+        reset_pers_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_pers_btn.setToolTip('Restore a customized built-in persona back to its factory blueprint')
+        self.del_persona_btn = QPushButton('🗑 Delete')
+        self.del_persona_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.del_persona_btn.setToolTip('Permanently delete the selected user-created custom Roleplay Persona (built-in personas cannot be deleted)')
+        p_sel_row.addWidget(QLabel('Persona:'))
+        p_sel_row.addWidget(self.persona_editor_combo, 1)
+        pc_lay.addLayout(p_sel_row)
+
+        p_act_row = QHBoxLayout()
+        p_act_row.setSpacing(6)
+        p_act_row.addWidget(new_pers_btn)
+        p_act_row.addWidget(reset_pers_btn)
+        p_act_row.addWidget(self.del_persona_btn)
+        p_act_row.addStretch(1)
+        pc_lay.addLayout(p_act_row)
+
+        p_form = QFormLayout()
+        self.persona_label_edit = QLineEdit()
+        self.persona_label_edit.setToolTip('Display label shown in Voice Cast & Mode dropdowns')
+        p_form.addRow('Persona Label:', self.persona_label_edit)
+
+        name_voice_row = QHBoxLayout()
+        self.persona_speaker_edit = QLineEdit()
+        self.persona_speaker_edit.setMaximumWidth(150)
+        self.persona_speaker_edit.setPlaceholderText('e.g. Maya')
+        self.persona_speaker_edit.setToolTip('Name this persona goes by in conversation and multi-AI table chats')
+        self.persona_voice_combo = QComboBox()
+        self.persona_voice_combo.setToolTip('Default neural voice paired with this persona')
+        for vid, vlbl in OPENAI_TTS_VOICES:
+            self.persona_voice_combo.addItem(vlbl, vid)
+        name_voice_row.addWidget(self.persona_speaker_edit)
+        name_voice_row.addWidget(QLabel('Voice:'))
+        name_voice_row.addWidget(self.persona_voice_combo, 1)
+        p_form.addRow('Speaker Name:', name_voice_row)
+
+        av_pers_row = QHBoxLayout()
+        self.persona_shape_combo = QComboBox()
+        for sid, slbl in AVATAR_SHAPES:
+            self.persona_shape_combo.addItem(slbl, sid)
+        self.persona_palette_combo = QComboBox()
+        for pid_c, plbl_c in AVATAR_PALETTES:
+            self.persona_palette_combo.addItem(plbl_c, pid_c)
+        av_pers_row.addWidget(self.persona_shape_combo, 1)
+        av_pers_row.addWidget(self.persona_palette_combo, 1)
+        p_form.addRow('Default 3D Avatar:', av_pers_row)
+        pc_lay.addLayout(p_form)
+
+        self.persona_evolve_check = QCheckBox(
+            'Evolve my Living User Profile in this persona'
+        )
+        self.persona_evolve_check.setToolTip(
+            'Uncheck to keep fictional RPG roleplay characters isolated from your personal Living User Profile'
+        )
+        pc_lay.addWidget(self.persona_evolve_check)
+
+        pc_lay.addWidget(QLabel('<b>Detailed Roleplay Blueprint (Psychological Stance, Cadence &amp; Listening Rules):</b>'))
+        self.persona_blueprint_edit = QTextEdit()
+        self.persona_blueprint_edit.setAcceptRichText(False)
+        self.persona_blueprint_edit.setMinimumHeight(185)
+        self.persona_blueprint_edit.setToolTip('Edit how this persona listens, jokes, challenges you, and responds — saves automatically')
+        pc_lay.addWidget(self.persona_blueprint_edit)
+
+        self.persona_status_lbl = QLabel('✓ Edits save automatically per persona')
+        self.persona_status_lbl.setStyleSheet('font-size: 11.5px; color: #90d7c1;')
+        pc_lay.addWidget(self.persona_status_lbl)
+
+        self._loading_persona_editor = False
+        self._active_edit_persona_id = str(v_cfg.get('active_voice_persona') or 'normal_female')
+
+        def _reload_persona_dropdowns(select_pid: str | None = None):
+            all_p = load_voice_personas(self.config_path)
+            target_id = select_pid or str(self.persona_editor_combo.currentData() or self._active_edit_persona_id or 'normal_female')
+            self._loading_persona_editor = True
+            try:
+                self.persona_editor_combo.blockSignals(True)
+                self.persona_editor_combo.clear()
+                for pid_p, p_obj in all_p.items():
+                    self.persona_editor_combo.addItem(str(p_obj.get('label') or pid_p), pid_p)
+                pi = self.persona_editor_combo.findData(target_id)
+                if pi >= 0:
+                    self.persona_editor_combo.setCurrentIndex(pi)
+                self.persona_editor_combo.blockSignals(False)
+
+                for sw in getattr(self, '_voice_cast_slot_widgets', []):
+                    cb = sw['persona']
+                    prev_slot_p = str(cb.currentData() or '')
+                    cb.blockSignals(True)
+                    cb.clear()
+                    for pid_p, p_obj in all_p.items():
+                        cb.addItem(str(p_obj.get('label') or pid_p), pid_p)
+                    si = cb.findData(prev_slot_p)
+                    if si >= 0:
+                        cb.setCurrentIndex(si)
+                    cb.blockSignals(False)
+            finally:
+                self._loading_persona_editor = False
+
+        def _load_persona_into_editor(pid_to_load: str):
+            all_p = load_voice_personas(self.config_path)
+            p_obj = all_p.get(pid_to_load) or next(iter(all_p.values()), {})
+            self._active_edit_persona_id = str(p_obj.get('id') or pid_to_load or 'normal_female')
+            self._loading_persona_editor = True
+            try:
+                self.persona_label_edit.setText(str(p_obj.get('label') or ''))
+                self.persona_speaker_edit.setText(str(p_obj.get('speaker_name') or ''))
+                vi = self.persona_voice_combo.findData(str((p_obj.get('voice_hints') or {}).get('openai') or 'coral'))
+                if vi >= 0:
+                    self.persona_voice_combo.setCurrentIndex(vi)
+                shi = self.persona_shape_combo.findData(str(p_obj.get('avatar_shape') or 'neural_core'))
+                if shi >= 0:
+                    self.persona_shape_combo.setCurrentIndex(shi)
+                pli = self.persona_palette_combo.findData(str(p_obj.get('avatar_palette') or 'tulsa_cyan'))
+                if pli >= 0:
+                    self.persona_palette_combo.setCurrentIndex(pli)
+                self.persona_evolve_check.setChecked(bool(p_obj.get('evolve_user_profile', True)))
+                self.persona_blueprint_edit.setPlainText(str(p_obj.get('blueprint') or ''))
+                is_bi = bool(p_obj.get('is_builtin'))
+                reset_pers_btn.setEnabled(is_bi)
+                self.del_persona_btn.setEnabled(not is_bi)
+            finally:
+                self._loading_persona_editor = False
+
+        def _save_active_persona_edits(*_args):
+            if getattr(self, '_loading_persona_editor', False) or not getattr(self, '_init_complete', False):
+                return
+            pid = str(self._active_edit_persona_id or self.persona_editor_combo.currentData() or '').strip()
+            if not pid:
+                return
+            save_voice_persona(
+                pid,
+                {
+                    'label': self.persona_label_edit.text().strip() or pid,
+                    'speaker_name': self.persona_speaker_edit.text().strip() or pid.title(),
+                    'voice_hints': {'openai': str(self.persona_voice_combo.currentData() or 'coral')},
+                    'avatar_shape': str(self.persona_shape_combo.currentData() or 'neural_core'),
+                    'avatar_palette': str(self.persona_palette_combo.currentData() or 'tulsa_cyan'),
+                    'evolve_user_profile': bool(self.persona_evolve_check.isChecked()),
+                    'blueprint': self.persona_blueprint_edit.toPlainText().strip(),
+                },
+                config_path=self.config_path,
+            )
+            self.persona_status_lbl.setText(f'✓ Saved "{self.persona_label_edit.text().strip() or pid}"')
+            self._saved_any_change = True
+
+        self._flush_active_persona_save = _save_active_persona_edits
+
+        def _on_persona_combo_changed(_idx: int):
+            if getattr(self, '_loading_persona_editor', False):
+                return
+            _save_active_persona_edits()
+            _load_persona_into_editor(str(self.persona_editor_combo.currentData() or 'normal_female'))
+
+        def _create_new_persona():
+            pname, ok = QInputDialog.getText(
+                self,
+                'New Roleplay Persona',
+                'Persona name (e.g. "Sam — Late-Night Philosopher"):',
+            )
+            if not ok or not pname.strip():
+                return
+            clean_nm = pname.strip()
+            traits_txt, _ok2 = QInputDialog.getText(
+                self,
+                'Roleplay Style & Traits',
+                f'Describe how "{clean_nm}" talks, thinks, and treats you (optional):',
+            )
+            traits_clean = (traits_txt or '').strip()
+            speaker_first = clean_nm.split('—')[0].split('-')[0].strip().split()[0] or clean_nm
+            pid_new = re.sub(r'[^a-zA-Z0-9_-]+', '_', clean_nm.lower()).strip('_') or 'custom_persona'
+            traits_clause = (
+                f'Your defining traits and roleplay stance: {traits_clean}. '
+                if traits_clean
+                else 'Bring distinct perspective, emotional warmth, nimble humor, and genuine curiosity. '
+            )
+            save_voice_persona(
+                pid_new,
+                {
+                    'label': clean_nm,
+                    'speaker_name': speaker_first,
+                    'voice_hints': {'openai': 'coral'},
+                    'avatar_shape': 'neural_core',
+                    'avatar_palette': 'tulsa_cyan',
+                    'evolve_user_profile': True,
+                    'blueprint': (
+                        f'You are {speaker_first} — {clean_nm}. '
+                        f'{traits_clause}'
+                        'Use the user\'s Living User Profile as organic memory continuity so conversations deepen naturally over time. '
+                        'Stay locked onto what the user cares about, speak in 1–3 crisp human conversational sentences, '
+                        'and never fall back on scripted helpdesk filler or generic closer clichés.'
+                    ),
+                },
+                config_path=self.config_path,
+            )
+            _reload_persona_dropdowns(select_pid=pid_new)
+            _load_persona_into_editor(pid_new)
+            self._saved_any_change = True
+
+        def _reset_selected_persona():
+            pid = str(self.persona_editor_combo.currentData() or '').strip()
+            if not pid:
+                return
+            reset_voice_persona(pid, config_path=self.config_path)
+            _reload_persona_dropdowns(select_pid=pid)
+            _load_persona_into_editor(pid)
+            self.persona_status_lbl.setText('↺ Restored factory blueprint')
+            self._saved_any_change = True
+
+        def _delete_selected_persona():
+            pid = str(self.persona_editor_combo.currentData() or '').strip()
+            if not pid or pid in BUILTIN_VOICE_PERSONAS:
+                return
+            del_lbl = self.persona_label_edit.text().strip() or pid
+            self._loading_persona_editor = True
+            try:
+                delete_voice_persona(pid, config_path=self.config_path)
+                self._active_edit_persona_id = 'normal_female'
+            finally:
+                self._loading_persona_editor = False
+            _reload_persona_dropdowns(select_pid='normal_female')
+            _load_persona_into_editor('normal_female')
+            self.persona_status_lbl.setText(f'🗑 Deleted custom persona "{del_lbl}"')
+            self._saved_any_change = True
+
+        _reload_persona_dropdowns(select_pid=self._active_edit_persona_id)
+        _load_persona_into_editor(self._active_edit_persona_id)
+        self.persona_editor_combo.currentIndexChanged.connect(_on_persona_combo_changed)
+        new_pers_btn.clicked.connect(_create_new_persona)
+        reset_pers_btn.clicked.connect(_reset_selected_persona)
+        self.del_persona_btn.clicked.connect(_delete_selected_persona)
+        self.persona_label_edit.editingFinished.connect(_save_active_persona_edits)
+        self.persona_speaker_edit.editingFinished.connect(_save_active_persona_edits)
+        self.persona_voice_combo.currentIndexChanged.connect(_save_active_persona_edits)
+        self.persona_shape_combo.currentIndexChanged.connect(_save_active_persona_edits)
+        self.persona_palette_combo.currentIndexChanged.connect(_save_active_persona_edits)
+        self.persona_evolve_check.toggled.connect(_save_active_persona_edits)
+        self.persona_blueprint_edit.textChanged.connect(_save_active_persona_edits)
+
+        pers_lay.addWidget(p_card)
+        pers_lay.addStretch(1)
+        pers_scroll.setWidget(pers_inner)
+        self.voice_sub_pages.addWidget(pers_scroll)
+
+        def _select_voice_subpage(sub_idx: int, sync_sidebar: bool = False):
+            clean_i = max(0, min(2, int(sub_idx)))
+            self.voice_sub_pages.setCurrentIndex(clean_i)
+            for b_i, btn in enumerate(self._voice_sub_tab_btns):
+                btn.blockSignals(True)
+                btn.setChecked(b_i == clean_i)
+                btn.blockSignals(False)
+            if sync_sidebar:
+                voice_page_idx = self.SETTINGS_PAGES.index('Voice & Audio')
+                if not getattr(self, '_voice_nav_expanded', False):
+                    self._voice_nav_expanded = True
+                    self._rebuild_nav_list(target_page_idx=voice_page_idx, voice_sub_idx=clean_i)
+                else:
+                    for r in range(self.nav_list.count()):
+                        it = self.nav_list.item(r)
+                        u_meta = it.data(Qt.ItemDataRole.UserRole) if it else None
+                        if isinstance(u_meta, tuple) and u_meta[:2] == (voice_page_idx, clean_i) and not (len(u_meta) >= 4 and u_meta[3]):
+                            self.nav_list.blockSignals(True)
+                            self.nav_list.setCurrentRow(r)
+                            self.nav_list.blockSignals(False)
+                            break
+
+        self._select_voice_subpage = _select_voice_subpage
+        _select_voice_subpage(0, sync_sidebar=False)
+
         self.pages.addWidget(w)
 
     def _build_appearance_page(self):
@@ -3293,26 +4939,128 @@ class ManageAIsDialog(QDialog):
         badge_form.addRow('Application Theme:', self.theme_combo)
 
         self.badge_mode_combo = QComboBox()
-        self.badge_mode_combo.setToolTip('Choose whether top/bottom AI badges show icons, full names, or both')
-        self.badge_mode_combo.addItem('Icons Only — Compact tokens with hover name (Default)', 'icons_only')
-        self.badge_mode_combo.addItem('Icons + Full Names (◆ Gemini)', 'icons_and_names')
-        self.badge_mode_combo.addItem('Full Names Only (Gemini)', 'names_only')
+        self.badge_mode_combo.setToolTip('Choose whether top/bottom AI badges show icons only (hover for name), full names, or both')
+        self.badge_mode_combo.addItem('Icons Only (Hover for Name)', 'icons_only')
+        self.badge_mode_combo.addItem('Icons + Names (◆ Gemini)', 'icons_and_names')
+        self.badge_mode_combo.addItem('Names Only (Gemini)', 'names_only')
         cur_badge_mode = ui_cfg.get('badge_display_mode', 'icons_only')
         b_idx = self.badge_mode_combo.findData(cur_badge_mode)
         if b_idx >= 0:
             self.badge_mode_combo.setCurrentIndex(b_idx)
         badge_form.addRow('Agent Chip Display Style:', self.badge_mode_combo)
+
+        self.bg_source_combo = QComboBox()
+        self.bg_source_combo.setToolTip('Choose solid theme colors, built-in atmospheric art matched to the theme, or any picture file on your PC')
+        self.bg_source_combo.addItem('Off (Solid Theme Colors)', 'none')
+        self.bg_source_combo.addItem('Built-In Theme Ambient Art', 'ambient')
+        self.bg_source_combo.addItem('Custom Picture File…', 'custom')
+        bs_idx = self.bg_source_combo.findData(str(ui_cfg.get('bg_image_source') or 'none'))
+        if bs_idx >= 0:
+            self.bg_source_combo.setCurrentIndex(bs_idx)
+        badge_form.addRow('Background Artwork:', self.bg_source_combo)
+
+        self.bg_placement_combo = QComboBox()
+        self.bg_placement_combo.setToolTip('Choose which panels display the washed-out background picture')
+        self.bg_placement_combo.addItem('Chat + Left Sidebar', 'chat_sidebar')
+        self.bg_placement_combo.addItem('Chat Area Only', 'chat')
+        self.bg_placement_combo.addItem('Left Sidebar Only', 'sidebar')
+        self.bg_placement_combo.addItem('All Panels (Chat + Sidebars)', 'all')
+        bp_idx = self.bg_placement_combo.findData(str(ui_cfg.get('bg_image_placement') or 'chat_sidebar'))
+        if bp_idx >= 0:
+            self.bg_placement_combo.setCurrentIndex(bp_idx)
+        badge_form.addRow('Background Areas:', self.bg_placement_combo)
+
+        wash_row = QHBoxLayout()
+        self.bg_washout_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bg_washout_slider.setRange(75, 96)
+        self.bg_washout_slider.setValue(int(ui_cfg.get('bg_washout_percent', 90)))
+        self.bg_washout_slider.setMaximumWidth(200)
+        self.bg_washout_slider.setToolTip('Higher washout blends more of the solid theme color over the picture (90% = 10% subtle image texture)')
+        self.bg_washout_lbl = QLabel(f"{self.bg_washout_slider.value()}% washout")
+        self.bg_washout_lbl.setMinimumWidth(92)
+        wash_row.addWidget(self.bg_washout_slider)
+        wash_row.addWidget(self.bg_washout_lbl)
+        wash_row.addStretch(1)
+        badge_form.addRow('Washout Strength:', wash_row)
+
+        pic_row = QHBoxLayout()
+        self.bg_path_edit = QLineEdit(str(ui_cfg.get('bg_image_path') or ''))
+        self.bg_path_edit.setPlaceholderText('Select a .png, .jpg, or .webp image…')
+        self.bg_path_edit.setToolTip('Path to custom background picture (pre-baked at your chosen washout strength)')
+        bg_browse_btn = QPushButton('Browse…')
+        bg_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        bg_browse_btn.setToolTip('Pick a picture from your PC or Fairybread generated_images folder')
+        bg_clear_btn = QPushButton('Clear')
+        bg_clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        bg_clear_btn.setToolTip('Clear custom background picture path')
+        pic_row.addWidget(self.bg_path_edit, 1)
+        pic_row.addWidget(bg_browse_btn)
+        pic_row.addWidget(bg_clear_btn)
+        badge_form.addRow('Custom Picture:', pic_row)
         lay.addLayout(badge_form)
 
+        def _preview_backdrop_live(*_args):
+            self.bg_washout_lbl.setText(f"{self.bg_washout_slider.value()}% washout")
+            if not getattr(self, '_init_complete', False):
+                return
+            p_txt = self.bg_path_edit.text().strip()
+            if p_txt.upper().startswith('M:'):
+                return
+            save_ui_settings(
+                {
+                    'bg_image_source': str(self.bg_source_combo.currentData() or 'none'),
+                    'bg_image_placement': str(self.bg_placement_combo.currentData() or 'chat_sidebar'),
+                    'bg_washout_percent': int(self.bg_washout_slider.value()),
+                    'bg_image_path': p_txt,
+                },
+                config_path=self.config_path,
+            )
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'apply_theme'):
+                parent.apply_theme(str(self.theme_combo.currentData() or 'dark'), render_chat=False)
+
+        def _browse_bg_picture():
+            from palace_theme import get_generated_images_dir
+            start_dir = str(get_generated_images_dir())
+            chosen, _ = QFileDialog.getOpenFileName(
+                self,
+                'Select Background Picture',
+                start_dir,
+                'Images (*.png *.jpg *.jpeg *.webp *.bmp);;All Files (*.*)',
+            )
+            if chosen and not chosen.upper().startswith('M:'):
+                self.bg_path_edit.setText(chosen)
+                c_idx = self.bg_source_combo.findData('custom')
+                if c_idx >= 0:
+                    self.bg_source_combo.setCurrentIndex(c_idx)
+                _preview_backdrop_live()
+
+        def _clear_bg_picture():
+            self.bg_path_edit.clear()
+            if str(self.bg_source_combo.currentData() or '') == 'custom':
+                n_idx = self.bg_source_combo.findData('none')
+                if n_idx >= 0:
+                    self.bg_source_combo.setCurrentIndex(n_idx)
+            _preview_backdrop_live()
+
+        bg_browse_btn.clicked.connect(_browse_bg_picture)
+        bg_clear_btn.clicked.connect(_clear_bg_picture)
+        self.bg_source_combo.currentIndexChanged.connect(_preview_backdrop_live)
+        self.bg_placement_combo.currentIndexChanged.connect(_preview_backdrop_live)
+        self.bg_washout_slider.valueChanged.connect(_preview_backdrop_live)
+        self.bg_path_edit.editingFinished.connect(_preview_backdrop_live)
+
         theme_btn_row = QHBoxLayout()
-        open_themes_btn = QPushButton('📂 Open Custom Themes Folder (Create / Edit JSON Themes)')
-        open_themes_btn.setToolTip('Open %LOCALAPPDATA%\\Palace\\themes in Explorer to customize or inspect theme JSON files')
+        open_themes_btn = QPushButton('📂 Themes Folder…')
+        open_themes_btn.setToolTip('Open %LOCALAPPDATA%\\Palace\\themes in Explorer to create, edit, or inspect custom JSON theme files')
         open_themes_btn.clicked.connect(lambda: webbrowser.open(str(get_themes_dir())))
         theme_btn_row.addWidget(open_themes_btn)
         theme_btn_row.addStretch()
         lay.addLayout(theme_btn_row)
 
-        lay.addWidget(QCheckBox('Show contributor symbols inside reply cards', checked=True))
+        contrib_chk = QCheckBox('Show contributor symbols inside reply cards', checked=True)
+        contrib_chk.setToolTip('Display small provider contributor icons inside synthesized answers so you can see who contributed')
+        lay.addWidget(contrib_chk)
         lay.addStretch()
         self.pages.addWidget(w)
 
@@ -3322,7 +5070,7 @@ class ManageAIsDialog(QDialog):
         parent = self.parent()
         if parent is not None and hasattr(parent, 'apply_theme'):
             parent.apply_theme(tid)
-        self.setStyleSheet(build_theme_stylesheet(tid))
+        self._apply_libreoffice_dialog_theme(tid)
 
     def _build_notifications_page(self):
         from email_service import (
@@ -3345,59 +5093,66 @@ class ManageAIsDialog(QDialog):
 
         desk_row = QHBoxLayout()
         self.desktop_notify_check = QCheckBox(
-            'Enable Desktop Toast Notification when a job finishes',
+            'Desktop Toast notifications',
             checked=bool(cfg.get('desktop_notify_enabled', True)),
         )
+        self.desktop_notify_check.setToolTip('Show a Windows desktop notification toast when a background or long-running job finishes')
         desk_row.addWidget(self.desktop_notify_check)
         self.desktop_sound_check = QCheckBox(
-            'Play completion chime',
+            'Play chime',
             checked=bool(cfg.get('desktop_sound_enabled', False)),
         )
+        self.desktop_sound_check.setToolTip('Play an audio chime with desktop completion notifications')
         desk_row.addWidget(self.desktop_sound_check)
         desk_row.addStretch()
         lay.addLayout(desk_row)
 
         notif_form = QFormLayout()
         self.desktop_notify_mode_combo = QComboBox()
+        self.desktop_notify_mode_combo.setToolTip('Choose when Windows desktop toast notifications trigger')
         self.desktop_notify_mode_combo.addItem(
-            'When Fairybread is unfocused OR job takes > 12 seconds (Default)',
+            'Unfocused OR job > 12s (Default)',
             'background_or_long',
         )
         self.desktop_notify_mode_combo.addItem('Every completed turn', 'always')
-        self.desktop_notify_mode_combo.addItem('Only when Autonomous Idle Mode finishes', 'idle_only')
+        self.desktop_notify_mode_combo.addItem('Experimental Mode finishes only', 'idle_only')
         d_idx = self.desktop_notify_mode_combo.findData(cfg.get('desktop_notify_mode', 'background_or_long'))
         if d_idx >= 0:
             self.desktop_notify_mode_combo.setCurrentIndex(d_idx)
         notif_form.addRow('Desktop Trigger:', self.desktop_notify_mode_combo)
 
         self.email_notify_check = QCheckBox(
-            'Email me the result when a large job or Idle Mode session finishes',
+            'Email me finished large jobs / Idle Mode',
             checked=bool(cfg.get('email_notify_enabled', False)),
         )
+        self.email_notify_check.setToolTip('Automatically send completion summaries to your configured email address')
         notif_form.addRow('Email Alerts:', self.email_notify_check)
 
         email_trig_row = QHBoxLayout()
         self.email_notify_mode_combo = QComboBox()
+        self.email_notify_mode_combo.setToolTip('Choose when completion emails are sent')
         self.email_notify_mode_combo.addItem(
-            'Large jobs (> 30 seconds) or Idle Mode completion (Default)',
+            'Large jobs (> 30s) or Idle Mode (Default)',
             'long_or_idle',
         )
         self.email_notify_mode_combo.addItem('Every completed turn', 'always')
-        self.email_notify_mode_combo.addItem('Only when Autonomous Idle Mode finishes', 'idle_only')
+        self.email_notify_mode_combo.addItem('Experimental Mode finishes only', 'idle_only')
         e_idx = self.email_notify_mode_combo.findData(cfg.get('email_notify_mode', 'long_or_idle'))
         if e_idx >= 0:
             self.email_notify_mode_combo.setCurrentIndex(e_idx)
         email_trig_row.addWidget(self.email_notify_mode_combo, 1)
         self.email_attach_images_check = QCheckBox(
-            'Attach generated PNGs',
+            'Attach PNGs',
             checked=bool(cfg.get('email_attach_images', True)),
         )
+        self.email_attach_images_check.setToolTip('Attach generated PNG graphics/maps to completion emails')
         email_trig_row.addWidget(self.email_attach_images_check)
         notif_form.addRow('Email Trigger:', email_trig_row)
         lay.addLayout(notif_form)
 
         # --- SECTION 2: EMAIL PROVIDER & EXHAUSTIVE SEARCH SETUP ---
-        email_hdr = QLabel('<b>2. Email Account Setup (Gmail, Microsoft Outlook/365, iCloud, Yahoo, Custom)</b>')
+        email_hdr = QLabel('<b>2. Email Account Setup (IMAP / SMTP)</b>')
+        email_hdr.setToolTip('Works with Gmail, Microsoft Outlook/365, iCloud, Yahoo, and custom IMAP/SMTP servers')
         lay.addWidget(email_hdr)
 
         email_form = QFormLayout()
@@ -3410,8 +5165,9 @@ class ManageAIsDialog(QDialog):
             self.email_provider_combo.setCurrentIndex(p_idx)
         prov_row.addWidget(self.email_provider_combo, 1)
 
-        self.email_portal_btn = QPushButton('🔑 Open Provider Password Page ↗')
+        self.email_portal_btn = QPushButton('🔑 App Passwords ↗')
         self.email_portal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.email_portal_btn.setToolTip('Open this email provider’s App Password or security token page in your browser')
 
         def _open_email_portal():
             pkey = str(self.email_provider_combo.currentData() or 'gmail')
@@ -3461,16 +5217,17 @@ class ManageAIsDialog(QDialog):
         email_form.addRow('Servers:', srv_row)
 
         self.email_access_mode_combo = QComboBox()
+        self.email_access_mode_combo.setToolTip('Choose whether AIs can only send you alerts, search mail + save drafts, or send replies')
         self.email_access_mode_combo.addItem(
-            '📝 Read & Drafts Only — Exhaustive All-Mail Search + Drafts (Recommended Default)',
+            '📝 Read & Drafts (Exhaustive Search · Recommended)',
             'read_and_drafts',
         )
         self.email_access_mode_combo.addItem(
-            '🔔 Self-Notifications Only — Outbound completion alerts to my own address only',
+            '🔔 Self-Notifications Only (Alerts Only)',
             'notifications_only',
         )
         self.email_access_mode_combo.addItem(
-            '⚡ Full Email Assistant — Search, read, draft, and send',
+            '⚡ Full Email Assistant (Search, Draft & Send)',
             'full_assistant',
         )
         a_idx = self.email_access_mode_combo.findData(cfg.get('access_mode', 'read_and_drafts'))
@@ -3495,8 +5252,9 @@ class ManageAIsDialog(QDialog):
         _on_email_provider_changed()
 
         test_row = QHBoxLayout()
-        test_btn = QPushButton('🧪 Save && Send Test Notification (Desktop + Email)')
+        test_btn = QPushButton('🧪 Test Alert')
         test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.setToolTip('Save email & notification fields and send a test desktop toast + test email')
         self.email_test_status_label = QLabel('')
         self.email_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
 
@@ -3568,24 +5326,221 @@ class ManageAIsDialog(QDialog):
 
     def _build_ai_providers_page(self):
         w, lay = self._make_simple_page(
-            'AI Providers (Instant DPAPI Auto-Save)',
-            'Select any AI provider below or type a custom name. API keys are automatically encrypted with Windows DPAPI and saved as you type.'
+            'AI Providers & API Keys (Instant DPAPI Auto-Save)',
+            'Connect each AI company directly in Option 1, OR paste one OpenRouter.ai key in Option 2 to fill missing seats automatically.'
         )
         self._loading_provider_fields = False
         self._active_provider_slug = ''
 
-        # Compact OpenRouter 1-Bill Hub Card
-        hub_card = QFrame()
+        # --- OPTION 1 CARD: INDIVIDUAL DIRECT API KEYS ---
+        direct_card = QFrame(w)
+        direct_lay = QVBoxLayout(direct_card)
+        _style_settings_card(direct_card, 'directProvidersCard', direct_lay, pad_h=12, pad_v=10)
+        direct_lay.setSpacing(6)
+        direct_title = QLabel('<b>🔑 Option 1 — Individual AI Providers (Direct API Keys &amp; Models)</b>')
+        direct_title.setTextFormat(Qt.TextFormat.RichText)
+        direct_lay.addWidget(direct_title)
+        direct_sub = QLabel(
+            'Configure each AI company directly (Gemini, OpenAI, DeepSeek, Groq, xAI Grok, Qwen, Cohere, Mistral, Cerebras) '
+            'with a direct API key from that company.'
+        )
+        direct_sub.setObjectName('muted')
+        direct_sub.setWordWrap(True)
+        direct_lay.addWidget(direct_sub)
+
+        form = QFormLayout()
+        prov_row = QHBoxLayout()
+        self.provider_combo = QComboBox()
+        self.provider_combo.setEditable(True)
+        self.provider_combo.setIconSize(QSize(18, 18))
+        configs = load_provider_configs(self.config_path)
+        known = list(dict.fromkeys([
+            *PROVIDER_CATALOG.keys(),
+            *configs.keys(),
+        ]))
+        for prov_name in known:
+            disp = PROVIDER_CATALOG.get(prov_name, {}).get('display_name', prov_name)
+            self.provider_combo.addItem(provider_qicon(prov_name), prov_name)
+            idx_last = self.provider_combo.count() - 1
+            self.provider_combo.setItemData(idx_last, f'{disp} ({prov_name})', Qt.ItemDataRole.ToolTipRole)
+        self.provider_combo.currentTextChanged.connect(self._load_selected_provider)
+        prov_row.addWidget(self.provider_combo, 1)
+
+        self.get_key_portal_btn = QPushButton('🔑 Get Key ↗')
+        self.get_key_portal_btn.setToolTip('Open this AI provider’s official API Key creation page in your browser')
+        self.get_key_portal_btn.clicked.connect(self._open_selected_provider_key_portal)
+        prov_row.addWidget(self.get_key_portal_btn)
+        form.addRow('AI Provider:', prov_row)
+
+        self.provider_billing_label = QLabel('')
+        self.provider_billing_label.setObjectName('muted')
+        self.provider_billing_label.setWordWrap(True)
+        form.addRow('Provider Info:', self.provider_billing_label)
+
+        self.enabled_check = QCheckBox('Active in conversation')
+        self.enabled_check.setToolTip('Include this AI provider in your active conversation roster')
+        self.enabled_check.setChecked(True)
+        self.enabled_check.toggled.connect(self._auto_save_current_provider)
+        form.addRow('', self.enabled_check)
+
+        key_row = QHBoxLayout()
+        self.api_key_edit = QLineEdit()
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_edit.setPlaceholderText('Paste direct API key — saves & encrypts automatically (Windows DPAPI)')
+        self.api_key_edit.textEdited.connect(self._auto_save_current_provider)
+        self.api_key_edit.editingFinished.connect(self._auto_save_current_provider)
+        show_key_btn = QPushButton('👁 Show')
+        show_key_btn.setToolTip('Temporarily reveal or hide the pasted API key')
+        show_key_btn.setCheckable(True)
+        show_key_btn.toggled.connect(
+            lambda checked: (
+                self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password),
+                show_key_btn.setText('🙈 Hide' if checked else '👁 Show'),
+            )
+        )
+        key_row.addWidget(self.api_key_edit, 1)
+        key_row.addWidget(show_key_btn)
+        form.addRow('1. Direct API Key:', key_row)
+
+        model_row = QHBoxLayout()
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_edit = self.model_combo.lineEdit()
+        self.model_edit.setPlaceholderText('Select a model from the dropdown or click Fetch Models')
+        self.model_combo.currentTextChanged.connect(self._auto_save_current_provider)
+        self.fetch_models_btn = QPushButton('↻ Fetch Models')
+        self.fetch_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.fetch_models_btn.setToolTip('Query this provider’s live API using your API key to list all currently available models.')
+        self.fetch_models_btn.clicked.connect(self._fetch_live_models_for_current_provider)
+        model_row.addWidget(self.model_combo, 1)
+        model_row.addWidget(self.fetch_models_btn)
+        form.addRow('2. Default Model:', model_row)
+
+        from voice_service import (
+            GEMINI_TTS_VOICES as _ATTR_GEM_VOICES,
+            OPENAI_TTS_VOICES as _ATTR_OAI_VOICES,
+            load_voice_personas as _load_attr_personas,
+        )
+        from voice_visualizer import (
+            AVATAR_PALETTES as _ATTR_PALETTES,
+            AVATAR_SHAPES as _ATTR_SHAPES,
+        )
+
+        name_row = QHBoxLayout()
+        self.agent_given_name_edit = QLineEdit()
+        self.agent_given_name_edit.setPlaceholderText('Optional custom AI name (e.g. Max, Ash) — overrides preset roleplay name')
+        self.agent_given_name_edit.setToolTip('Custom name this AI accepts and answers to across Solo Chat, Democratic Council, and Voice Mode')
+        self.agent_given_name_edit.textEdited.connect(self._auto_save_current_provider)
+        self.agent_given_name_edit.editingFinished.connect(self._auto_save_current_provider)
+        name_row.addWidget(self.agent_given_name_edit, 1)
+        form.addRow('3. Given Name:', name_row)
+
+        voice_mode_row = QHBoxLayout()
+        voice_mode_row.setSpacing(6)
+        self.agent_voice_combo = QComboBox()
+        self.agent_voice_combo.setToolTip('Speaking voice assigned to this AI agent')
+        self.agent_voice_combo.addItem('Default Voice (Auto)', '')
+        _seen_voices = {''}
+        for _vid, _vlbl in _ATTR_OAI_VOICES:
+            if _vid not in _seen_voices:
+                _seen_voices.add(_vid)
+                self.agent_voice_combo.addItem(_vlbl, _vid)
+        for _vid, _vlbl in _ATTR_GEM_VOICES:
+            if _vid not in _seen_voices:
+                _seen_voices.add(_vid)
+                self.agent_voice_combo.addItem(_vlbl, _vid)
+        self.agent_voice_combo.currentIndexChanged.connect(self._auto_save_current_provider)
+        voice_mode_row.addWidget(self.agent_voice_combo, 1)
+
+        self.agent_mode_combo = QComboBox()
+        self.agent_mode_combo.setToolTip('Default conversational mode/personality preset for this AI agent')
+        self.agent_mode_combo.addItem('Follow Global Voice Mode', '')
+        for _pid_m, _p_obj_m in _load_attr_personas(self.config_path).items():
+            self.agent_mode_combo.addItem(str(_p_obj_m.get('label') or _pid_m), _pid_m)
+        self.agent_mode_combo.currentIndexChanged.connect(self._auto_save_current_provider)
+        voice_mode_row.addWidget(self.agent_mode_combo, 1)
+        form.addRow('4. Voice & Mode:', voice_mode_row)
+
+        avatar_attr_row = QHBoxLayout()
+        avatar_attr_row.setSpacing(6)
+        self.agent_shape_combo = QComboBox()
+        self.agent_shape_combo.setToolTip('3D Hologram shape used when this AI agent speaks')
+        self.agent_shape_combo.addItem('Default 3D Shape', '')
+        for _sid_a, _slbl_a in _ATTR_SHAPES:
+            self.agent_shape_combo.addItem(_slbl_a, _sid_a)
+        self.agent_shape_combo.currentIndexChanged.connect(self._auto_save_current_provider)
+        avatar_attr_row.addWidget(self.agent_shape_combo, 1)
+
+        self.agent_palette_combo = QComboBox()
+        self.agent_palette_combo.setToolTip('3D Hologram glow color palette for this AI agent')
+        self.agent_palette_combo.addItem('Auto AI Color', '')
+        for _cid_a, _clbl_a in _ATTR_PALETTES:
+            self.agent_palette_combo.addItem(_clbl_a, _cid_a)
+        self.agent_palette_combo.currentIndexChanged.connect(self._auto_save_current_provider)
+        avatar_attr_row.addWidget(self.agent_palette_combo, 1)
+        form.addRow('5. 3D Avatar:', avatar_attr_row)
+
+        role_col = QVBoxLayout()
+        role_col.setSpacing(4)
+        self.agent_role_edit = QTextEdit()
+        self.agent_role_edit.setFixedHeight(68)
+        self.agent_role_edit.setPlaceholderText('Personality, strengths & role attribution in Council and Voice…')
+        self.agent_role_edit.setToolTip('Editable personality and role instructions injected when this AI responds in Text or Voice')
+        self._role_attr_save_timer = QTimer(self)
+        self._role_attr_save_timer.setSingleShot(True)
+        self._role_attr_save_timer.setInterval(280)
+        self._role_attr_save_timer.timeout.connect(self._auto_save_current_provider)
+        self.agent_role_edit.textChanged.connect(
+            lambda: None if getattr(self, '_loading_provider_fields', False) else self._role_attr_save_timer.start()
+        )
+        role_col.addWidget(self.agent_role_edit)
+        reset_attr_row = QHBoxLayout()
+        reset_attr_row.addStretch(1)
+        self.reset_attr_btn = QPushButton('↺ Reset Role Attribution')
+        self.reset_attr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_attr_btn.setToolTip('Reset Role Attribution, Voice, Mode, 3D Avatar and custom Given Name for this provider')
+        self.reset_attr_btn.clicked.connect(self._reset_current_provider_attribution)
+        reset_attr_row.addWidget(self.reset_attr_btn)
+        role_col.addLayout(reset_attr_row)
+        form.addRow('6. Role & Style:', role_col)
+
+        self.adv_url_check = QCheckBox('▸ Custom Base URL (Ollama / proxy)')
+        self.adv_url_check.setToolTip('Show optional Base URL field (only needed for local Ollama or custom OpenAI-compatible proxies)')
+        form.addRow('', self.adv_url_check)
+
+        self.base_url_label = QLabel('Base URL:')
+        self.base_url_edit = QLineEdit()
+        self.base_url_edit.setPlaceholderText('Leave blank for official cloud endpoint (only used for custom proxies / Ollama)')
+        self.base_url_edit.textEdited.connect(self._auto_save_current_provider)
+        self.base_url_edit.editingFinished.connect(self._auto_save_current_provider)
+        form.addRow(self.base_url_label, self.base_url_edit)
+
+        def _toggle_adv_url(checked: bool):
+            self.base_url_label.setVisible(checked)
+            self.base_url_edit.setVisible(checked)
+
+        self.adv_url_check.toggled.connect(_toggle_adv_url)
+        _toggle_adv_url(False)
+
+        self.auto_save_status_label = QLabel('🔒 Protected by Windows DPAPI · Auto-save enabled')
+        self.auto_save_status_label.setStyleSheet('color: #22c55e; font-size: 11px; font-weight: 600;')
+        form.addRow('', self.auto_save_status_label)
+
+        direct_lay.addLayout(form)
+        lay.addWidget(direct_card)
+
+        # --- OPTION 2 CARD: OPENROUTER ALL-IN-ONE HUB ---
+        hub_card = QFrame(w)
         hub_lay = QVBoxLayout(hub_card)
         _style_settings_card(hub_card, 'openRouterHubCard', hub_lay, pad_h=12, pad_v=10)
         hub_lay.setSpacing(6)
         hub_cfg = load_openrouter_hub_settings(self.config_path)
 
         hub_top = QHBoxLayout()
-        hub_title = QLabel('<b>⊕ OpenRouter All-in-One Hub (Optional Single-Bill Mode)</b>')
+        hub_title = QLabel('<b>⊕ Option 2 — OpenRouter All-in-One Hub (Optional Single-Key Mode)</b>')
         hub_title.setTextFormat(Qt.TextFormat.RichText)
         hub_top.addWidget(hub_title, 1)
-        wizard_btn = QPushButton('🧭 Run Guided Setup Wizard…')
+        wizard_btn = QPushButton('🧭 Setup Wizard…')
         wizard_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         wizard_btn.setToolTip('Open the step-by-step Guided Setup & Selective Backup Restore Wizard')
         def _launch_wizard():
@@ -3596,13 +5551,53 @@ class ManageAIsDialog(QDialog):
         hub_top.addWidget(wizard_btn)
         hub_lay.addLayout(hub_top)
 
-        self.or_autofill_check = QCheckBox('Auto-fill unconfigured AI seats using my single OpenRouter key (direct keys always take priority)')
-        self.or_autofill_check.setChecked(bool(hub_cfg.get('auto_fill_seats', False)))
-        self.or_autofill_check.setToolTip('Automatically populate Claude, Gemini, GPT, DeepSeek, Qwen, and Mistral via your single OpenRouter wallet whenever no direct key is set')
-        hub_lay.addWidget(self.or_autofill_check)
+        hub_sub = QLabel(
+            'Optional alternative: paste one OpenRouter.ai key below instead of creating separate accounts. '
+            'Direct keys set in Option 1 above always take priority.'
+        )
+        hub_sub.setObjectName('muted')
+        hub_sub.setWordWrap(True)
+        hub_lay.addWidget(hub_sub)
 
-        tier_row = QHBoxLayout()
-        tier_row.addWidget(QLabel('OpenRouter Seat Tier Preset:'))
+        hub_form = QFormLayout()
+        or_key_row = QHBoxLayout()
+        self.or_hub_key_edit = QLineEdit()
+        self.or_hub_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        try:
+            _has_or_k = bool(self.credential_store.has_api_key('openrouter'))
+        except Exception:
+            _has_or_k = False
+        self.or_hub_key_edit.setPlaceholderText(
+            '✓ OpenRouter key saved in DPAPI Vault (paste new key to replace)'
+            if _has_or_k
+            else 'Paste your OpenRouter key (sk-or-...) — encrypted with Windows DPAPI'
+        )
+        get_or_btn = QPushButton('🔑 Get Key ↗')
+        get_or_btn.setToolTip('Open OpenRouter API Key page in your browser')
+        get_or_btn.clicked.connect(lambda: webbrowser.open('https://openrouter.ai/settings/keys'))
+        or_key_row.addWidget(self.or_hub_key_edit, 1)
+        or_key_row.addWidget(get_or_btn)
+        hub_form.addRow('OpenRouter Key:', or_key_row)
+
+        def _save_or_hub_key(*_args):
+            if getattr(self, '_loading_provider_fields', False):
+                return
+            k_val = self.or_hub_key_edit.text().strip()
+            if k_val:
+                try:
+                    self.credential_store.set_api_key('openrouter', k_val)
+                    self.or_hub_key_edit.setPlaceholderText('✓ OpenRouter key saved in DPAPI Vault (paste new key to replace)')
+                    if hasattr(self, 'auto_save_status_label'):
+                        self.auto_save_status_label.setText('✓ Auto-saved OpenRouter Hub Key (Windows DPAPI encrypted)')
+                    p = self.parent()
+                    if p is not None and hasattr(p, 'reload_providers_from_config'):
+                        p.reload_providers_from_config()
+                except Exception:
+                    pass
+
+        self.or_hub_key_edit.textEdited.connect(_save_or_hub_key)
+        self.or_hub_key_edit.editingFinished.connect(_save_or_hub_key)
+
         self.or_tier_combo = QComboBox()
         self.or_tier_combo.setToolTip('Choose model quality/cost preset for OpenRouter-backed seats')
         self.or_tier_combo.addItem('Free / Starter ($0 models)', 'free')
@@ -3611,8 +5606,18 @@ class ManageAIsDialog(QDialog):
         cur_tier = str(hub_cfg.get('tier', 'balanced'))
         t_idx = self.or_tier_combo.findData(cur_tier)
         self.or_tier_combo.setCurrentIndex(t_idx if t_idx >= 0 else 1)
-        tier_row.addWidget(self.or_tier_combo, 1)
-        hub_lay.addLayout(tier_row)
+        hub_form.addRow('OpenRouter Tier Preset:', self.or_tier_combo)
+        hub_lay.addLayout(hub_form)
+
+        self.or_autofill_check = QCheckBox('Auto-fill unconfigured seats via OpenRouter')
+        self.or_autofill_check.setChecked(bool(hub_cfg.get('auto_fill_seats', False)))
+        self.or_autofill_check.setToolTip('Automatically populate Claude, Gemini, GPT, DeepSeek, Qwen, and Mistral via your single OpenRouter wallet whenever no direct key is set (Option 1 direct keys always take priority)')
+        hub_lay.addWidget(self.or_autofill_check)
+
+        self.use_openrouter_check = QCheckBox('Route selected provider via OpenRouter')
+        self.use_openrouter_check.setToolTip('Force the AI seat currently selected in Option 1 above to route through OpenRouter even if a direct key exists')
+        self.use_openrouter_check.toggled.connect(self._auto_save_current_provider)
+        hub_lay.addWidget(self.use_openrouter_check)
 
         def _save_or_hub(*_args):
             if getattr(self, '_loading_provider_fields', False):
@@ -3635,99 +5640,6 @@ class ManageAIsDialog(QDialog):
         self.or_tier_combo.currentIndexChanged.connect(_save_or_hub)
         lay.addWidget(hub_card)
 
-        form = QFormLayout()
-        prov_row = QHBoxLayout()
-        self.provider_combo = QComboBox()
-        self.provider_combo.setEditable(True)
-        self.provider_combo.setIconSize(QSize(20, 20))
-        configs = load_provider_configs(self.config_path)
-        known = list(dict.fromkeys([
-            *PROVIDER_CATALOG.keys(),
-            *configs.keys(),
-        ]))
-        for prov_name in known:
-            disp = PROVIDER_CATALOG.get(prov_name, {}).get('display_name', prov_name)
-            self.provider_combo.addItem(provider_qicon(prov_name), prov_name)
-            idx_last = self.provider_combo.count() - 1
-            self.provider_combo.setItemData(idx_last, f'{disp} ({prov_name})', Qt.ItemDataRole.ToolTipRole)
-        self.provider_combo.currentTextChanged.connect(self._load_selected_provider)
-        prov_row.addWidget(self.provider_combo, 1)
-
-        self.get_key_portal_btn = QPushButton('🔑 Get API Key ↗')
-        self.get_key_portal_btn.setToolTip('Open this AI provider’s official API Key creation page in your browser')
-        self.get_key_portal_btn.clicked.connect(self._open_selected_provider_key_portal)
-        prov_row.addWidget(self.get_key_portal_btn)
-        form.addRow('AI Provider:', prov_row)
-
-        self.provider_billing_label = QLabel('')
-        self.provider_billing_label.setObjectName('muted')
-        self.provider_billing_label.setWordWrap(True)
-        form.addRow('Provider Info:', self.provider_billing_label)
-
-        self.enabled_check = QCheckBox('Active in conversation')
-        self.enabled_check.setChecked(True)
-        self.enabled_check.toggled.connect(self._auto_save_current_provider)
-        form.addRow('', self.enabled_check)
-
-        self.use_openrouter_check = QCheckBox('Route this provider via OpenRouter (uses OpenRouter key instead of direct key)')
-        self.use_openrouter_check.setToolTip('Route this specific AI seat through your OpenRouter API key even if a direct key exists')
-        self.use_openrouter_check.toggled.connect(self._auto_save_current_provider)
-        form.addRow('', self.use_openrouter_check)
-
-        key_row = QHBoxLayout()
-        self.api_key_edit = QLineEdit()
-        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText('Paste API key — saves & encrypts automatically (Windows DPAPI)')
-        self.api_key_edit.textEdited.connect(self._auto_save_current_provider)
-        self.api_key_edit.editingFinished.connect(self._auto_save_current_provider)
-        show_key_btn = QPushButton('👁 Show')
-        show_key_btn.setCheckable(True)
-        show_key_btn.toggled.connect(
-            lambda checked: (
-                self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password),
-                show_key_btn.setText('🙈 Hide' if checked else '👁 Show'),
-            )
-        )
-        key_row.addWidget(self.api_key_edit, 1)
-        key_row.addWidget(show_key_btn)
-        form.addRow('1. API Key:', key_row)
-
-        model_row = QHBoxLayout()
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_edit = self.model_combo.lineEdit()
-        self.model_edit.setPlaceholderText('Select a model from the dropdown or click Fetch Live Models')
-        self.model_combo.currentTextChanged.connect(self._auto_save_current_provider)
-        self.fetch_models_btn = QPushButton('↻ Fetch Live Models')
-        self.fetch_models_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.fetch_models_btn.setToolTip('Query this provider’s live API using your API key to list all currently available models.')
-        self.fetch_models_btn.clicked.connect(self._fetch_live_models_for_current_provider)
-        model_row.addWidget(self.model_combo, 1)
-        model_row.addWidget(self.fetch_models_btn)
-        form.addRow('2. Model:', model_row)
-
-        self.adv_url_check = QCheckBox('▸ Show Advanced Custom Base URL (Not needed for Cerebras, OpenAI, Gemini, etc.)')
-        form.addRow('', self.adv_url_check)
-
-        self.base_url_label = QLabel('Base URL:')
-        self.base_url_edit = QLineEdit()
-        self.base_url_edit.setPlaceholderText('Leave blank for official cloud endpoint (only used for custom proxies / Ollama)')
-        self.base_url_edit.textEdited.connect(self._auto_save_current_provider)
-        self.base_url_edit.editingFinished.connect(self._auto_save_current_provider)
-        form.addRow(self.base_url_label, self.base_url_edit)
-
-        def _toggle_adv_url(checked: bool):
-            self.base_url_label.setVisible(checked)
-            self.base_url_edit.setVisible(checked)
-
-        self.adv_url_check.toggled.connect(_toggle_adv_url)
-        _toggle_adv_url(False)
-
-        self.auto_save_status_label = QLabel('🔒 Protected by Windows DPAPI · Auto-save enabled')
-        self.auto_save_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px; font-weight: 600;')
-        form.addRow('', self.auto_save_status_label)
-
-        lay.addLayout(form)
         lay.addStretch()
         self._load_selected_provider(self.provider_combo.currentText())
         self.pages.addWidget(w)
@@ -3763,7 +5675,7 @@ class ManageAIsDialog(QDialog):
         left_col = QVBoxLayout()
         left_col.addWidget(QLabel('<b>Profiles / Squads:</b>'))
         self.squad_list_widget = QListWidget()
-        self.squad_list_widget.setFixedWidth(220)
+        self.squad_list_widget.setFixedWidth(195)
         self.squad_list_widget.setToolTip('Select a Profile to customize its AIs and settings')
         left_col.addWidget(self.squad_list_widget, 1)
 
@@ -3813,11 +5725,11 @@ class ManageAIsDialog(QDialog):
         form.addRow('Model Overrides:', self.squad_overrides_edit)
         right_lay.addLayout(form)
 
-        self.squad_delib_check = QCheckBox('Enable 2-Round Council Deliberation (Peer Review ON)')
+        self.squad_delib_check = QCheckBox('2-Round Council Deliberation (Peer Review ON)')
         self.squad_delib_check.setToolTip('Run 2-round peer review when this Profile is selected')
         right_lay.addWidget(self.squad_delib_check)
 
-        self.squad_code_check = QCheckBox('Enable Fairybread Source Code Access ({} Code ON)')
+        self.squad_code_check = QCheckBox('Fairybread Source Code Access ({} Code ON)')
         self.squad_code_check.setToolTip('Automatically enable read-only source code sharing in this Profile')
         right_lay.addWidget(self.squad_code_check)
 
@@ -3833,7 +5745,7 @@ class ManageAIsDialog(QDialog):
             chk = QCheckBox(f'{ic} {disp}')
             chk.setToolTip(f'Include {disp} in this Profile')
             self.squad_provider_checks[pname] = chk
-            prov_grid.addWidget(chk, idx // 3, idx % 3)
+            prov_grid.addWidget(chk, idx // 2, idx % 2)
         right_lay.addLayout(prov_grid)
         right_lay.addStretch(1)
         split_row.addWidget(right_card, 1)
@@ -4018,19 +5930,19 @@ class ManageAIsDialog(QDialog):
 
         row2 = QHBoxLayout()
         lbl2 = QLabel(
-            '<b>Living User Profile &amp; Memory Summary</b><br>'
-            '<span style="color:#8b949e; font-size:11.5px;">View and directly edit what Fairybread knows about you (Overview, How You Like to Work, Projects).</span>'
+            '<b>Living User Profile (Master Agent Memory)</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">View and edit the single master profile read and automatically updated by all Council &amp; Voice agents.</span>'
         )
         lbl2.setWordWrap(True)
         lbl2.setTextFormat(Qt.TextFormat.RichText)
-        manage_sum_btn = QPushButton('Manage Profile…')
+        manage_sum_btn = QPushButton('Living Profile…')
         manage_sum_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        manage_sum_btn.setToolTip('View & edit your Living User Profile')
+        manage_sum_btn.setToolTip('Open the master Living User Profile that all Council & Voice agents read and auto-update')
 
         def _open_summary():
             parent = self.parent()
             if parent is not None and hasattr(parent, 'show_memory_summary_dialog'):
-                parent.show_memory_summary_dialog()
+                parent.show_memory_summary_dialog(parent_widget=self)
 
         manage_sum_btn.clicked.connect(_open_summary)
         row2.addWidget(lbl2, 1)
@@ -4043,15 +5955,19 @@ class ManageAIsDialog(QDialog):
         ref_lay = QVBoxLayout(ref_card)
         _style_settings_card(ref_card, 'memoryRefPhotosCard', ref_lay, pad_h=10, pad_v=10)
         ref_lay.setSpacing(6)
-        ref_lay.addWidget(QLabel('<b>Reference photos</b> <span style="color:#8b949e; font-size:11.5px;">(Stored 100% locally — used when you ask to generate or edit an image of yourself)</span>'))
+        ref_hdr = QLabel('<b>Reference photos</b> <span style="color:#8b949e; font-size:11.5px;">(100% local)</span>')
+        ref_hdr.setToolTip('Stored 100% locally — used only when you ask to generate or edit an image of yourself')
+        ref_lay.addWidget(ref_hdr)
 
         self.ref_face_path = str(p_cfg.get('reference_photo_face') or '')
         self.ref_body_path = str(p_cfg.get('reference_photo_body') or '')
 
         face_row = QHBoxLayout()
         self.ref_face_lbl = QLabel()
-        face_add_btn = QPushButton('Add / Change…')
+        face_add_btn = QPushButton('Upload…')
+        face_add_btn.setToolTip('Choose a local portrait/face photo to use as visual likeness reference')
         face_clr_btn = QPushButton('Clear')
+        face_clr_btn.setToolTip('Clear the saved portrait reference photo')
         face_row.addWidget(self.ref_face_lbl, 1)
         face_row.addWidget(face_add_btn)
         face_row.addWidget(face_clr_btn)
@@ -4059,8 +5975,10 @@ class ManageAIsDialog(QDialog):
 
         body_row = QHBoxLayout()
         self.ref_body_lbl = QLabel()
-        body_add_btn = QPushButton('Add / Change…')
+        body_add_btn = QPushButton('Upload…')
+        body_add_btn.setToolTip('Choose a local full-body photo to use as visual likeness reference')
         body_clr_btn = QPushButton('Clear')
+        body_clr_btn.setToolTip('Clear the saved full-body reference photo')
         body_row.addWidget(self.ref_body_lbl, 1)
         body_row.addWidget(body_add_btn)
         body_row.addWidget(body_clr_btn)
@@ -4069,8 +5987,8 @@ class ManageAIsDialog(QDialog):
         def _refresh_ref_labels():
             f_name = Path(self.ref_face_path).name if self.ref_face_path else 'Not set'
             b_name = Path(self.ref_body_path).name if self.ref_body_path else 'Not set'
-            self.ref_face_lbl.setText(f'<b>Reference photo (Face / Portrait):</b> <span style="color:#58a6ff;">{html.escape(f_name)}</span>')
-            self.ref_body_lbl.setText(f'<b>Full-body reference photo:</b> <span style="color:#58a6ff;">{html.escape(b_name)}</span>')
+            self.ref_face_lbl.setText(f'<b>Portrait photo:</b> <span style="color:#58a6ff;">{html.escape(f_name)}</span>')
+            self.ref_body_lbl.setText(f'<b>Full-body photo:</b> <span style="color:#58a6ff;">{html.escape(b_name)}</span>')
             self._schedule_autosave()
 
         def _pick_ref_photo(kind: str):
@@ -4164,7 +6082,9 @@ class ManageAIsDialog(QDialog):
         inst_lay = QVBoxLayout(inst_card)
         _style_settings_card(inst_card, 'memoryCustomInstCard', inst_lay, pad_h=10, pad_v=10)
         inst_lay.setSpacing(6)
-        inst_lay.addWidget(QLabel('<b>Custom instructions (General Chat — applies to all Council AIs):</b>'))
+        gen_inst_hdr = QLabel('<b>Custom instructions (General Chat):</b>')
+        gen_inst_hdr.setToolTip('Applies to all Council AIs in normal everyday chats')
+        inst_lay.addWidget(gen_inst_hdr)
         self.pers_general_inst_edit = QTextEdit()
         self.pers_general_inst_edit.setAcceptRichText(False)
         self.pers_general_inst_edit.setPlaceholderText('Give your Council AIs extra instructions and context for everyday chats…')
@@ -4172,7 +6092,9 @@ class ManageAIsDialog(QDialog):
         self.pers_general_inst_edit.setPlainText(str(p_cfg.get('custom_instructions_general') or ''))
         inst_lay.addWidget(self.pers_general_inst_edit)
 
-        inst_lay.addWidget(QLabel('<b>Coding &amp; Technical Work instructions (like Codex — applies to code/work tasks):</b>'))
+        code_inst_hdr = QLabel('<b>Coding &amp; Technical instructions:</b>')
+        code_inst_hdr.setToolTip('Like Codex — applies specifically to coding, debugging, and technical architecture tasks')
+        inst_lay.addWidget(code_inst_hdr)
         self.pers_coding_inst_edit = QTextEdit()
         self.pers_coding_inst_edit.setAcceptRichText(False)
         self.pers_coding_inst_edit.setPlaceholderText('Specify coding conventions, languages, drive rules, or review workflow…')
@@ -4261,40 +6183,43 @@ class ManageAIsDialog(QDialog):
         form.addRow('Experimental Memory space limit:', idle_space_row)
 
         self.idle_memory_mode_combo = QComboBox()
+        self.idle_memory_mode_combo.setToolTip('Choose whether Experimental Mode agents are strictly isolated or allowed read access to Shared Memory')
         self.idle_memory_mode_combo.addItem(
-            'Only their own Experimental memory (Isolated — No Normal memory access)',
+            'Isolated — Experimental Memory Only (Default)',
             'isolated'
         )
         self.idle_memory_mode_combo.addItem(
-            'Non-project Shared Memory + their own Experimental memory (Projects off-limits)',
+            'Non-Project Shared Memory + Experimental',
             'non_project'
         )
         self.idle_memory_mode_combo.addItem(
-            'Full Shared Memory access (excluding Private projects) + their own Experimental memory',
+            'Full Shared Memory (No Private) + Experimental',
             'full'
         )
         current_mode = idle_cfg.get('memory_access_mode', 'isolated')
         idx = self.idle_memory_mode_combo.findData(current_mode)
         if idx >= 0:
             self.idle_memory_mode_combo.setCurrentIndex(idx)
-        form.addRow('Memory Access in Experimental Mode:', self.idle_memory_mode_combo)
+        form.addRow('Experimental Memory access:', self.idle_memory_mode_combo)
         lay.addLayout(form)
 
         self.idle_share_code_check = QCheckBox(
-            'Share Fairybread source code with agents (Reference + On-Demand Read — allows agents to inspect code and propose improvements)'
+            'Share Fairybread source code mirror with agents'
         )
-        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only on-demand access to Fairybread source code')
+        self.idle_share_code_check.setToolTip('Give Experimental Mode agents read-only on-demand access to the Fairybread source code mirror to inspect code and propose improvements')
         self.idle_share_code_check.setChecked(bool(idle_cfg.get('share_source_code', False)))
         lay.addWidget(self.idle_share_code_check)
 
         from palace_config import get_source_mirror_dir
         from idle_service import sync_source_to_sandbox
         mirror_row = QHBoxLayout()
-        mirror_row.addWidget(QLabel('Shared Source Code Mirror Folder:'))
+        mirror_row.addWidget(QLabel('Source Mirror Folder:'))
         self.idle_mirror_dir_edit = QLineEdit(str(idle_cfg.get('source_mirror_dir') or get_source_mirror_dir(self.config_path)))
         self.idle_mirror_dir_edit.setToolTip('Read-only folder where a copy of Fairybread source code is kept for AI inspection')
         mirror_browse_btn = QPushButton('Browse…')
-        mirror_sync_btn = QPushButton('↻ Sync Code Copy Now')
+        mirror_browse_btn.setToolTip('Choose folder for the read-only source code mirror')
+        mirror_sync_btn = QPushButton('↻ Sync')
+        mirror_sync_btn.setToolTip('Sync read-only Fairybread source code copy to this mirror folder now')
         mirror_row.addWidget(self.idle_mirror_dir_edit, 1)
         mirror_row.addWidget(mirror_browse_btn)
         mirror_row.addWidget(mirror_sync_btn)
@@ -4317,9 +6242,9 @@ class ManageAIsDialog(QDialog):
         mirror_sync_btn.clicked.connect(_sync_mirror_now)
 
         self.idle_live_patch_check = QCheckBox(
-            '⚡ Owner-Only: Allow agents to apply live code patches, hot-reboot & auto-continue past reboot'
+            '⚡ Owner-Only: Allow live code patches && hot-reboot'
         )
-        self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches, hot-reboot, and resume automatically')
+        self.idle_live_patch_check.setToolTip('Allow Experimental Mode agents to stage verified patches in sandbox, hot-reboot, and auto-continue past reboot')
         self.idle_live_patch_check.setChecked(bool(idle_cfg.get('allow_live_self_modify', False)))
         lay.addWidget(self.idle_live_patch_check)
 
@@ -4344,11 +6269,14 @@ class ManageAIsDialog(QDialog):
             )
             lay.addWidget(pub_notice)
 
-        self.idle_pause_check = QCheckBox('Pause countdown timer while operator is admitted to discussion')
+        self.idle_pause_check = QCheckBox('Pause countdown timer when operator joins')
+        self.idle_pause_check.setToolTip('Pause the Experimental session timer while you are participating in the live discussion')
         self.idle_pause_check.setChecked(bool(idle_cfg.get('pause_when_joined', True)))
         lay.addWidget(self.idle_pause_check)
 
-        lay.addWidget(QLabel('Experimental Mode Startup Prompt (editable charter — customize or restore defaults below):'))
+        prompt_lbl = QLabel('Experimental Startup Prompt (Charter):')
+        prompt_lbl.setToolTip('Editable Experimental Mode charter injected at the start of autonomous council runs')
+        lay.addWidget(prompt_lbl)
         self.idle_prompt_edit = QTextEdit()
         self.idle_prompt_edit.setAcceptRichText(False)
         self.idle_prompt_edit.setMinimumHeight(105)
@@ -4356,7 +6284,9 @@ class ManageAIsDialog(QDialog):
         self.idle_prompt_edit.setPlainText(str(idle_cfg.get('standing_instruction', '')))
         lay.addWidget(self.idle_prompt_edit)
 
-        lay.addWidget(QLabel('Mission Statement, Code of Ethics & Conduct Rules (injected into Experimental Mode):'))
+        ethics_lbl = QLabel('Mission Statement & Code of Ethics:')
+        ethics_lbl.setToolTip('Safety and ethical conduct rules injected into Experimental Mode')
+        lay.addWidget(ethics_lbl)
         self.mission_ethics_edit = QTextEdit()
         self.mission_ethics_edit.setAcceptRichText(False)
         self.mission_ethics_edit.setMinimumHeight(105)
@@ -4374,8 +6304,8 @@ class ManageAIsDialog(QDialog):
         self.idle_mem_status_label.setWordWrap(True)
         mem_row.addWidget(self.idle_mem_status_label, 1)
 
-        reset_defaults_btn = QPushButton('↺ Restore Default Prompts')
-        reset_defaults_btn.setToolTip('Reset Experimental prompts to defaults')
+        reset_defaults_btn = QPushButton('↺ Reset Prompts')
+        reset_defaults_btn.setToolTip('Reset Experimental startup charter and ethics prompts back to factory defaults')
 
         def _restore_idle_defaults():
             from palace_config import DEFAULT_IDLE_INSTRUCTION, DEFAULT_MISSION_ETHICS
@@ -4385,7 +6315,7 @@ class ManageAIsDialog(QDialog):
         reset_defaults_btn.clicked.connect(_restore_idle_defaults)
         mem_row.addWidget(reset_defaults_btn)
 
-        clear_idle_btn = QPushButton('Clear Experimental Memory')
+        clear_idle_btn = QPushButton('🗑 Clear Memory')
         clear_idle_btn.setToolTip('Clear all Experimental Memory notes')
         clear_idle_btn.clicked.connect(self._clear_idle_memory)
         mem_row.addWidget(clear_idle_btn)
@@ -4407,53 +6337,42 @@ class ManageAIsDialog(QDialog):
         from local_cli_provider import detect_external_platforms
 
         w, outer_lay = self._make_simple_page(
-            '🔗 External Agent Bridge (MCP)',
-            'Connect ChatGPT Desktop / Codex, Google Antigravity, Grok (xAI), or Claude Desktop — pick either Foreman Mode or Council Member Mode per app.'
+            'External Apps (MCP)',
+            'Choose which desktop AI apps can drive Fairybread (Foreman Mode).'
         )
         b_cfg = load_bridge_settings(self.config_path)
         home_override = getattr(self, '_bridge_home_dir', None)
         appdata_override = getattr(self, '_bridge_appdata_dir', None)
         detected = detect_external_platforms(home_dir=home_override, appdata_dir=appdata_override)
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(w)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-        inner = QWidget()
+        inner = QWidget(scroll)
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 8, 4)
         lay.setSpacing(10)
 
-        # Card 1: Clear built-in guide explaining Foreman vs Council Member modes & benefits
-        guide_card = QFrame()
+        guide_card = QFrame(inner)
         g_lay = QVBoxLayout(guide_card)
-        _style_settings_card(guide_card, 'externalBridgeGuideCard', g_lay, pad_h=12, pad_v=12)
-        g_lay.setSpacing(6)
+        _style_settings_card(guide_card, 'externalBridgeGuideCard', g_lay, pad_h=0, pad_v=2)
+        g_lay.setSpacing(4)
         guide_top = QHBoxLayout()
-        guide_hdr = QLabel('<b>How External AI Links Work — Pick One Mode Per App</b>')
+        guide_hdr = QLabel('<b>Connected Desktop AI Applications</b>')
         guide_hdr.setTextFormat(Qt.TextFormat.RichText)
         guide_top.addWidget(guide_hdr, 1)
-        self.rescan_bridge_clis_btn = QPushButton('🔄 Re-scan CLIs')
+        self.rescan_bridge_clis_btn = QPushButton('Re-scan')
         self.rescan_bridge_clis_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.rescan_bridge_clis_btn.setToolTip('Re-scan local PATH and standard user CLI folders (~/.local/bin, npm, ~/.grok/bin)')
+        self.rescan_bridge_clis_btn.setToolTip('Re-scan installed external AI applications on this computer')
         guide_top.addWidget(self.rescan_bridge_clis_btn)
         g_lay.addLayout(guide_top)
-
         self.bridge_guide_label = QLabel(
-            '• <b>Foreman Mode (External AI drives Fairybread):</b> Stay inside ChatGPT Desktop, Antigravity, Grok, or Claude '
-            'and outsource jobs to Fairybread — multi-AI peer-reviewed answers, 300-DPI graphics, Shared Memory lookups, and '
-            'exhaustive email searches. <i>Setup:</i> Flip <b>Foreman</b> ON (Fairybread writes the config automatically), '
-            'restart that app once, then ask it to use Fairybread.<br>'
-            '• <b>Council Member Mode (External AI joins Fairybread\'s Council):</b> Use your existing local CLI subscription '
-            '(<code>codex</code>, <code>agy</code>, <code>grok</code>, <code>claude</code>) inside Fairybread\'s council '
-            'without paying for a separate per-token API key. <i>Setup:</i> Install and sign in to that CLI once, then flip '
-            '<b>Council Member</b> ON. <i>(Tip: direct API keys in AI Providers are faster when you have them.)</i><br>'
-            '• <b>One-or-the-Other Safety Rule:</b> Turning one switch ON automatically locks (greys out) the other for that '
-            'app so an AI can never trigger an infinite feedback loop. Turn the active switch OFF first to switch roles.'
+            'Check Foreman Mode on any app below to let that app send jobs directly to Fairybread (no extra CLI required), '
+            'or use optional Council Member Mode if you have a local CLI installed.'
         )
-        self.bridge_guide_label.setTextFormat(Qt.TextFormat.RichText)
+        self.bridge_guide_label.setObjectName('muted')
         self.bridge_guide_label.setWordWrap(True)
-        self.bridge_guide_label.setStyleSheet('color: #c9d1d9; font-size: 12px; line-height: 1.45;')
         g_lay.addWidget(self.bridge_guide_label)
         lay.addWidget(guide_card)
 
@@ -4461,47 +6380,49 @@ class ManageAIsDialog(QDialog):
         self.bridge_platform_controls: dict[str, dict[str, Any]] = {}
         platform_meta = {
             'codex': {
-                'title': 'ChatGPT Desktop / Codex CLI',
-                'note': 'Writes ~/.codex/config.toml → restart ChatGPT Desktop → switch to Codex / Work mode → type /mcp. (Standard browser chat cannot access local tools.)',
+                'title': 'ChatGPT Desktop',
+                'note': 'Check Foreman Mode, restart ChatGPT Desktop once, switch to Work / Codex mode, and ask it to use Fairybread.',
             },
             'antigravity': {
                 'title': 'Google Antigravity',
-                'note': 'Writes ~/.gemini/config/mcp_config.json + SKILL.md → restart Antigravity to see fairybread_* tools natively.',
+                'note': 'Check Foreman Mode and restart Google Antigravity once — Fairybread tools appear automatically.',
             },
             'grok': {
-                'title': 'Grok (xAI Build CLI / Grok Bot)',
-                'note': 'Writes ~/.grok/config.toml for Grok Build CLI or Grok Bot (x.ai/bot). Plain grok.com browser chat cannot access local tools.',
+                'title': 'Grok (xAI)',
+                'note': 'Check Foreman Mode (or click Copy for Grok Bot custom connector setup) so Grok can drive Fairybread.',
             },
             'claude': {
-                'title': 'Claude Desktop / Claude Code CLI',
-                'note': 'Writes %APPDATA%\\Claude\\claude_desktop_config.json → restart Claude Desktop.',
+                'title': 'Claude Desktop',
+                'note': 'Check Foreman Mode and restart Claude Desktop once to let Claude drive Fairybread.',
             },
         }
 
-        chk_style = (
-            'QCheckBox { color: #e6edf3; font-size: 12px; font-weight: 600; spacing: 6px; } '
-            'QCheckBox:disabled { color: #6e7681; }'
-        )
+        chk_style = ''
 
         self.bridge_status_label = QLabel('')
         self.bridge_status_label.setWordWrap(True)
         self.bridge_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
 
         def _format_badge(pk: str, info: dict[str, Any], linked: bool) -> str:
-            parts = [
-                'App Config Found' if (info.get('config_dir_exists') or info.get('config_file_exists')) else 'App Not Detected',
-                'CLI Ready' if info.get('cli_available') else 'CLI Not Installed',
-            ]
             if linked:
-                parts.append('MCP Linked')
-            return ' · '.join(parts)
+                return '✓ Connected — Can Drive Fairybread'
+            if info.get('config_dir_exists') or info.get('config_file_exists'):
+                return 'App Found — Not Linked Yet'
+            return 'App Not Installed (Optional)'
+
+        def _format_badge_tooltip(pk: str, info: dict[str, Any], linked: bool) -> str:
+            if linked:
+                return 'Connected. This app can send tasks directly to Fairybread (no CLI or terminal tool required). Restart the app once if already open.'
+            if info.get('config_dir_exists') or info.get('config_file_exists'):
+                return 'This app is installed on your PC. Check Foreman Mode below to let it drive Fairybread.'
+            return 'This app was not found in its default folder. You can still check Foreman Mode to pre-create its connection file.'
 
         saved_platforms = b_cfg.get('platforms') or {}
 
         for pk in EXTERNAL_PLATFORMS:
             info = detected.get(pk, {})
             meta = platform_meta[pk]
-            card = QFrame()
+            card = QFrame(inner)
             c_lay = QVBoxLayout(card)
             _style_settings_card(card, f'bridgePlatformCard_{pk}', c_lay, pad_h=10, pad_v=10)
             c_lay.setSpacing(6)
@@ -4511,20 +6432,21 @@ class ManageAIsDialog(QDialog):
             title_lbl.setTextFormat(Qt.TextFormat.RichText)
             top_row.addWidget(title_lbl, 1)
 
-            badge_lbl = QLabel(_format_badge(pk, info, bool(info.get('mcp_linked'))))
+            is_linked_now = bool(info.get('mcp_linked'))
+            badge_lbl = QLabel(_format_badge(pk, info, is_linked_now))
+            badge_lbl.setToolTip(_format_badge_tooltip(pk, info, is_linked_now))
             badge_lbl.setStyleSheet(
-                'font-size: 11px; color: #9ca3af; background: #0d1117; '
-                'border: 1px solid #21262d; border-radius: 5px; padding: 2px 8px;'
+                'font-size: 11px; border: 1px solid #454545; border-radius: 3px; padding: 2px 8px;'
             )
             top_row.addWidget(badge_lbl)
             c_lay.addLayout(top_row)
 
             switch_row = QHBoxLayout()
             switch_row.setSpacing(14)
-            foreman_chk = QCheckBox('Foreman Mode (Drives Fairybread)')
-            foreman_chk.setStyleSheet(chk_style)
-            council_chk = QCheckBox('Council Member (Joins Council)')
-            council_chk.setStyleSheet(chk_style)
+            foreman_chk = QCheckBox('Foreman Mode (App Drives Fairybread)')
+            foreman_chk.setToolTip('Let this application send tasks to Fairybread (no CLI installation needed)')
+            council_chk = QCheckBox('Council Member (Optional Local CLI)')
+            council_chk.setToolTip('Optional reverse mode: lets Fairybread call a local terminal CLI as a council member (not needed when this app drives Fairybread)')
 
             saved_mode = str(saved_platforms.get(pk, 'off') or 'off').lower()
             is_foreman_init = (saved_mode == 'foreman') or bool(info.get('mcp_linked'))
@@ -4539,7 +6461,7 @@ class ManageAIsDialog(QDialog):
             switch_row.addStretch()
 
             if pk == 'grok':
-                copy_grok_btn = QPushButton('📋 Copy Command')
+                copy_grok_btn = QPushButton('Copy')
                 copy_grok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 copy_grok_btn.setToolTip('Copy TOML and command/args for Grok Bot custom connector setup')
 
@@ -4560,14 +6482,16 @@ class ManageAIsDialog(QDialog):
             note_lbl = QLabel(meta['note'])
             note_lbl.setWordWrap(True)
             note_lbl.setObjectName('muted')
-            note_lbl.setStyleSheet('font-size: 11.5px; color: #8b949e;')
             c_lay.addWidget(note_lbl)
 
             install_hint_txt = str(info.get('install_hint') or '').strip()
-            cli_hint_lbl = QLabel(f'<i>Council Member requires local CLI:</i> {html.escape(install_hint_txt)}')
-            cli_hint_lbl.setTextFormat(Qt.TextFormat.RichText)
+            cli_hint_lbl = QLabel(
+                f'Optional Council Member CLI not installed ({install_hint_txt}) — not needed for Foreman Mode.'
+                if install_hint_txt else '',
+                card,
+            )
             cli_hint_lbl.setWordWrap(True)
-            cli_hint_lbl.setStyleSheet('font-size: 11.5px; color: #eab308;')
+            cli_hint_lbl.setStyleSheet('font-size: 11px; color: #8b949e;')
             cli_hint_lbl.setVisible((not cli_avail) and bool(install_hint_txt))
             c_lay.addWidget(cli_hint_lbl)
 
@@ -4627,42 +6551,47 @@ class ManageAIsDialog(QDialog):
         cap_lay.addWidget(cap_hdr)
 
         self.bridge_enabled_check = QCheckBox(
-            'Enable External Agent Bridge (MCP Server && Local CLI Bridge)',
+            'Enable External Agent Bridge (MCP & Local CLI)',
             checked=bool(b_cfg.get('enabled', True)),
         )
+        self.bridge_enabled_check.setToolTip('Master switch for the MCP Server and local CLI bridges (Claude, Codex, Gemini CLI, Grok)')
         cap_lay.addWidget(self.bridge_enabled_check)
 
         self.bridge_council_check = QCheckBox(
-            'Allow external agents to consult the Fairybread Multi-AI Council (fairybread_ask_council)',
+            'Consult Multi-AI Council (fairybread_ask_council)',
             checked=bool(b_cfg.get('allow_council_query', True)),
         )
+        self.bridge_council_check.setToolTip('Allow external agents to send questions to Fairybread’s multi-AI peer-reviewed council')
         cap_lay.addWidget(self.bridge_council_check)
 
         self.bridge_image_check = QCheckBox(
-            'Allow external agents to render 300-DPI images, social banners && wallpapers (fairybread_generate_image)',
+            'Render 300-DPI Graphics & Banners',
             checked=bool(b_cfg.get('allow_image_generation', True)),
         )
+        self.bridge_image_check.setToolTip('Allow external agents to call fairybread_generate_image to render 300-DPI graphics, banners & wallpapers')
         cap_lay.addWidget(self.bridge_image_check)
 
         self.bridge_email_check = QCheckBox(
-            'Allow external agents to run Exhaustive Email Searches when configured (fairybread_search_email)',
+            'Run Exhaustive Email Searches',
             checked=bool(b_cfg.get('allow_email_search', True)),
         )
+        self.bridge_email_check.setToolTip('Allow external agents to call fairybread_search_email when your email connector is configured')
         cap_lay.addWidget(self.bridge_email_check)
 
         self.bridge_memory_check = QCheckBox(
-            'Allow external agents to query Shared Memory (fairybread_search_memory)',
+            'Query Shared Memory (fairybread_search_memory)',
             checked=bool(b_cfg.get('allow_memory_search', True)),
         )
+        self.bridge_memory_check.setToolTip('Allow external agents to search Fairybread’s local Shared Memory')
         cap_lay.addWidget(self.bridge_memory_check)
 
         btn_row = QHBoxLayout()
-        test_bridge_btn = QPushButton('🧪 Test MCP Bridge')
+        test_bridge_btn = QPushButton('🧪 Test Bridge')
         test_bridge_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         test_bridge_btn.setToolTip('Spawn Fairybread MCP server over stdio and verify initialize, tools/list, and fairybread_status')
-        copy_mcp_btn = QPushButton('📋 Copy Generic MCP JSON (Cursor / Windsurf)')
+        copy_mcp_btn = QPushButton('📋 Copy MCP JSON')
         copy_mcp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        copy_mcp_btn.setToolTip('Copy generic stdio JSON config for external MCP clients')
+        copy_mcp_btn.setToolTip('Copy generic stdio JSON config for Cursor, Windsurf, or other MCP clients')
         btn_row.addWidget(test_bridge_btn)
         btn_row.addWidget(copy_mcp_btn)
         cap_lay.addLayout(btn_row)
@@ -4714,9 +6643,9 @@ class ManageAIsDialog(QDialog):
             council_chk.setChecked(False)
             council_chk.blockSignals(False)
             council_chk.setEnabled(False)
-            council_chk.setToolTip('Turn Foreman Mode OFF first to switch roles (prevents feedback loops)')
+            council_chk.setToolTip('Locked while Foreman Mode is ON (prevents feedback loops). Turn Foreman Mode OFF first if you want Council Member mode.')
             foreman_chk.setEnabled(True)
-            foreman_chk.setToolTip('Foreman Mode active — turn OFF to unlink MCP config and unlock Council Member')
+            foreman_chk.setToolTip('Connected — this app can drive Fairybread (no CLI required). Uncheck to disconnect.')
         elif council_chk.isChecked():
             foreman_chk.blockSignals(True)
             foreman_chk.setChecked(False)
@@ -4727,12 +6656,15 @@ class ManageAIsDialog(QDialog):
             council_chk.setToolTip('Council Member active — turn OFF to unlock Foreman Mode')
         else:
             foreman_chk.setEnabled(True)
-            foreman_chk.setToolTip('Link Fairybread MCP so this app can drive Fairybread (locks Council Member while ON)')
+            foreman_chk.setToolTip('Check to let this app drive Fairybread automatically (no terminal CLI needed)')
             council_chk.setEnabled(cli_avail)
             if cli_avail:
-                council_chk.setToolTip('Add this local CLI inside Fairybread Council (locks Foreman Mode while ON)')
+                council_chk.setToolTip('Optional reverse mode: add this local command-line tool inside Fairybread Council')
             else:
-                council_chk.setToolTip(f'CLI not installed. {install_hint}')
+                council_chk.setToolTip(
+                    f'Optional reverse mode (not needed for Foreman Mode or if you use API keys in AI Providers).\n'
+                    f'To enable Council Member mode, install the optional command-line tool: {install_hint}'
+                )
 
     def _on_bridge_foreman_toggled(self, platform_key: str, checked: bool):
         from fairybread_mcp import link_platform_foreman, unlink_platform_foreman
@@ -4784,13 +6716,15 @@ class ManageAIsDialog(QDialog):
                 info['mcp_linked'] = False
 
         ctrl['info'] = info
-        parts = [
-            'App Config Found' if (info.get('config_dir_exists') or info.get('config_file_exists')) else 'App Not Detected',
-            'CLI Ready' if ctrl.get('cli_available') else 'CLI Not Installed',
-        ]
         if info.get('mcp_linked'):
-            parts.append('MCP Linked')
-        badge_lbl.setText(' · '.join(parts))
+            badge_lbl.setText('✓ Connected — Can Drive Fairybread')
+            badge_lbl.setToolTip('Connected. This app can send tasks directly to Fairybread (no CLI required). Restart the app once if already open.')
+        elif info.get('config_dir_exists') or info.get('config_file_exists'):
+            badge_lbl.setText('App Found — Not Linked Yet')
+            badge_lbl.setToolTip('This app is installed on your PC. Check Foreman Mode below to let it drive Fairybread.')
+        else:
+            badge_lbl.setText('App Not Installed (Optional)')
+            badge_lbl.setToolTip('This app was not found in its default folder.')
         self._sync_platform_interlock(platform_key)
 
     def _on_bridge_council_toggled(self, platform_key: str, checked: bool):
@@ -4847,6 +6781,7 @@ class ManageAIsDialog(QDialog):
             STORAGE_SLIDER_STOPS_MB,
             compute_palace_storage_stats,
             format_storage_mb_label,
+            get_palace_data_root,
             list_palace_stored_files,
             mb_to_slider_index,
             move_experimental_data_to_directory,
@@ -4861,17 +6796,18 @@ class ManageAIsDialog(QDialog):
             'clean up stored media, and export AES-256 encrypted backups.'
         )
 
-        scroll = QScrollArea()
+        scroll = QScrollArea(w)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setStyleSheet('QScrollArea { background: transparent; border: none; }')
-        inner = QWidget()
+        inner = QWidget(scroll)
         lay = QVBoxLayout(inner)
         lay.setContentsMargins(0, 0, 8, 4)
         lay.setSpacing(12)
 
         ui_cfg = load_ui_settings(self.config_path)
-        stats = compute_palace_storage_stats(self.config_path)
+        data_root_init = str(get_palace_data_root(self.config_path))
+        exp_root_init = str(get_experimental_data_root(self.config_path))
 
         def _open_folder_safe(folder_path: Path, label: str):
             try:
@@ -4897,7 +6833,7 @@ class ManageAIsDialog(QDialog):
         card1_hdr.setToolTip('View Normal Mode disk usage, configure storage limits, and move Normal or Experimental Palace databases')
         sp_lay.addWidget(card1_hdr)
 
-        self.normal_space_summary_lbl = QLabel()
+        self.normal_space_summary_lbl = QLabel('<b>Calculating database usage…</b>')
         self.normal_space_summary_lbl.setWordWrap(True)
         self.normal_space_summary_lbl.setTextFormat(Qt.TextFormat.RichText)
         self.normal_space_summary_lbl.setToolTip('Live breakdown of Normal Palace SQLite DB, chats, uploads, and generated images')
@@ -4923,6 +6859,7 @@ class ManageAIsDialog(QDialog):
         self.normal_storage_edit.setToolTip('Enter a storage cap such as "500 MB", "2 GB", or "Unlimited"')
 
         def _refresh_storage_summary_labels():
+            self._backup_storage_loaded = True
             st = compute_palace_storage_stats(self.config_path)
             cap_mb = parse_storage_mb_text(self.normal_storage_edit.text())
             cap_txt = format_storage_mb_label(cap_mb)
@@ -4976,7 +6913,7 @@ class ManageAIsDialog(QDialog):
         sp_lay.addWidget(loc_lbl)
         loc_row = QHBoxLayout()
         loc_row.setSpacing(6)
-        self.palace_data_dir_edit = QLineEdit(str(stats['data_root']))
+        self.palace_data_dir_edit = QLineEdit(data_root_init)
         self.palace_data_dir_edit.setToolTip('Active folder for Normal Palace memory.db and media (encrypted keys stay in %LOCALAPPDATA%\\Palace)')
         loc_browse_btn = QPushButton('Browse…')
         loc_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -5000,7 +6937,7 @@ class ManageAIsDialog(QDialog):
         sp_lay.addWidget(exp_lbl)
         exp_row = QHBoxLayout()
         exp_row.setSpacing(6)
-        self.experimental_data_dir_edit = QLineEdit(str(stats.get('experimental_root') or get_experimental_data_root(self.config_path)))
+        self.experimental_data_dir_edit = QLineEdit(exp_root_init)
         self.experimental_data_dir_edit.setToolTip('Active folder for Experimental Mode memory and mailbox files')
         exp_browse_btn = QPushButton('Browse…')
         exp_browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -5071,7 +7008,7 @@ class ManageAIsDialog(QDialog):
 
         loc_browse_btn.clicked.connect(_browse_data_dir)
         loc_move_btn.clicked.connect(_move_data_dir)
-        loc_open_btn.clicked.connect(lambda: _open_folder_safe(Path(self.palace_data_dir_edit.text().strip() or str(stats['data_root'])), 'Normal DB Folder'))
+        loc_open_btn.clicked.connect(lambda: _open_folder_safe(Path(self.palace_data_dir_edit.text().strip() or data_root_init), 'Normal DB Folder'))
         exp_browse_btn.clicked.connect(_browse_exp_dir)
         exp_move_btn.clicked.connect(_move_exp_dir)
         exp_open_btn.clicked.connect(lambda: _open_folder_safe(Path(self.experimental_data_dir_edit.text().strip() or str(get_experimental_data_root(self.config_path))), 'Experimental DB Folder'))
@@ -5088,12 +7025,12 @@ class ManageAIsDialog(QDialog):
         fc_lay.addWidget(card2_hdr)
 
         qfolder_row = QHBoxLayout()
-        qfolder_row.setSpacing(8)
-        open_inst_btn = QPushButton('📂 Install Folder')
+        qfolder_row.setSpacing(6)
+        open_inst_btn = QPushButton('📂 Install')
         open_inst_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_inst_btn.setToolTip(f'Open installed Fairybread binaries & optional \\source\\ folder: {get_app_install_dir()}')
 
-        open_appdata_btn = QPushButton('📂 AppData & Keys')
+        open_appdata_btn = QPushButton('📂 AppData')
         open_appdata_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_appdata_btn.setToolTip(f'Open {get_appdata_root()} containing palace_config.json, encrypted credentials.json, and custom themes')
 
@@ -5101,7 +7038,7 @@ class ManageAIsDialog(QDialog):
         open_norm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_norm_btn.setToolTip('Open active Normal Palace DB folder (close Fairybread before editing memory.db directly)')
 
-        open_exp_btn = QPushButton('📂 Experimental DB')
+        open_exp_btn = QPushButton('📂 Exp. DB')
         open_exp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         open_exp_btn.setToolTip('Open active Experimental Palace DB folder (ai_idle_memory.json, agent_mailbox.json, shared files)')
 
@@ -5143,6 +7080,7 @@ class ManageAIsDialog(QDialog):
         fl_lay.addWidget(self.stored_files_list)
 
         def _refresh_stored_files_list():
+            self._backup_storage_loaded = True
             self.stored_files_list.clear()
             for item in list_palace_stored_files(self.config_path):
                 lbl = f"[{item['category']}]  {item['name']}   ({item['size_kb']:.1f} KB · {item['modified']})"
@@ -5232,12 +7170,12 @@ class ManageAIsDialog(QDialog):
         bk_lay.addWidget(bak_hdr)
 
         chk_row = QHBoxLayout()
-        chk_row.setSpacing(12)
-        self.backup_include_memory_check = QCheckBox('Memory, Chats && Experimental DB', checked=True)
+        chk_row.setSpacing(10)
+        self.backup_include_memory_check = QCheckBox('Memory && Chats', checked=True)
         self.backup_include_memory_check.setToolTip('Include Normal SQLite memory.db, conversations, uploads, and Experimental sandbox data')
-        self.backup_include_settings_check = QCheckBox('Settings && API Keys (AES-256)', checked=True)
-        self.backup_include_settings_check.setToolTip('Include palace_config.json, custom themes, and encrypted API keys vault')
-        self.backup_include_images_check = QCheckBox('Generated Pictures', checked=True)
+        self.backup_include_settings_check = QCheckBox('Settings && Keys', checked=True)
+        self.backup_include_settings_check.setToolTip('Include palace_config.json, custom themes, and AES-256 encrypted API keys vault')
+        self.backup_include_images_check = QCheckBox('Pictures', checked=True)
         self.backup_include_images_check.setToolTip('Include generated PNG images stored by Fairybread')
         self.backup_include_creds_check = self.backup_include_settings_check
         chk_row.addWidget(self.backup_include_memory_check)
@@ -5260,15 +7198,15 @@ class ManageAIsDialog(QDialog):
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-        export_btn = QPushButton('📦 Full Backup (.zip)…')
+        export_btn = QPushButton('📦 Full Backup…')
         export_btn.setToolTip('Create a backup archive using the checkboxes selected above (AES-256 password-locked if API keys included)')
         export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        keys_only_btn = QPushButton('🔑 Keys & Settings (.zip)…')
+        keys_only_btn = QPushButton('🔑 Keys Only…')
         keys_only_btn.setToolTip('Export ONLY your AES-256 password-locked API keys, provider settings, and custom themes (~20 KB portable vault)')
         keys_only_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        restore_btn = QPushButton('♻ Restore (.zip)…')
+        restore_btn = QPushButton('♻ Restore…')
         restore_btn.setToolTip('Verify SHA-256 checksums and restore Memory, Settings, and/or API keys from a backup archive (.zip)')
         restore_btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -5430,8 +7368,8 @@ class ManageAIsDialog(QDialog):
         keys_only_btn.clicked.connect(lambda: _run_backup(keys_only=True))
         restore_btn.clicked.connect(_do_restore)
         restore_defaults_btn.clicked.connect(_do_restore_defaults)
-        _refresh_storage_summary_labels()
-        _refresh_stored_files_list()
+        self._backup_storage_loaded = False
+        self._refresh_backup_storage_ui = lambda: (_refresh_storage_summary_labels(), _refresh_stored_files_list())
 
         lay.addStretch()
         scroll.setWidget(inner)
@@ -5443,6 +7381,30 @@ class ManageAIsDialog(QDialog):
         self.idle_mem_status_label.setText(
             'AI-Only Permanent Idle Memory: 0 notes (0.0 KB / 10 MB cap) · Accessible only in Idle Mode'
         )
+
+    def _reset_current_provider_attribution(self):
+        name = (getattr(self, '_active_provider_slug', '') or self.provider_combo.currentText()).strip().lower()
+        if not name:
+            return
+        cat = PROVIDER_CATALOG.get(name, {})
+        default_role = str(cat.get('role') or cat.get('strengths') or '').strip()
+        self._loading_provider_fields = True
+        try:
+            if hasattr(self, 'agent_given_name_edit'):
+                self.agent_given_name_edit.setText('')
+            if hasattr(self, 'agent_voice_combo'):
+                self.agent_voice_combo.setCurrentIndex(0)
+            if hasattr(self, 'agent_mode_combo'):
+                self.agent_mode_combo.setCurrentIndex(0)
+            if hasattr(self, 'agent_shape_combo'):
+                self.agent_shape_combo.setCurrentIndex(0)
+            if hasattr(self, 'agent_palette_combo'):
+                self.agent_palette_combo.setCurrentIndex(0)
+            if hasattr(self, 'agent_role_edit'):
+                self.agent_role_edit.setPlainText(default_role)
+        finally:
+            self._loading_provider_fields = False
+        self._auto_save_current_provider()
 
     def _auto_save_current_provider(self, *_args):
         if getattr(self, '_loading_provider_fields', False):
@@ -5462,17 +7424,32 @@ class ManageAIsDialog(QDialog):
                 if (hasattr(self, 'use_openrouter_check') and name not in {'openrouter', 'ollama'})
                 else False
             )
-            save_provider_config(
-                provider_name=name,
-                enabled=self.enabled_check.isChecked(),
-                model=self.model_edit.text(),
-                base_url=self.base_url_edit.text(),
-                use_openrouter=use_or,
-                config_path=self.config_path,
-            )
+            kwargs: dict[str, Any] = {
+                'provider_name': name,
+                'enabled': self.enabled_check.isChecked(),
+                'model': self.model_edit.text(),
+                'base_url': self.base_url_edit.text(),
+                'use_openrouter': use_or,
+                'config_path': self.config_path,
+            }
+            if hasattr(self, 'agent_given_name_edit'):
+                kwargs['given_name'] = clean_given_name(self.agent_given_name_edit.text())
+            if hasattr(self, 'agent_voice_combo'):
+                kwargs['voice_name'] = str(self.agent_voice_combo.currentData() or '').strip()
+            if hasattr(self, 'agent_mode_combo'):
+                kwargs['conversational_mode'] = str(self.agent_mode_combo.currentData() or '').strip()
+            if hasattr(self, 'agent_shape_combo'):
+                kwargs['avatar_shape'] = str(self.agent_shape_combo.currentData() or '').strip()
+            if hasattr(self, 'agent_palette_combo'):
+                kwargs['avatar_palette'] = str(self.agent_palette_combo.currentData() or '').strip()
+            if hasattr(self, 'agent_role_edit'):
+                kwargs['role_attribution'] = self.agent_role_edit.toPlainText().strip()
+            save_provider_config(**kwargs)
             if hasattr(self, 'auto_save_status_label'):
                 disp = PROVIDER_CATALOG.get(name, {}).get('display_name', name)
-                self.auto_save_status_label.setText(f'✓ Auto-saved {disp} (Windows DPAPI encrypted)')
+                gn = kwargs.get('given_name') or ''
+                tag = f'"{gn}" · {disp}' if gn else disp
+                self.auto_save_status_label.setText(f'✓ Auto-saved {tag} (Windows DPAPI encrypted)')
             parent = self.parent()
             if parent is not None and hasattr(parent, 'reload_providers_from_config'):
                 parent.reload_providers_from_config()
@@ -5554,6 +7531,23 @@ class ManageAIsDialog(QDialog):
                 self.model_edit.setText(saved_model)
 
             self.base_url_edit.setText(str(cfg.get('base_url') or cat.get('default_base_url') or ''))
+            attr = get_provider_attribution(clean, config_path=self.config_path)
+            if hasattr(self, 'agent_given_name_edit'):
+                self.agent_given_name_edit.setText(str(attr.get('given_name') or ''))
+            if hasattr(self, 'agent_voice_combo'):
+                vi = self.agent_voice_combo.findData(str(attr.get('voice_name') or ''))
+                self.agent_voice_combo.setCurrentIndex(vi if vi >= 0 else 0)
+            if hasattr(self, 'agent_mode_combo'):
+                mi = self.agent_mode_combo.findData(str(attr.get('conversational_mode') or ''))
+                self.agent_mode_combo.setCurrentIndex(mi if mi >= 0 else 0)
+            if hasattr(self, 'agent_shape_combo'):
+                si = self.agent_shape_combo.findData(str(attr.get('avatar_shape') or ''))
+                self.agent_shape_combo.setCurrentIndex(si if si >= 0 else 0)
+            if hasattr(self, 'agent_palette_combo'):
+                pi = self.agent_palette_combo.findData(str(attr.get('avatar_palette') or ''))
+                self.agent_palette_combo.setCurrentIndex(pi if pi >= 0 else 0)
+            if hasattr(self, 'agent_role_edit'):
+                self.agent_role_edit.setPlainText(str(attr.get('role_attribution') or ''))
             if hasattr(self, 'adv_url_check'):
                 needs_url = clean not in PROVIDER_CATALOG or clean == 'ollama'
                 self.adv_url_check.setChecked(needs_url)
@@ -5650,6 +7644,36 @@ class ManageAIsDialog(QDialog):
                 'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
                 'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
                 'theme': str(self.theme_combo.currentData() or 'dark') if hasattr(self, 'theme_combo') else 'dark',
+                'home_location': (
+                    self.home_location_edit.text().strip()
+                    if hasattr(self, 'home_location_edit')
+                    else str(load_ui_settings(self.config_path).get('home_location') or '')
+                ),
+                'weather_map_enabled': (
+                    bool(self.weather_display_combo.currentData())
+                    if hasattr(self, 'weather_display_combo')
+                    else bool(load_ui_settings(self.config_path).get('weather_map_enabled', True))
+                ),
+                'bg_image_source': (
+                    str(self.bg_source_combo.currentData() or 'none')
+                    if hasattr(self, 'bg_source_combo')
+                    else str(load_ui_settings(self.config_path).get('bg_image_source') or 'none')
+                ),
+                'bg_image_placement': (
+                    str(self.bg_placement_combo.currentData() or 'chat_sidebar')
+                    if hasattr(self, 'bg_placement_combo')
+                    else str(load_ui_settings(self.config_path).get('bg_image_placement') or 'chat_sidebar')
+                ),
+                'bg_washout_percent': (
+                    int(self.bg_washout_slider.value())
+                    if hasattr(self, 'bg_washout_slider')
+                    else int(load_ui_settings(self.config_path).get('bg_washout_percent', 90))
+                ),
+                'bg_image_path': (
+                    self.bg_path_edit.text().strip()
+                    if hasattr(self, 'bg_path_edit')
+                    else str(load_ui_settings(self.config_path).get('bg_image_path') or '')
+                ),
             }
             if hasattr(self, 'normal_storage_edit'):
                 ui_updates['normal_max_storage_mb'] = parse_storage_mb_text(self.normal_storage_edit.text())
@@ -5714,6 +7738,8 @@ class ManageAIsDialog(QDialog):
                     },
                     config_path=self.config_path,
                 )
+            if hasattr(self, '_flush_active_persona_save') and callable(self._flush_active_persona_save):
+                self._flush_active_persona_save()
             if hasattr(self, '_collect_voice_payload'):
                 from voice_service import save_voice_settings
                 save_voice_settings(self._collect_voice_payload(), config_path=self.config_path)
@@ -5760,6 +7786,7 @@ class ManageAIsDialog(QDialog):
 class PalaceWindow(QMainWindow):
     _cost_event_signal = Signal(object)
     _catalog_sync_done = Signal(object, bool)
+    _ui_call_signal = Signal(object)
 
     def __init__(
         self,
@@ -5787,6 +7814,9 @@ class PalaceWindow(QMainWindow):
         self._voice_companion = None
         self._voice_threads = []
         self._voice_session_gen = 0
+        self._pending_quorum_beats = []
+        self._active_voice_slot_index = 0
+        self._voice_turn_counter = 0
         self._last_voice_brain_provider = ''
         self._last_voice_brain_fell_back = False
         self._last_voice_brain_requested = ''
@@ -5861,7 +7891,8 @@ class PalaceWindow(QMainWindow):
         outer.addWidget(splitter, 1)
 
         # --- LEFT SIDEBAR (Matches GPT/Antigravity mockup) ---
-        sidebar = QWidget()
+        sidebar = BackdropPanelWidget(border_side='right')
+        self.sidebar_widget = sidebar
         sidebar.setObjectName('sidebar')
         sidebar.setMinimumWidth(250)
         sidebar.setMaximumWidth(285)
@@ -5976,10 +8007,12 @@ class PalaceWindow(QMainWindow):
         self.manage_ais_button.setToolTip('Settings & AI Providers')
         self.manage_ais_button.clicked.connect(self.open_manage_ais)
         side.addWidget(self.manage_ais_button)
+        sidebar.setMinimumWidth(210)
+        sidebar.setMaximumWidth(320)
         splitter.addWidget(sidebar)
 
         # --- MAIN CHAT WORKSPACE ---
-        panel = QWidget()
+        panel = QWidget(splitter)
         panel.setObjectName('chatPanel')
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(18, 10, 18, 8)
@@ -5992,7 +8025,7 @@ class PalaceWindow(QMainWindow):
         top_strip.setContentsMargins(12, 5, 12, 5)
         top_strip.setSpacing(8)
 
-        self.conversation_title = ResponsiveBarLabel('Fairybread  /  New conversation')
+        self.conversation_title = ResponsiveBarLabel('New conversation')
         self.conversation_title.setStyleSheet('color: #c9d1d9; font-size: 12.5px; font-weight: 600;')
         top_strip.addWidget(self.conversation_title)
 
@@ -6044,16 +8077,16 @@ class PalaceWindow(QMainWindow):
         self.update_available_btn.hide()
         top_strip.addWidget(self.update_available_btn)
 
-        self.no_history_btn = QPushButton(' No-History')
+        self.no_history_btn = QPushButton(' History')
         self.no_history_btn.setIcon(no_history_qicon(False))
         self.no_history_btn.setIconSize(QSize(16, 16))
         self.no_history_btn.setCheckable(True)
         self.no_history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.no_history_btn.setToolTip("Don't save chat history (ephemeral)")
+        self.no_history_btn.setToolTip('History & Memory: ON by default (lit up). Click to turn OFF (RED ephemeral mode — does not save history).')
         self.no_history_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 9px; border-radius: 6px; font-weight: 600; font-size: 11.5px; } '
-            'QPushButton:hover { color: #c9d1d9; } '
+            'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
+            'padding: 4px 9px; border-radius: 6px; font-weight: 700; font-size: 11.5px; } '
+            'QPushButton:hover { background: #1a2f4c; color: #93c5fd; } '
             'QPushButton:checked { background: #2c1517; color: #ef4444; border: 1px solid #ef4444; font-weight: 700; }'
         )
         self.no_history_btn.toggled.connect(self._on_no_history_toggled)
@@ -6073,6 +8106,7 @@ class PalaceWindow(QMainWindow):
             'QPushButton:checked { background: #3d1414; color: #ff4d4d; border: 1px solid #ef4444; font-weight: 700; }'
         )
         self.idle_switch_btn.toggled.connect(self._on_idle_switch_toggled)
+        self.idle_switch_btn.hide()
         top_strip.addWidget(self.idle_switch_btn)
 
         self.memory_button = QPushButton('Memory')
@@ -6090,14 +8124,14 @@ class PalaceWindow(QMainWindow):
         layout.addWidget(loaded_frame)
 
         # --- STACKED WORKSPACE VIEWS (Tab Bar Hidden So Idle/Mail Only Show When Needed) ---
-        self.workspace_tabs = QTabWidget()
+        self.workspace_tabs = QTabWidget(panel)
         self.workspace_tabs.setObjectName('workspaceTabs')
         self.workspace_tabs.tabBar().hide()
         self.workspace_tabs.setStyleSheet('QTabWidget::pane { border: none; background: transparent; }')
         layout.addWidget(self.workspace_tabs, 1)
 
         # ================= TAB 0: NORMAL PALACE =================
-        normal_tab = QWidget()
+        normal_tab = QWidget(self.workspace_tabs)
         normal_lay = QVBoxLayout(normal_tab)
         normal_lay.setContentsMargins(36, 6, 36, 2)
         normal_lay.setSpacing(6)
@@ -6144,9 +8178,11 @@ class PalaceWindow(QMainWindow):
         self.chat.setObjectName('chatView')
         self.chat.setAccessibleName('Conversation history')
         self.chat.setOpenLinks(False)
-        self.chat.setAcceptDrops(False)
+        self.chat.setAcceptDrops(True)
+        self.chat.installEventFilter(self)
         if self.chat.viewport() is not None:
-            self.chat.viewport().setAcceptDrops(False)
+            self.chat.viewport().setAcceptDrops(True)
+            self.chat.viewport().installEventFilter(self)
         self.chat.anchorClicked.connect(self._on_chat_anchor_clicked)
         self.chat.anchor_action_requested.connect(lambda s: self._on_chat_anchor_clicked(QUrl(s)))
         normal_lay.addWidget(self.chat, 1)
@@ -6204,6 +8240,8 @@ class PalaceWindow(QMainWindow):
 
         self.staged_attachments_frame = QFrame()
         self.staged_attachments_frame.setStyleSheet('background: transparent; border: none;')
+        self.staged_attachments_frame.setAcceptDrops(True)
+        self.staged_attachments_frame.installEventFilter(self)
         self.staged_attachments_layout = QHBoxLayout(self.staged_attachments_frame)
         self.staged_attachments_layout.setContentsMargins(0, 2, 0, 4)
         self.staged_attachments_layout.setSpacing(8)
@@ -6545,7 +8583,7 @@ class PalaceWindow(QMainWindow):
         self.workspace_tabs.addTab(normal_tab, '💬 Normal Mode')
 
         # ================= TAB 1: EXPERIMENTAL MODE (BETA) =================
-        idle_tab = QWidget()
+        idle_tab = QWidget(self.workspace_tabs)
         idle_tab_lay = QVBoxLayout(idle_tab)
         idle_tab_lay.setContentsMargins(0, 8, 0, 0)
         idle_tab_lay.setSpacing(8)
@@ -6685,7 +8723,7 @@ class PalaceWindow(QMainWindow):
 
         idle_tab_lay.addWidget(self.idle_banner)
 
-        idle_split = QSplitter(Qt.Orientation.Horizontal)
+        idle_split = QSplitter(Qt.Orientation.Horizontal, idle_tab)
         idle_left = QWidget()
         idle_left_lay = QVBoxLayout(idle_left)
         idle_left_lay.setContentsMargins(0, 0, 6, 0)
@@ -6744,7 +8782,7 @@ class PalaceWindow(QMainWindow):
         self.workspace_tabs.addTab(idle_tab, '🧪 Experimental Mode')
 
         # ================= TAB 2: AGENT MAIL (EMAIL INTERFACE) =================
-        mail_tab = QWidget()
+        mail_tab = QWidget(self.workspace_tabs)
         mail_lay = QVBoxLayout(mail_tab)
         mail_lay.setContentsMargins(0, 8, 0, 0)
         mail_lay.setSpacing(8)
@@ -6763,7 +8801,7 @@ class PalaceWindow(QMainWindow):
         mail_top.addWidget(self.mail_quota_label)
         mail_lay.addLayout(mail_top)
 
-        mail_split = QSplitter(Qt.Orientation.Horizontal)
+        mail_split = QSplitter(Qt.Orientation.Horizontal, mail_tab)
         self.mail_list = QListWidget()
         self.mail_list.setMinimumWidth(230)
         self.mail_list.setToolTip('Messages and improvement proposals sent to you by Idle Mode agents')
@@ -6871,7 +8909,7 @@ class PalaceWindow(QMainWindow):
         layout.addWidget(self.inline_status_label)
 
         # --- THE WORKBENCH: AGENT AVATAR CHIP ROW (Visible Across All Workspace Tabs) ---
-        agent_workbench_frame = QFrame()
+        agent_workbench_frame = QFrame(panel)
         agent_workbench_frame.setObjectName('agentWorkbenchBar')
         agent_workbench_frame.setFixedHeight(28)
         self.agent_workbench_frame = agent_workbench_frame
@@ -6882,7 +8920,7 @@ class PalaceWindow(QMainWindow):
         self.loaded_agents_caption.setObjectName('loadedAIsLabel')
         self.providers_layout.addWidget(self.loaded_agents_caption)
 
-        self.agent_chips_host = QWidget()
+        self.agent_chips_host = QWidget(agent_workbench_frame)
         self.agent_chips_grid = QGridLayout(self.agent_chips_host)
         self.agent_chips_grid.setContentsMargins(0, 0, 0, 0)
         self.agent_chips_grid.setHorizontalSpacing(4)
@@ -6891,24 +8929,27 @@ class PalaceWindow(QMainWindow):
 
         if provider_states is None:
             try:
-                raw_provs = json.loads(self.config_path.read_text()).get('providers', {})
+                raw_cfg = json.loads(self.config_path.read_text(encoding='utf-8'))
+                raw_provs = raw_cfg.get('providers', {})
                 provider_states = {
                     name: settings.get('enabled', False)
                     for name, settings in raw_provs.items()
                     if name not in {'test', 'off'}
                 }
-                from fairybread_mcp import get_council_cli_platforms
-                from local_cli_provider import PLATFORM_TO_CLI_PROVIDER, find_cli_binary
-                for pk in get_council_cli_platforms(self.config_path):
-                    prov_key = PLATFORM_TO_CLI_PROVIDER.get(pk)
-                    if prov_key and find_cli_binary(pk):
-                        provider_states[prov_key] = True
+                ext_plats = ((raw_cfg.get('external_agent_bridge') or {}).get('platforms') or {})
+                if any(v == 'council' for v in ext_plats.values()):
+                    from fairybread_mcp import get_council_cli_platforms
+                    from local_cli_provider import PLATFORM_TO_CLI_PROVIDER, find_cli_binary
+                    for pk in get_council_cli_platforms(self.config_path):
+                        prov_key = PLATFORM_TO_CLI_PROVIDER.get(pk)
+                        if prov_key and find_cli_binary(pk):
+                            provider_states[prov_key] = True
             except (OSError, ValueError, KeyError) as exc:
                 provider_states = {}
                 self.config_warning = str(exc)
         self.provider_states = provider_states
         for name, enabled in provider_states.items():
-            label = QPushButton()
+            label = QPushButton(self.agent_chips_host)
             label.setFlat(True)
             label.setCursor(Qt.CursorShape.PointingHandCursor)
             label.clicked.connect(lambda checked=False, n=name: self._on_top_provider_badge_clicked(n))
@@ -6983,7 +9024,7 @@ class PalaceWindow(QMainWindow):
         splitter.addWidget(panel)
 
         # --- RIGHT SIDEBAR: SHARED MEMORY (Auto-Indexed Contextual Memory for All AIs) ---
-        self.memory_panel = QFrame()
+        self.memory_panel = BackdropPanelWidget(border_side='left')
         self.memory_panel.setObjectName('memoryPanel')
         self.memory_panel.setMinimumWidth(295)
         memory_layout = QVBoxLayout(self.memory_panel)
@@ -7003,7 +9044,8 @@ class PalaceWindow(QMainWindow):
             'padding: 6px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; } '
             'QPushButton:hover { background: #1f365c; }'
         )
-        self.open_memory_summary_btn.clicked.connect(self.show_memory_summary_dialog)
+        self.open_memory_summary_btn.clicked.connect(lambda _checked=False: self.show_memory_summary_dialog())
+        self.open_memory_summary_btn.hide()
         memory_layout.addWidget(self.open_memory_summary_btn)
 
         self.memory_search_edit = QLineEdit()
@@ -7064,6 +9106,9 @@ class PalaceWindow(QMainWindow):
         self.memory_button.toggled.connect(lambda visible: splitter.setSizes([240, 620, 295]) if visible else None)
         self.memory_button.toggled.connect(self.refresh_memory_review)
         splitter.setSizes([240, 860])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(2, 0)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
         QShortcut(QKeySequence('Ctrl+O'), self, self.choose_files)
@@ -7091,6 +9136,7 @@ class PalaceWindow(QMainWindow):
         self._force_quit = False
         self._tray_hint_shown = False
         self._catalog_sync_done.connect(self._apply_catalog_sync_result)
+        self._ui_call_signal.connect(self._on_ui_call)
         self._refresh_busy_mode_controls()
         if os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
             self._ensure_system_tray()
@@ -7098,6 +9144,11 @@ class PalaceWindow(QMainWindow):
             if self._should_auto_launch_setup_wizard(ui_cfg=ui_cfg, demo=demo):
                 QTimer.singleShot(600, self.open_setup_wizard)
         QTimer.singleShot(250, self._on_ouroboros_startup_ready)
+
+    @Slot(object)
+    def _on_ui_call(self, fn):
+        if callable(fn):
+            fn()
 
     def _ensure_system_tray(self):
         try:
@@ -7260,145 +9311,240 @@ class PalaceWindow(QMainWindow):
         menubar = self.menuBar()
         store_packaged = is_msix_packaged()
 
-        palace_menu = menubar.addMenu('Fairybread')
-        palace_menu.setToolTipsVisible(True)
-        new_convo_act = QAction('New Conversation\tCtrl+N', self)
+        # 1. File menu
+        file_menu = menubar.addMenu('File')
+        file_menu.setToolTipsVisible(True)
+        new_convo_act = QAction('New Chat\tCtrl+N', self)
         new_convo_act.setToolTip('Start a clean conversation thread (Ctrl+N)')
         new_convo_act.triggered.connect(self.new_conversation)
-        palace_menu.addAction(new_convo_act)
+        file_menu.addAction(new_convo_act)
         new_proj_act = QAction('New Project…', self)
         new_proj_act.setToolTip('Create a project folder in the sidebar to group related chats and files')
         new_proj_act.triggered.connect(lambda: self.new_project())
-        palace_menu.addAction(new_proj_act)
-        attach_act = QAction('Attach Documents or Pictures…\tCtrl+O', self)
+        file_menu.addAction(new_proj_act)
+        attach_act = QAction('Attach Files or Pictures…\tCtrl+O', self)
         attach_act.setToolTip('Attach documents, PDFs, code files, or images to your next prompt (Ctrl+O)')
         attach_act.triggered.connect(self.choose_files)
-        palace_menu.addAction(attach_act)
-        palace_menu.addSeparator()
-        wizard_act = QAction('🧭 Guided Setup && Restore Wizard…', self)
-        wizard_act.setToolTip('Run the step-by-step Setup Wizard, OpenRouter 1-bill hub setup, or Selective Backup Restore')
-        wizard_act.triggered.connect(lambda: self.open_setup_wizard(initial_page=0))
-        palace_menu.addAction(wizard_act)
-        spend_act = QAction('💵 Spend && Billing Dashboard…', self)
-        spend_act.setToolTip('View cumulative spend, resettable per-provider payment tickers, live voice spend, and live account balances')
-        spend_act.triggered.connect(self.open_spend_billing_dialog)
-        palace_menu.addAction(spend_act)
-        palace_menu.addSeparator()
-        exit_act = QAction('Exit Fairybread', self)
+        file_menu.addAction(attach_act)
+        file_menu.addSeparator()
+        export_act = QAction('Export Current Chat…', self)
+        export_act.setToolTip('Copy or export the current conversation transcript')
+        export_act.triggered.connect(lambda: self._copy_session_content(self.session_id, mode='transcript'))
+        file_menu.addAction(export_act)
+        open_data_act = QAction('Open Data Folder…', self)
+        open_data_act.setToolTip('Open the local Fairybread data directory in Windows Explorer')
+        open_data_act.triggered.connect(lambda: os.startfile(str(get_palace_data_root(self.config_path))) if hasattr(os, 'startfile') else None)
+        file_menu.addAction(open_data_act)
+        file_menu.addSeparator()
+        exit_act = QAction('Exit\tCtrl+Q', self)
         exit_act.setToolTip('Close and exit Fairybread completely')
         exit_act.triggered.connect(self.exit_application)
-        palace_menu.addAction(exit_act)
+        file_menu.addAction(exit_act)
 
-        self.mode_menu = menubar.addMenu('Mode')
-        self.mode_menu.setToolTipsVisible(True)
-        self.mode_menu.aboutToShow.connect(self._rebuild_mode_menu)
-        self._rebuild_mode_menu()
+        # 2. Edit menu
+        edit_menu = menubar.addMenu('Edit')
+        edit_menu.setToolTipsVisible(True)
+        undo_act = QAction('Undo\tCtrl+Z', self)
+        undo_act.setToolTip('Undo typing in the focused text box')
+        undo_act.triggered.connect(lambda: self._run_focused_text_edit_action('undo'))
+        edit_menu.addAction(undo_act)
+        redo_act = QAction('Redo\tCtrl+Y', self)
+        redo_act.setToolTip('Redo typing in the focused text box')
+        redo_act.triggered.connect(lambda: self._run_focused_text_edit_action('redo'))
+        edit_menu.addAction(redo_act)
+        edit_menu.addSeparator()
+        cut_act = QAction('Cut\tCtrl+X', self)
+        cut_act.setToolTip('Cut selected text from the focused text box')
+        cut_act.triggered.connect(lambda: self._run_focused_text_edit_action('cut'))
+        edit_menu.addAction(cut_act)
+        copy_sel_act = QAction('Copy\tCtrl+C', self)
+        copy_sel_act.setToolTip('Copy selected text from chat or the message box')
+        copy_sel_act.triggered.connect(lambda: self._run_focused_text_edit_action('copy'))
+        edit_menu.addAction(copy_sel_act)
+        paste_act = QAction('Paste\tCtrl+V', self)
+        paste_act.setToolTip('Paste text or image from clipboard into the message box')
+        paste_act.triggered.connect(lambda: self._run_focused_text_edit_action('paste'))
+        edit_menu.addAction(paste_act)
+        sel_all_act = QAction('Select All\tCtrl+A', self)
+        sel_all_act.setToolTip('Select all text in the focused view or message box')
+        sel_all_act.triggered.connect(lambda: self._run_focused_text_edit_action('selectAll'))
+        edit_menu.addAction(sel_all_act)
+        edit_menu.addSeparator()
+        copy_act = QAction('Copy Last Answer', self)
+        copy_act.setToolTip('Copy the latest AI reply to the clipboard')
+        copy_act.triggered.connect(self.copy_answer)
+        edit_menu.addAction(copy_act)
+        copy_thread_act = QAction('Copy Full Thread', self)
+        copy_thread_act.setToolTip('Copy the entire conversation transcript to the clipboard')
+        copy_thread_act.triggered.connect(lambda: self._copy_session_content(self.session_id, mode='transcript'))
+        edit_menu.addAction(copy_thread_act)
 
+        # 3. View menu
         view_menu = menubar.addMenu('View')
         view_menu.setToolTipsVisible(True)
-        self.theme_menu = view_menu.addMenu('🎨 Theme')
+        self.theme_menu = view_menu.addMenu('Theme')
         self.theme_menu.setToolTipsVisible(True)
         self._rebuild_theme_menu()
-        self.voice_avatar_menu = view_menu.addMenu('◎ Voice Avatar')
-        self.voice_avatar_menu.setToolTipsVisible(True)
-        self.voice_avatar_menu.aboutToShow.connect(self._rebuild_voice_avatar_menu)
-        self._rebuild_voice_avatar_menu()
         view_menu.addSeparator()
-        mem_sum_act = QAction('📝 Memory Summary (View && Edit)…', self)
-        mem_sum_act.setToolTip('Inspect or edit your shared local Memory Summary profile')
-        mem_sum_act.triggered.connect(self.show_memory_summary_dialog)
-        view_menu.addAction(mem_sum_act)
-        mem_act = QAction('Toggle Shared Memory Panel', self)
+        mem_act = QAction('Shared Memory Panel', self)
         mem_act.setToolTip('Show or hide the right-hand Memory Palace side panel')
         mem_act.triggered.connect(lambda: self.memory_button.click())
         view_menu.addAction(mem_act)
-        peer_act = QAction('Expand / Collapse All Peer Deliberations', self)
+        peer_act = QAction('Expand / Collapse Peer Deliberations', self)
         peer_act.setToolTip('Expand or collapse peer deliberation bubbles inside the active conversation')
         peer_act.triggered.connect(self.toggle_all_deliberations)
         view_menu.addAction(peer_act)
-        snap_act = QAction('Capture Fairybread UI Snapshot', self)
-        snap_act.setToolTip('Take a local PNG snapshot of the Fairybread window and run UI clipping diagnostics')
+        view_menu.addSeparator()
+        snap_act = QAction('Capture Window Snapshot', self)
+        snap_act.setToolTip('Take a local PNG snapshot of the Fairybread window')
         snap_act.triggered.connect(self.capture_and_insert_ui_snapshot)
         view_menu.addAction(snap_act)
 
-        settings_menu = menubar.addMenu('Settings')
-        settings_menu.setToolTipsVisible(True)
-        settings_nav_specs = [
-            ('⚙ General Settings…', 'General', 'Startup, tray behavior, automatic spellcheck, and Enter-key submission'),
-            ('🤖 AI Providers && API Keys…', 'AI Providers', 'Configure API keys, models, and enabled status for all AI providers'),
-            ('🛡 AI Access Permissions…', 'AI Access Permissions', 'Set execution mode and manage your Write Exclusion List'),
-            ('⚡ Agent Defaults (Response && Speed)…', 'Agent Defaults', 'Set default search depth, output detail, timeouts, and smart routing'),
-            ('🎨 Appearance && Theme…', 'Appearance', 'Switch application themes, chip display styles, and open themes folder'),
-            ('🎛 Profiles && AI Squads…', 'Profiles', 'Manage preset multi-AI squads and custom role assignments'),
-            ('🧠 Memory && Personalization…', 'Memory & Personalization', 'Configure tone weights, speech style, custom instructions, and reference photos'),
-            ('🎙️ Voice && Audio…', 'Voice & Audio', 'Configure TTS voices, Thinking AI, microphone input, and Live Voice Mode'),
-            ('📧 Email && Notifications…', 'Email & Notifications', 'Configure desktop alerts and IMAP/SMTP Agent Mail'),
-            ('🔗 External Agent Bridge (MCP)…', 'External Agent Bridge (MCP)', 'Connect ChatGPT/Codex, Antigravity, Grok, or Claude over local stdio MCP'),
-            ('🧪 Experimental Mode…', 'Experimental Mode', 'Configure autonomous Idle/Experimental Mode timers, cost caps, and charters'),
-            ('📦 Storage, Databases && Backup…', 'Backup & Restore', 'Move Normal/Experimental databases, open key/config folders, and create AES-256 backups'),
-        ]
-        for label_txt, page_key, tip_txt in settings_nav_specs:
-            s_act = QAction(label_txt, self)
-            s_act.setToolTip(tip_txt)
-            s_act.triggered.connect(lambda _c=False, pk=page_key: self.open_manage_ais(pk))
-            settings_menu.addAction(s_act)
-        settings_menu.addSeparator()
-        wiz_settings_act = QAction('🧭 Guided Setup && Restore Wizard…', self)
-        wiz_settings_act.setToolTip('Walk through needs-based setup, OpenRouter 1-bill hub, voice setup, or selective backup restore')
-        wiz_settings_act.triggered.connect(lambda: self.open_setup_wizard(initial_page=0))
-        settings_menu.addAction(wiz_settings_act)
-        spend_settings_act = QAction('💵 Spend && Billing Tickers…', self)
-        spend_settings_act.setToolTip('View cumulative, per-provider resettable, and active session spend tickers')
-        spend_settings_act.triggered.connect(self.open_spend_billing_dialog)
-        settings_menu.addAction(spend_settings_act)
-        settings_menu.addSeparator()
-        restore_defaults_act = QAction('↺ Restore Default Settings…', self)
-        restore_defaults_act.setToolTip('Reset app settings to factory defaults while keeping Memory Palaces, chats, and API keys')
-        restore_defaults_act.triggered.connect(self.show_restore_defaults_dialog)
-        settings_menu.addAction(restore_defaults_act)
+        # 4. Council menu (live controls for the current conversation)
+        self.mode_menu = menubar.addMenu('Council')
+        self.mode_menu.setToolTipsVisible(True)
+        self.mode_menu.aboutToShow.connect(self._rebuild_mode_menu)
+        self.mode_menu.addAction('Loading Council…')
 
+        # 5. Audio menu (dedicated top-level Audio tab)
+        self.audio_menu = menubar.addMenu('Audio')
+        self.audio_menu.setToolTipsVisible(True)
+        self.audio_menu.aboutToShow.connect(self._rebuild_audio_menu)
+        self.audio_menu.addAction('Loading Audio…')
+        self.voice_avatar_menu = QMenu('3D Voice Avatar Stage', self)
+        self.voice_avatar_menu.setToolTipsVisible(True)
+        self.voice_avatar_menu.aboutToShow.connect(self._rebuild_voice_avatar_menu)
+
+        # 6. Tools menu (one-off commands + single doorway Options... Alt+F12)
+        tools_menu = menubar.addMenu('Tools')
+        tools_menu.setToolTipsVisible(True)
+        spend_act = QAction('API Usage & Spend Ledger…', self)
+        spend_act.setToolTip('View cumulative spend, resettable per-provider tickers, and live account balances')
+        spend_act.triggered.connect(self.open_spend_billing_dialog)
+        tools_menu.addAction(spend_act)
+        wizard_act = QAction('Guided Setup & Key Wizard…', self)
+        wizard_act.setToolTip('Run the step-by-step Setup Wizard or Selective Backup Restore')
+        wizard_act.triggered.connect(lambda: self.open_setup_wizard(initial_page=0))
+        tools_menu.addAction(wizard_act)
+        tools_menu.addSeparator()
+        open_options_act = QAction('Options…\tAlt+F12', self)
+        open_options_act.setShortcut(QKeySequence('Alt+F12'))
+        open_options_act.setToolTip('Open Options — Fairybread (Alt+F12)')
+        open_options_act.triggered.connect(lambda: self.open_manage_ais('General'))
+        tools_menu.addAction(open_options_act)
+
+        # 7. Help menu
         help_menu = menubar.addMenu('Help')
         help_menu.setToolTipsVisible(True)
-        guide_act = QAction('📖 User Guide && Drawing Instructions…\tF1', self)
+        guide_act = QAction('Fairybread Help & Guide…\tF1', self)
         guide_act.setToolTip('Open the built-in Fairybread User Guide & Drawing Instructions (F1)')
         guide_act.setShortcut(QKeySequence('F1'))
         guide_act.triggered.connect(self.show_user_guide_dialog)
         help_menu.addAction(guide_act)
-        privacy_act = QAction('🔒 Privacy Policy…', self)
-        privacy_act.setToolTip('Read the Fairybread local-first Privacy Policy and BYOK third-party provider disclosures')
+        privacy_act = QAction('Privacy Policy…', self)
+        privacy_act.setToolTip('Read the Fairybread local-first Privacy Policy and BYOK disclosures')
         privacy_act.triggered.connect(self.show_privacy_policy_dialog)
         help_menu.addAction(privacy_act)
-        web_act = QAction('🌐 Fairybread.me (Community Forums, Skins && News) ↗', self)
+        web_act = QAction('Fairybread.me Website ↗', self)
         web_act.setToolTip('Visit fairybread.me in your web browser')
         web_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
         help_menu.addAction(web_act)
-        upd_label = '🔄 Refresh Model Catalog && Rates…' if store_packaged else '🔄 Check for Updates && Refresh Model Rates…'
-        upd_tip = (
-            'Fetch updated AI model lists & pricing rates from fairybread.me (app updates come from Microsoft Store)'
-            if store_packaged
-            else 'Fetch updated AI model lists & pricing rates and check for newer Fairybread releases'
-        )
+        upd_label = 'Refresh Model Catalog & Rates…' if store_packaged else 'Check for Updates…'
         check_updates_act = QAction(upd_label, self)
-        check_updates_act.setToolTip(upd_tip)
+        check_updates_act.setToolTip('Fetch updated AI model lists & pricing rates and check for newer releases')
         check_updates_act.triggered.connect(lambda: self.check_for_updates_and_catalog(manual=True))
         help_menu.addAction(check_updates_act)
-        donate_act = QAction('❤️ Donate (USD) / Corporate License…', self)
-        donate_act.setToolTip('Support Fairybread development or arrange a corporate team license (>2 seats)')
+        donate_act = QAction('Donate / Corporate License…', self)
+        donate_act.setToolTip('Support Fairybread development or arrange a corporate team license')
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
         help_menu.addSeparator()
         about_act = QAction('About Fairybread', self)
-        about_act.setToolTip('View Fairybread version, edition, integrity verification, and license information')
+        about_act.setToolTip('View Fairybread version, edition, and license information')
         about_act.triggered.connect(self.show_about_dialog)
         help_menu.addAction(about_act)
         self._top_menus = {
-            'fairybread': palace_menu,
-            'mode': self.mode_menu,
+            'file': file_menu,
+            'edit': edit_menu,
             'view': view_menu,
+            'council': self.mode_menu,
+            'audio': self.audio_menu,
+            'tools': tools_menu,
             'theme': self.theme_menu,
-            'settings': settings_menu,
+            'settings': tools_menu,
             'help': help_menu,
         }
+
+    def _rebuild_audio_menu(self):
+        if not hasattr(self, 'audio_menu'):
+            return
+        self.audio_menu.setToolTipsVisible(True)
+        self.audio_menu.clear()
+        talk_active = bool(getattr(self, '_talk_only_mode', False))
+        live_active = bool(hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+        toggle_label = (
+            'Stop Voice Mode (Currently ON)'
+            if (talk_active or live_active)
+            else 'Start Voice Mode (Talk Mode Only)'
+        )
+        talk_toggle_act = QAction(toggle_label, self.audio_menu)
+        talk_toggle_act.setCheckable(True)
+        talk_toggle_act.setChecked(talk_active or live_active)
+        talk_toggle_act.setToolTip('Start or stop live two-way voice conversation mode')
+        talk_toggle_act.triggered.connect(
+            lambda checked=False, _was_on=(talk_active or live_active): self.stop_all_voice_modes(
+                notice='Voice Mode stopped.'
+            )
+            if (_was_on or not checked)
+            else self._activate_talk_only_mode(auto_start_live_voice=True)
+        )
+        self.audio_menu.addAction(talk_toggle_act)
+        self.audio_menu.addSeparator()
+
+        from voice_service import load_voice_personas, load_voice_settings, stop_active_speech
+        v_cfg = load_voice_settings(self.config_path)
+        voice_presets = dict(v_cfg.get('voice_mode_presets') or {})
+        cur_persona = str(v_cfg.get('active_voice_persona') or 'normal_female')
+        multi_on = bool(v_cfg.get('multi_ai_voice_enabled', False))
+
+        quorum_menu = self.audio_menu.addMenu('Table Quorum Lineup')
+        quorum_menu.setToolTipsVisible(True)
+        for p_id, p_meta in voice_presets.items():
+            p_lbl = str(p_meta.get('label') or p_id).replace('&', '&&')
+            is_cur_p = (
+                bool(p_meta.get('multi_ai_voice_enabled', False)) == multi_on
+                and str(p_meta.get('active_voice_persona') or '') == cur_persona
+            )
+            p_act = QAction(p_lbl, quorum_menu)
+            p_act.setCheckable(True)
+            p_act.setChecked(is_cur_p)
+            p_act.triggered.connect(lambda _c=False, pid=p_id: self._activate_voice_mode_preset(pid, auto_start_live_voice=True))
+            quorum_menu.addAction(p_act)
+
+        personas = load_voice_personas(self.config_path)
+        pers_menu = self.audio_menu.addMenu('Roleplay Persona')
+        pers_menu.setToolTipsVisible(True)
+        for pers_id, pers_meta in personas.items():
+            p_name = str(pers_meta.get('label') or pers_id).replace('&', '&&')
+            pa = QAction(p_name, pers_menu)
+            pa.setCheckable(True)
+            pa.setChecked(pers_id == cur_persona)
+            pa.triggered.connect(lambda _c=False, pid=pers_id: self._set_quick_voice_persona(pid))
+            pers_menu.addAction(pa)
+
+        self.audio_menu.addMenu(self.voice_avatar_menu)
+        self.audio_menu.addSeparator()
+
+        mute_act = QAction('Stop Speaking / Silence Audio', self.audio_menu)
+        mute_act.setToolTip('Immediately stop any currently playing TTS voice output')
+        mute_act.triggered.connect(stop_active_speech)
+        self.audio_menu.addAction(mute_act)
+        self.audio_menu.addSeparator()
+
+        audio_opts_act = QAction('Audio & Voice Options…', self.audio_menu)
+        audio_opts_act.setToolTip('Open Options — Fairybread directly on Voice & Audio')
+        audio_opts_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
+        self.audio_menu.addAction(audio_opts_act)
 
     def _rebuild_mode_menu(self):
         if not hasattr(self, 'mode_menu'):
@@ -7473,10 +9619,32 @@ class PalaceWindow(QMainWindow):
         except Exception as exc:
             self.show_notice(f'Could not import theme: {exc}')
 
-    def show_donation_license_dialog(self):
+    def _run_focused_text_edit_action(self, op: str):
+        fw = QApplication.focusWidget()
+        if op == 'copy':
+            for cand in (fw, getattr(self, 'chat', None), getattr(self, 'composer', None)):
+                if cand is None:
+                    continue
+                if hasattr(cand, 'textCursor') and cand.textCursor().hasSelection() and hasattr(cand, 'copy'):
+                    cand.copy()
+                    return
+                if hasattr(cand, 'hasSelectedText') and cand.hasSelectedText() and hasattr(cand, 'copy'):
+                    cand.copy()
+                    return
+            return
+        if fw is not None and hasattr(fw, op):
+            getattr(fw, op)()
+            return
+        fallback = getattr(self, 'chat', None) if op == 'selectAll' else getattr(self, 'composer', None)
+        if fallback is not None and hasattr(fallback, op):
+            getattr(fallback, op)()
+
+    def show_donation_license_dialog(self, parent_widget: QWidget | None = None):
         from palace_config import CORPORATE_LICENSE_MAILTO, DONATION_TIER_URLS
 
-        dlg = QDialog(self)
+        parent_w = parent_widget if isinstance(parent_widget, QWidget) else self
+        dlg = QDialog(parent_w)
+        _apply_windows_dialog_flags(dlg, resizable=True)
         dlg.setWindowTitle('Support Fairybread — Voluntary USD Donation & Corporate Licensing')
         dlg.resize(720, 480)
         dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
@@ -7564,14 +9732,16 @@ class PalaceWindow(QMainWindow):
         v.addLayout(bottom_row)
         dlg.exec()
 
-    def show_user_guide_dialog(self):
+    def show_user_guide_dialog(self, parent_widget: QWidget | None = None):
         guide_path = get_resource_path('USER_GUIDE.md')
         md_text = (
             guide_path.read_text(encoding='utf-8', errors='replace')
             if guide_path.exists()
             else '# Fairybread User Guide\n\nUser guide file (`USER_GUIDE.md`) not found.'
         )
-        dlg = QDialog(self)
+        parent_w = parent_widget if isinstance(parent_widget, QWidget) else self
+        dlg = QDialog(parent_w)
+        _apply_windows_dialog_flags(dlg, resizable=True)
         dlg.setWindowTitle('Fairybread — User Guide & Drawing Instructions')
         dlg.resize(860, 680)
         dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
@@ -7596,14 +9766,16 @@ class PalaceWindow(QMainWindow):
         v.addLayout(btn_row)
         dlg.exec()
 
-    def show_privacy_policy_dialog(self):
+    def show_privacy_policy_dialog(self, parent_widget: QWidget | None = None):
         priv_path = get_resource_path('PRIVACY.md')
         md_text = (
             priv_path.read_text(encoding='utf-8', errors='replace')
             if priv_path.exists()
             else '# Fairybread Privacy Policy\n\nPrivacy policy file (`PRIVACY.md`) not found.'
         )
-        dlg = QDialog(self)
+        parent_w = parent_widget if isinstance(parent_widget, QWidget) else self
+        dlg = QDialog(parent_w)
+        _apply_windows_dialog_flags(dlg, resizable=True)
         dlg.setWindowTitle('Fairybread — Privacy Policy')
         dlg.resize(780, 620)
         dlg.setStyleSheet('background:#0d1117; color:#f0f6fc;')
@@ -7705,11 +9877,16 @@ class PalaceWindow(QMainWindow):
                 'Suggest an idea or improvement on <a href="https://fairybread.me">Fairybread.me</a> or Facebook — '
                 'adopted ideas earn credit right here.</p>'
             )
-        box = QMessageBox(self)
-        box.setWindowTitle(f'About Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION})')
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText(
-            f'<h3>Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
+        dlg = QDialog(self)
+        _apply_windows_dialog_flags(dlg, resizable=False)
+        dlg.setWindowTitle(f'About Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION})')
+        dlg.setMinimumWidth(620)
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(20, 18, 20, 16)
+        v.setSpacing(14)
+
+        body_lbl = QLabel(
+            f'<h3 style="margin-top:0;">Fairybread ({ed_label} · Beta v{FAIRYBREAD_VERSION}) — Multi-AI Council &amp; Shared Memory Workspace</h3>'
             '<p>Created by <b>Brett Martin Moore</b>.</p>'
             f'{contrib_html}'
             f'{pub_note}'
@@ -7717,23 +9894,51 @@ class PalaceWindow(QMainWindow):
             'Free for personal use &amp; small teams (up to 2 seats); no redistribution, competing forks, or rebranding without written permission. '
             'For businesses/companies using more than 2 seats, a negotiable corporate license applies.</p>'
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
-            '<p>Contact &amp; Corporate Licensing: <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></p>'
+            '<p>Contact &amp; Corporate Licensing: <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></p>',
+            dlg,
         )
-        verify_btn = box.addButton('🛡 Verify Integrity', QMessageBox.ButtonRole.ActionRole)
-        privacy_btn = box.addButton('🔒 Privacy Policy', QMessageBox.ButtonRole.ActionRole)
-        contact_btn = box.addButton('Contact / Corporate License', QMessageBox.ButtonRole.ActionRole)
-        donate_btn = box.addButton('❤️ Donate (USD)', QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Ok)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked == verify_btn:
-            self.show_integrity_check_dialog()
-        elif clicked == privacy_btn:
-            self.show_privacy_policy_dialog()
-        elif clicked == contact_btn:
-            webbrowser.open('mailto:bm069au@gmail.com?subject=Fairybread%20Support%20or%20Corporate%20License')
-        elif clicked == donate_btn:
-            self.show_donation_license_dialog()
+        body_lbl.setWordWrap(True)
+        body_lbl.setTextFormat(Qt.TextFormat.RichText)
+        body_lbl.setOpenExternalLinks(True)
+        body_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        v.addWidget(body_lbl)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        verify_btn = QPushButton('🛡 Verify Integrity', dlg)
+        verify_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        verify_btn.setToolTip('Verify Ed25519 digital signature and SHA-256 installation hashes')
+        verify_btn.clicked.connect(self.show_integrity_check_dialog)
+        btn_row.addWidget(verify_btn)
+
+        privacy_btn = QPushButton('🔒 Privacy Policy', dlg)
+        privacy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        privacy_btn.setToolTip('Read the local-first Fairybread Privacy Policy')
+        privacy_btn.clicked.connect(lambda: self.show_privacy_policy_dialog(parent_widget=dlg))
+        btn_row.addWidget(privacy_btn)
+
+        contact_btn = QPushButton('Contact / Corporate License', dlg)
+        contact_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        contact_btn.setToolTip('Email Brett Martin Moore regarding support or >2-seat corporate licensing')
+        contact_btn.clicked.connect(lambda: webbrowser.open('mailto:bm069au@gmail.com?subject=Fairybread%20Support%20or%20Corporate%20License'))
+        btn_row.addWidget(contact_btn)
+
+        donate_btn = QPushButton('❤️ Donate (USD)', dlg)
+        donate_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        donate_btn.setToolTip('Open voluntary USD support options')
+        donate_btn.clicked.connect(lambda: self.show_donation_license_dialog(parent_widget=dlg))
+        btn_row.addWidget(donate_btn)
+
+        btn_row.addStretch(1)
+        ok_btn = QPushButton('OK', dlg)
+        ok_btn.setDefault(True)
+        ok_btn.setMinimumWidth(80)
+        ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        ok_btn.setToolTip('Close About Fairybread')
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(ok_btn)
+        v.addLayout(btn_row)
+        dlg.exec()
 
     @staticmethod
     def _build_palace(context):
@@ -8057,7 +10262,7 @@ class PalaceWindow(QMainWindow):
             self.ai_pill_button.setText(f'{self.current_squad_label} ({active_count}{cap_suffix})  ▾')
         elif active_count == 1:
             only = active_names[0]
-            self.ai_pill_button.setText(f'{provider_icon(only)} {provider_display_name(only)}  ▾')
+            self.ai_pill_button.setText(f'{provider_icon(only)} {provider_display_name(only, config_path=self.config_path)}  ▾')
         elif active_count > 0:
             self.ai_pill_button.setText(f'Choose AIs ({active_count}{cap_suffix})  ▾')
         else:
@@ -8079,25 +10284,78 @@ class PalaceWindow(QMainWindow):
         menu.setToolTipsVisible(True)
         talk_active = bool(getattr(self, '_talk_only_mode', False))
         live_active = bool(hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
-        talk_label = (
-            '⏹  Stop Talk Mode Only (Currently ON)'
+        from voice_service import load_voice_personas, load_voice_settings
+        v_cfg = load_voice_settings(self.config_path)
+        voice_presets = dict(v_cfg.get('voice_mode_presets') or {})
+        cur_persona = str(v_cfg.get('active_voice_persona') or 'normal_female')
+        multi_on = bool(v_cfg.get('multi_ai_voice_enabled', False))
+
+        voice_menu_title = (
+            '⏹  Stop Voice Mode / Talk Mode Only (Currently ON)'
             if (talk_active or live_active)
-            else '🎙️  Talk Mode Only (Fast Voice Chat · No Council)'
+            else '🎙️  Voice Mode (Talk Mode Only)'
         )
-        talk_only_act = QAction(talk_label, menu)
-        talk_only_act.setCheckable(True)
-        talk_only_act.setChecked(talk_active or live_active)
-        talk_only_act.setToolTip(
-            '1 fast non-thinking voice AI with Shared Memory Palace access — click again to stop Talk Mode'
+        voice_menu = menu.addMenu(voice_menu_title)
+        voice_menu.setToolTipsVisible(True)
+        if menu_style:
+            voice_menu.setStyleSheet(menu_style)
+        voice_root_act = voice_menu.menuAction()
+        voice_root_act.setCheckable(True)
+        voice_root_act.setChecked(talk_active or live_active)
+        voice_root_act.setToolTip(
+            'Voice Mode profiles, Roleplay Personas & Multi-AI Table Quorum — open submenu to switch lineup'
         )
-        talk_only_act.triggered.connect(
+
+        toggle_label = (
+            '⏹  Stop Voice Mode (Currently ON)'
+            if (talk_active or live_active)
+            else '▶  Start Voice Mode (Current Setup)'
+        )
+        talk_toggle_act = QAction(toggle_label, voice_menu)
+        talk_toggle_act.setCheckable(True)
+        talk_toggle_act.setChecked(talk_active or live_active)
+        talk_toggle_act.triggered.connect(
             lambda checked=False, _was_on=(talk_active or live_active): self.stop_all_voice_modes(
                 notice='Talk Mode Only / Live Voice stopped.'
             )
             if (_was_on or not checked)
             else self._activate_talk_only_mode(auto_start_live_voice=True)
         )
-        menu.addAction(talk_only_act)
+        voice_menu.addAction(talk_toggle_act)
+        voice_menu.addSeparator()
+
+        for p_id, p_meta in voice_presets.items():
+            p_lbl = str(p_meta.get('label') or p_id)
+            is_cur_p = (
+                bool(p_meta.get('multi_ai_voice_enabled', False)) == multi_on
+                and str(p_meta.get('active_voice_persona') or '') == cur_persona
+            )
+            p_act = QAction(_esc_amp(p_lbl), voice_menu)
+            p_act.setCheckable(True)
+            p_act.setChecked(is_cur_p)
+            p_act.setToolTip(
+                'Multi-AI Table Quorum preset' if p_meta.get('multi_ai_voice_enabled') else 'Solo Voice Roleplay preset'
+            )
+            p_act.triggered.connect(lambda _c=False, pid=p_id: self._activate_voice_mode_preset(pid))
+            voice_menu.addAction(p_act)
+
+        voice_menu.addSeparator()
+        pers_sub = voice_menu.addMenu('🎭 Quick Roleplay Persona')
+        pers_sub.setToolTipsVisible(True)
+        if menu_style:
+            pers_sub.setStyleSheet(menu_style)
+        for pid_r, p_obj in load_voice_personas(self.config_path).items():
+            r_act = QAction(_esc_amp(str(p_obj.get('label') or pid_r)), pers_sub)
+            r_act.setCheckable(True)
+            r_act.setChecked(cur_persona == pid_r)
+            r_act.triggered.connect(lambda _c=False, pid=pid_r: self._set_quick_voice_persona(pid))
+            pers_sub.addAction(r_act)
+
+        voice_menu.addSeparator()
+        cust_v_act = QAction('⚙ Customize Voice Cast && Roleplay…', voice_menu)
+        cust_v_act.triggered.connect(lambda: self.open_manage_ais('Voice Cast'))
+        voice_menu.addAction(cust_v_act)
+
         menu.addSeparator()
 
         squad_dict = load_ai_squads(self.config_path)
@@ -8203,6 +10461,67 @@ class PalaceWindow(QMainWindow):
         if pos.y() < 40:
             pos = self.ai_pill_button.mapToGlobal(QPoint(0, self.ai_pill_button.height() + 4))
         menu.exec(pos)
+
+    def _activate_voice_mode_preset(self, preset_id: str, auto_start_live_voice: bool = True):
+        from voice_service import load_voice_settings, normalize_voice_cast_slots, save_voice_settings
+
+        v_cfg = load_voice_settings(self.config_path)
+        presets = dict(v_cfg.get('voice_mode_presets') or {})
+        preset = presets.get(preset_id)
+        if not isinstance(preset, dict):
+            self._activate_talk_only_mode(auto_start_live_voice=auto_start_live_voice)
+            return
+        updates: dict[str, Any] = {
+            'multi_ai_voice_enabled': bool(preset.get('multi_ai_voice_enabled', False)),
+            'active_voice_persona': str(preset.get('active_voice_persona') or 'normal_female'),
+            'multi_ai_max_volleys': int(preset.get('max_volleys', 3) or 3),
+        }
+        if isinstance(preset.get('slots'), list) and preset['slots']:
+            updates['voice_cast_slots'] = normalize_voice_cast_slots(preset['slots'])
+        else:
+            slots = list(v_cfg.get('voice_cast_slots') or [])
+            if slots:
+                slots[0]['persona_id'] = updates['active_voice_persona']
+                if 'slot_count' in preset:
+                    sc = int(preset['slot_count'] or 1)
+                    defaults = normalize_voice_cast_slots(None)
+                    for idx in range(1, 4):
+                        if idx < sc and not str(slots[idx].get('provider') or '').strip():
+                            slots[idx]['provider'] = defaults[idx]['provider']
+                        elif idx >= sc:
+                            slots[idx]['provider'] = ''
+                updates['voice_cast_slots'] = slots
+        save_voice_settings(updates, config_path=self.config_path)
+        self._apply_voice_avatar_settings()
+        self._activate_talk_only_mode(auto_start_live_voice=auto_start_live_voice)
+        self.show_notice(f'🎙 Voice Mode preset active: {preset.get("label", preset_id)}')
+
+    def _set_quick_voice_persona(self, persona_id: str):
+        from voice_service import load_voice_personas, load_voice_settings, save_voice_settings
+
+        personas = load_voice_personas(self.config_path)
+        p_meta = personas.get(persona_id)
+        if not p_meta:
+            return
+        v_cfg = load_voice_settings(self.config_path)
+        slots = list(v_cfg.get('voice_cast_slots') or [])
+        if slots:
+            slots[0]['persona_id'] = persona_id
+            slots[0]['speaker_name'] = str(p_meta.get('speaker_name') or slots[0].get('speaker_name') or 'Maya')
+            oai_v = str((p_meta.get('voice_hints') or {}).get('openai') or '')
+            if oai_v:
+                slots[0]['voice_name'] = oai_v
+            slots[0]['avatar_shape'] = str(p_meta.get('avatar_shape') or slots[0].get('avatar_shape') or 'neural_core')
+            slots[0]['avatar_palette'] = str(p_meta.get('avatar_palette') or slots[0].get('avatar_palette') or 'tulsa_cyan')
+        save_voice_settings(
+            {
+                'active_voice_persona': persona_id,
+                'voice_cast_slots': slots,
+            },
+            config_path=self.config_path,
+        )
+        self._apply_voice_avatar_settings()
+        self.show_notice(f'🎭 Roleplay Persona: {p_meta.get("label", persona_id)}')
 
     def _activate_talk_only_mode(self, auto_start_live_voice: bool = True):
         self._talk_only_mode = True
@@ -8366,6 +10685,13 @@ class PalaceWindow(QMainWindow):
             self._show_provider_badge_info(name)
             return
         cur_active = (self.provider_states.get(name) is True)
+        cur_vis_status = str((self.provider_details.get(name) or {}).get('status') or '')
+        if cur_active and cur_vis_status in {'Timeout', 'Cutoff', 'Limited', 'Unavailable', 'Failed'}:
+            # Clicking a warning chip clears the transient warning back to active Enabled rather than disabling the AI!
+            self.set_provider_status(name, 'Enabled', provider_color(name))
+            self.status_label.setTextFormat(Qt.TextFormat.RichText)
+            self.status_label.setText(f'{format_ai_badge_html(name)} · Ready & active')
+            return
         self._toggle_provider_quick(name, not cur_active)
 
     def _toggle_provider_quick(self, name: str, enabled: bool):
@@ -8414,7 +10740,7 @@ class PalaceWindow(QMainWindow):
 
     def _on_no_history_toggled(self, no_history_active: bool):
         self.no_history_btn.setIcon(no_history_qicon(no_history_active))
-        self.no_history_btn.setText(' No-History')
+        self.no_history_btn.setText(' History')
         self.no_history_banner.setVisible(no_history_active)
         if self.history_toggle.isChecked() == no_history_active:
             self.history_toggle.blockSignals(True)
@@ -8428,7 +10754,7 @@ class PalaceWindow(QMainWindow):
             self.no_history_btn.blockSignals(True)
             self.no_history_btn.setChecked(want_no_hist)
             self.no_history_btn.setIcon(no_history_qicon(want_no_hist))
-            self.no_history_btn.setText(' No-History')
+            self.no_history_btn.setText(' History')
             self.no_history_banner.setVisible(want_no_hist)
             self.no_history_btn.blockSignals(False)
         self.update_privacy_label()
@@ -8452,11 +10778,39 @@ class PalaceWindow(QMainWindow):
     def _show_provider_badge_info(self, name: str):
         info = self.provider_details.get(name, {})
         status = info.get('status', 'Enabled')
-        detail = info.get('detail') or f'{provider_display_name(name)} is currently {status}.'
+        detail = info.get('detail') or f'{provider_display_name(name, config_path=self.config_path)} is currently {status}.'
         self.status_label.setTextFormat(Qt.TextFormat.RichText)
         self.status_label.setText(
-            f'{format_ai_badge_html(name)} · {html.escape(status)} — {html.escape(detail)}'
+            f'{format_ai_badge_html(name, config_path=self.config_path)} · {html.escape(status)} — {html.escape(detail)}'
         )
+
+    @staticmethod
+    def _format_human_agent_issue_tooltip(display_name: str, status: str, detail: str) -> str:
+        low = (detail or '').lower()
+        if any(k in low for k in ('401', '403', 'invalid_api_key', 'authentication', 'unauthorized', 'permission', 'api key')):
+            what = f'{display_name} API key was rejected or is missing.'
+            fix = f'Open Settings → AI Providers → {display_name} and paste a valid API key.'
+        elif any(k in low for k in ('402', 'insufficient_quota', 'billing', 'credit', 'balance', 'payment')):
+            what = f'{display_name} account is out of API credits.'
+            fix = f'Top up your {display_name} API balance or switch to a free model in Settings → AI Providers.'
+        elif any(k in low for k in ('429', 'rate', 'resource_exhausted', 'too many requests', 'quota')):
+            what = f'{display_name} hit a temporary rate or quota limit (too many requests at once).'
+            fix = f'Wait ~30 seconds and try again, or switch models in Settings → AI Providers → {display_name}.'
+        elif any(k in low for k in ('404', 'not found', 'deprecated', 'decommissioned', 'retired', 'does not exist')):
+            what = f'The configured model for {display_name} is retired or unavailable.'
+            fix = f'Open Settings → AI Providers → {display_name} and choose an active model from the dropdown.'
+        elif any(k in low for k in ('timeout', 'timed out', 'straggler', 'connection', 'unreachable')):
+            what = f'{display_name} did not finish responding before the phase time ceiling.'
+            fix = f'If {display_name} was doing heavy thinking, raise Provider Timeout in Settings → Agent Defaults, or click this agent to retry.'
+        elif status == 'Inactive':
+            what = f'{display_name} is currently turned OFF for this conversation.'
+            fix = f'Click {display_name} here in the bottom Agents bar to turn it back ON.'
+        else:
+            clean_d = (detail or 'Unexpected provider error').strip()
+            what = f'{display_name} encountered an issue: {clean_d[:140]}'
+            fix = f'Open Settings → AI Providers → {display_name} to test or update its settings, or click to toggle.'
+        raw_line = f'\nTechnical detail: {detail.strip()[:160]}' if detail and status != 'Inactive' else ''
+        return f'⚠ {display_name} — {status}\nWhat went wrong: {what}\nHow to fix: {fix}{raw_line}'
 
     def set_provider_status(self, name, status, colour, detail=''):
         label = self.provider_labels.get(name)
@@ -8468,9 +10822,11 @@ class PalaceWindow(QMainWindow):
             if not getattr(self, '_in_agent_bar_relayout', False):
                 self._relayout_agent_bar()
             return
+        if label.parent() is None and hasattr(self, 'agent_chips_host'):
+            label.setParent(self.agent_chips_host)
         label.setVisible(True)
         icon = provider_icon(name)
-        display_name = provider_display_name(name)
+        display_name = provider_display_name(name, config_path=self.config_path)
         fg = provider_color(name)
 
         if status in {'Enabled', 'Responded', 'Working'}:
@@ -8493,12 +10849,9 @@ class PalaceWindow(QMainWindow):
             label.setToolTip(f'{icon} {display_name} — Active ({status})\nClick to toggle ON/OFF for this discussion')
         else:
             suffix = '' if status == 'Inactive' else f' · {status}'
-            if status in {'Cutoff', 'Timeout', 'Limited', 'Unavailable'}:
-                chip_col = str(colour or '#e2b96b')
-                chip_weight = '600'
-            elif status == 'Failed':
-                chip_col = str(colour or '#ff9595')
-                chip_weight = '600'
+            if status in {'Cutoff', 'Timeout', 'Limited', 'Unavailable', 'Failed'}:
+                chip_col = str(colour or '#6e7681')
+                chip_weight = '500' if chip_col == '#6e7681' else '600'
             else:
                 chip_col = '#6e7681'
                 chip_weight = '500'
@@ -8516,8 +10869,7 @@ class PalaceWindow(QMainWindow):
                 f'padding: 2px 6px; border-radius: 4px; font-size: 11.5px; font-weight: {chip_weight}; }} '
                 f'QPushButton:hover {{ background: #1c2128; }}'
             )
-            tip_detail = f'\nDetail: {detail}' if detail else ''
-            label.setToolTip(f'{icon} {display_name} — {status}{tip_detail}\nClick to toggle active')
+            label.setToolTip(self._format_human_agent_issue_tooltip(display_name, status, detail))
         if not getattr(self, '_in_agent_bar_relayout', False):
             self._relayout_agent_bar()
 
@@ -9580,6 +11932,7 @@ class PalaceWindow(QMainWindow):
         exp_sha = str(info.get('installer_sha256') or '').strip()
 
         dlg = QDialog(self)
+        _apply_windows_dialog_flags(dlg, resizable=False)
         dlg.setWindowTitle('Fairybread Update Available')
         dlg.resize(520, 320)
         lay = QVBoxLayout(dlg)
@@ -9716,29 +12069,38 @@ class PalaceWindow(QMainWindow):
         meta = PERMISSION_MODE_META.get(mk, PERMISSION_MODE_META['default'])
         excl_n = len(ap.get('write_exclusions') or [])
         self.permission_pill_btn.setText(f"🛡 {meta['pill']} ▾")
+        t_dict = load_theme_dict(getattr(self, 'active_theme', 'dark'))
+        is_light = _is_light_theme(t_dict)
         if mk == 'turbo':
+            bg_c, fg_c, bd_c, hv_c = ('#f3e8ff', '#7e22ce', '#a855f7', '#6b21a8') if is_light else ('#1c1b29', '#c084fc', '#9333ea', '#f3e8ff')
             self.permission_pill_btn.setStyleSheet(
-                'QPushButton { background: #1c1b29; color: #c084fc; border: 1px solid #9333ea; '
-                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 700; } '
-                'QPushButton:hover { color: #f3e8ff; border-color: #a855f7; }'
+                f'QPushButton {{ background: {bg_c}; color: {fg_c}; border: 1px solid {bd_c}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }} '
+                f'QPushButton:hover {{ color: {hv_c}; border-color: #a855f7; }}'
             )
         elif mk == 'auto':
+            bg_c, fg_c, bd_c, hv_c = ('#dbeafe', '#1d4ed8', '#3b82f6', '#1e3a8a') if is_light else ('#132238', '#58a6ff', '#3b82f6', '#dbeafe')
             self.permission_pill_btn.setStyleSheet(
-                'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
-                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-                'QPushButton:hover { color: #dbeafe; border-color: #60a5fa; }'
+                f'QPushButton {{ background: {bg_c}; color: {fg_c}; border: 1px solid {bd_c}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ color: {hv_c}; border-color: #60a5fa; }}'
             )
         elif mk == 'request_review':
+            bg_c, fg_c, bd_c, hv_c = ('#fef3c7', '#b45309', '#d97706', '#92400e') if is_light else ('#261b10', '#f0b849', '#d29922', '#fef3c7')
             self.permission_pill_btn.setStyleSheet(
-                'QPushButton { background: #261b10; color: #f0b849; border: 1px solid #d29922; '
-                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-                'QPushButton:hover { color: #fef3c7; border-color: #eab308; }'
+                f'QPushButton {{ background: {bg_c}; color: {fg_c}; border: 1px solid {bd_c}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ color: {hv_c}; border-color: #eab308; }}'
             )
         else:
+            bg_c = t_dict.get('bg_card', '#161b22')
+            fg_c = t_dict.get('text_secondary', '#c9d1d9')
+            bd_c = t_dict.get('border', '#262c3a')
+            hv_c = t_dict.get('text_primary', '#f0f6fc')
             self.permission_pill_btn.setStyleSheet(
-                'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
-                'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-                'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+                f'QPushButton {{ background: {bg_c}; color: {fg_c}; border: 1px solid {bd_c}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ color: {hv_c}; border-color: #3b82f6; }}'
             )
         excl_note = f' · {excl_n} Write Exclusion(s) active' if excl_n else ' · 0 Write Exclusions'
         self.permission_pill_btn.setToolTip(
@@ -9852,6 +12214,21 @@ class PalaceWindow(QMainWindow):
 
     def reload_providers_from_config(self):
         self.reload_provider_bar()
+        if hasattr(self, '_update_ai_pill_text'):
+            try:
+                self._update_ai_pill_text()
+            except Exception:
+                pass
+        if hasattr(self, '_refresh_voice_bar_pills'):
+            try:
+                self._refresh_voice_bar_pills()
+            except Exception:
+                pass
+        if hasattr(self, '_apply_voice_avatar_settings'):
+            try:
+                self._apply_voice_avatar_settings()
+            except Exception:
+                pass
 
     def _switch_theme_and_persist(self, theme_id: str):
         self.apply_theme(theme_id)
@@ -9864,16 +12241,153 @@ class PalaceWindow(QMainWindow):
         t_dict = load_theme_dict(theme_id)
         self.status_label.setText(f'Theme applied: {t_dict.get("name", theme_id)}')
 
+    def _apply_theme_widget_styles(self, t_dict: dict):
+        is_light = _is_light_theme(t_dict)
+        bg_card = str(t_dict.get('bg_card') or ('#f3f4f6' if is_light else '#161b22'))
+        bg_hover = str(t_dict.get('bg_hover') or ('#eaeef2' if is_light else '#1f242d'))
+        border = str(t_dict.get('border') or ('#d0d7de' if is_light else '#21262d'))
+        txt_pri = str(t_dict.get('text_primary') or ('#1f2328' if is_light else '#e6edf3'))
+        txt_sec = str(t_dict.get('text_secondary') or ('#24292f' if is_light else '#c9d1d9'))
+        txt_mut = str(t_dict.get('text_muted') or ('#57606a' if is_light else '#8b949e'))
+
+        if hasattr(self, 'conversation_title'):
+            self.conversation_title.setStyleSheet(f'color: {txt_pri}; font-size: 12.5px; font-weight: 600;')
+        if hasattr(self, 'no_history_btn'):
+            on_bg, on_fg, on_bd = ('#ddf4ff', '#0969da', '#54aeff') if is_light else ('#132238', '#58a6ff', '#3b82f6')
+            off_bg, off_fg, off_bd = ('#fee2e2', '#cf222e', '#ef4444') if is_light else ('#2c1517', '#ef4444', '#ef4444')
+            self.no_history_btn.setStyleSheet(
+                f'QPushButton {{ background: {on_bg}; color: {on_fg}; border: 1px solid {on_bd}; '
+                f'padding: 4px 9px; border-radius: 6px; font-weight: 700; font-size: 11.5px; }} '
+                f'QPushButton:hover {{ border-color: {on_fg}; }} '
+                f'QPushButton:checked {{ background: {off_bg}; color: {off_fg}; border: 1px solid {off_bd}; font-weight: 700; }}'
+            )
+        if hasattr(self, 'memory_button'):
+            chk_bg, chk_fg, chk_bd = ('#ddf4ff', '#0969da', '#3b82f6') if is_light else ('#132238', '#58a6ff', '#3b82f6')
+            self.memory_button.setStyleSheet(
+                f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
+                f'padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 11.5px; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'QPushButton:checked {{ background: {chk_bg}; color: {chk_fg}; border: 1px solid {chk_bd}; font-weight: 700; }}'
+            )
+        for btn_attr in ('slash_cmd_btn', 'search_depth_btn'):
+            b_w = getattr(self, btn_attr, None)
+            if b_w is not None:
+                b_w.setStyleSheet(
+                    f'QPushButton {{ background: {bg_card}; color: {txt_sec}; border: 1px solid {border}; '
+                    f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                    f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; border-color: #3b82f6; }}'
+                )
+        if hasattr(self, 'deliberate_pill_btn'):
+            c_bg, c_fg, c_bd = ('#f3e8ff', '#7e22ce', '#a855f7') if is_light else ('#231536', '#a855f7', '#a855f7')
+            self.deliberate_pill_btn.setStyleSheet(
+                f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'QPushButton:checked {{ background: {c_bg}; color: {c_fg}; border: 1px solid {c_bd}; }}'
+            )
+        if hasattr(self, 'tangent_btn'):
+            t_bg, t_fg, t_bd = ('#fef9c3', '#a16207', '#eab308') if is_light else ('#29230f', '#eab308', '#eab308')
+            self.tangent_btn.setStyleSheet(
+                f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'QPushButton:checked {{ background: {t_bg}; color: {t_fg}; border: 1px solid {t_bd}; }}'
+            )
+        if hasattr(self, 'palace_code_btn'):
+            cd_bg, cd_fg, cd_bd = ('#ecfeff', '#0e7490', '#06b6d4') if is_light else ('#0f2930', '#06b6d4', '#06b6d4')
+            self.palace_code_btn.setStyleSheet(
+                f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
+                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'QPushButton:checked {{ background: {cd_bg}; color: {cd_fg}; border: 1px solid {cd_bd}; }}'
+            )
+        if hasattr(self, '_refresh_permission_pill_text'):
+            self._refresh_permission_pill_text()
+
+    def _apply_backdrop_images(self, t_dict: dict[str, Any]):
+        """Apply HiDPI pre-baked washed-out background pictures across selected areas without scroll smearing or opaque child slabs."""
+        from palace_theme import render_theme_ambient_qimage
+
+        ui_cfg = load_ui_settings(self.config_path)
+        src_mode = str(ui_cfg.get('bg_image_source') or 'none').strip().lower()
+        placement = str(ui_cfg.get('bg_image_placement') or 'chat_sidebar').strip().lower()
+        washout = max(75, min(96, int(ui_cfg.get('bg_washout_percent', 90))))
+        custom_path = str(ui_cfg.get('bg_image_path') or '').strip()
+
+        src_img: QImage | None = None
+        if src_mode == 'ambient':
+            src_img = render_theme_ambient_qimage(self.active_theme)
+        elif src_mode == 'custom' and custom_path and not custom_path.upper().startswith('M:'):
+            p_obj = Path(custom_path)
+            if p_obj.is_file():
+                loaded = QImage(str(p_obj))
+                if not loaded.isNull():
+                    src_img = loaded
+
+        want_chat = (src_img is not None) and (placement in {'chat', 'chat_sidebar', 'all'})
+        want_side = (src_img is not None) and (placement in {'sidebar', 'chat_sidebar', 'all'})
+        want_mem = (src_img is not None) and (placement == 'all')
+
+        bg_main = str(t_dict.get('bg_main') or '#0d1117')
+        bg_side = str(t_dict.get('bg_sidebar') or '#11161d')
+        border = str(t_dict.get('border') or '#21262d')
+
+        if hasattr(self, 'chat') and isinstance(self.chat, ChatBrowser):
+            self.chat.set_washed_backdrop(src_img if want_chat else None, base_hex=bg_main, washout_pct=washout)
+
+        side_w = getattr(self, 'sidebar_widget', None)
+        if isinstance(side_w, BackdropPanelWidget):
+            side_w.set_washed_backdrop(
+                src_img if want_side else None,
+                base_hex=bg_side,
+                border_hex=border,
+                washout_pct=washout,
+            )
+            if want_side:
+                side_w.setStyleSheet(
+                    'QWidget#sidebar { background: transparent; border: none; } '
+                    'QWidget#sidebar QListWidget, QWidget#sidebar QListWidget::viewport { background: transparent; border: none; } '
+                    'QWidget#sidebar QLabel { background: transparent; }'
+                )
+                for lw in side_w.findChildren(QListWidget):
+                    lw.viewport().setAutoFillBackground(False)
+            else:
+                side_w.setStyleSheet('')
+
+        mem_w = getattr(self, 'memory_panel', None)
+        if isinstance(mem_w, BackdropPanelWidget):
+            mem_w.set_washed_backdrop(
+                src_img if want_mem else None,
+                base_hex=bg_side,
+                border_hex=border,
+                washout_pct=washout,
+            )
+            if want_mem:
+                mem_w.setStyleSheet(
+                    'QFrame#memoryPanel { background: transparent; border: none; } '
+                    'QFrame#memoryPanel QListWidget, QFrame#memoryPanel QListWidget::viewport { background: transparent; } '
+                    'QFrame#memoryPanel QLabel { background: transparent; }'
+                )
+                for lw in mem_w.findChildren(QListWidget):
+                    lw.viewport().setAutoFillBackground(False)
+            else:
+                mem_w.setStyleSheet('')
+
     def apply_theme(self, theme_id: str, render_chat: bool = True):
         self.active_theme = str(theme_id or 'dark')
         if hasattr(self, '_item_html_cache'):
             self._item_html_cache.clear()
         t_dict = load_theme_dict(self.active_theme)
         self.setStyleSheet(build_theme_stylesheet(self.active_theme))
+        self._apply_theme_widget_styles(t_dict)
         if hasattr(self, 'chat') and isinstance(self.chat, ChatBrowser):
             self.chat.set_theme_colors(t_dict)
-        if render_chat and getattr(self, 'chat_items', None):
-            self._render_chat_items()
+        self._apply_backdrop_images(t_dict)
+        if render_chat:
+            if getattr(self, 'chat_items', None):
+                self._render_chat_items(scroll_to_bottom=False)
+            elif hasattr(self, 'chat'):
+                self.load_history()
         if hasattr(self, '_apply_voice_avatar_settings'):
             self._apply_voice_avatar_settings()
 
@@ -9898,7 +12412,7 @@ class PalaceWindow(QMainWindow):
                 self.set_provider_status(cli_prov_key, 'Off', '#6e7681')
         for name, enabled in self.provider_states.items():
             if name not in self.provider_labels:
-                label = QPushButton()
+                label = QPushButton(self.agent_chips_host)
                 label.setFlat(True)
                 label.setCursor(Qt.CursorShape.PointingHandCursor)
                 label.clicked.connect(lambda checked=False, n=name: self._on_top_provider_badge_clicked(n))
@@ -9964,49 +12478,44 @@ class PalaceWindow(QMainWindow):
             else (self.bottom_token_label.text() if hasattr(self, 'bottom_token_label') else '')
         )
 
-        # Left AI chips width (including 'Agents:' caption ~56px)
-        left_normal_px = 58 + sum(28 + len(btn.text().strip()) * 7.2 for _, btn in visible) + max(0, len(visible) - 1) * 6
-        left_compact_px = 52 + sum(max(24, int(len(btn.text().strip()) * 6.5 + 16)) for _, btn in visible) + max(0, len(visible) - 1) * 4
+        # Layout up to MAX_COLS=4 AI chips per row consistently across all window widths
+        MAX_COLS = 4
+        chip_widths = [
+            max(int(len(btn.text().strip()) * 6.5 + 16), 24) if btn.text().strip() else 24
+            for _, btn in visible
+        ]
+        max_chip_px = max([w for w in chip_widths] or [64])
+        col_gap = 6
+        left_block_px = 58 + min(len(visible), MAX_COLS) * (max_chip_px + col_gap) + 8
 
         # Right status + token labels width on 1 row
         right_normal_1row_px = (len(status_plain) * 7.0 + 14) + (len(token_plain) * 7.2 + 16) + 16
         right_compact_1row_px = (len(status_plain) * 5.8 + 10) + (len(token_plain) * 6.0 + 12) + 12
 
-        total_normal_1row = left_normal_px + right_normal_1row_px
-        total_compact_1row = left_compact_px + right_compact_1row_px
-
-        if total_normal_1row <= bar_w:
-            state = 1  # 1-row normal
+        chip_rows = max(1, (len(visible) + MAX_COLS - 1) // MAX_COLS)
+        fits_normal = (left_block_px + right_normal_1row_px) <= bar_w
+        fits_compact = (left_block_px + right_compact_1row_px) <= bar_w
+        if chip_rows == 1 and fits_normal:
+            state = 1
             compact = False
-            bar_h = 28
-        elif total_compact_1row <= bar_w:
-            state = 2  # 1-row compact
+            right_rows = 1
+        elif fits_compact:
+            state = 2
             compact = True
-            bar_h = 28
+            right_rows = 1
         else:
-            state = 3  # 2-row compact (both left chips and right text can use 2 rows)
+            state = 3
             compact = True
-            bar_h = 48
+            right_rows = 2
 
+        total_rows = max(chip_rows, right_rows)
+        bar_h = 28 if total_rows <= 1 else (48 if total_rows == 2 else 66)
         self.agent_workbench_frame.setFixedHeight(bar_h)
 
         font_sz = '10px' if compact else '11.5px'
-        pad = '1px 3px' if compact else '2px 6px'
+        pad = '1px 4px' if compact else '2px 6px'
         btn_h = 19 if compact else 22
         icon_sz = 11 if compact else 13
-
-        chip_widths = []
-        for _, btn in visible:
-            txt_s = btn.text().strip()
-            chip_widths.append(max(int(len(txt_s) * 6.5 + 16), 24) if txt_s else 24)
-
-        # Determine if left chips themselves need 2 rows in state 3
-        right_2row_needed_px = min(max(145, int(bar_w * 0.34)), max(len(status_plain) * 5.8, len(token_plain) * 6.0) + 16)
-        left_avail_in_state3 = max(160, bar_w - 58 - right_2row_needed_px - 16)
-        if state == 3 and len(visible) > 1 and (sum(chip_widths) + max(0, len(visible) - 1) * 4 > left_avail_in_state3 or len(visible) > 6):
-            chip_rows = 2
-        else:
-            chip_rows = 1
 
         styled_chips = []
         for idx, (name, btn) in enumerate(visible):
@@ -10036,42 +12545,22 @@ class PalaceWindow(QMainWindow):
                 f'padding: {pad}; border-radius: 4px; font-size: {font_sz}; font-weight: {weight}; }} '
                 f'QPushButton:hover {{ background: #1c2128; }}'
             )
+            if btn.parent() is None and hasattr(self, 'agent_chips_host'):
+                btn.setParent(self.agent_chips_host)
             btn.setVisible(True)
             styled_chips.append((btn, est_w))
 
-        row0_w = 0
-        row1_w = 0
-        if chip_rows == 1:
-            row0_lay = QHBoxLayout()
-            row0_lay.setContentsMargins(0, 0, 0, 0)
-            row0_lay.setSpacing(4)
-            for btn, w_est in styled_chips:
-                row0_lay.addWidget(btn)
-                row0_w += w_est + 4
-            row0_lay.addStretch(1)
-            self.agent_chips_grid.addLayout(row0_lay, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        else:
-            # Pack chips into 2 balanced horizontal rows by pixel width so long 'Cutoff' chips do not stretch empty columns
-            row0_lay = QHBoxLayout()
-            row0_lay.setContentsMargins(0, 0, 0, 0)
-            row0_lay.setSpacing(4)
-            row1_lay = QHBoxLayout()
-            row1_lay.setContentsMargins(0, 0, 0, 0)
-            row1_lay.setSpacing(4)
-            target_half = max(left_avail_in_state3, (sum(chip_widths) + len(chip_widths) * 4) // 2)
-            for idx_c, (btn, w_est) in enumerate(styled_chips):
-                if idx_c == 0 or (row0_w + w_est <= target_half and len(styled_chips) - idx_c > 1):
-                    row0_lay.addWidget(btn)
-                    row0_w += w_est + 4
-                else:
-                    row1_lay.addWidget(btn)
-                    row1_w += w_est + 4
-            row0_lay.addStretch(1)
-            row1_lay.addStretch(1)
-            self.agent_chips_grid.addLayout(row0_lay, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.agent_chips_grid.addLayout(row1_lay, 1, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.agent_chips_grid.setHorizontalSpacing(6)
+        self.agent_chips_grid.setVerticalSpacing(2)
+        for idx_c, (btn, _w_est) in enumerate(styled_chips):
+            self.agent_chips_grid.addWidget(
+                btn,
+                idx_c // MAX_COLS,
+                idx_c % MAX_COLS,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            )
 
-        # Layout right-side status_label + bottom_token_label using the exact same state rules
+        # Layout right-side status_label + bottom_token_label cleanly without colliding with the 4-col AI block
         if hasattr(self, 'right_status_grid') and hasattr(self, 'status_label') and hasattr(self, 'bottom_token_label'):
             while self.right_status_grid.count():
                 self.right_status_grid.takeAt(0)
@@ -10096,7 +12585,7 @@ class PalaceWindow(QMainWindow):
                 f'font-family: Consolas, monospace; font-size: {font_sz}; color: {cost_col}; padding: {token_pad};'
             )
 
-            used_left_px = max(row0_w, row1_w) + 58 if chip_rows == 2 else (left_compact_px if compact else left_normal_px)
+            used_left_px = min(bar_w // 2, left_block_px) if chip_rows >= 2 else left_block_px
             avail_right_px = max(130, bar_w - used_left_px - 20)
 
             align_r = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -10108,7 +12597,7 @@ class PalaceWindow(QMainWindow):
                 else:
                     self.right_status_host.setMaximumWidth(16777215)
                     self.right_status_host.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-            if state in (1, 2):
+            if right_rows == 1:
                 token_w = int(len(token_plain) * (6.0 if compact else 7.2) + 16)
                 status_max_w = max(80, avail_right_px - token_w - 8)
                 if hasattr(self.status_label, 'apply_elided_width'):
@@ -10116,7 +12605,6 @@ class PalaceWindow(QMainWindow):
                 self.right_status_grid.addWidget(self.status_label, 0, 0, align_r)
                 self.right_status_grid.addWidget(self.bottom_token_label, 0, 1, align_r)
             else:
-                # State 3: Stack status_label on row 0 and bottom_token_label on row 1
                 if hasattr(self.status_label, 'apply_elided_width'):
                     self.status_label.apply_elided_width(avail_right_px)
                 if hasattr(self.bottom_token_label, 'apply_elided_width'):
@@ -10264,14 +12752,16 @@ class PalaceWindow(QMainWindow):
             f'Source entry:\n{source["entry_id"]}'
         )
 
-    def show_memory_summary_dialog(self):
+    def show_memory_summary_dialog(self, parent_widget: QWidget | None = None):
         from memory_service import ai_update_memory_summary, load_memory_summary, save_memory_summary
 
         db_p = self._memory_db_path()
         sum_data = load_memory_summary(db_p)
 
-        dlg = QDialog(self)
-        dlg.setWindowTitle('Fairybread — Memory Summary (Shared Across All Council AIs)')
+        parent_w = parent_widget if isinstance(parent_widget, QWidget) else self
+        dlg = QDialog(parent_w)
+        _apply_windows_dialog_flags(dlg, resizable=True)
+        dlg.setWindowTitle('Fairybread — Living User Profile (Shared Across All Council & Voice AIs)')
         dlg.resize(720, 660)
         dlg.setStyleSheet('background:#131720; color:#e6edf3;')
         v = QVBoxLayout(dlg)
@@ -10279,7 +12769,7 @@ class PalaceWindow(QMainWindow):
         v.setSpacing(12)
 
         hdr_row = QHBoxLayout()
-        title_lbl = QLabel('<b>Memory summary</b>')
+        title_lbl = QLabel('<b>Living User Profile</b>')
         title_lbl.setStyleSheet('font-size: 16px; color: #f0f6fc;')
         age_lbl = QLabel(str(sum_data.get('updated_relative', 'Updated just now')))
         age_lbl.setStyleSheet('font-size: 12.5px; color: #8b949e; margin-left: 8px;')
@@ -10306,22 +12796,14 @@ class PalaceWindow(QMainWindow):
 
         refresh_ai_btn = QPushButton('↻ Auto-Update from Chats')
         refresh_ai_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_ai_btn.setToolTip('Have the AI refresh your Memory summary from recent conversations')
+        refresh_ai_btn.setToolTip('Have the AI refresh your Living User Profile from recent conversations')
         refresh_ai_btn.setStyleSheet(
             'QPushButton { background:#21262d; color:#c9d1d9; border:1px solid #30363d; border-radius:6px; padding:5px 12px; font-weight:600; }'
         )
 
-        close_x_btn = QPushButton('✕')
-        close_x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_x_btn.setToolTip('Close')
-        close_x_btn.setFixedSize(30, 30)
-        close_x_btn.setStyleSheet('QPushButton { background:transparent; color:#8b949e; border:none; font-size:15px; font-weight:700; } QPushButton:hover { color:#f0f6fc; }')
-        close_x_btn.clicked.connect(dlg.accept)
-
         hdr_row.addWidget(edit_toggle_btn)
         hdr_row.addWidget(save_direct_btn)
         hdr_row.addWidget(refresh_ai_btn)
-        hdr_row.addWidget(close_x_btn)
         v.addLayout(hdr_row)
 
         stack = QStackedWidget(dlg)
@@ -10343,11 +12825,11 @@ class PalaceWindow(QMainWindow):
         stack.addWidget(editor)
         v.addWidget(stack, 1)
 
-        status_lbl = QLabel('Shared with all 8 Council AIs on every turn · Click "✎ Edit Directly" to edit by hand or use "Ask or update" below.')
+        status_lbl = QLabel('Shared with and auto-updated by all Council & Voice AIs · Click "✎ Edit Directly" to edit by hand or use "Ask or update" below.')
         status_lbl.setStyleSheet('font-size: 11.5px; color: #8b949e;')
         v.addWidget(status_lbl)
 
-        # Bottom rounded 'Ask or update' bar (matching ChatGPT screenshot)
+        # Bottom rounded 'Ask or update' bar
         ask_bar = QFrame(dlg)
         ask_bar.setStyleSheet('background:#1c212b; border:1px solid #30363d; border-radius:20px; padding:4px 8px;')
         ask_lay = QHBoxLayout(ask_bar)
@@ -10357,7 +12839,7 @@ class PalaceWindow(QMainWindow):
         ask_edit.setStyleSheet('background:transparent; border:none; color:#f0f6fc; font-size:13px;')
         ask_send_btn = QPushButton('↑', ask_bar)
         ask_send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        ask_send_btn.setToolTip('Update Memory summary')
+        ask_send_btn.setToolTip('Update Living User Profile')
         ask_send_btn.setFixedSize(30, 30)
         ask_send_btn.setStyleSheet(
             'QPushButton { background:#58a6ff; color:#0d1117; border:none; border-radius:15px; font-size:14px; font-weight:700; }'
@@ -10365,6 +12847,12 @@ class PalaceWindow(QMainWindow):
         ask_lay.addWidget(ask_edit, 1)
         ask_lay.addWidget(ask_send_btn)
         v.addWidget(ask_bar)
+
+        def _flush_pending_edits():
+            if edit_toggle_btn.isChecked():
+                save_memory_summary(editor.toPlainText(), db_path=db_p)
+                if hasattr(self, 'refresh_memory_review'):
+                    self.refresh_memory_review(True)
 
         def _toggle_edit(editing: bool):
             if editing:
@@ -10381,24 +12869,29 @@ class PalaceWindow(QMainWindow):
                 save_direct_btn.hide()
                 edit_toggle_btn.setText('✎ Edit Directly')
                 status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
-                status_lbl.setText('✓ Memory summary saved and synced to all Council AIs.')
-                if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+                status_lbl.setText('✓ Living User Profile saved and synced to all Council & Voice AIs.')
+                if hasattr(self, 'refresh_memory_review'):
                     self.refresh_memory_review(True)
 
         def _save_direct():
             saved = save_memory_summary(editor.toPlainText(), db_path=db_p)
             reader.setMarkdown(saved['text'])
             age_lbl.setText(saved['updated_relative'])
+            edit_toggle_btn.blockSignals(True)
             edit_toggle_btn.setChecked(False)
+            edit_toggle_btn.blockSignals(False)
+            stack.setCurrentIndex(0)
+            save_direct_btn.hide()
+            edit_toggle_btn.setText('✎ Edit Directly')
             status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
-            status_lbl.setText('✓ Direct edits saved to Shared Memory.')
-            if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+            status_lbl.setText('✓ Direct edits saved to your Living User Profile.')
+            if hasattr(self, 'refresh_memory_review'):
                 self.refresh_memory_review(True)
 
         def _run_ai_update(custom_note: str = ''):
             note = (custom_note or ask_edit.text()).strip()
             status_lbl.setStyleSheet('font-size: 11.5px; color: #58a6ff;')
-            status_lbl.setText('⏳ Updating Memory summary with AI…')
+            status_lbl.setText('⏳ Updating Living User Profile with AI…')
             QApplication.processEvents()
             updated = ai_update_memory_summary(note, db_path=db_p)
             reader.setMarkdown(updated['text'])
@@ -10406,10 +12899,24 @@ class PalaceWindow(QMainWindow):
             age_lbl.setText(updated['updated_relative'])
             ask_edit.clear()
             status_lbl.setStyleSheet('font-size: 11.5px; color: #22c55e;')
-            status_lbl.setText('✓ Memory summary updated by AI and shared with all Council agents.')
-            if hasattr(self, 'memory_panel') and self.memory_panel.isVisible():
+            status_lbl.setText('✓ Living User Profile updated by AI and shared with all agents.')
+            if hasattr(self, 'refresh_memory_review'):
                 self.refresh_memory_review(True)
 
+        foot_row = QHBoxLayout()
+        foot_row.addStretch(1)
+        close_prof_btn = QPushButton('Close', dlg)
+        close_prof_btn.setMinimumWidth(84)
+        close_prof_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_prof_btn.setToolTip('Save any open edits and close Living User Profile')
+        close_prof_btn.setStyleSheet(
+            'QPushButton { background:#21262d; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:5px 16px; font-weight:600; }'
+        )
+        close_prof_btn.clicked.connect(dlg.accept)
+        foot_row.addWidget(close_prof_btn)
+        v.addLayout(foot_row)
+
+        dlg.finished.connect(lambda _res: _flush_pending_edits())
         edit_toggle_btn.toggled.connect(_toggle_edit)
         save_direct_btn.clicked.connect(_save_direct)
         refresh_ai_btn.clicked.connect(lambda: _run_ai_update('Refresh and refine from recent conversations'))
@@ -10514,9 +13021,14 @@ class PalaceWindow(QMainWindow):
         return 'Fairybread'
 
     def _update_breadcrumb(self, session_title: str):
+        selected_proj = getattr(self.store, 'selected_project', None)
         proj_name = self._current_project_name()
         folder = self.store.get_project_folder() if hasattr(self.store, 'get_project_folder') else ''
-        self.conversation_title.setText(f'{proj_name}  /  {session_title}')
+        clean_title = str(session_title or 'New conversation').strip() or 'New conversation'
+        if selected_proj and proj_name and proj_name != 'Fairybread':
+            self.conversation_title.setText(f'{proj_name}  /  {clean_title}')
+        else:
+            self.conversation_title.setText(clean_title)
         if hasattr(self, 'attached_folder_chip'):
             if folder:
                 folder_short = Path(folder).name or folder
@@ -10830,6 +13342,8 @@ class PalaceWindow(QMainWindow):
 
     def _on_voice_barge_in(self):
         self._voice_session_gen = int(getattr(self, '_voice_session_gen', 0)) + 1
+        if hasattr(self, '_pending_quorum_beats'):
+            self._pending_quorum_beats.clear()
         self._barge_badge_until = time.monotonic() + 0.9
         if hasattr(self, 'voice_level_badge'):
             self.voice_level_badge.setText('⚡ Interrupted — listening…')
@@ -10855,10 +13369,10 @@ class PalaceWindow(QMainWindow):
             fell_back = bool(getattr(self, '_last_voice_brain_fell_back', False))
             req_p = str(getattr(self, '_last_voice_brain_requested', '') or cfg_p).strip().lower()
             if fell_back and eff_p and eff_p != 'auto' and req_p not in {'', 'auto', eff_p}:
-                self.voice_brain_btn.setText(f'⚠ 🧠 {provider_display_name(req_p)} → {provider_display_name(eff_p)} ▾')
+                self.voice_brain_btn.setText(f'⚠ 🧠 {provider_display_name(req_p, config_path=self.config_path)} → {provider_display_name(eff_p, config_path=self.config_path)} ▾')
                 self.voice_brain_btn.setToolTip(
-                    f'Thinking AI fell back from {provider_display_name(req_p)} to {provider_display_name(eff_p)} — '
-                    f'your saved setting is still {provider_display_name(req_p)}. Click to switch anytime.'
+                    f'Thinking AI fell back from {provider_display_name(req_p, config_path=self.config_path)} to {provider_display_name(eff_p, config_path=self.config_path)} — '
+                    f'your saved setting is still {provider_display_name(req_p, config_path=self.config_path)}. Click to switch anytime.'
                 )
                 self.voice_brain_btn.setStyleSheet(
                     'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
@@ -10868,7 +13382,7 @@ class PalaceWindow(QMainWindow):
             elif eff_p and eff_p != 'auto':
                 col = provider_color(eff_p)
                 ic = provider_icon(eff_p)
-                dn = provider_display_name(eff_p)
+                dn = provider_display_name(eff_p, config_path=self.config_path)
                 self.voice_brain_btn.setText(f'🧠 {ic} {dn} ▾')
                 self.voice_brain_btn.setToolTip('Thinking AI (🧠): who thinks & writes replies in Voice/Talk Mode (click to switch anytime)')
                 self.voice_brain_btn.setStyleSheet(
@@ -10978,7 +13492,7 @@ class PalaceWindow(QMainWindow):
         a_auto.triggered.connect(lambda: _pick_brain('auto'))
         menu.addAction(a_auto)
 
-        for pk in ('gemini', 'openai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral', 'cerebras'):
+        for pk in ('gemini', 'openai', 'xai', 'deepseek', 'groq', 'qwen', 'cohere', 'mistral', 'cerebras'):
             has_k = False
             try:
                 has_k = bool((cred.get_api_key(pk) or '').strip())
@@ -11087,11 +13601,25 @@ class PalaceWindow(QMainWindow):
                 )
         self.voice_level_badge.show()
         self._sync_composer_live_bar_visibility()
-        self._sync_voice_avatar_status(
-            state='thinking' if self.worker is not None else 'listening',
-            mic_level=float(lvl) / 100.0,
-            speech_detected=speech_detected,
-        )
+        try:
+            from voice_service import is_speaking as _is_tts_speaking
+            tts_busy = bool(_is_tts_speaking())
+        except Exception:
+            tts_busy = False
+        vw_busy = bool(getattr(self, '_voice_threads', None))
+        quorum_busy = bool(getattr(self, '_pending_quorum_beats', None))
+        if self.worker is not None or vw_busy:
+            self._sync_voice_avatar_status(
+                state='thinking',
+                mic_level=0.0,
+                speech_detected=False,
+            )
+        elif not tts_busy and not quorum_busy:
+            self._sync_voice_avatar_status(
+                state='listening',
+                mic_level=0.0,
+                speech_detected=speech_detected,
+            )
 
     def _sync_composer_live_bar_visibility(self):
         if not hasattr(self, 'composer_live_bar'):
@@ -11254,8 +13782,18 @@ class PalaceWindow(QMainWindow):
 
         def _on_stage_settings(updates: dict):
             try:
-                from voice_service import save_voice_settings
-                save_voice_settings(updates or {}, config_path=self.config_path)
+                from voice_service import load_voice_settings, save_voice_settings
+                clean_upd = dict(updates or {})
+                if 'voice_avatar_shape' in clean_upd or 'voice_avatar_palette' in clean_upd:
+                    cur_v = load_voice_settings(self.config_path)
+                    slots = [dict(s) for s in (cur_v.get('voice_cast_slots') or []) if isinstance(s, dict)]
+                    if slots:
+                        if 'voice_avatar_shape' in clean_upd:
+                            slots[0]['avatar_shape'] = str(clean_upd['voice_avatar_shape'])
+                        if 'voice_avatar_palette' in clean_upd:
+                            slots[0]['avatar_palette'] = str(clean_upd['voice_avatar_palette'])
+                        clean_upd['voice_cast_slots'] = slots
+                save_voice_settings(clean_upd, config_path=self.config_path)
                 self._apply_voice_avatar_settings()
             except Exception:
                 pass
@@ -11289,8 +13827,9 @@ class PalaceWindow(QMainWindow):
         if win is None:
             return
         try:
-            from voice_service import load_voice_settings
+            from voice_service import load_voice_personas, load_voice_settings
             v_cfg = load_voice_settings(self.config_path)
+            personas = load_voice_personas(self.config_path)
             t_dict = load_theme_dict(str(getattr(self, 'active_theme', 'dark') or 'dark'))
             active_p = str(getattr(self, '_last_voice_brain_provider', '') or v_cfg.get('voice_llm_provider') or '').strip().lower()
             if active_p == 'auto':
@@ -11304,6 +13843,46 @@ class PalaceWindow(QMainWindow):
                 always_on_top=bool(v_cfg.get('voice_avatar_always_on_top', True)),
                 show_activity=bool(v_cfg.get('voice_avatar_show_activity', True)),
             )
+            multi_on = bool(v_cfg.get('multi_ai_voice_enabled', False))
+            raw_slots = list(v_cfg.get('voice_cast_slots') or [])
+            cast_avatars: list[dict[str, Any]] = []
+            _placeholders = {'', 'maya', 'liam', 'chloe', 'ethan', 'elena', 'jack', 'marcus', 'seat 1', 'seat 2', 'seat 3', 'seat 4'}
+            for idx, sl in enumerate(raw_slots[:4]):
+                if not isinstance(sl, dict):
+                    continue
+                sp = str(sl.get('provider') or '').strip().lower()
+                if idx > 0 and (not multi_on or not sp or sp in {'none', 'off', 'blank'}):
+                    continue
+                eff_sp = active_p if (sp == 'auto' or not sp) else sp
+                pid = str(sl.get('persona_id') or v_cfg.get('active_voice_persona') or 'normal_female')
+                p_meta = personas.get(pid) or {}
+                sl_col = PROVIDER_CATALOG.get(eff_sp, {}).get('color', '') or provider_color(eff_sp) if eff_sp else p_col
+                custom_given = get_provider_given_name(eff_sp, config_path=self.config_path) if eff_sp else ''
+                raw_sl_sp = str(sl.get('speaker_name') or '').strip()
+                if custom_given and (not raw_sl_sp or raw_sl_sp.lower() in _placeholders):
+                    shown_sp_name = custom_given
+                else:
+                    shown_sp_name = raw_sl_sp or custom_given or str(p_meta.get('speaker_name') or f'AI {idx + 1}')
+                slot_shape = (
+                    str(v_cfg.get('voice_avatar_shape') or sl.get('avatar_shape') or 'neural_core')
+                    if not multi_on
+                    else str(sl.get('avatar_shape') or v_cfg.get('voice_avatar_shape') or 'neural_core')
+                )
+                slot_palette = (
+                    str(v_cfg.get('voice_avatar_palette') or sl.get('avatar_palette') or 'tulsa_cyan')
+                    if not multi_on
+                    else str(sl.get('avatar_palette') or v_cfg.get('voice_avatar_palette') or 'tulsa_cyan')
+                )
+                cast_avatars.append({
+                    'slot_index': idx,
+                    'speaker_name': shown_sp_name,
+                    'persona_label': str(p_meta.get('label') or ''),
+                    'avatar_shape': slot_shape,
+                    'avatar_palette': slot_palette,
+                    'provider_color': sl_col,
+                })
+            if hasattr(win, 'set_cast_avatars'):
+                win.set_cast_avatars(cast_avatars, active_slot_index=int(getattr(self, '_active_voice_slot_index', 0)))
             if reapply_windowed and win.isVisible() and win._stage_mode == 'windowed':
                 win.present_in_mode('windowed')
         except Exception:
@@ -11383,6 +13962,8 @@ class PalaceWindow(QMainWindow):
     def stop_all_voice_modes(self, *, exit_talk_only: bool = True, notice: str = '') -> None:
         """Atomically stop all microphone capture, voice playback, and in-flight VoiceCompanion callbacks."""
         self._voice_session_gen = int(getattr(self, '_voice_session_gen', 0)) + 1
+        if hasattr(self, '_pending_quorum_beats'):
+            self._pending_quorum_beats.clear()
         sess = getattr(self, '_active_voice_session', None)
         self._active_voice_session = None
         if sess is not None:
@@ -11684,6 +14265,7 @@ class PalaceWindow(QMainWindow):
         append_user_msg: bool = False,
         persist_exchange: bool = True,
         speak_aloud: bool = True,
+        on_tts_finished: Any = None,
     ) -> int:
         """Render, persist, and speak a Voice Companion reply with explicit 🧠 Thinking & 🔊 Speaking attribution."""
         prov = str(getattr(decision, 'provider_used', '') or '').strip()
@@ -11693,17 +14275,33 @@ class PalaceWindow(QMainWindow):
         fb_reason = str(getattr(decision, 'fallback_reason', '') or '').strip()
         prev_p = str(getattr(self, '_last_voice_brain_provider', '') or '').strip()
         valid_prov = prov if prov and prov not in {'local', 'fallback', 'injected'} else ''
+        speaker_name = str(getattr(decision, 'speaker_name', '') or '').strip()
+        slot_idx = int(getattr(decision, 'slot_index', 0) or 0)
+        voice_ov = str(getattr(decision, 'voice_name', '') or '').strip()
+        persona_id = str(getattr(decision, 'persona_id', '') or '').strip()
 
+        self._active_voice_slot_index = slot_idx
         self._last_voice_brain_fell_back = bool(fell_back)
         self._last_voice_brain_requested = req_p or ''
         if valid_prov:
             self._last_voice_brain_provider = valid_prov
             self._refresh_voice_bar_pills()
             self._sync_voice_footer_state()
-            self._apply_voice_avatar_settings()
+        updated_attrs = list(getattr(decision, 'updated_attributions', None) or [])
+        if updated_attrs:
+            try:
+                self.reload_providers_from_config()
+                for item in updated_attrs:
+                    g_nm = str(item.get('given_name') or '').strip()
+                    p_nm = str(item.get('provider') or '').strip()
+                    if g_nm:
+                        self.show_notice(f'✓ Saved custom agent name: {g_nm} ({p_nm or "AI"})')
+            except Exception:
+                pass
+        self._apply_voice_avatar_settings()
         self._sync_voice_avatar_status(
             state='speaking' if speak_aloud else 'listening',
-            caption=spoken_reply[:135],
+            caption=f'{speaker_name}: {spoken_reply[:120]}' if speaker_name else spoken_reply[:135],
             has_visual_reply=False,
         )
 
@@ -11711,23 +14309,28 @@ class PalaceWindow(QMainWindow):
             self.append_message('user', user_disp, render=False)
 
         if fell_back and valid_prov:
-            req_disp = provider_display_name(req_p) if req_p and req_p != 'auto' else 'Primary AI'
+            req_disp = provider_display_name(req_p, config_path=self.config_path) if req_p and req_p != 'auto' else 'Primary AI'
             why = f' ({fb_reason[:110]})' if fb_reason else ''
-            st_msg = f'Status: {req_disp} failed{why} — switched Thinking AI to {provider_display_name(valid_prov)}.'
+            st_msg = f'Status: {req_disp} failed{why} — switched Thinking AI to {provider_display_name(valid_prov, config_path=self.config_path)}.'
             self.append_status_message(st_msg, severity='error', icon_prefix='⚠ 🧠', force=True, render=False)
-            self.show_notice(f'⚠ 🧠 {req_disp} unavailable → {provider_display_name(valid_prov)}')
+            self.show_notice(f'⚠ 🧠 {req_disp} unavailable → {provider_display_name(valid_prov, config_path=self.config_path)}')
         elif fell_back and fb_reason:
-            req_disp = provider_display_name(req_p) if req_p and req_p != 'auto' else 'Thinking AI'
+            req_disp = provider_display_name(req_p, config_path=self.config_path) if req_p and req_p != 'auto' else 'Thinking AI'
             st_msg = f'Status: {req_disp} failed ({fb_reason[:110]}).'
             self.append_status_message(st_msg, severity='error', icon_prefix='⚠ 🧠', force=True, render=False)
         elif prev_p and valid_prov and prev_p != valid_prov:
-            st_msg = f'Status: Thinking AI switched from {provider_display_name(prev_p)} to {provider_display_name(valid_prov)}.'
+            st_msg = f'Status: Thinking AI switched from {provider_display_name(prev_p, config_path=self.config_path)} to {provider_display_name(valid_prov, config_path=self.config_path)}.'
             self.append_status_message(st_msg, severity='info', icon_prefix='⇄ 🧠', force=True, render=False)
-            self.show_notice(f'⇄ 🧠 Thinking AI: {provider_display_name(prev_p)} → {provider_display_name(valid_prov)}')
+            self.show_notice(f'⇄ 🧠 Thinking AI: {provider_display_name(prev_p, config_path=self.config_path)} → {provider_display_name(valid_prov, config_path=self.config_path)}')
 
+        shown_reply = (
+            f'🗣️ **{speaker_name}:** {disp_reply}'
+            if speaker_name and not disp_reply.lstrip().startswith('🗣️')
+            else disp_reply
+        )
         asst_idx = self.append_message(
             'assistant',
-            disp_reply,
+            shown_reply,
             speaker='voice_companion',
             contributors=[valid_prov] if valid_prov else [],
             model_id=model_used,
@@ -11766,7 +14369,7 @@ class PalaceWindow(QMainWindow):
                     self._refresh_voice_bar_pills(active_tts_label=eng_lbl, tts_fell_back=bool(meta.get('fell_back')))
                     self._render_chat_items()
 
-                QTimer.singleShot(0, _apply)
+                self._ui_call_signal.emit(_apply)
 
             def _on_tts_err(err_m: str, g=req_gen):
                 def _apply_err():
@@ -11780,23 +14383,153 @@ class PalaceWindow(QMainWindow):
                         force=True,
                         render=True,
                     )
+                    if not getattr(self, '_pending_quorum_beats', None):
+                        self._sync_voice_avatar_status(
+                            state='listening',
+                            caption=f'🔇 Audio error: {str(err_m or "audio error")[:85]}',
+                        )
 
-                QTimer.singleShot(0, _apply_err)
+                self._ui_call_signal.emit(_apply_err)
 
-            speak_agent_response(
+            started_audio = speak_agent_response(
                 spoken_reply,
                 config_path=self.config_path,
+                voice_override=voice_ov,
+                persona_id=persona_id,
                 on_speech_meta=_on_tts_meta,
                 on_error=_on_tts_err,
+                on_finished=on_tts_finished,
             )
+            if not started_audio and on_tts_finished is not None:
+                QTimer.singleShot(0, on_tts_finished)
+        elif on_tts_finished is not None:
+            QTimer.singleShot(0, on_tts_finished)
 
         if persist_exchange:
             self._persist_voice_exchange(
                 raw_user_for_store,
-                disp_reply,
+                shown_reply,
                 provider_used=prov,
             )
         return asst_idx
+
+    def _schedule_voice_profile_evolution(self, user_text: str, decisions: list[Any]) -> None:
+        """Enrich Living User Profile & Cognitive Signature asynchronously after a spoken/voice-chat turn."""
+        if not user_text or not any(bool(getattr(d, 'evolve_user_profile', True)) for d in decisions):
+            return
+        self._voice_turn_counter = int(getattr(self, '_voice_turn_counter', 0)) + 1
+        turn_no = self._voice_turn_counter
+        db_p = self._memory_db_path()
+        recent_hist = list(getattr(getattr(self, '_voice_companion', None), '_history', []) or [])
+
+        def _worker():
+            try:
+                from memory_service import auto_evolve_user_profile_from_turn, evolve_conversational_signature_from_turns
+                auto_evolve_user_profile_from_turn(user_text, db_path=db_p)
+                if turn_no % 4 == 0 and len(recent_hist) >= 2:
+                    evolve_conversational_signature_from_turns(recent_hist, db_path=db_p)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True, name='FairybreadVoiceProfileEvolve').start()
+
+    def _advance_quorum_after_tts(self, req_gen: int) -> None:
+        if req_gen != int(getattr(self, '_voice_session_gen', 0)):
+            return
+        pending = getattr(self, '_pending_quorum_beats', None)
+        if not pending:
+            self._sync_voice_avatar_status(state='listening')
+            return
+        item = pending.pop(0)
+        self._deliver_voice_quorum_beat_item(item, req_gen=req_gen)
+
+    def _deliver_voice_quorum_beat_item(self, item: dict[str, Any], *, req_gen: int) -> int:
+        dec = item['decision']
+        pending = getattr(self, '_pending_quorum_beats', [])
+        on_done = None
+        if pending:
+            on_done = lambda g=req_gen: QTimer.singleShot(250, lambda: self._advance_quorum_after_tts(g))
+        else:
+            on_done = lambda g=req_gen: QTimer.singleShot(
+                50,
+                lambda: self._sync_voice_avatar_status(state='listening') if g == int(getattr(self, '_voice_session_gen', 0)) else None,
+            )
+        return self._deliver_voice_companion_reply(
+            user_disp=item['user_disp'],
+            raw_user_for_store=item['raw_user_for_store'],
+            disp_reply=item['disp_reply'],
+            spoken_reply=dec.spoken_reply,
+            decision=dec,
+            req_gen=req_gen,
+            append_user_msg=bool(item.get('append_user_msg', False)),
+            persist_exchange=bool(item.get('persist_exchange', True)),
+            speak_aloud=True,
+            on_tts_finished=on_done,
+        )
+
+    def _deliver_voice_quorum_decisions(
+        self,
+        decisions_raw: Any,
+        *,
+        user_disp: str,
+        raw_user_for_store: str,
+        raw_user_for_profile: str,
+        req_gen: int,
+        talk_only: bool,
+        append_user_msg: bool,
+        allow_mem_write: bool,
+    ) -> list[Any]:
+        beats = list(decisions_raw) if isinstance(decisions_raw, (list, tuple)) else [decisions_raw]
+        beats = [b for b in beats if b is not None and str(getattr(b, 'spoken_reply', '') or '').strip()]
+        if not beats:
+            return []
+        if not hasattr(self, '_pending_quorum_beats'):
+            self._pending_quorum_beats = []
+        self._pending_quorum_beats.clear()
+
+        beat_items: list[dict[str, Any]] = []
+        for idx, b in enumerate(beats):
+            saved_mems = self._save_voice_memories(
+                list(getattr(b, 'memory_saves', None) or []),
+                author=getattr(b, 'provider_used', '') or 'voice_companion',
+            )
+            disp = b.spoken_reply
+            if saved_mems:
+                badges = ' · '.join(f'🧠 Saved: "{m["summary"]}"' for m in saved_mems)
+                disp = f'{disp}\n\n{badges}'
+            beat_items.append({
+                'decision': b,
+                'user_disp': user_disp,
+                'raw_user_for_store': raw_user_for_store if idx == 0 else '[Table Quorum Peer Reply]',
+                'disp_reply': disp,
+                'append_user_msg': bool(append_user_msg and idx == 0),
+                'persist_exchange': bool(talk_only or getattr(b, 'action', 'chat') != 'delegate'),
+            })
+
+        first = beat_items[0]
+        if len(beat_items) > 1:
+            self._pending_quorum_beats.extend(beat_items[1:])
+        self._deliver_voice_quorum_beat_item(first, req_gen=req_gen)
+
+        # In offscreen headless tests where audio doesn't play, immediately flush remaining quorum chat bubbles
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen' and self._pending_quorum_beats:
+            while self._pending_quorum_beats:
+                nxt = self._pending_quorum_beats.pop(0)
+                self._deliver_voice_companion_reply(
+                    user_disp=nxt['user_disp'],
+                    raw_user_for_store=nxt['raw_user_for_store'],
+                    disp_reply=nxt['disp_reply'],
+                    spoken_reply=nxt['decision'].spoken_reply,
+                    decision=nxt['decision'],
+                    req_gen=req_gen,
+                    append_user_msg=False,
+                    persist_exchange=nxt['persist_exchange'],
+                    speak_aloud=False,
+                )
+
+        if allow_mem_write:
+            self._schedule_voice_profile_evolution(raw_user_for_profile, beats)
+        return beats
 
     def _on_live_voice_utterance(self, wav_path: Path):
         from voice_service import load_voice_settings, speak_agent_response
@@ -11812,9 +14545,8 @@ class PalaceWindow(QMainWindow):
         self._sync_voice_avatar_status(state='thinking', caption='Thinking…')
 
         recent_snip = self._recent_voice_context_snippet()
-        mem_ctx, allow_mem_write = self._search_voice_memory_context(
-            recent_snip or str(getattr(self, 'last_question', '') or '') or 'user preferences and facts'
-        )
+        is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
+        allow_mem_write = not is_no_history
 
         worker = VoiceCompanionWorker(
             wav_path,
@@ -11825,10 +14557,11 @@ class PalaceWindow(QMainWindow):
             background_status=str(getattr(self, 'pending_status_text', '') or ''),
             background_question=str(getattr(self, 'last_question', '') or ''),
             recent_chat_snippet=recent_snip,
-            memory_context=mem_ctx,
+            memory_context='',
             allow_memory_write=allow_mem_write,
             session_gen=req_gen,
             memory_db_path=self._memory_db_path(),
+            include_palace_code=bool(self.palace_code_btn.isChecked()),
             parent=self,
         )
         self._voice_threads.append(worker)
@@ -11841,13 +14574,14 @@ class PalaceWindow(QMainWindow):
                 pass
             worker.deleteLater()
 
-        def _on_vw_done(decision, transcript: str, gen=req_gen):
+        def _on_vw_done(decision_payload, transcript: str, gen=req_gen, can_write=allow_mem_write):
             if gen != int(getattr(self, '_voice_session_gen', 0)):
                 return
             text = (transcript or '').strip()
             if not text:
+                self._sync_voice_avatar_status(state='listening', caption='Listening…')
                 return
-            if decision is None:
+            if decision_payload is None:
                 self.composer.setPlainText(text)
                 if self.worker is None:
                     self._turn_triggered_by_live_voice = True
@@ -11856,27 +14590,21 @@ class PalaceWindow(QMainWindow):
                     self.queue_next_turn()
                 return
 
-            saved_mems = self._save_voice_memories(
-                list(getattr(decision, 'memory_saves', None) or []),
-                author=getattr(decision, 'provider_used', '') or 'voice_companion',
-            )
-            disp_reply = decision.spoken_reply
-            if saved_mems:
-                badges = ' · '.join(f'🧠 Saved: "{m["summary"]}"' for m in saved_mems)
-                disp_reply = f'{disp_reply}\n\n{badges}'
-
             user_disp = f'🎙 {text}'
-            self._deliver_voice_companion_reply(
+            beats = self._deliver_voice_quorum_decisions(
+                decision_payload,
                 user_disp=user_disp,
                 raw_user_for_store=user_disp,
-                disp_reply=disp_reply,
-                spoken_reply=decision.spoken_reply,
-                decision=decision,
+                raw_user_for_profile=text,
                 req_gen=gen,
+                talk_only=talk_only,
                 append_user_msg=True,
-                persist_exchange=bool(talk_only or decision.action != 'delegate'),
-                speak_aloud=True,
+                allow_mem_write=can_write,
             )
+            if not beats:
+                self._sync_voice_avatar_status(state='listening', caption='Listening…')
+                return
+            decision = beats[0]
 
             if (not talk_only) and decision.action == 'delegate' and decision.delegated_task:
                 task_text = decision.delegated_task.strip()
@@ -11948,6 +14676,10 @@ class PalaceWindow(QMainWindow):
                 icon_prefix='✕ 🎙',
                 force=True,
                 render=True,
+            )
+            self._sync_voice_avatar_status(
+                state='listening',
+                caption=f'⚠ {str(err or "Voice error")[:90]}',
             )
 
         worker.completed.connect(_on_vw_done)
@@ -12031,9 +14763,12 @@ class PalaceWindow(QMainWindow):
 
             self.copy_button.setEnabled(bool(self.last_answer))
             if not messages:
+                t_welcome = load_theme_dict(getattr(self, 'active_theme', 'dark'))
+                w_pri = str(t_welcome.get('text_primary') or '#e6edf7')
+                w_mut = str(t_welcome.get('text_muted') or '#8b949e')
                 self.chat.setHtml(
-                    '<div style="margin-top:48px; color:#e6edf7; font-size:20px; font-weight:600;">What are we working on?</div>'
-                    '<p style="color:#8b949e; font-size:13px; margin-top:6px;">'
+                    f'<div style="margin-top:48px; color:{w_pri}; font-size:20px; font-weight:600;">What are we working on?</div>'
+                    f'<p style="color:{w_mut}; font-size:13px; margin-top:6px;">'
                     'Ask anything, paste text or screenshots (Ctrl+V), or drag &amp; drop documents and pictures.<br>'
                     'Create Projects in the left sidebar without needing a disk folder.'
                     '</p>'
@@ -12269,10 +15004,11 @@ class PalaceWindow(QMainWindow):
             if active_contribs:
                 c0 = active_contribs[0]
                 m_part = f' <span style="color:#8b949e; font-weight:500;">({html.escape(m_str)})</span>' if m_str else ''
+                c0_disp = provider_display_name(c0, config_path=self.config_path)
                 brain_part = (
                     f'<span style="color:{provider_color(c0)}; font-size:12px; font-weight:700;" '
-                    f'title="Thinking AI: {html.escape(provider_display_name(c0))}">'
-                    f'🧠 {provider_icon(c0)} {html.escape(provider_display_name(c0))}{m_part}</span>'
+                    f'title="Thinking AI: {html.escape(c0_disp)}">'
+                    f'🧠 {provider_icon(c0)} {html.escape(c0_disp)}{m_part}</span>'
                 )
             else:
                 brain_part = '<span style="color:#38bdf8; font-size:12px; font-weight:600;" title="Thinking AI: Voice Companion">🧠 Voice Companion</span>'
@@ -12291,27 +15027,35 @@ class PalaceWindow(QMainWindow):
             if chat_mode == 'names_only':
                 badges_html = '&nbsp;&nbsp;'.join(
                     f'<span style="color:{provider_color(c)}; font-size:12px; font-weight:600;" '
-                    f'title="{html.escape(provider_display_name(c))}">'
-                    f'{html.escape(provider_display_name(c))}</span>'
+                    f'title="{html.escape(provider_display_name(c, config_path=self.config_path))}">'
+                    f'{html.escape(provider_display_name(c, config_path=self.config_path))}</span>'
                     for c in active_contribs
                 )
             elif chat_mode == 'icons_and_names':
                 badges_html = '&nbsp;&nbsp;'.join(
                     f'<span style="color:{provider_color(c)}; font-size:12px; font-weight:600;" '
-                    f'title="{html.escape(provider_display_name(c))}">'
-                    f'{provider_icon(c)} {html.escape(provider_display_name(c))}</span>'
+                    f'title="{html.escape(provider_display_name(c, config_path=self.config_path))}">'
+                    f'{provider_icon(c)} {html.escape(provider_display_name(c, config_path=self.config_path))}</span>'
                     for c in active_contribs
                 )
             else:
                 # Default: icons ONLY under the combined reply
                 badges_html = '&nbsp;&nbsp;&nbsp;'.join(
                     f'<span style="color:{provider_color(c)}; font-size:13.5px; font-weight:700;" '
-                    f'title="{html.escape(provider_display_name(c))}">'
+                    f'title="{html.escape(provider_display_name(c, config_path=self.config_path))}">'
                     f'{provider_icon(c)}</span>'
                     for c in active_contribs
                 )
         else:
             badges_html = '<span style="color:#3b82f6; font-size:13.5px;" title="Palace">◆</span>'
+
+        is_light_chat = _is_light_theme(t_dict)
+        asst_txt_col = str(t_dict.get('text_primary') or ('#1f2328' if is_light_chat else '#e6edf3'))
+        asst_sec_col = str(t_dict.get('text_secondary') or ('#24292f' if is_light_chat else '#c9d1d9'))
+        asst_mut_col = str(t_dict.get('text_muted') or ('#57606a' if is_light_chat else '#8b949e'))
+        step_bg_col = str(t_dict.get('bg_card') or ('#f6f8fa' if is_light_chat else '#0d1117'))
+        div_col = str(t_dict.get('border') or ('#d0d7de' if is_light_chat else '#161b22'))
+        act_tid = str(getattr(self, 'active_theme', 'dark') or 'dark')
 
         # Understated ChatGPT/Antigravity-style collapsible thinking line ("Worked across N AIs · Peer deliberation ›")
         delib_html = ''
@@ -12324,10 +15068,10 @@ class PalaceWindow(QMainWindow):
             mode_label = 'Peer deliberation' if has_peer else 'Individual AI responses'
             action_hint = 'Hide thinking' if is_open else f'{step_count} steps · Show thinking'
             delib_html = (
-                f'<div style="padding-bottom:6px; margin-bottom:8px; border-bottom:1px solid #161b22;">'
-                f'<a href="toggle-peer:{item_idx}" style="color:#8b949e; text-decoration:none; font-size:12px; font-weight:500;">'
+                f'<div style="padding-bottom:6px; margin-bottom:8px; border-bottom:1px solid {div_col};">'
+                f'<a href="toggle-peer:{item_idx}" style="color:{asst_mut_col}; text-decoration:none; font-size:12px; font-weight:500;">'
                 f'Worked across {len(active_contribs)} AIs · {mode_label} '
-                f'<span style="color:#6e7681;">({action_hint})</span> {arrow}</a>'
+                f'<span style="color:{asst_mut_col};">({action_hint})</span> {arrow}</a>'
                 f'</div>'
             )
             if is_open:
@@ -12338,12 +15082,12 @@ class PalaceWindow(QMainWindow):
                     ph_label = f'{sp.upper()} (PEER REPLY)' if ph == 'peer_reply' else sp.upper()
                     sp_color = provider_color(sp)
                     sp_icon = provider_icon(sp)
-                    sp_text = format_markdown_and_drawings(str(msg.get('content', '')))
+                    sp_text = format_markdown_and_drawings(str(msg.get('content', '')), theme_id=act_tid)
                     step_blocks.append(
-                        f'<table width="100%" cellspacing="0" cellpadding="8" style="margin-top:6px; background:#0d1117; border-left:2px solid {sp_color};">'
+                        f'<table width="100%" cellspacing="0" cellpadding="8" style="margin-top:6px; background:{step_bg_col}; border-left:2px solid {sp_color};">'
                         f'<tr><td>'
                         f'<div style="color:{sp_color}; font-size:11px; font-weight:700;">{sp_icon} {html.escape(ph_label)}</div>'
-                        f'<div style="color:#c9d1d9; font-size:12.5px; margin-top:3px; line-height:1.45;">{sp_text}</div>'
+                        f'<div style="color:{asst_sec_col}; font-size:12.5px; margin-top:3px; line-height:1.45;">{sp_text}</div>'
                         f'</td></tr></table>'
                     )
                 expanded_steps_html = (
@@ -12360,26 +15104,26 @@ class PalaceWindow(QMainWindow):
                 )
                 meta_tag = f'{hidden_tags} · {meta_tag}'.strip(' ·')
 
-        rendered_body = format_markdown_and_drawings(content)
+        rendered_body = format_markdown_and_drawings(content, theme_id=act_tid)
         test_meta_html = ''
         if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
-            test_meta_html = f'<div style="font-size:1px; color:#0b0d10;">{html.escape(meta_tag)}</div>'
+            test_meta_html = f'<div style="font-size:1px; color:{t_dict.get("bg_main", "#0b0d10")};">{html.escape(meta_tag)}</div>'
 
         reply_idx = max(0, len(self.reply_archive) - 1)
         ts_str = format_time_only(item.get('timestamp'))
-        ts_tag = f'&nbsp;&nbsp;<span style="color:#8b949e; font-size:11px;">· {ts_str}</span>' if ts_str else ''
+        ts_tag = f'&nbsp;&nbsp;<span style="color:{asst_mut_col}; font-size:11px;">· {ts_str}</span>' if ts_str else ''
         actions_row_html = (
-            f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:10px; border-top:1px solid #161b22; padding-top:6px;">'
+            f'<table width="100%" cellspacing="0" cellpadding="0" style="margin-top:10px; border-top:1px solid {div_col}; padding-top:6px;">'
             f'<tr>'
             f'<td align="left" style="vertical-align:middle;">{badges_html}{ts_tag}</td>'
-            f'<td align="right" style="vertical-align:middle; margin-right:6px; color:#6e7681; font-size:11.5px;">'
-            f'<a href="speak:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Read response aloud">🔊 Speak</a>'
+            f'<td align="right" style="vertical-align:middle; margin-right:6px; color:{asst_mut_col}; font-size:11.5px;">'
+            f'<a href="speak:{reply_idx}" style="color:{asst_mut_col}; text-decoration:none;" title="Read response aloud">🔊 Speak</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
-            f'<a href="copy:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Copy reply">⧉ Copy</a>'
+            f'<a href="copy:{reply_idx}" style="color:{asst_mut_col}; text-decoration:none;" title="Copy reply">⧉ Copy</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
-            f'<a href="up:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Helpful">↑ Helpful</a>'
+            f'<a href="up:{reply_idx}" style="color:{asst_mut_col}; text-decoration:none;" title="Helpful">↑ Helpful</a>'
             f'&nbsp;&nbsp;&nbsp;&nbsp;'
-            f'<a href="down:{reply_idx}" style="color:#6e7681; text-decoration:none;" title="Needs improvement">↓ Unhelpful</a>'
+            f'<a href="down:{reply_idx}" style="color:{asst_mut_col}; text-decoration:none;" title="Needs improvement">↓ Unhelpful</a>'
             f'</td>'
             f'</tr></table>'
         )
@@ -12389,7 +15133,7 @@ class PalaceWindow(QMainWindow):
             f'{handoff_banner_html}'
             f'{delib_html}'
             f'{expanded_steps_html}'
-            f'<div style="color:#e6edf3; font-size:13.5px;">{rendered_body}</div>'
+            f'<div style="color:{asst_txt_col}; font-size:13.5px;">{rendered_body}</div>'
             f'{actions_row_html}'
             f'{test_meta_html}'
             f'</div>'
@@ -12636,27 +15380,35 @@ class PalaceWindow(QMainWindow):
                 self.show_notice(f'Could not delete file: {exc}')
 
     def _check_storage_warnings(self):
-        try:
-            from palace_config import compute_palace_storage_stats, format_storage_mb_label
-            st = compute_palace_storage_stats(self.config_path)
-            if st['normal_state'] == 'exceeded':
-                cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
-                self.show_notice(
-                    f"⚠ Normal Mode storage cap reached ({st['normal_total_mb']:.1f} MB / {cap_lbl}). "
-                    f"Open Settings → Storage & Backup to delete old files, raise your cap, or move to another drive."
-                )
-            elif st['normal_state'] == 'warning':
-                cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
-                self.show_notice(
-                    f"⚠ Approaching Normal Mode storage limit ({st['normal_pct']:.0f}% of {cap_lbl} used)."
-                )
-            elif st['idle_state'] in {'exceeded', 'warning'}:
-                cap_lbl = format_storage_mb_label(st['idle_cap_mb'])
-                self.show_notice(
-                    f"⚠ Idle Memory storage is at {st['idle_pct']:.0f}% of {cap_lbl} ({st['idle_total_mb']:.1f} MB used)."
-                )
-        except Exception:
-            pass
+        cfg_p = self.config_path
+
+        def _worker():
+            try:
+                from palace_config import compute_palace_storage_stats, format_storage_mb_label
+                st = compute_palace_storage_stats(cfg_p)
+                notice_msg = ''
+                if st['normal_state'] == 'exceeded':
+                    cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
+                    notice_msg = (
+                        f"⚠ Normal Mode storage cap reached ({st['normal_total_mb']:.1f} MB / {cap_lbl}). "
+                        f"Open Settings → Storage & Backup to delete old files, raise your cap, or move to another drive."
+                    )
+                elif st['normal_state'] == 'warning':
+                    cap_lbl = format_storage_mb_label(st['normal_cap_mb'])
+                    notice_msg = (
+                        f"⚠ Approaching Normal Mode storage limit ({st['normal_pct']:.0f}% of {cap_lbl} used)."
+                    )
+                elif st['idle_state'] in {'exceeded', 'warning'}:
+                    cap_lbl = format_storage_mb_label(st['idle_cap_mb'])
+                    notice_msg = (
+                        f"⚠ Idle Memory storage is at {st['idle_pct']:.0f}% of {cap_lbl} ({st['idle_total_mb']:.1f} MB used)."
+                    )
+                if notice_msg:
+                    self._ui_call_signal.emit(lambda msg=notice_msg: self.show_notice(msg))
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True, name='FairybreadStorageCheck').start()
 
     def _open_image_viewer_dialog(self, img_path: str):
         path_obj = Path(img_path)
@@ -12670,6 +15422,7 @@ class PalaceWindow(QMainWindow):
             self.show_notice(f'Could not load image: {img_path}')
             return
         dlg = QDialog(self)
+        _apply_windows_dialog_flags(dlg, resizable=True, allow_minimize=True)
         dlg.setWindowTitle(f'Fairybread Visual Viewer — {path_obj.name}')
         dlg.resize(min(1180, pix.width() + 60), min(780, pix.height() + 90))
         lay = QVBoxLayout(dlg)
@@ -12746,6 +15499,52 @@ class PalaceWindow(QMainWindow):
             self._update_inline_status_banner()
             self.set_busy(False)
 
+    def _restore_all_configured_agents_active(self):
+        """Ensure every configured AI provider is active and visually lit when starting a new conversation."""
+        from local_cli_provider import CLI_PROVIDER_TO_PLATFORM
+        store = CredentialStore()
+        try:
+            has_or = store.has_api_key('openrouter')
+        except Exception:
+            has_or = False
+        try:
+            saved_cfgs = load_provider_configs(self.config_path) if self.config_path.exists() else {}
+        except Exception:
+            saved_cfgs = {}
+
+        self.max_ais_per_turn = 0
+        for name in list(self.provider_states.keys()):
+            if name in CLI_PROVIDER_TO_PLATFORM:
+                if self.provider_states.get(name):
+                    self.set_provider_status(name, 'Enabled', provider_color(name))
+                continue
+            p_cfg = saved_cfgs.get(name, {}) if isinstance(saved_cfgs, dict) else {}
+            is_cfg_enabled = bool(p_cfg.get('enabled', False))
+            has_direct_key = False
+            try:
+                has_direct_key = store.has_api_key(name)
+            except Exception:
+                has_direct_key = False
+            should_be_active = bool(self.provider_states.get(name) is True or is_cfg_enabled or has_direct_key or (has_or and name in saved_cfgs))
+            if should_be_active:
+                self.provider_states[name] = True
+                try:
+                    if self.config_path.exists() and not is_cfg_enabled:
+                        set_provider_enabled(name, True, config_path=self.config_path)
+                except Exception:
+                    pass
+                self.set_provider_status(name, 'Enabled', provider_color(name))
+        self._relayout_agent_bar()
+        self._update_ai_pill_text()
+
+    def _refresh_enabled_agent_chips_ready(self):
+        """Clear transient turn-warning chip states so all enabled AIs show clean active colors."""
+        for name, enabled in self.provider_states.items():
+            if enabled is True:
+                self.set_provider_status(name, 'Enabled', provider_color(name))
+        self._relayout_agent_bar()
+        self._update_ai_pill_text()
+
     @Slot()
     def new_conversation(self):
         if not self.confirm_switch():
@@ -12756,6 +15555,7 @@ class PalaceWindow(QMainWindow):
             if self.workspace_tabs.currentIndex() != 0:
                 self.workspace_tabs.setCurrentIndex(0)
             self.session_id = self.store.create()
+            self._restore_all_configured_agents_active()
             self.reset_draft()
             self.refresh_projects()
             self.refresh_sessions()
@@ -12809,6 +15609,7 @@ class PalaceWindow(QMainWindow):
             ):
                 self.store.set_unread(key, False)
             self.session_id = key
+            self._refresh_enabled_agent_chips_ready()
             self.reset_draft()
             self.refresh_projects()
             self.refresh_sessions()
@@ -12839,9 +15640,9 @@ class PalaceWindow(QMainWindow):
     def add_pasted_image(self, raw_bytes: bytes):
         if self.worker is not None or not raw_bytes:
             return
-        if len(self.attachments) >= 5:
-            self.show_notice('Attach up to five files per message.')
-            return
+        # No hard cap on staged images. Context budget is enforced at send
+        # time in files_ready()/send path via MAX_TOTAL_CHARS so unlimited
+        # staging never silently drops what the user dragged in.
         try:
             idx = sum(1 for a in self.attachments if getattr(a, 'kind', '') == 'image') + 1
             item = attachment_from_image_bytes(raw_bytes, filename=f'pasted-image-{idx}.png')
@@ -12863,9 +15664,9 @@ class PalaceWindow(QMainWindow):
                 known.add(key)
         if not selected:
             return
-        if len(self.attachments) + len(selected) > 5:
-            self.show_notice('Attach up to five files per message.')
-            return
+        # Unlimited multi-batch staging. files_ready() enforces MAX_TOTAL_CHARS
+        # at ingest so over-budget items surface as a notice rather than being
+        # silently dropped, matching the attachment_service.py budgets.
 
         def extract():
             items, errors = [], []
@@ -12882,10 +15683,7 @@ class PalaceWindow(QMainWindow):
     def files_ready(self, payload):
         items, errors = payload
         for item in items:
-            if sum(len(a.text) for a in self.attachments) + len(item.text) > MAX_TOTAL_CHARS:
-                errors.append(f'{item.name}: total attachment limit is 48,000 characters.')
-            else:
-                self.attachments.append(item)
+            self.attachments.append(item)
         self.refresh_attachments()
         self.status_label.setText('Attachments ready. They are sent only when you press Send.')
         if errors:
@@ -12979,17 +15777,95 @@ class PalaceWindow(QMainWindow):
             self.refresh_attachments()
 
     def dragEnterEvent(self, event):
-        if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+        md = event.mimeData()
+        if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
             event.acceptProposedAction()
+            return
+        if self.worker is None and md.hasImage():
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
-        if self.worker is None and event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+        md = event.mimeData()
+        if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
             event.acceptProposedAction()
+            return
+        if self.worker is None and md.hasImage():
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
 
     def dropEvent(self, event):
-        if self.worker is None and event.mimeData().hasUrls():
-            self.add_files([u.toLocalFile() for u in event.mimeData().urls() if u.isLocalFile()])
-            event.acceptProposedAction()
+        md = event.mimeData()
+        if self.worker is not None:
+            return
+        if md.hasUrls():
+            local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+            if local:
+                self.add_files(local)
+                event.acceptProposedAction()
+                return
+        if md.hasImage():
+            # Route image drag (from browser/Explorer thumbnails) through the
+            # same paste pipeline so count and format handling stays unified.
+            try:
+                img = md.imageData()
+                img = img if hasattr(img, 'save') else QImage(img)
+                if not img.isNull():
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    img.save(buf, 'PNG')
+                    self.add_pasted_image(bytes(buf.data()))
+                    buf.close()
+                    event.acceptProposedAction()
+                    return
+            except Exception as exc:
+                self.show_notice(f'Could not read dropped image: {exc}')
+                return
+        super().dropEvent(event)
+
+    def eventFilter(self, obj, ev):
+        """Window-level file-drop forwarder.
+
+        ChatBrowser (QTextBrowser) and child frames like
+        staged_attachments_frame mark themselves as acceptDrops and swallow
+        subsequent drags, so drops targeted at those widgets never reach
+        PalaceWindow. This filter is installed on those children and re-routes
+        any local file / image drop into add_files / add_pasted_image.
+        """
+        t = ev.type()
+        if t == QEvent.Type.DragEnter or t == QEvent.Type.DragMove:
+            md = ev.mimeData()
+            if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+                ev.acceptProposedAction()
+                return True
+            if self.worker is None and md.hasImage():
+                ev.acceptProposedAction()
+                return True
+        elif t == QEvent.Type.Drop:
+            md = ev.mimeData()
+            if self.worker is None and md.hasUrls():
+                local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
+                if local:
+                    self.add_files(local)
+                    ev.acceptProposedAction()
+                    return True
+            if self.worker is None and md.hasImage():
+                try:
+                    img = md.imageData()
+                    img = img if hasattr(img, 'save') else QImage(img)
+                    if not img.isNull():
+                        buf = QBuffer()
+                        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                        img.save(buf, 'PNG')
+                        self.add_pasted_image(bytes(buf.data()))
+                        buf.close()
+                        ev.acceptProposedAction()
+                        return True
+                except Exception:
+                    pass
+        return super().eventFilter(obj, ev)
 
     def _show_slash_commands_menu(self):
         menu = QMenu(self)
@@ -13274,7 +16150,8 @@ class PalaceWindow(QMainWindow):
                 )
                 return
             recent_snip = self._recent_voice_context_snippet()
-            mem_ctx, allow_mem_write = self._search_voice_memory_context(question)
+            is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
+            allow_mem_write = not is_no_history
             req_gen = int(getattr(self, '_voice_session_gen', 0))
             self.last_question = question
             self.composer.clear()
@@ -13287,10 +16164,11 @@ class PalaceWindow(QMainWindow):
                 companion_enabled=True,
                 talk_only=True,
                 recent_chat_snippet=recent_snip,
-                memory_context=mem_ctx,
+                memory_context='',
                 allow_memory_write=allow_mem_write,
                 session_gen=req_gen,
                 memory_db_path=self._memory_db_path(),
+                include_palace_code=bool(self.palace_code_btn.isChecked()),
                 parent=self,
             )
             self._voice_threads.append(worker)
@@ -13303,32 +16181,24 @@ class PalaceWindow(QMainWindow):
                     pass
                 _w.deleteLater()
 
-            def _on_talk_done(decision, _transcript: str, q_text=question, gen=req_gen):
+            def _on_talk_done(decision_payload, _transcript: str, q_text=question, gen=req_gen, can_write=allow_mem_write):
                 if gen != int(getattr(self, '_voice_session_gen', 0)):
                     return
-                if decision is None or not str(getattr(decision, 'spoken_reply', '') or '').strip():
+                if decision_payload is None:
                     return
-                saved_mems = self._save_voice_memories(
-                    list(getattr(decision, 'memory_saves', None) or []),
-                    author=getattr(decision, 'provider_used', '') or 'voice_companion',
-                )
-                reply = decision.spoken_reply
-                disp_reply = reply
-                if saved_mems:
-                    badges = ' · '.join(f'🧠 Saved: "{m["summary"]}"' for m in saved_mems)
-                    disp_reply = f'{reply}\n\n{badges}'
-                self._deliver_voice_companion_reply(
+                beats = self._deliver_voice_quorum_decisions(
+                    decision_payload,
                     user_disp=q_text,
                     raw_user_for_store=q_text,
-                    disp_reply=disp_reply,
-                    spoken_reply=reply,
-                    decision=decision,
+                    raw_user_for_profile=q_text,
                     req_gen=gen,
+                    talk_only=True,
                     append_user_msg=False,
-                    persist_exchange=True,
-                    speak_aloud=True,
+                    allow_mem_write=can_write,
                 )
-                self.last_answer = disp_reply
+                if not beats:
+                    return
+                self.last_answer = '\n\n'.join(b.spoken_reply for b in beats)
                 self.copy_button.setEnabled(True)
                 self.status_label.setText('🎙️ Talk Mode Only · Replied')
 
@@ -13343,7 +16213,7 @@ class PalaceWindow(QMainWindow):
             worker.start()
             return
         try:
-            prompt = compose_question(question, self.attachments)
+            prompt = compose_question(question, self.attachments, allow_unlimited=True)
         except ValueError as exc:
             self.show_notice(str(exc))
             return
@@ -13484,7 +16354,7 @@ class PalaceWindow(QMainWindow):
                 self.set_provider_status(
                     prov,
                     'Responded' if ok else 'Limited',
-                    '#90d7c1' if ok else '#e2b96b',
+                    '#90d7c1' if ok else '#6e7681',
                 )
             self.pending_status_text = f'Round {rnd}: {done_c}/{tot_c} AIs responded ({provider_display_name(prov)} finished)'
             self._update_inline_status_banner()
@@ -13647,20 +16517,21 @@ class PalaceWindow(QMainWindow):
                 continue
             response = result.provider_results.get(name)
             if response is None:
-                self.set_provider_status(name, 'Inactive', '#6e7681', 'Skipped on this turn')
+                # Smart-routing / 1-AI fast-path intentionally skipped this AI on this turn — keep it active & lit!
+                self.set_provider_status(name, 'Enabled', provider_color(name))
             elif response.succeeded:
                 self.set_provider_status(name, 'Responded', '#90d7c1')
             else:
                 error = response.error or 'Unknown provider error'
                 err_low = error.lower()
                 if 'straggler cutoff' in err_low:
-                    chip_status, chip_col = 'Cutoff', '#e2b96b'
+                    chip_status, chip_col = 'Cutoff', '#6e7681'
                 elif 'timed out' in err_low or 'timeout' in err_low:
-                    chip_status, chip_col = 'Timeout', '#e2b96b'
+                    chip_status, chip_col = 'Timeout', '#6e7681'
                 elif any(w in err_low for w in ('429', 'rate', 'quota')):
-                    chip_status, chip_col = 'Limited', '#e2b96b'
+                    chip_status, chip_col = 'Limited', '#6e7681'
                 else:
-                    chip_status, chip_col = 'Failed', '#ff9595'
+                    chip_status, chip_col = 'Failed', '#6e7681'
                 self.set_provider_status(name, chip_status, chip_col, error)
                 failed_notes.append(f'{provider_display_name(name)} ({error[:75]})')
         warnings = [result.context_error, result.memory_error]
@@ -13902,9 +16773,22 @@ class PalaceWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent):
         force_quit = bool(getattr(self, '_force_quit', False))
         if not force_quit and self.worker is not None:
-            self.show_notice('A request is still running. Please let it finish before closing Fairybread.')
-            event.ignore()
-            return
+            if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+                self.show_notice('A request is still running. Please let it finish before closing Fairybread.')
+                event.ignore()
+                return
+            ans = QMessageBox.question(
+                self,
+                'AI Request Running',
+                'An AI request is still running.\n\nStop the active request and exit Fairybread now?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            force_quit = True
+            self._force_quit = True
         if not force_quit and not self.confirm_switch():
             event.ignore()
             return
