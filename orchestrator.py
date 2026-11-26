@@ -523,6 +523,10 @@ _INTERNAL_EMAIL_TAG_RE = re.compile(
     r"\[(EMAIL_TEST|EMAIL_SEARCH|EMAIL_DRAFT|EMAIL_SEND)\b([^\]]*)\]",
     re.IGNORECASE | re.DOTALL,
 )
+_INTERNAL_SERVICE_TAG_RE = re.compile(
+    r"\[(JELLYFIN_STATUS|JELLYFIN_SEARCH|JELLYFIN_REFRESH|SERVICE_API|SET_VOICE_SENSITIVITY|ADD_IGNORED_NOISE)\b([^\]]*)\]",
+    re.IGNORECASE | re.DOTALL,
+)
 _INTERNAL_CODE_TOOL_RE = re.compile(
     r"\[(?:TOOL:|FILE_LIST\b|FILE_READ\b)[^\]]*\]",
     re.IGNORECASE | re.DOTALL,
@@ -547,13 +551,18 @@ def _is_technical_or_code_request(
 
 def _has_internal_tool_tag(text: str) -> bool:
     raw = text or ""
-    return bool(_INTERNAL_EMAIL_TAG_RE.search(raw) or _INTERNAL_CODE_TOOL_RE.search(raw))
+    return bool(
+        _INTERNAL_EMAIL_TAG_RE.search(raw)
+        or _INTERNAL_SERVICE_TAG_RE.search(raw)
+        or _INTERNAL_CODE_TOOL_RE.search(raw)
+    )
 
 
 def _strip_internal_tool_plumbing(text: str, *, keep_code_tools: bool = False) -> str:
     """Remove internal Fairybread tool call tags and raw source/workspace dumps from user-visible text."""
     out = str(text or "")
     out = _INTERNAL_EMAIL_TAG_RE.sub("", out)
+    out = _INTERNAL_SERVICE_TAG_RE.sub("", out)
     if not keep_code_tools:
         out = _INTERNAL_CODE_TOOL_RE.sub("", out)
         out = re.sub(
@@ -648,6 +657,62 @@ def _execute_internal_agent_tools(
                     outputs.append(f"[INTERNAL EMAIL SEND RESULT]: ok={ok_s} | {msg_s}")
         except Exception as exc:
             outputs.append(f"[INTERNAL EMAIL ERROR]: {exc}")
+
+    # 1b. Native App & Service API connectors ([JELLYFIN_STATUS], [JELLYFIN_SEARCH], [JELLYFIN_REFRESH], [SERVICE_API])
+    for m in _INTERNAL_SERVICE_TAG_RE.finditer(raw):
+        tag_kind = m.group(1).upper()
+        attrs = _parse_tag_attrs(m.group(2) or "")
+        did_run = True
+        try:
+            from service_connectors import (
+                call_service_connector,
+                jellyfin_get_status,
+                jellyfin_refresh_library,
+                jellyfin_search_items,
+            )
+            if tag_kind == "JELLYFIN_STATUS":
+                outputs.append(jellyfin_get_status())
+            elif tag_kind == "JELLYFIN_SEARCH":
+                q = attrs.get("query") or "recent"
+                outputs.append(jellyfin_search_items(q))
+            elif tag_kind == "JELLYFIN_REFRESH":
+                outputs.append(jellyfin_refresh_library())
+            elif tag_kind == "SERVICE_API":
+                sid = attrs.get("service") or "jellyfin"
+                meth = attrs.get("method") or "GET"
+                path_s = attrs.get("path") or "/"
+                res_s = call_service_connector(sid, method=meth, path=path_s)
+                outputs.append(
+                    f"[INTERNAL SERVICE_API RESULT ({sid} {meth} {path_s})]: "
+                    f"ok={res_s.get('ok')} status={res_s.get('status_code')} "
+                    f"error={res_s.get('error')} body={str(res_s.get('text') or '')[:6000]}"
+                )
+            elif tag_kind == "SET_VOICE_SENSITIVITY":
+                from voice_service import save_voice_settings
+                v_upd: dict[str, Any] = {}
+                raw_lvl = attrs.get("level") or attrs.get("sensitivity") or attrs.get("value") or ""
+                if raw_lvl:
+                    try:
+                        v_upd["interruption_sensitivity"] = max(0, min(100, int(float(raw_lvl.rstrip("%")))))
+                    except (TypeError, ValueError):
+                        pass
+                raw_bi = (attrs.get("barge_in") or "").lower()
+                if raw_bi in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+                    v_upd["barge_in_enabled"] = raw_bi in {"true", "1", "on", "yes"}
+                raw_ign = (attrs.get("ignore_fillers") or attrs.get("ignore_noises") or "").lower()
+                if raw_ign in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+                    v_upd["ignore_vocal_noises"] = raw_ign in {"true", "1", "on", "yes"}
+                if v_upd:
+                    save_voice_settings(v_upd)
+                    outputs.append(f"[INTERNAL VOICE SENSITIVITY UPDATED]: {v_upd}")
+            elif tag_kind == "ADD_IGNORED_NOISE":
+                from voice_service import add_custom_ignored_noise
+                ph = attrs.get("phrase") or attrs.get("noise") or attrs.get("sound") or attrs.get("query") or ""
+                if ph:
+                    updated_list = add_custom_ignored_noise(ph)
+                    outputs.append(f"[INTERNAL IGNORED NOISE ADDED]: '{ph}' (custom list: {', '.join(updated_list)})")
+        except Exception as exc:
+            outputs.append(f"[INTERNAL SERVICE CONNECTOR ERROR]: {exc}")
 
     # 2. Internal source-code / workspace read tools (silent, never dumped raw to ordinary users)
     if allow_code_tools and "[TOOL:" in raw:
@@ -1365,6 +1430,24 @@ Instructions:
             if email_q is not None and email_configured:
                 email_res = exhaustive_search_emails(email_q)
                 extra_blocks.append(email_res.format_for_council_prompt())
+        except Exception:
+            pass
+
+        try:
+            from service_connectors import (
+                format_service_connectors_status_for_prompt,
+                list_active_service_connectors,
+            )
+            active_svcs = list_active_service_connectors()
+            mentions_service = bool(
+                re.search(
+                    r"\b(?:jellyfin|plex|tmdb|tvdb|home\s+assistant|sonarr|radarr|media\s+server|nfo)\b",
+                    effective_question,
+                    re.IGNORECASE,
+                )
+            )
+            if active_svcs or mentions_service:
+                extra_blocks.append(format_service_connectors_status_for_prompt())
         except Exception:
             pass
 

@@ -967,13 +967,32 @@ class VoiceCompanionWorker(QThread):
     def run(self):
         try:
             transcript = self.text_input.strip()
+            audio_dur_sec = 0.0
             if not transcript:
                 if self.wav_path is None:
                     self.completed.emit(None, "")
                     return
-                from voice_service import transcribe_audio_file
-
+                from voice_service import (
+                    _log_voice_diagnostic,
+                    is_unconscious_human_noise_or_filler,
+                    transcribe_audio_file,
+                )
+                try:
+                    import wave as _wave
+                    with _wave.open(str(self.wav_path), "rb") as _wf:
+                        audio_dur_sec = float(_wf.getnframes()) / float(max(1, _wf.getframerate() or 16000))
+                except Exception:
+                    audio_dur_sec = 0.0
                 transcript = (transcribe_audio_file(self.wav_path) or "").strip()
+                if transcript:
+                    should_ign, ign_why = is_unconscious_human_noise_or_filler(
+                        transcript,
+                        audio_dur_sec=audio_dur_sec,
+                    )
+                    if should_ign:
+                        _log_voice_diagnostic(f"Ignored unconscious vocal noise/filler in Talk Mode: {ign_why}")
+                        self.completed.emit(None, "")
+                        return
             if not transcript:
                 self.completed.emit(None, "")
                 return
@@ -2282,6 +2301,8 @@ class ManageAIsDialog(QDialog):
             getattr(self, 'persona_evolve_check', None),
             getattr(self, 'persona_blueprint_edit', None),
             getattr(self, 'voice_preset_manage_combo', None),
+            getattr(self, 'service_connector_combo', None),
+            getattr(self, 'service_connector_key_edit', None),
         }
         for chk in self.pages.findChildren(QCheckBox):
             if chk not in excluded:
@@ -3925,6 +3946,37 @@ class ManageAIsDialog(QDialog):
         pause_row.addWidget(self.silence_timeout_slider, 1)
         pause_row.addWidget(self.silence_timeout_label)
         m_form.addRow('Live Voice Auto-Send Pause:', pause_row)
+
+        sens_row = QHBoxLayout()
+        self.interruption_sens_slider = QSlider(Qt.Orientation.Horizontal)
+        self.interruption_sens_slider.setRange(0, 100)
+        self.interruption_sens_slider.setToolTip(
+            'Controls how easily sounds interrupt AI speech (Barge-in) or trigger recording.\n'
+            '• 15–35% (Relaxed / Recommended): Ignores coughs, throat clears, chair noises, and brief sounds.\n'
+            '• 50% (Balanced): Standard voice interruption.\n'
+            '• 80–100% (High): Hair-trigger instant interruption.\n'
+            'Tip: You can also tell the AI out loud: "Lower your interruption sensitivity to 20%" and it will move this slider for you!'
+        )
+        cur_sens = int(v_cfg.get('interruption_sensitivity', 35))
+        self.interruption_sens_slider.setValue(cur_sens)
+
+        def _format_sens_tag(val: int) -> str:
+            if val <= 25:
+                return f'{val}% (Noise-Immune)'
+            if val <= 45:
+                return f'{val}% (Relaxed)'
+            if val <= 70:
+                return f'{val}% (Balanced)'
+            return f'{val}% (Hair-Trigger)'
+
+        self.interruption_sens_label = QLabel(_format_sens_tag(cur_sens))
+        self.interruption_sens_label.setFixedWidth(128)
+        self.interruption_sens_slider.valueChanged.connect(
+            lambda val: self.interruption_sens_label.setText(_format_sens_tag(val))
+        )
+        sens_row.addWidget(self.interruption_sens_slider, 1)
+        sens_row.addWidget(self.interruption_sens_label)
+        m_form.addRow('Interruption & Noise Sensitivity:', sens_row)
         mc_lay.addLayout(m_form)
 
         self.barge_in_check = QCheckBox(
@@ -3932,9 +3984,33 @@ class ManageAIsDialog(QDialog):
             checked=bool(v_cfg.get('barge_in_enabled', True)),
         )
         self.barge_in_check.setToolTip(
-            'Stops spoken AI audio immediately when you speak over it in Live Voice Mode. Best with headphones; uncheck if loud open desktop speakers bleed into your microphone.'
+            'Stops spoken AI audio when you speak sustained words over it in Live Voice Mode. Best with headphones; uncheck if open desktop speakers bleed into your microphone.'
         )
         mc_lay.addWidget(self.barge_in_check)
+
+        self.ignore_vocal_noises_check = QCheckBox(
+            'Ignore unconscious human noises, coughs, sighs & fillers ("um", "uh", "hmm", "ah")',
+            checked=bool(v_cfg.get('ignore_vocal_noises', True)),
+        )
+        self.ignore_vocal_noises_check.setToolTip(
+            'Automatically filters out 60+ built-in human vocal noises (ums, ahs, throat clearing, coughs, sighs, sniffs, lip smacks, and short Whisper noise hallucinations) so they never cut off or confuse the AI.'
+        )
+        mc_lay.addWidget(self.ignore_vocal_noises_check)
+
+        noise_row = QHBoxLayout()
+        noise_row.setSpacing(6)
+        noise_lbl = QLabel('Extra Ignored Noises / Words:')
+        noise_lbl.setToolTip('Optional comma-separated extra sounds or words for Talk Mode to ignore (AIs can also add to this list when you ask)')
+        self.custom_ignored_noises_edit = QLineEdit(str(v_cfg.get('custom_ignored_noises') or ''))
+        self.custom_ignored_noises_edit.setPlaceholderText(
+            'Built-in: um, uh, hmm, ah, er, mm, mhm, ahem, cough, sigh, sniff, groan, yawn… (add extra comma-separated words here)'
+        )
+        self.custom_ignored_noises_edit.setToolTip(
+            'Built-in filter already ignores 60+ common human vocal noises & fillers. Add any personal words/sounds Whisper mistranscribes from your mic.'
+        )
+        noise_row.addWidget(noise_lbl)
+        noise_row.addWidget(self.custom_ignored_noises_edit, 1)
+        mc_lay.addLayout(noise_row)
 
         # Live Microphone Level Meter & Test Row
         meter_row = QHBoxLayout()
@@ -4027,6 +4103,9 @@ class ManageAIsDialog(QDialog):
                 'silence_timeout_ms': int(self.silence_timeout_slider.value()),
                 'volume_percent': int(self.voice_vol_slider.value()),
                 'barge_in_enabled': self.barge_in_check.isChecked(),
+                'interruption_sensitivity': int(self.interruption_sens_slider.value()) if hasattr(self, 'interruption_sens_slider') else 35,
+                'ignore_vocal_noises': bool(self.ignore_vocal_noises_check.isChecked()) if hasattr(self, 'ignore_vocal_noises_check') else True,
+                'custom_ignored_noises': self.custom_ignored_noises_edit.text().strip() if hasattr(self, 'custom_ignored_noises_edit') else '',
                 'status_notification_style': str(self.status_style_combo.currentData() or 'text'),
                 'voice_companion_enabled': self.voice_companion_check.isChecked(),
                 'spoken_summary_for_background': self.spoken_summary_check.isChecked(),
@@ -4265,6 +4344,7 @@ class ManageAIsDialog(QDialog):
             self.mic_device_combo,
             self.mic_gain_slider,
             self.silence_timeout_slider,
+            self.interruption_sens_slider,
         ):
             _guard_w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             _guard_w.installEventFilter(self._wheel_guard)
@@ -5790,9 +5870,312 @@ class ManageAIsDialog(QDialog):
         self.or_tier_combo.currentIndexChanged.connect(_save_or_hub)
         lay.addWidget(hub_card)
 
+        # --- CARD 3: APP & SERVICE API KEYS (Jellyfin, Media & Custom APIs) ---
+        from service_connectors import (
+            AUTH_STYLE_CHOICES,
+            SERVICE_CONNECTOR_CATALOG,
+            get_service_cred_key,
+            load_service_connectors_config,
+            save_service_connector_config,
+            test_service_connector,
+        )
+
+        svc_card = QFrame()
+        svc_lay = QVBoxLayout(svc_card)
+        _style_settings_card(svc_card, 'serviceConnectorsCard', svc_lay, pad_h=12, pad_v=12)
+        svc_lay.setSpacing(8)
+
+        svc_hdr = QLabel(
+            '<b>🔌 Option 3 — App &amp; Service API Keys (Jellyfin, Media &amp; Custom APIs)</b><br>'
+            '<span style="color:#8b949e; font-size:11.5px;">'
+            'Store API keys for local servers (like <b>Jellyfin</b> or <b>Home Assistant</b>) and web services '
+            '(like <b>TMDB</b>, <b>Plex</b>, <b>GitHub</b>, or custom apps). Keys are encrypted in your Windows DPAPI Vault '
+            'and used locally by Fairybread tools — never sent in raw text to cloud AI prompts.'
+            '</span>'
+        )
+        svc_hdr.setWordWrap(True)
+        svc_hdr.setTextFormat(Qt.TextFormat.RichText)
+        svc_lay.addWidget(svc_hdr)
+
+        svc_top_row = QHBoxLayout()
+        svc_top_row.setSpacing(8)
+        svc_top_row.addWidget(QLabel('<b>Service / App:</b>'))
+        self.service_connector_combo = QComboBox()
+        self.service_connector_combo.setToolTip('Choose which external app or service API key to configure (e.g. Jellyfin Media Server)')
+        for sid, meta in SERVICE_CONNECTOR_CATALOG.items():
+            self.service_connector_combo.addItem(str(meta.get('display_name') or sid), sid)
+        svc_top_row.addWidget(self.service_connector_combo, 1)
+
+        self.service_connector_enabled_check = QCheckBox('Enable for AI Tools')
+        self.service_connector_enabled_check.setChecked(True)
+        self.service_connector_enabled_check.setToolTip('Allow Fairybread AIs to query or trigger this service locally when you ask')
+        svc_top_row.addWidget(self.service_connector_enabled_check)
+
+        self.service_open_portal_btn = QPushButton('🔑 Open Keys Page ↗')
+        self.service_open_portal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.service_open_portal_btn.setToolTip('Open the API keys dashboard for this service in your web browser (e.g. localhost:8096/#/dashboard/keys)')
+        self.service_open_portal_btn.clicked.connect(self._open_selected_service_key_portal)
+        svc_top_row.addWidget(self.service_open_portal_btn)
+        svc_lay.addLayout(svc_top_row)
+
+        self.service_connector_desc_label = QLabel('')
+        self.service_connector_desc_label.setWordWrap(True)
+        self.service_connector_desc_label.setStyleSheet('color: #8b949e; font-size: 11.5px;')
+        svc_lay.addWidget(self.service_connector_desc_label)
+
+        # Custom Service Name + Auth Header row (shown only for custom_1 / custom_2 / custom_3)
+        self.service_custom_row_widget = QWidget()
+        cust_row = QHBoxLayout(self.service_custom_row_widget)
+        cust_row.setContentsMargins(0, 0, 0, 0)
+        cust_row.setSpacing(8)
+        cust_row.addWidget(QLabel('Custom Name:'))
+        self.service_custom_name_edit = QLineEdit()
+        self.service_custom_name_edit.setPlaceholderText('e.g. Sonarr, Radarr, Obsidian Local REST, Ollama Server…')
+        self.service_custom_name_edit.setToolTip('Give this custom API slot a friendly name')
+        cust_row.addWidget(self.service_custom_name_edit, 1)
+        cust_row.addWidget(QLabel('Auth Header:'))
+        self.service_auth_style_combo = QComboBox()
+        self.service_auth_style_combo.setToolTip('How the API key should be attached to HTTP requests for this custom service')
+        for a_slug, a_lbl in AUTH_STYLE_CHOICES:
+            self.service_auth_style_combo.addItem(a_lbl, a_slug)
+        cust_row.addWidget(self.service_auth_style_combo)
+        self.service_custom_row_widget.hide()
+        svc_lay.addWidget(self.service_custom_row_widget)
+
+        svc_url_row = QHBoxLayout()
+        svc_url_row.setSpacing(8)
+        svc_url_row.addWidget(QLabel('Server / Base URL:'))
+        self.service_connector_url_edit = QLineEdit()
+        self.service_connector_url_edit.setPlaceholderText('http://localhost:8096')
+        self.service_connector_url_edit.setToolTip('Base URL of the local server or web API (e.g. http://localhost:8096 for Jellyfin)')
+        svc_url_row.addWidget(self.service_connector_url_edit, 1)
+        svc_lay.addLayout(svc_url_row)
+
+        svc_key_row = QHBoxLayout()
+        svc_key_row.setSpacing(8)
+        svc_key_row.addWidget(QLabel('Service API Key:'))
+        self.service_connector_key_edit = QLineEdit()
+        self.service_connector_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.service_connector_key_edit.setPlaceholderText('Paste Jellyfin or service API key here — auto-saves & encrypts immediately')
+        self.service_connector_key_edit.setToolTip('Paste the API key generated by Jellyfin or your external service (encrypted via Windows DPAPI)')
+        svc_key_row.addWidget(self.service_connector_key_edit, 1)
+
+        self.service_test_btn = QPushButton('🔌 Test Service')
+        self.service_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.service_test_btn.setToolTip('Test the connection and API key against the configured server URL right now')
+        self.service_test_btn.clicked.connect(self._test_current_service_connector)
+        svc_key_row.addWidget(self.service_test_btn)
+
+        self.service_clear_key_btn = QPushButton('🗑 Clear Key')
+        self.service_clear_key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.service_clear_key_btn.setToolTip('Remove the stored API key for this service from the Windows DPAPI Vault')
+        self.service_clear_key_btn.clicked.connect(self._clear_current_service_connector_key)
+        svc_key_row.addWidget(self.service_clear_key_btn)
+        svc_lay.addLayout(svc_key_row)
+
+        self.service_connector_status_label = QLabel('✓ Service keys are encrypted locally in Windows DPAPI Vault')
+        self.service_connector_status_label.setWordWrap(True)
+        self.service_connector_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px;')
+        svc_lay.addWidget(self.service_connector_status_label)
+
+        self._loading_service_connector_fields = False
+        self.service_connector_combo.currentIndexChanged.connect(self._on_service_connector_changed)
+        self.service_connector_enabled_check.toggled.connect(self._auto_save_current_service_connector)
+        self.service_connector_url_edit.editingFinished.connect(self._auto_save_current_service_connector)
+        self.service_custom_name_edit.editingFinished.connect(self._auto_save_current_service_connector)
+        self.service_auth_style_combo.currentIndexChanged.connect(self._auto_save_current_service_connector)
+
+        def _on_service_key_typed(txt: str):
+            if getattr(self, '_loading_service_connector_fields', False):
+                return
+            val = txt.strip()
+            if len(val) >= 8:
+                sid = str(self.service_connector_combo.currentData() or 'jellyfin').strip().lower()
+                try:
+                    self.credential_store.set_api_key(get_service_cred_key(sid), val)
+                    self.service_connector_enabled_check.blockSignals(True)
+                    self.service_connector_enabled_check.setChecked(True)
+                    self.service_connector_enabled_check.blockSignals(False)
+                    self._auto_save_current_service_connector()
+                    self.service_connector_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px;')
+                    self.service_connector_status_label.setText(
+                        f'✓ Auto-saved & encrypted {self.service_connector_combo.currentText()} key in Windows DPAPI Vault'
+                    )
+                except Exception:
+                    pass
+
+        self.service_connector_key_edit.textEdited.connect(_on_service_key_typed)
+        self.service_connector_key_edit.editingFinished.connect(self._auto_save_current_service_connector)
+        lay.addWidget(svc_card)
+
         lay.addStretch()
         self._load_selected_provider(self.provider_combo.currentText())
+        self._load_selected_service_connector('jellyfin')
         self.pages.addWidget(w)
+
+    def _on_service_connector_changed(self, *_args):
+        sid = str(self.service_connector_combo.currentData() or 'jellyfin').strip().lower()
+        self._load_selected_service_connector(sid)
+
+    def _load_selected_service_connector(self, service_id: str):
+        from service_connectors import (
+            SERVICE_CONNECTOR_CATALOG,
+            get_service_cred_key,
+            load_service_connectors_config,
+        )
+        sid = str(service_id or 'jellyfin').strip().lower()
+        if sid not in SERVICE_CONNECTOR_CATALOG:
+            sid = 'jellyfin'
+        self._loading_service_connector_fields = True
+        try:
+            all_cfgs = load_service_connectors_config(self.config_path)
+            cfg = all_cfgs.get(sid, {})
+            meta = SERVICE_CONNECTOR_CATALOG.get(sid, {})
+            self._active_service_connector_id = sid
+
+            idx = self.service_connector_combo.findData(sid)
+            if idx >= 0 and self.service_connector_combo.currentIndex() != idx:
+                self.service_connector_combo.setCurrentIndex(idx)
+
+            has_key = False
+            try:
+                has_key = bool(self.credential_store.has_api_key(get_service_cred_key(sid)))
+            except Exception:
+                has_key = False
+
+            self.service_connector_enabled_check.setChecked(bool(cfg.get('enabled', True)))
+            self.service_connector_url_edit.setText(str(cfg.get('base_url') or meta.get('default_base_url') or ''))
+            self.service_connector_url_edit.setPlaceholderText(str(meta.get('url_placeholder') or 'http://localhost:8096'))
+            self.service_connector_desc_label.setText(str(meta.get('description') or ''))
+
+            is_custom = bool(meta.get('is_custom', False))
+            self.service_custom_row_widget.setVisible(is_custom)
+            if is_custom:
+                self.service_custom_name_edit.setText(str(cfg.get('custom_name') or meta.get('display_name') or ''))
+                a_idx = self.service_auth_style_combo.findData(str(cfg.get('auth_style') or 'bearer'))
+                self.service_auth_style_combo.setCurrentIndex(a_idx if a_idx >= 0 else 0)
+
+            portal_url = str(meta.get('key_portal_url') or '').strip()
+            if portal_url or self.service_connector_url_edit.text().strip():
+                self.service_open_portal_btn.setEnabled(True)
+            else:
+                self.service_open_portal_btn.setEnabled(False)
+
+            self.service_connector_key_edit.clear()
+            if has_key:
+                self.service_connector_key_edit.setPlaceholderText(
+                    '✓ Encrypted in Windows DPAPI Vault (paste new key to replace)'
+                )
+                self.service_connector_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px;')
+                self.service_connector_status_label.setText(
+                    f'✓ {meta.get("display_name", sid)} API key is saved in Windows DPAPI Vault. Click "🔌 Test Service" to verify.'
+                )
+            else:
+                self.service_connector_key_edit.setPlaceholderText(
+                    str(meta.get('key_placeholder') or 'Paste service API key here — auto-saves & encrypts immediately')
+                )
+                self.service_connector_status_label.setStyleSheet('color: #8b949e; font-size: 11.5px;')
+                self.service_connector_status_label.setText(
+                    f'No API key stored yet for {meta.get("display_name", sid)}.'
+                )
+        finally:
+            self._loading_service_connector_fields = False
+
+    def _auto_save_current_service_connector(self, *_args):
+        if getattr(self, '_loading_service_connector_fields', False):
+            return
+        if not hasattr(self, 'service_connector_combo'):
+            return
+        from service_connectors import (
+            SERVICE_CONNECTOR_CATALOG,
+            get_service_cred_key,
+            save_service_connector_config,
+        )
+        sid = str(
+            getattr(self, '_active_service_connector_id', '')
+            or self.service_connector_combo.currentData()
+            or 'jellyfin'
+        ).strip().lower()
+        if sid not in SERVICE_CONNECTOR_CATALOG:
+            return
+        raw_key = self.service_connector_key_edit.text().strip()
+        if raw_key:
+            try:
+                self.credential_store.set_api_key(get_service_cred_key(sid), raw_key)
+                self.service_connector_key_edit.clear()
+                self.service_connector_key_edit.setPlaceholderText(
+                    '✓ Encrypted in Windows DPAPI Vault (paste new key to replace)'
+                )
+            except Exception:
+                pass
+        meta = SERVICE_CONNECTOR_CATALOG.get(sid, {})
+        is_custom = bool(meta.get('is_custom', False))
+        try:
+            save_service_connector_config(
+                sid,
+                enabled=bool(self.service_connector_enabled_check.isChecked()),
+                base_url=self.service_connector_url_edit.text().strip(),
+                custom_name=self.service_custom_name_edit.text().strip() if is_custom else '',
+                auth_style=(
+                    str(self.service_auth_style_combo.currentData() or 'bearer')
+                    if is_custom
+                    else str(meta.get('auth_style') or 'bearer')
+                ),
+                config_path=self.config_path,
+            )
+        except Exception:
+            pass
+
+    def _open_selected_service_key_portal(self):
+        from service_connectors import SERVICE_CONNECTOR_CATALOG
+        sid = str(self.service_connector_combo.currentData() or 'jellyfin').strip().lower()
+        meta = SERVICE_CONNECTOR_CATALOG.get(sid, {})
+        url = str(meta.get('key_portal_url') or '').strip()
+        if sid == 'jellyfin':
+            base = self.service_connector_url_edit.text().strip().rstrip('/') or 'http://localhost:8096'
+            url = f'{base}/web/index.html#!/dashboard/keys'
+        elif not url:
+            url = self.service_connector_url_edit.text().strip()
+        if url:
+            webbrowser.open(url)
+
+    def _test_current_service_connector(self):
+        from service_connectors import test_service_connector
+        self._auto_save_current_service_connector()
+        sid = str(self.service_connector_combo.currentData() or 'jellyfin').strip().lower()
+        self.service_connector_status_label.setStyleSheet('color: #58a6ff; font-size: 11.5px;')
+        self.service_connector_status_label.setText('⏳ Testing service connection…')
+        QApplication.processEvents()
+        res = test_service_connector(
+            sid,
+            config_path=self.config_path,
+            credential_store=self.credential_store,
+        )
+        ok = bool(res.get('ok')) if isinstance(res, dict) else bool(res[0])
+        msg = str(res.get('summary') or '') if isinstance(res, dict) else str(res[1])
+        if ok:
+            self.service_connector_status_label.setStyleSheet('color: #22c55e; font-size: 11.5px;')
+            self.service_connector_status_label.setText(msg)
+        else:
+            self.service_connector_status_label.setStyleSheet('color: #f85149; font-size: 11.5px;')
+            self.service_connector_status_label.setText(f'⚠ {msg}')
+
+    def _clear_current_service_connector_key(self):
+        from service_connectors import SERVICE_CONNECTOR_CATALOG, get_service_cred_key
+        sid = str(self.service_connector_combo.currentData() or 'jellyfin').strip().lower()
+        meta = SERVICE_CONNECTOR_CATALOG.get(sid, {})
+        try:
+            self.credential_store.delete_api_key(get_service_cred_key(sid))
+        except Exception:
+            pass
+        self.service_connector_key_edit.clear()
+        self.service_connector_key_edit.setPlaceholderText(
+            str(meta.get('key_placeholder') or 'Paste service API key here — auto-saves & encrypts immediately')
+        )
+        self.service_connector_status_label.setStyleSheet('color: #8b949e; font-size: 11.5px;')
+        self.service_connector_status_label.setText(
+            f'🗑 Cleared stored API key for {meta.get("display_name", sid)}.'
+        )
 
     def _open_selected_provider_key_portal(self):
         clean = self.provider_combo.currentText().strip().lower()
@@ -7762,6 +8145,8 @@ class ManageAIsDialog(QDialog):
                 return False
         else:
             self._auto_save_current_provider()
+        if hasattr(self, '_auto_save_current_service_connector'):
+            self._auto_save_current_service_connector()
 
         try:
             if hasattr(self, '_flush_squad_editor') and callable(self._flush_squad_editor):
@@ -7961,11 +8346,18 @@ class ManageAIsDialog(QDialog):
         if hasattr(self, '_autosave_status_label'):
             self._autosave_status_label.setText('✓ Saved automatically')
         parent = self.parent()
-        if parent is not None and hasattr(parent, '_apply_voice_avatar_settings'):
-            try:
-                parent._apply_voice_avatar_settings()
-            except Exception:
-                pass
+        if parent is not None:
+            if hasattr(parent, '_apply_voice_avatar_settings'):
+                try:
+                    parent._apply_voice_avatar_settings()
+                except Exception:
+                    pass
+            live_sess = getattr(parent, '_active_voice_session', None)
+            if live_sess is not None and hasattr(live_sess, 'reload_live_settings'):
+                try:
+                    live_sess.reload_live_settings()
+                except Exception:
+                    pass
         return True
 
     def save_settings(self):
@@ -14693,6 +15085,33 @@ class PalaceWindow(QMainWindow):
                     p_nm = str(item.get('provider') or '').strip()
                     if g_nm:
                         self.show_notice(f'✓ Saved custom agent name: {g_nm} ({p_nm or "AI"})')
+            except Exception:
+                pass
+        updated_v_cfg = dict(getattr(decision, 'updated_voice_settings', None) or {})
+        if updated_v_cfg:
+            try:
+                live_sess = getattr(self, '_active_voice_session', None)
+                if live_sess is not None and hasattr(live_sess, 'reload_live_settings'):
+                    live_sess.reload_live_settings()
+                parts_msg: list[str] = []
+                if 'interruption_sensitivity' in updated_v_cfg:
+                    parts_msg.append(f'Sensitivity → {updated_v_cfg["interruption_sensitivity"]}%')
+                if 'barge_in_enabled' in updated_v_cfg:
+                    parts_msg.append(f'Barge-in → {"ON" if updated_v_cfg["barge_in_enabled"] else "OFF"}')
+                if 'ignore_vocal_noises' in updated_v_cfg:
+                    parts_msg.append(f'Ignore vocal noises → {"ON" if updated_v_cfg["ignore_vocal_noises"] else "OFF"}')
+                if 'added_ignored_noises' in updated_v_cfg:
+                    parts_msg.append(f'Ignored sounds += {updated_v_cfg["added_ignored_noises"]}')
+                if parts_msg:
+                    summary_v = ' · '.join(parts_msg)
+                    self.show_notice(f'🎙 AI updated voice settings: {summary_v}')
+                    self.append_status_message(
+                        f'Status: AI updated microphone settings ({summary_v}).',
+                        severity='info',
+                        icon_prefix='🎙',
+                        force=True,
+                        render=False,
+                    )
             except Exception:
                 pass
         self._apply_voice_avatar_settings()

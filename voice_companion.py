@@ -71,14 +71,48 @@ def _get_cached_gemini_client(api_key: str, *, timeout_ms: int = 18000):
 
 _CODE_STOPWORDS = {
     "what", "when", "where", "which", "while", "whilst", "would", "could", "should", "about", "there", "their",
-    "these", "those", "please", "check", "look", "looking", "code", "file", "files", "mode", "voice", "chat",
+    "these", "those", "please", "check", "look", "looking", "code", "file", "files", "mode", "chat",
     "chatting", "turn", "button", "fairybread", "palace", "make", "sure", "does", "happens", "how", "work", "works",
     "into", "from", "with", "that", "this", "have", "just", "want", "wanted", "tell", "explain", "right", "now",
+    "can", "you", "see", "the", "and", "for", "are", "was", "were", "been", "some", "any", "inspect", "read",
 }
 
 
-def build_voice_code_context(utterance: str, max_chars: int = 4800) -> str:
-    """Fast (~5ms) local Python source lookup for Voice Mode when `{ } Code` is toggled ON."""
+def _extract_module_symbol_outline(lines: list[str], max_symbols: int = 24) -> str:
+    """Extract a compact outline of top-level classes and functions with line numbers from a Python module."""
+    syms: list[str] = []
+    for idx, ln in enumerate(lines):
+        m = re.match(r"^(class|def)\s+([a-zA-Z_][a-zA-Z0-9_]*)", ln)
+        if m:
+            kind_tag = "class " if m.group(1) == "class" else "def "
+            syms.append(f"{kind_tag}{m.group(2)} (L{idx + 1})")
+            if len(syms) >= max_symbols:
+                break
+    return ", ".join(syms)
+
+
+def _extract_significant_code_bodies(lines: list[str], max_lines: int = 110) -> str:
+    """Return actual implementation lines (skipping top import boilerplate) so AIs see real code, never just headers."""
+    start_idx = 0
+    for idx, ln in enumerate(lines):
+        stripped = ln.strip()
+        if idx > 5 and stripped.startswith(("def ", "class ", "@")):
+            start_idx = max(0, idx - 1)
+            break
+    chosen = lines[start_idx : min(len(lines), start_idx + max_lines)]
+    return "\n".join(f"{start_idx + 1 + i}: {l[:150]}" for i, l in enumerate(chosen))
+
+
+def build_voice_code_context(
+    utterance: str,
+    max_chars: int = 18000,
+    recent_history: list[tuple[str, str]] | None = None,
+) -> str:
+    """Fast local Python source lookup for Voice Mode when `{ } Code` is toggled ON.
+
+    Guarantees full function/class implementation bodies (never 18-line import headers!),
+    conversation-history topic carryover, and an architecture symbol map across all modules.
+    """
     mirror_dir = get_source_mirror_dir()
     install_src = get_app_install_dir() / "source"
     if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
@@ -99,12 +133,19 @@ def build_voice_code_context(utterance: str, max_chars: int = 4800) -> str:
     if not py_files:
         return ""
 
-    u_low = (utterance or "").lower()
+    # Combine current utterance with recent voice turns so "Look at the code for that" resolves the active topic
+    combined_query = utterance or ""
+    if recent_history:
+        prev_u = " ".join((u or "") for u, _a in recent_history[-2:])
+        if len((utterance or "").split()) <= 12 and prev_u:
+            combined_query = f"{utterance} {prev_u}"
+
+    u_low = combined_query.lower()
     raw_tokens = [
         tok for tok in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", u_low)
         if tok not in _CODE_STOPWORDS
     ]
-    tokens = list(dict.fromkeys(raw_tokens))[:8]
+    tokens = list(dict.fromkeys(raw_tokens))[:12]
 
     # Map common plain-English feature words to exact modules so natural speech hits the right file immediately
     concept_map = {
@@ -117,85 +158,153 @@ def build_voice_code_context(utterance: str, max_chars: int = 4800) -> str:
         "options": "palace_gui.py",
         "window": "palace_gui.py",
         "sidebar": "palace_gui.py",
+        "clipboard": "palace_gui.py",
+        "paste": "palace_gui.py",
         "memory": "memory_service.py",
         "profile": "memory_service.py",
         "council": "orchestrator.py",
+        "orchestrator": "orchestrator.py",
         "synthesizer": "synthesizer.py",
         "setup": "setup_wizard.py",
         "wizard": "setup_wizard.py",
         "billing": "cost_service.py",
         "spend": "cost_service.py",
+        "cost": "cost_service.py",
         "audio": "voice_service.py",
+        "voice": "voice_service.py",
+        "mic": "voice_service.py",
+        "microphone": "voice_service.py",
+        "sensitivity": "voice_service.py",
+        "interrupt": "voice_service.py",
+        "interruption": "voice_service.py",
+        "barge": "voice_service.py",
+        "noise": "voice_service.py",
+        "noises": "voice_service.py",
         "tts": "voice_service.py",
         "deepgram": "voice_service.py",
         "companion": "voice_companion.py",
+        "talk": "voice_companion.py",
+        "jellyfin": "service_connectors.py",
+        "plex": "service_connectors.py",
+        "tmdb": "service_connectors.py",
+        "service": "service_connectors.py",
+        "connector": "service_connectors.py",
+        "connectors": "service_connectors.py",
+        "deepseek": "openai_provider.py",
+        "mistral": "mistral_provider.py",
+        "voxtral": "voice_service.py",
+        "ocr": "attachment_service.py",
+        "pdf": "attachment_service.py",
+        "attachment": "attachment_service.py",
+        "search": "search_service.py",
+        "weather": "search_service.py",
+        "email": "email_service.py",
+        "gmail": "email_service.py",
+        "backup": "backup_service.py",
+        "mcp": "fairybread_mcp.py",
+        "bridge": "fairybread_mcp.py",
+        "idle": "idle_service.py",
+        "experimental": "idle_service.py",
+        "dpapi": "credential_store.py",
+        "vault": "credential_store.py",
+        "key": "credential_store.py",
+        "keys": "credential_store.py",
     }
     hinted_files = {concept_map[w] for w in re.findall(r"[a-z]+", u_low) if w in concept_map}
 
-    manifest = ", ".join(p.name for p in py_files[:30])
+    file_lines_cache: dict[str, list[str]] = {}
+    outline_rows: list[str] = []
+    for p in py_files:
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            file_lines_cache[p.name] = lines
+            sym_str = _extract_module_symbol_outline(lines, max_symbols=14)
+            if sym_str:
+                outline_rows.append(f"  • {p.name} ({len(lines)} lines): {sym_str}")
+        except OSError:
+            continue
+
+    manifest = ", ".join(p.name for p in py_files[:35])
     blocks: list[str] = [
         f"FAIRYBREAD LIVE SOURCE CODE ACCESS (`{{ }} Code` is ON — Read-Only Mirror: `{src_dir}`):",
         f"Modules ({len(py_files)}): {manifest}",
+        "CODEBASE SYMBOL MAP (Classes & Functions per Module):\n" + "\n".join(outline_rows[:24]),
     ]
     used_chars = sum(len(x) for x in blocks)
 
     scored_hits: list[tuple[int, str, int, list[str]]] = []
     for p in py_files:
-        p_low = p.name.lower()
-        file_bonus = 8 if (p_low in u_low or p.stem.lower() in u_low) else (5 if p.name in hinted_files else 0)
-        if not tokens and not file_bonus:
+        lines = file_lines_cache.get(p.name)
+        if not lines:
             continue
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
+        p_low = p.name.lower()
+        file_bonus = 10 if (p_low in u_low or p.stem.lower() in u_low) else (6 if p.name in hinted_files else 0)
+        if not tokens and not file_bonus:
             continue
         if tokens:
             for idx, line in enumerate(lines):
                 l_low = line.lower()
                 matched_t = sum(1 for t in tokens if t in l_low)
                 if matched_t > 0:
-                    def_bonus = 4 if l_low.lstrip().startswith(("def ", "class ")) else 0
+                    def_bonus = 6 if l_low.lstrip().startswith(("def ", "class ")) else 0
                     score = matched_t * 3 + def_bonus + file_bonus
                     if score >= 4:
-                        lo = max(0, idx - 3)
-                        hi = min(len(lines), idx + 18)
+                        lo = max(0, idx - 4)
+                        hi = min(len(lines), idx + 42)
                         scored_hits.append((score, p.name, lo + 1, lines[lo:hi]))
-                        if len(scored_hits) > 40:
+                        if len(scored_hits) > 65:
                             break
-        elif file_bonus:
-            scored_hits.append((file_bonus, p.name, 1, lines[:35]))
+        if file_bonus and not any(h[1] == p.name for h in scored_hits):
+            # Include real implementation code body (skipping top imports) for hinted files
+            start_i = 0
+            for idx, ln in enumerate(lines):
+                if idx > 5 and ln.strip().startswith(("def ", "class ")):
+                    start_i = max(0, idx - 1)
+                    break
+            scored_hits.append((file_bonus, p.name, start_i + 1, lines[start_i : min(len(lines), start_i + 65)]))
 
     scored_hits.sort(key=lambda item: item[0], reverse=True)
     seen_ranges: set[tuple[str, int]] = set()
     added = 0
     for _sc, fname, start_ln, snippet_lines in scored_hits:
-        bucket = (fname, start_ln // 20)
+        bucket = (fname, start_ln // 35)
         if bucket in seen_ranges:
             continue
         seen_ranges.add(bucket)
-        snip = "\n".join(f"{start_ln + i}: {ln[:140]}" for i, ln in enumerate(snippet_lines))
-        entry = f"\n--- {fname} (around line {start_ln}) ---\n{snip}"
+        snip = "\n".join(f"{start_ln + i}: {ln[:150]}" for i, ln in enumerate(snippet_lines))
+        entry = f"\n--- {fname} (lines {start_ln}–{start_ln + len(snippet_lines) - 1}) ---\n{snip}"
         if used_chars + len(entry) > max_chars:
             break
         blocks.append(entry)
         used_chars += len(entry)
         added += 1
-        if added >= 4:
+        if added >= 8:
             break
 
     if added == 0:
-        # Provide top architecture summary when the user asks a general codebase question
-        for core_name in ("palace_gui.py", "orchestrator.py", "voice_companion.py"):
-            cp = src_dir / core_name
-            if cp.is_file():
-                try:
-                    head = "\n".join(cp.read_text(encoding="utf-8", errors="replace").splitlines()[:18])
-                    entry = f"\n--- {core_name} (header) ---\n{head}"
-                    if used_chars + len(entry) <= max_chars:
-                        blocks.append(entry)
-                        used_chars += len(entry)
-                except OSError:
-                    pass
+        # User asked a general "look at the code" question without naming a specific symbol.
+        # Provide real implementation bodies from the most recently modified modules + core voice/orchestrator engines.
+        try:
+            recent_py = sorted(py_files, key=lambda p: p.stat().st_mtime, reverse=True)[:4]
+        except OSError:
+            recent_py = []
+        target_names: list[str] = []
+        for rp in recent_py:
+            if rp.name not in target_names:
+                target_names.append(rp.name)
+        for core_name in ("voice_companion.py", "voice_service.py", "service_connectors.py", "orchestrator.py", "palace_gui.py"):
+            if core_name not in target_names:
+                target_names.append(core_name)
+
+        for fname in target_names[:5]:
+            lines = file_lines_cache.get(fname)
+            if not lines:
+                continue
+            body_snip = _extract_significant_code_bodies(lines, max_lines=75)
+            entry = f"\n--- {fname} (active implementation code) ---\n{body_snip}"
+            if used_chars + len(entry) <= max_chars:
+                blocks.append(entry)
+                used_chars += len(entry)
 
     return "\n".join(blocks)
 from synthesizer import is_pass_or_defer_text
@@ -203,7 +312,69 @@ from voice_service import clean_text_for_speech, load_voice_personas, load_voice
 
 
 _SET_AGENT_NAME_TAG_RE = re.compile(r"\[SET_AGENT_NAME\s+([^\]]+)\]", re.IGNORECASE)
+_SET_VOICE_SENSITIVITY_TAG_RE = re.compile(r"\[SET_VOICE_SENSITIVITY\s+([^\]]+)\]", re.IGNORECASE)
+_ADD_IGNORED_NOISE_TAG_RE = re.compile(r"\[ADD_IGNORED_NOISE\s+([^\]]+)\]", re.IGNORECASE)
 _KV_ATTR_RE = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"|([a-zA-Z_]+)\s*=\s*\'([^\']*)\'')
+
+
+def parse_voice_sensitivity_and_noise_tags(text: str) -> tuple[str, list[dict[str, Any]], list[str]]:
+    """Extract and strip `[SET_VOICE_SENSITIVITY ...]` and `[ADD_IGNORED_NOISE ...]` tags from AI replies."""
+    raw = text or ""
+    sens_updates: list[dict[str, Any]] = []
+    added_noises: list[str] = []
+
+    def _repl_sens(match: re.Match[str]) -> str:
+        attrs_raw = match.group(1) or ""
+        parsed: dict[str, str] = {}
+        for m in _KV_ATTR_RE.finditer(attrs_raw):
+            k = (m.group(1) or m.group(3) or "").strip().lower()
+            v = (m.group(2) if m.group(1) else m.group(4)) or ""
+            if k:
+                parsed[k] = v.strip()
+        upd: dict[str, Any] = {}
+        raw_lvl = parsed.get("sensitivity") or parsed.get("level") or parsed.get("value") or ""
+        if raw_lvl:
+            try:
+                upd["interruption_sensitivity"] = max(0, min(100, int(float(raw_lvl.rstrip("%")))))
+            except (TypeError, ValueError):
+                pass
+        raw_bi = (parsed.get("barge_in") or "").lower()
+        if raw_bi in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+            upd["barge_in_enabled"] = raw_bi in {"true", "1", "on", "yes"}
+        raw_ign = (parsed.get("ignore_fillers") or parsed.get("ignore_noises") or "").lower()
+        if raw_ign in {"true", "false", "1", "0", "on", "off", "yes", "no"}:
+            upd["ignore_vocal_noises"] = raw_ign in {"true", "1", "on", "yes"}
+        raw_sil = parsed.get("silence_ms") or ""
+        if raw_sil:
+            try:
+                upd["silence_timeout_ms"] = max(800, min(3000, int(float(raw_sil))))
+            except (TypeError, ValueError):
+                pass
+        if upd:
+            sens_updates.append(upd)
+        return ""
+
+    def _repl_noise(match: re.Match[str]) -> str:
+        attrs_raw = match.group(1) or ""
+        parsed: dict[str, str] = {}
+        for m in _KV_ATTR_RE.finditer(attrs_raw):
+            k = (m.group(1) or m.group(3) or "").strip().lower()
+            v = (m.group(2) if m.group(1) else m.group(4)) or ""
+            if k:
+                parsed[k] = v.strip()
+        phrase = parsed.get("phrase") or parsed.get("noise") or parsed.get("sound") or parsed.get("word") or ""
+        if not phrase and attrs_raw:
+            bare = re.sub(r"[\"'`]", "", attrs_raw).strip()
+            if bare and "=" not in bare:
+                phrase = bare
+        if phrase:
+            added_noises.append(phrase)
+        return ""
+
+    cleaned = _SET_VOICE_SENSITIVITY_TAG_RE.sub(_repl_sens, raw)
+    cleaned = _ADD_IGNORED_NOISE_TAG_RE.sub(_repl_noise, cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned, sens_updates, added_noises
 
 
 def _strip_preset_identity_prefix(blueprint: str) -> str:
@@ -353,6 +524,7 @@ class VoiceCompanionDecision:
     slot_index: int = 0
     evolve_user_profile: bool = True
     updated_attributions: list[dict[str, str]] = field(default_factory=list)
+    updated_voice_settings: dict[str, Any] = field(default_factory=dict)
 
 
 _DELEGATE_HINT_RE = re.compile(
@@ -1065,6 +1237,35 @@ class VoiceCompanion:
                 pass
         return applied
 
+    def _persist_voice_sensitivity_and_noise_updates(
+        self,
+        sens_updates: list[dict[str, Any]],
+        added_noises: list[str],
+    ) -> dict[str, Any]:
+        """Persist AI-adjusted microphone sensitivity / barge-in / ignored human noise updates to voice_settings."""
+        from voice_service import add_custom_ignored_noise, save_voice_settings
+
+        combined_upd: dict[str, Any] = {}
+        for item in sens_updates or []:
+            if isinstance(item, dict):
+                combined_upd.update(item)
+        if combined_upd:
+            try:
+                save_voice_settings(combined_upd, config_path=self.config_path)
+            except Exception:
+                pass
+        clean_noises: list[str] = []
+        for ph in added_noises or []:
+            if str(ph or "").strip():
+                try:
+                    add_custom_ignored_noise(str(ph), config_path=self.config_path)
+                    clean_noises.append(str(ph).strip())
+                except Exception:
+                    pass
+        if clean_noises:
+            combined_upd["added_ignored_noises"] = clean_noises
+        return combined_upd
+
     def respond(
         self,
         user_utterance: str,
@@ -1211,12 +1412,21 @@ class VoiceCompanion:
             else ""
         )
         quorum_block = f"{extra_quorum_context.strip()}\n\n" if extra_quorum_context.strip() else ""
-        code_ctx = build_voice_code_context(utterance) if include_palace_code else ""
+        code_ctx = build_voice_code_context(utterance, recent_history=self._history) if include_palace_code else ""
         code_ctx_block = f"{code_ctx}\n\n" if code_ctx else ""
+        cur_sens = int(v_cfg.get("interruption_sensitivity", 35))
+        cur_ign = bool(v_cfg.get("ignore_vocal_noises", True))
+        voice_sens_tool_rule = (
+            f"MICROPHONE & INTERRUPTION SENSITIVITY TOOL (Current sensitivity: {cur_sens}% [0%=Maximum noise immunity/hard to interrupt, 35%=Relaxed default, 50%=Balanced, 100%=Hair-trigger], Ignore vocal noises/ums/ahs: {cur_ign}):\n"
+            "- If the user asks you to lower/raise microphone or interruption sensitivity, stop cutting off when they make noises/coughs/sighs, or ignore their 'ums', 'ahs', or specific sounds:\n"
+            "  • Emit `[SET_VOICE_SENSITIVITY level=\"20\" ignore_fillers=\"true\"]` (pick 15-25 for low sensitivity/high noise immunity, 35 for relaxed, 50 for balanced, or add `barge_in=\"false\"` if they want zero interruption while you speak, or `silence_ms=\"1800\"` to wait longer after pauses).\n"
+            "  • If they mention a specific word/sound to ignore, also emit `[ADD_IGNORED_NOISE phrase=\"word or sound\"]`.\n"
+            "  • Place these tags at the very end of your reply (Fairybread applies them live to the microphone slider and strips the tags before speaking) and confirm naturally out loud.\n"
+        )
 
         if talk_only:
             mode_cap_line = (
-                "SOURCE CODE ACCESS IS ACTIVE (`{ } Code` button is ON): You CAN read and inspect Fairybread's live Python source code provided in the prompt below. Discuss how the code works accurately in plain spoken English (summarize logic and module/function behavior clearly without reading raw punctuation aloud).\n\n"
+                "SOURCE CODE ACCESS IS ACTIVE (`{ } Code` button is ON): You CAN read and inspect Fairybread's live Python source code provided in the prompt below (including full function/class implementations and symbol maps — NOT just headers). Discuss how the actual code works accurately in plain spoken English (summarize logic, line numbers, and module/function behavior clearly without reading raw punctuation aloud).\n\n"
                 if code_ctx
                 else "There is NO background council, NO code execution, NO image generation, and NO web tools active right now.\n\n"
             )
@@ -1231,6 +1441,7 @@ class VoiceCompanion:
                 f"{pers_block}"
                 f"{VOICE_ANTI_STALL_RULES}\n"
                 f"{mem_rule_talk}\n"
+                f"{voice_sens_tool_rule}\n"
                 f"NAME CHANGE TOOL: If the user gives you (or another AI) a new name to go by (e.g. 'call yourself Ash' or 'I will name you Max'), "
                 f"emit `[SET_AGENT_NAME provider=\"{eff_prov or 'auto'}\" name=\"NewName\"]` at the very end so Fairybread saves it permanently, and adopt the name naturally out loud.\n"
             )
@@ -1244,7 +1455,7 @@ class VoiceCompanion:
                 "SPOKEN STYLE RULES:\n"
                 "- Reply in plain natural conversational sentences only (1-3 crisp spoken sentences, contractions okay).\n"
                 "- Engage directly with the substance of what the user just said; follow genuine topic shifts, jokes, and side tangents naturally while staying locked onto the active subject when the user challenges your style.\n"
-                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than optional trailing `[SAVE_MEMORY ...]` or `[SET_AGENT_NAME provider=\"...\" name=\"...\"]`."
+                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than optional trailing `[SAVE_MEMORY ...]`, `[SET_AGENT_NAME ...]`, `[SET_VOICE_SENSITIVITY ...]`, or `[ADD_IGNORED_NOISE ...]`."
             )
             try:
                 raw_out, pname, m_used, req_p, fell_back, fb_reason = self._invoke_fast_llm_detailed(
@@ -1284,10 +1495,12 @@ class VoiceCompanion:
             candidate_txt = str(obj.get("spoken_reply") or raw_out) if (isinstance(obj, dict) and obj.get("spoken_reply")) else raw_out
             stripped_txt, parsed_saves = parse_save_memory_tags(candidate_txt, replace_with_badge=False)
             stripped_txt, name_tags = parse_set_agent_name_tags(stripped_txt)
+            stripped_txt, sens_tags, noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_txt)
             applied_names = self._persist_agent_name_updates(
                 name_tags,
                 default_provider=(pname if pname and pname != "fallback" else eff_prov),
             )
+            applied_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(sens_tags, noise_tags)
             for item in applied_names:
                 if item.get("provider") in {eff_prov, pname}:
                     eff_speaker = item["given_name"]
@@ -1297,7 +1510,11 @@ class VoiceCompanion:
             spoken = _strip_stall_closers(cleaned, self._recent_closers) or cleaned or (
                 f"Got it, you can call me {eff_speaker}."
                 if applied_names
-                else ("Saved that to your Memory Palace." if parsed_saves else "Gotcha.")
+                else (
+                    "I've lowered the microphone interruption sensitivity and updated your noise filter."
+                    if applied_voice_cfg
+                    else ("Saved that to your Memory Palace." if parsed_saves else "Gotcha.")
+                )
             )
             dec = VoiceCompanionDecision(
                 action="chat",
@@ -1318,6 +1535,7 @@ class VoiceCompanion:
                 slot_index=slot_index,
                 evolve_user_profile=eff_evolve,
                 updated_attributions=applied_names,
+                updated_voice_settings=applied_voice_cfg,
             )
             if record_history:
                 self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")
@@ -1347,7 +1565,8 @@ class VoiceCompanion:
             f"{quorum_block}"
             f"{profile_block}"
             f"{pers_block}"
-            f"{VOICE_ANTI_STALL_RULES}"
+            f"{VOICE_ANTI_STALL_RULES}\n"
+            f"{voice_sens_tool_rule}"
         )
         prompt = (
             f"{bg_block}\n"
@@ -1358,14 +1577,15 @@ class VoiceCompanion:
             f"{topic_lock_block}"
             f"USER JUST SAID: {utterance}\n\n"
             "Respond ONLY with a single valid JSON object matching this exact schema:\n"
-            '{"action": "chat|delegate|steer|status", "spoken_reply": "...", "delegated_task": "...", "steer_note": "...", "save_memory": null, "set_agent_name": null}\n\n'
+            '{"action": "chat|delegate|steer|status", "spoken_reply": "...", "delegated_task": "...", "steer_note": "...", "save_memory": null, "set_agent_name": null, "set_voice_sensitivity": null, "add_ignored_noise": null}\n\n'
             "ROUTING RULES:\n"
             f"{mem_json_rule}"
             + (
-                "- Live Source Code Inspection (`{ } Code` is ON): Matched Fairybread Python source snippets are included above. If the user is asking you to look at, explain, or talk through the code, answer directly right now using `action=\"chat\"` based on the real code above! Only use `action=\"delegate\"` if they want a full multi-AI audit or code edits/patches.\n"
+                "- Live Source Code Inspection (`{ } Code` is ON): Matched Fairybread Python source implementation bodies and symbol maps are included above (NOT just headers). If the user is asking you to look at, explain, or talk through the code, answer directly right now using `action=\"chat\"` based on the real code above! Only use `action=\"delegate\"` if they want a full multi-AI audit or code edits/patches.\n"
                 if code_ctx
                 else ""
             )
+            + f"- Microphone / Interruption Sensitivity & Noise Filter (Current sensitivity: {cur_sens}%): If the user asks to lower/raise sensitivity so their noises don't cut you off, or to ignore 'ums', 'ahs', or specific sounds, keep `action=\"chat\"` and set optional `\"set_voice_sensitivity\": {{\"level\": 20, \"ignore_fillers\": true}}` (and/or `\"add_ignored_noise\": \"phrase\"`) in the JSON (or include `[SET_VOICE_SENSITIVITY level=\"20\" ignore_fillers=\"true\"]` in `spoken_reply`) and confirm naturally out loud.\n"
             + f"- Custom AI Name: If the user gives you (or another AI) a name to go by (e.g. 'call yourself Ash' or 'your name is Max'), set optional "
             f'`"set_agent_name": {{"provider": "{eff_prov or "auto"}", "name": "NewName"}}` in the JSON (keeping `action="chat"`) and adopt it naturally in `spoken_reply`.\n'
             "1. 'chat': Casual talk, debate, roleplay, follow-up banter, quick questions, memory recalls/saves, brainstorming, or simple explanations you can answer directly right now (even if the background crew is BUSY).\n"
@@ -1415,16 +1635,18 @@ class VoiceCompanion:
         if not obj:
             stripped_raw, parsed_raw_saves = parse_save_memory_tags(raw_out, replace_with_badge=False)
             stripped_raw, raw_name_tags = parse_set_agent_name_tags(stripped_raw)
+            stripped_raw, raw_sens_tags, raw_noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_raw)
             applied_raw_names = self._persist_agent_name_updates(
                 raw_name_tags,
                 default_provider=(pname if pname and pname != "fallback" else eff_prov),
             )
+            applied_raw_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(raw_sens_tags, raw_noise_tags)
             for item in applied_raw_names:
                 if item.get("provider") in {eff_prov, pname}:
                     eff_speaker = item["given_name"]
             cleaned = clean_text_for_speech(stripped_raw)
             spoken = _strip_stall_closers(cleaned, self._recent_closers) or cleaned
-            if not spoken and not applied_raw_names:
+            if not spoken and not applied_raw_names and not applied_raw_voice_cfg:
                 dec = self._fallback_decision(
                     utterance,
                     background_busy=background_busy,
@@ -1444,7 +1666,11 @@ class VoiceCompanion:
             else:
                 dec = VoiceCompanionDecision(
                     action="chat",
-                    spoken_reply=spoken or f"Got it, you can call me {eff_speaker}.",
+                    spoken_reply=spoken or (
+                        f"Got it, you can call me {eff_speaker}."
+                        if applied_raw_names
+                        else "I've updated your microphone interruption sensitivity and noise filter."
+                    ),
                     provider_used=pname,
                     model_used=m_used,
                     requested_provider=req_p,
@@ -1459,6 +1685,7 @@ class VoiceCompanion:
                     slot_index=slot_index,
                     evolve_user_profile=eff_evolve,
                     updated_attributions=applied_raw_names,
+                    updated_voice_settings=applied_raw_voice_cfg,
                 )
             if record_history:
                 self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")
@@ -1470,6 +1697,40 @@ class VoiceCompanion:
         raw_reply_field = str(obj.get("spoken_reply") or "")
         stripped_reply, tag_saves = parse_save_memory_tags(raw_reply_field, replace_with_badge=False)
         stripped_reply, reply_name_tags = parse_set_agent_name_tags(stripped_reply)
+        stripped_reply, reply_sens_tags, reply_noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_reply)
+        json_sens_updates: list[dict[str, Any]] = list(reply_sens_tags)
+        json_noise_updates: list[str] = list(reply_noise_tags)
+        raw_svs = obj.get("set_voice_sensitivity")
+        if isinstance(raw_svs, dict):
+            upd_s: dict[str, Any] = {}
+            raw_l = raw_svs.get("level") if "level" in raw_svs else raw_svs.get("sensitivity")
+            if raw_l is not None:
+                try:
+                    upd_s["interruption_sensitivity"] = max(0, min(100, int(float(str(raw_l).rstrip("%")))))
+                except (TypeError, ValueError):
+                    pass
+            if "barge_in" in raw_svs and raw_svs["barge_in"] is not None:
+                upd_s["barge_in_enabled"] = bool(raw_svs["barge_in"])
+            if "ignore_fillers" in raw_svs and raw_svs["ignore_fillers"] is not None:
+                upd_s["ignore_vocal_noises"] = bool(raw_svs["ignore_fillers"])
+            if "silence_ms" in raw_svs and raw_svs["silence_ms"] is not None:
+                try:
+                    upd_s["silence_timeout_ms"] = max(800, min(3000, int(float(raw_svs["silence_ms"]))))
+                except (TypeError, ValueError):
+                    pass
+            if upd_s:
+                json_sens_updates.append(upd_s)
+        elif isinstance(raw_svs, (int, float)):
+            json_sens_updates.append({"interruption_sensitivity": max(0, min(100, int(raw_svs)))})
+        raw_ain = obj.get("add_ignored_noise")
+        if isinstance(raw_ain, str) and raw_ain.strip():
+            json_noise_updates.append(raw_ain.strip())
+        elif isinstance(raw_ain, list):
+            for x_n in raw_ain:
+                if str(x_n or "").strip():
+                    json_noise_updates.append(str(x_n).strip())
+        applied_json_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(json_sens_updates, json_noise_updates)
+
         json_name_updates: list[dict[str, str]] = list(reply_name_tags)
         raw_sn = obj.get("set_agent_name")
         sn_items = raw_sn if isinstance(raw_sn, list) else ([raw_sn] if isinstance(raw_sn, dict) else [])
@@ -1552,6 +1813,7 @@ class VoiceCompanion:
             slot_index=slot_index,
             evolve_user_profile=eff_evolve,
             updated_attributions=applied_json_names,
+            updated_voice_settings=applied_json_voice_cfg,
         )
         if record_history:
             self._remember(utterance, f"{eff_speaker}: {dec.spoken_reply}")

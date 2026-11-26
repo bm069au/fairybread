@@ -2886,6 +2886,159 @@ class VoiceUpgradeTests(unittest.TestCase):
         self.assertEqual(len(pasted_blobs), 1)
         self.assertTrue(pasted_blobs[0].startswith(b'\x89PNG\r\n\x1a\n'))
 
+        # 5. Verify Option 3 — App & Service API Keys (Jellyfin + future connectors) DPAPI vault & silent tool execution
+        from service_connectors import (
+            SERVICE_CONNECTOR_CATALOG,
+            format_service_connectors_status_for_prompt,
+            get_service_cred_key,
+            is_service_connector_configured,
+            jellyfin_get_status,
+            jellyfin_refresh_library,
+            jellyfin_search_items,
+            save_service_connector_config,
+            test_service_connector,
+        )
+        from orchestrator import _execute_internal_agent_tools, _has_internal_tool_tag, _strip_internal_tool_plumbing
+
+        self.assertIn('jellyfin', SERVICE_CONNECTOR_CATALOG)
+        self.assertIn('tmdb', SERVICE_CONNECTOR_CATALOG)
+        self.assertIn('plex', SERVICE_CONNECTOR_CATALOG)
+        self.assertIn('home_assistant', SERVICE_CONNECTOR_CATALOG)
+        self.assertIn('custom_1', SERVICE_CONNECTOR_CATALOG)
+
+        svc_cfg = self.root / 'svc_cfg.json'
+        svc_cred = CredentialStore(self.root / 'svc_creds.json')
+        fake_jf_secret = 'jf_secret_token_998877665544'
+        svc_cred.set_api_key(get_service_cred_key('jellyfin'), fake_jf_secret)
+        save_service_connector_config(
+            'jellyfin',
+            enabled=True,
+            base_url='http://localhost:8096',
+            config_path=svc_cfg,
+        )
+        self.assertTrue(is_service_connector_configured('jellyfin', config_path=svc_cfg, credential_store=svc_cred))
+        prompt_manifest = format_service_connectors_status_for_prompt(config_path=svc_cfg, credential_store=svc_cred)
+        self.assertIn('Jellyfin Media Server', prompt_manifest)
+        self.assertIn('[JELLYFIN_SEARCH', prompt_manifest)
+        # Crucial security invariant: raw service API key must NEVER appear in the LLM prompt manifest
+        self.assertNotIn(fake_jf_secret, prompt_manifest)
+
+        self.assertTrue(_has_internal_tool_tag('Let me check Jellyfin: [JELLYFIN_SEARCH query="Star Trek"]'))
+        self.assertEqual(
+            _strip_internal_tool_plumbing('Checking server.\n[JELLYFIN_STATUS]'),
+            'Checking server.',
+        )
+
+        class _FakeHTTPResp:
+            def __init__(self, status: int, body: bytes):
+                self.status = status
+                self._body = body
+
+            def read(self, *_args):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def _fake_urlopen(req, timeout=10.0):
+            url = req.full_url
+            headers_lower = {k.lower(): v for k, v in req.header_items()}
+            self.assertEqual(headers_lower.get('x-emby-token'), fake_jf_secret)
+            if '/System/Info' in url:
+                return _FakeHTTPResp(200, b'{"ServerName":"Brett Jellyfin","Version":"10.10.3","OperatingSystemDisplayName":"Windows 11"}')
+            if '/Library/VirtualFolders' in url:
+                return _FakeHTTPResp(200, b'[{"Name":"TV Shows","CollectionType":"tvshows"},{"Name":"Movies","CollectionType":"movies"}]')
+            if '/Items?' in url:
+                return _FakeHTTPResp(200, b'{"Items":[{"Name":"Shadow Warrior","ProductionYear":1997,"Type":"Movie","Id":"abc123"}],"TotalRecordCount":1}')
+            if '/Library/Refresh' in url:
+                return _FakeHTTPResp(204, b'')
+            return _FakeHTTPResp(200, b'{"ok":true}')
+
+        with patch('urllib.request.urlopen', side_effect=_fake_urlopen):
+            res_test = test_service_connector('jellyfin', config_path=svc_cfg, credential_store=svc_cred)
+            self.assertTrue(res_test['ok'])
+            self.assertIn('Brett Jellyfin', res_test['summary'])
+            self.assertIn('TV Shows', res_test['summary'])
+
+            st_txt = jellyfin_get_status(config_path=svc_cfg, credential_store=svc_cred)
+            self.assertIn('Brett Jellyfin', st_txt)
+            self.assertNotIn(fake_jf_secret, st_txt)
+
+            srch_txt = jellyfin_search_items('Shadow', config_path=svc_cfg, credential_store=svc_cred)
+            self.assertIn('Shadow Warrior', srch_txt)
+
+            ref_txt = jellyfin_refresh_library(config_path=svc_cfg, credential_store=svc_cred)
+            self.assertIn('library scan', ref_txt.lower())
+
+        # 6. Verify v0.95c Interruption Sensitivity, Human Vocal Noise Filter, AI Voice Tools & Full Talk Mode Code Access
+        from voice_service import (
+            add_custom_ignored_noise,
+            compute_sensitivity_thresholds,
+            is_unconscious_human_noise_or_filler,
+            load_voice_settings,
+        )
+        from voice_companion import (
+            VoiceCompanion,
+            build_voice_code_context,
+            parse_voice_sensitivity_and_noise_tags,
+        )
+
+        th_low = compute_sensitivity_thresholds(15)
+        th_def = compute_sensitivity_thresholds(35)
+        th_high = compute_sensitivity_thresholds(100)
+        self.assertGreater(th_low['barge_level'], th_def['barge_level'])
+        self.assertGreater(th_def['barge_level'], th_high['barge_level'])
+        self.assertGreater(th_low['barge_ticks'], th_high['barge_ticks'])
+
+        # Unconscious human vocal noises, fillers, bracketed sound tags & short Whisper noise hallucinations
+        for noise_txt, dur in (
+            ('um', 0.4),
+            ('Uh, hmm...', 0.6),
+            ('[cough]', 0.5),
+            ('(clears throat) *sigh*', 0.8),
+            ('ahem', 0.4),
+            ('Thank you.', 0.7),
+        ):
+            ign, why = is_unconscious_human_noise_or_filler(noise_txt, audio_dur_sec=dur, config_path=svc_cfg)
+            self.assertTrue(ign, msg=f'Expected {noise_txt!r} ({dur}s) to be ignored, got False')
+
+        # Real spoken sentences must NOT be ignored
+        for real_speech in (
+            'Hey Gemini, look at the code.',
+            'Lower your sensitivity to 20 percent.',
+            'Thank you for helping me debug the audio module today.',
+        ):
+            ign_r, _ = is_unconscious_human_noise_or_filler(real_speech, audio_dur_sec=2.4, config_path=svc_cfg)
+            self.assertFalse(ign_r, msg=f'Real speech {real_speech!r} should not be ignored')
+
+        # AI voice sensitivity & custom ignored noise tag parsing + persistence
+        vc_test = VoiceCompanion(
+            config_path=svc_cfg,
+            credential_store=svc_cred,
+            llm_callable=lambda _p: (
+                'I lowered your interruption sensitivity to 20 percent and added krrk to your ignored noises list. '
+                '[SET_VOICE_SENSITIVITY level="20" ignore_fillers="true"] '
+                '[ADD_IGNORED_NOISE phrase="krrk"]'
+            ),
+        )
+        dec_v = vc_test.respond('Lower your sensitivity and ignore krrk', talk_only=True, include_palace_code=True)
+        self.assertEqual(dec_v.updated_voice_settings.get('interruption_sensitivity'), 20)
+        self.assertIn('krrk', dec_v.updated_voice_settings.get('added_ignored_noises', []))
+        self.assertNotIn('SET_VOICE_SENSITIVITY', dec_v.spoken_reply)
+        self.assertEqual(load_voice_settings(svc_cfg)['interruption_sensitivity'], 20)
+        ign_custom, _ = is_unconscious_human_noise_or_filler('krrk', audio_dur_sec=0.5, config_path=svc_cfg)
+        self.assertTrue(ign_custom)
+
+        # Verify build_voice_code_context returns real function/class implementations (not just 18-line headers)
+        gen_code_ctx = build_voice_code_context('Look at the code')
+        self.assertIn('CODEBASE SYMBOL MAP', gen_code_ctx)
+        self.assertIn('def ', gen_code_ctx)
+        self.assertNotIn('(header)', gen_code_ctx)
+        self.assertGreater(len(gen_code_ctx), 2500)
+
 
 if __name__ == '__main__':
     unittest.main()

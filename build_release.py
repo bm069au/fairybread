@@ -230,6 +230,7 @@ def write_pyinstaller_spec(
 
     hidden = [
         "setup_wizard",
+        "service_connectors",
         "voice_visualizer",
         "cerebras.cloud.sdk",
         "PIL.Image",

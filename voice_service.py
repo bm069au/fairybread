@@ -602,6 +602,9 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "silence_timeout_ms": 950,
     "volume_percent": 100,
     "barge_in_enabled": True,
+    "interruption_sensitivity": 35,
+    "ignore_vocal_noises": True,
+    "custom_ignored_noises": "",
     "status_notification_style": "text",
     "auto_speak_responses": False,
     "voice_companion_enabled": True,
@@ -956,6 +959,15 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
             pass
     if "barge_in_enabled" in raw:
         merged["barge_in_enabled"] = bool(raw["barge_in_enabled"])
+    if "interruption_sensitivity" in raw:
+        try:
+            merged["interruption_sensitivity"] = max(0, min(100, int(raw["interruption_sensitivity"])))
+        except (TypeError, ValueError):
+            pass
+    if "ignore_vocal_noises" in raw:
+        merged["ignore_vocal_noises"] = bool(raw["ignore_vocal_noises"])
+    if isinstance(raw.get("custom_ignored_noises"), str):
+        merged["custom_ignored_noises"] = raw["custom_ignored_noises"].strip()[:1200]
     st_style = str(raw.get("status_notification_style") or DEFAULT_VOICE_SETTINGS["status_notification_style"]).strip().lower()
     merged["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     if "auto_speak_responses" in raw:
@@ -1271,6 +1283,12 @@ def save_voice_settings(
     current["silence_timeout_ms"] = max(700, min(4000, int(current.get("silence_timeout_ms", 1500))))
     current["volume_percent"] = max(0, min(100, int(current.get("volume_percent", 100))))
     current["barge_in_enabled"] = bool(current.get("barge_in_enabled", True))
+    try:
+        current["interruption_sensitivity"] = max(0, min(100, int(current.get("interruption_sensitivity", 35))))
+    except (TypeError, ValueError):
+        current["interruption_sensitivity"] = 35
+    current["ignore_vocal_noises"] = bool(current.get("ignore_vocal_noises", True))
+    current["custom_ignored_noises"] = str(current.get("custom_ignored_noises") or "").strip()[:1200]
     st_style = str(current.get("status_notification_style") or "text").strip().lower()
     current["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     current["auto_speak_responses"] = bool(current.get("auto_speak_responses", False))
@@ -1461,6 +1479,146 @@ def get_last_tts_engine_used() -> str:
         return _LAST_TTS_ENGINE_USED
 
 
+BUILTIN_HUMAN_VOCAL_NOISES: tuple[str, ...] = (
+    # 1. Thinking & hesitation fillers
+    "um", "umm", "ummm", "uh", "uhh", "uhhh", "er", "erm", "err", "ah", "ahh", "ahhh",
+    "eh", "ehh", "mm", "mmm", "mmmm", "hm", "hmm", "hmmm", "uh-huh", "uh huh", "mhm",
+    "mm-hmm", "mm hmm", "huh", "oh", "ohh",
+    # 2. Throat, mouth, breath & unconscious vocal tics / stim noises
+    "ahem", "hem", "khem", "tsk", "tut", "psst", "shh", "shhh", "pff", "pfft", "phew",
+    "ugh", "argh", "oof", "ach", "urp", "hic", "brr", "brrr", "zzz", "lip smack",
+    "tongue click", "throat clear", "clears throat", "cough", "coughs", "coughing",
+    "sigh", "sighs", "sighing", "sniff", "sniffs", "sniffle", "snort", "sneeze",
+    "yawn", "yawns", "yawning", "groan", "grunt", "grunts", "chuckle", "giggle",
+    "pant", "panting", "inhale", "exhale", "breathing", "breath", "gasp",
+    # 3. Short single-syllable mouth percussives / hums
+    "buh", "duh", "puh", "tuh", "kuh", "la", "da", "ba", "na", "ha", "hah",
+)
+
+WHISPER_SHORT_NOISE_HALLUCINATIONS: tuple[str, ...] = (
+    "thank you", "thank you.", "thanks", "thanks.", "thanks for watching",
+    "thanks for watching.", "thank you for watching", "thank you for watching.",
+    "you", "you.", "bye", "bye.", "subtitles by", "amara.org", "...", ".",
+    "mbc", "sbs", "so", "well", "yeah", "okay", "ok", "right",
+)
+
+_SOUND_TAG_BRACKET_RE = re.compile(
+    r"(?:\[[^\]]{1,45}\]|\([^)]{1,45}\)|\*[^*]{1,45}\*|<[^>]{1,45}>)",
+    re.IGNORECASE,
+)
+
+
+def compute_sensitivity_thresholds(sensitivity: int = 35) -> dict[str, int]:
+    """Map Interruption & Noise Sensitivity (0..100, default 35 = Relaxed/Noise-Tolerant) to audio thresholds.
+
+    - sensitivity = 0   (Maximum noise immunity): barge_level=52, barge_ticks=15 (~825ms), idle_level=20, idle_ticks=4
+    - sensitivity = 35  (Default Relaxed):        barge_level=37, barge_ticks=10 (~550ms), idle_level=14, idle_ticks=3
+    - sensitivity = 50  (Balanced):               barge_level=31, barge_ticks=9  (~495ms), idle_level=11, idle_ticks=3
+    - sensitivity = 100 (Hair-trigger):           barge_level=18, barge_ticks=4  (~220ms), idle_level=7,  idle_ticks=2
+    """
+    s = max(0, min(100, int(sensitivity if sensitivity is not None else 35)))
+    barge_level = max(16, int(round(52.0 - 0.34 * s)))
+    barge_ticks = max(4, int(round(15.0 - 0.11 * s)))
+    idle_level = max(6, int(round(20.0 - 0.13 * s)))
+    idle_ticks = 2 if s >= 75 else (3 if s >= 25 else 4)
+    return {
+        "sensitivity": s,
+        "barge_level": barge_level,
+        "barge_ticks": barge_ticks,
+        "barge_ms": barge_ticks * 55,
+        "idle_level": idle_level,
+        "idle_ticks": idle_ticks,
+    }
+
+
+def get_ignored_vocal_noise_set(config_path: Path = CONFIG_PATH, custom_csv: str | None = None) -> set[str]:
+    """Return normalized set of ignored human vocal noises & fillers (built-in catalog + user/AI custom additions)."""
+    items = {w.strip().lower() for w in BUILTIN_HUMAN_VOCAL_NOISES if w.strip()}
+    raw_custom = custom_csv
+    if raw_custom is None:
+        try:
+            raw_custom = str(load_voice_settings(config_path).get("custom_ignored_noises") or "")
+        except Exception:
+            raw_custom = ""
+    if raw_custom:
+        for tok in re.split(r"[,;\n]+", raw_custom):
+            clean = re.sub(r"[^a-z0-9\s\-']", "", tok.strip().lower()).strip()
+            if clean:
+                items.add(clean)
+    return items
+
+
+def add_custom_ignored_noise(phrase: str, config_path: Path = CONFIG_PATH) -> list[str]:
+    """Add one or more noise/filler phrases to custom_ignored_noises in voice_settings and return updated custom list."""
+    v_cfg = load_voice_settings(config_path)
+    existing = [
+        p.strip()
+        for p in re.split(r"[,;\n]+", str(v_cfg.get("custom_ignored_noises") or ""))
+        if p.strip()
+    ]
+    existing_low = {p.lower() for p in existing}
+    for part in re.split(r"[,;\n]+", str(phrase or "")):
+        clean = re.sub(r"[\[\]()*\"']", "", part).strip()
+        if clean and clean.lower() not in existing_low and len(clean) <= 45:
+            existing.append(clean)
+            existing_low.add(clean.lower())
+    save_voice_settings({"custom_ignored_noises": ", ".join(existing)}, config_path=config_path)
+    return existing
+
+
+def is_unconscious_human_noise_or_filler(
+    transcript: str,
+    *,
+    audio_dur_sec: float = 0.0,
+    config_path: Path = CONFIG_PATH,
+    ignore_enabled: bool | None = None,
+    custom_csv: str | None = None,
+) -> tuple[bool, str]:
+    """Return (should_ignore, reason) if a transcribed clip is purely human vocal noise, filler ('um'/'uh'), or short noise hallucination."""
+    raw = (transcript or "").strip()
+    if not raw:
+        return True, "empty transcript"
+
+    if ignore_enabled is None:
+        try:
+            ignore_enabled = bool(load_voice_settings(config_path).get("ignore_vocal_noises", True))
+        except Exception:
+            ignore_enabled = True
+    if not ignore_enabled:
+        return False, ""
+
+    # 1. Strip bracketed/asterisk sound annotations like [cough], (sighs), *clears throat*, [blank_audio]
+    without_tags = _SOUND_TAG_BRACKET_RE.sub(" ", raw).strip()
+    norm = re.sub(r"[^a-zA-Z0-9\s\-']", " ", without_tags).lower()
+    norm = re.sub(r"\s+", " ", norm).strip()
+    if not norm:
+        return True, f"non-speech sound annotation ({raw[:40]})"
+
+    noise_set = get_ignored_vocal_noise_set(config_path=config_path, custom_csv=custom_csv)
+
+    # 2. Exact match against single/multi-word noise catalog (e.g. "uh-huh", "mm hmm", "clears throat")
+    if norm in noise_set:
+        return True, f"ignored vocal filler/noise ('{norm}')"
+
+    # 3. Sequence of only filler/noise tokens (e.g. "um uh hmm", "ah um")
+    words = [w.strip("-'") for w in norm.split() if w.strip("-'")]
+    if not words:
+        return True, "punctuation only"
+    if len(words) <= 4 and all(
+        (w in noise_set or re.fullmatch(r"(?:u+m+|u+h+|a+h+|e+r+m*|h+m+|m+|s+h+|p+f+t*|t+s+k+|b+r+)", w) is not None)
+        for w in words
+    ):
+        return True, f"vocal filler sequence ('{norm}')"
+
+    # 4. Short acoustic noise hallucination (< 1.25s clip where Whisper hallucinates 'thank you', 'you', etc.)
+    if 0.0 < audio_dur_sec <= 1.25:
+        raw_low = raw.lower().strip()
+        if raw_low in WHISPER_SHORT_NOISE_HALLUCINATIONS or norm in {h.rstrip(".") for h in WHISPER_SHORT_NOISE_HALLUCINATIONS}:
+            return True, f"short acoustic noise hallucination ('{raw[:35]}' in {audio_dur_sec:.2f}s)"
+
+    return False, ""
+
+
 class LiveAudioSession:
     """Real-time QAudioSource microphone streamer supporting both Dictate Mode and Live Hands-Free Voice Mode."""
 
@@ -1491,10 +1649,17 @@ class LiveAudioSession:
         self._gain_percent = 150
         self._silence_timeout_ms = 1500
         self._barge_in_enabled = True
+        self._interruption_sensitivity = 35
+        self._ignore_vocal_noises = True
+        self._barge_level_threshold = 37
+        self._barge_ticks_threshold = 10
+        self._idle_level_threshold = 14
+        self._idle_ticks_threshold = 3
 
         self._pcm_buffer = bytearray()
         self._barge_prebuf = bytearray()
         self._barge_ticks = 0
+        self._barge_miss_tolerance = 0
         self._level_history: list[int] = [10, 20, 15, 25, 15, 10]
         self._speech_detected = False
         self._speech_ticks = 0
@@ -1506,15 +1671,28 @@ class LiveAudioSession:
         self.active = False
         self.muted = False
 
+    def reload_live_settings(self) -> dict[str, Any]:
+        """Hot-reload microphone gain, silence timeout, barge-in, and interruption sensitivity without stopping capture."""
+        v_cfg = load_voice_settings(self.config_path)
+        self._gain_percent = int(v_cfg.get("mic_gain_percent", 150))
+        self._silence_timeout_ms = int(v_cfg.get("silence_timeout_ms", 1500))
+        self._barge_in_enabled = bool(v_cfg.get("barge_in_enabled", True))
+        self._interruption_sensitivity = int(v_cfg.get("interruption_sensitivity", 35))
+        self._ignore_vocal_noises = bool(v_cfg.get("ignore_vocal_noises", True))
+        th = compute_sensitivity_thresholds(self._interruption_sensitivity)
+        self._barge_level_threshold = th["barge_level"]
+        self._barge_ticks_threshold = th["barge_ticks"]
+        self._idle_level_threshold = th["idle_level"]
+        self._idle_ticks_threshold = th["idle_ticks"]
+        return th
+
     def start(self, parent_widget=None) -> tuple[bool, str]:
         from PySide6.QtCore import QTimer
         from PySide6.QtMultimedia import QAudioFormat, QAudioSource
 
         self._parent_widget = parent_widget
         v_cfg = load_voice_settings(self.config_path)
-        self._gain_percent = int(v_cfg.get("mic_gain_percent", 150))
-        self._silence_timeout_ms = int(v_cfg.get("silence_timeout_ms", 1500))
-        self._barge_in_enabled = bool(v_cfg.get("barge_in_enabled", True))
+        self.reload_live_settings()
         dev = resolve_qaudio_input_device(str(v_cfg.get("microphone_device", "System default")))
         if dev.isNull():
             return False, "No microphone input device detected on this system."
@@ -1646,24 +1824,32 @@ class LiveAudioSession:
                 )
                 if pcm16:
                     self._barge_prebuf.extend(pcm16)
-                    max_pre = max(3200, int(self._sample_rate * 2 * 0.35))
+                    max_pre = max(3200, int(self._sample_rate * 2 * 0.75))
                     if len(self._barge_prebuf) > max_pre:
                         del self._barge_prebuf[:-max_pre]
                 self._level_history.append(lvl)
                 if len(self._level_history) > 12:
                     self._level_history = self._level_history[-12:]
                 bars = format_wave_bars(self._level_history, width=6)
-                if lvl >= 18:
+                b_lvl_req = int(getattr(self, "_barge_level_threshold", 37))
+                b_tks_req = int(getattr(self, "_barge_ticks_threshold", 10))
+                if lvl >= b_lvl_req:
                     self._barge_ticks += 1
+                    self._barge_miss_tolerance = 1
+                elif self._barge_ticks > 0 and getattr(self, "_barge_miss_tolerance", 0) > 0 and lvl >= max(12, b_lvl_req - 10):
+                    # Allow 1 brief syllable dip inside continuous human speech without resetting sustained count
+                    self._barge_miss_tolerance = 0
                 else:
                     self._barge_ticks = 0
-                if self._barge_ticks >= 4:
+                    self._barge_miss_tolerance = 0
+                if self._barge_ticks >= b_tks_req:
                     stop_speaking()
                     self._pcm_buffer = bytearray(self._barge_prebuf)
                     self._barge_prebuf.clear()
                     self._barge_ticks = 0
+                    self._barge_miss_tolerance = 0
                     self._speech_detected = True
-                    self._speech_ticks = 4
+                    self._speech_ticks = b_tks_req
                     self._last_voice_ts = time.monotonic()
                     if self.on_barge_in is not None:
                         try:
@@ -1686,6 +1872,7 @@ class LiveAudioSession:
                 self._pcm_buffer.clear()
                 self._barge_prebuf.clear()
                 self._barge_ticks = 0
+                self._barge_miss_tolerance = 0
                 self._speech_detected = False
                 self._speech_ticks = 0
                 self._last_voice_ts = time.monotonic()
@@ -1697,12 +1884,15 @@ class LiveAudioSession:
                         pass
                 return
             elif self._barge_prebuf:
-                if self._barge_ticks > 0:
+                # Only carry over prebuffer if it nearly reached sustained speech threshold (prevents short coughs right as TTS ends from firing a turn)
+                b_tks_req = int(getattr(self, "_barge_ticks_threshold", 10))
+                if self._barge_ticks >= max(3, b_tks_req // 2):
                     self._pcm_buffer.extend(self._barge_prebuf)
                     self._speech_ticks = max(self._speech_ticks, self._barge_ticks)
                     self._last_voice_ts = time.monotonic()
                 self._barge_prebuf.clear()
                 self._barge_ticks = 0
+                self._barge_miss_tolerance = 0
 
         if not raw:
             return
@@ -1722,12 +1912,16 @@ class LiveAudioSession:
         bars = format_wave_bars(self._level_history, width=6)
 
         now = time.monotonic()
-        if lvl >= 7:
+        idle_lvl_req = int(getattr(self, "_idle_level_threshold", 14)) if self.live_mode else 7
+        idle_tks_req = int(getattr(self, "_idle_ticks_threshold", 3)) if self.live_mode else 2
+        if lvl >= idle_lvl_req:
             self._speech_ticks += 1
             self._last_voice_ts = now
-            if self._speech_ticks >= 2:
+            if self._speech_ticks >= idle_tks_req:
                 self._speech_detected = True
         else:
+            if not self._speech_detected:
+                self._speech_ticks = 0
             if self.live_mode and not self._speech_detected:
                 max_lead_bytes = self._sample_rate * 2
                 if len(self._pcm_buffer) > max_lead_bytes:
