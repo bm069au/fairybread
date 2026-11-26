@@ -1339,7 +1339,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.95a')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.95b')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -2872,6 +2872,19 @@ class VoiceUpgradeTests(unittest.TestCase):
 
             att = extract_attachment(blank_pdf, credential_store=cred)
             self.assertIn('OCR extracted text cleanly.', att.text)
+
+        # 4. Verify Ctrl+V QPixmap clipboard picture paste in PySide6 / Python 3.13
+        from PySide6.QtGui import QColor, QPixmap
+        from palace_gui import Composer
+        pm = QPixmap(24, 24)
+        pm.fill(QColor('#3b82f6'))
+        QApplication.clipboard().setPixmap(pm)
+        comp = Composer()
+        pasted_blobs: list[bytes] = []
+        comp.image_pasted.connect(lambda b: pasted_blobs.append(b))
+        comp.paste()
+        self.assertEqual(len(pasted_blobs), 1)
+        self.assertTrue(pasted_blobs[0].startswith(b'\x89PNG\r\n\x1a\n'))
 
 
 if __name__ == '__main__':

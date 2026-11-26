@@ -1,3 +1,16 @@
+# Fairybread — Beta v0.95b (Win_x64) Changelog
+**Release Date:** 2026-11-26
+**Version:** `0.95b` (`0.95.2.0`)
+
+## Summary of Changes in `v0.95b`
+1. **❖ Full DeepSeek V4.1-Flash & V4-Pro + Web Search/Fetch, Scanned-PDF OCR & Neural Voice (`palace_config.py`, `openai_provider.py`, `cost_service.py`, `voice_companion.py`, `search_service.py`, `attachment_service.py`, `voice_service.py`):**
+   - Upgrades DeepSeek default to **`deepseek-flash`** (`DeepSeek-V4.1-Flash-1017` — 1M context, 384K max output, native image/vision input, `$0.15/1M` in · `$0.60/1M` out) and routes **Deeper Chat** (plus legacy `deepseek-reasoner` calls) to **`deepseek-v4-pro`** (`DeepSeek-V4-Pro-0813`).
+   - Integrates DeepSeek **`POST /v1/tools/search`** and **`POST /v1/tools/fetch`** (clean Markdown extraction) into `search_service.py`, chains **`POST /v1/tools/ocr`** (`$0.225 / 1k pages`) ahead of Mistral OCR for scanned image-only PDFs, and adds **`DeepSeek Neural (stella / tide · ~$0.023/1k chars)`** (`POST /v1/tools/tts` 24 kHz PCM streaming) and **`POST /v1/tools/asr`** (`$0.058/hr`) to `voice_service.py`.
+2. **📋 `Ctrl+V` & Right-Click Clipboard Picture Paste Fix (`palace_gui.py`):**
+   - Fixes Python 3.13 / PySide6 `TypeError: QImage(QPixmap)` in `Composer.insertFromMimeData` by decoding `QPixmap.toImage()`, `QImage`, raw `image/png`/`image/jpeg`/`image/webp`/`image/gif`/`image/bmp` MIME buffers, and `QApplication.clipboard().image()` / `.pixmap()`; enables right-click **Paste** whenever the clipboard contains an image or local files; and forwards `Ctrl+V` / `Edit → Paste` from the read-only chat pane directly to the composer input box.
+
+---
+
 # Fairybread — Beta v0.95a (Win_x64) Changelog
 **Release Date:** 2026-11-26
 **Version:** `0.95a` (`0.95.1.0`)

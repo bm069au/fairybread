@@ -48,6 +48,8 @@ MODEL_TOKEN_RATES_PER_1M: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4o": (2.50, 10.00),
     "claude-sonnet-5.5": (3.00, 15.00),
+    "deepseek-v4-pro": (0.66, 1.98),
+    "deepseek-flash": (0.15, 0.60),
     "deepseek-reasoner": (0.55, 2.19),
     "deepseek-chat": (0.27, 1.10),
     "qwen/qwen3.8-27b": (0.15, 0.60),
@@ -88,10 +90,14 @@ TTS_COST_PER_1K_CHARS_USD: dict[str, float] = {
     "deepgram:flux": 0.030,
     "deepgram:aura-2": 0.025,
     "deepgram:aura": 0.020,
+    "deepseek:stella": 0.0225,
+    "deepseek:tide": 0.0225,
+    "deepseek:tts": 0.0225,
 }
 
 STT_COST_PER_MINUTE_USD: dict[str, float] = {
     "groq:whisper-large-v3-turbo": 0.00067,
+    "deepseek:asr": 0.00097,
     "openai:whisper-1": 0.006,
     "gemini:gemini-4-hydrogen": 0.002,
     "gemini:gemini-2.5-flash": 0.002,

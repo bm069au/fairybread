@@ -1,4 +1,4 @@
-# Fairybread (Beta v0.95a) — User Guide & Setup Handbook
+# Fairybread (Beta v0.95b) — User Guide & Setup Handbook
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)** · Official site: [fairybread.me](https://fairybread.me)
 
@@ -116,7 +116,7 @@ Why connect companies directly instead of routing everything through one aggrega
 | **Google Gemini** | Huge context windows, strong general & coding model, multimodal native | Generous **Free tier** (rate-limited) or pay-as-you-go | **Image Gen** (`gemini-3-pro-image`/`3.1-flash`), **Vision**, **Gemini Audio STT & TTS** | [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) |
 | **Anthropic (Claude)** | Nuanced writing, complex code review, natural tone | Prepaid credit balance | Deep analysis & coding specialist (direct key, OpenRouter, or `claude` CLI). **Note:** Strict anti-roleplay guardrails—usually refuses or breaks character in Roleplay Personas | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
 | **Mistral / Codestral** | European frontier models (`Small`/`Medium`/`Large`), `Magistral` reasoning, `Codestral` coding | **Free Experiment plan** *(must enable in Billing)* or pay-as-you-go | **Vision**, **Scanned-PDF OCR** (`mistral-ocr-latest`), **Voxtral Voice TTS & STT** | [console.mistral.ai/api-keys](https://console.mistral.ai/api-keys/) |
-| **DeepSeek** | Frontier-class coding & step-by-step reasoning at tiny cost | Strict prepaid top-up (`$2`/`$5`/`$10`) | Everyday chat (`deepseek-chat`) & heavy reasoning (`deepseek-reasoner`) | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
+| **DeepSeek** | Frontier-class coding, 1M context & reasoning (`deepseek-flash` V4.1-Flash & `deepseek-v4-pro`) at tiny cost | Strict prepaid top-up (`$2`/`$5`/`$10`) | **Vision** (`deepseek-flash`), **Web Search & Fetch**, **Scanned-PDF OCR**, **DeepSeek Neural TTS (`stella`/`tide`) & ASR** | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) |
 | **Groq Cloud (LPU)** | Blazing-fast instant answers on open-weight models (`gpt-oss-120b`, `Qwen`) | **Free tier** (strict per-minute token caps) | **Fastest Microphone Dictation** (`whisper-large-v3-turbo`), **Groq Orpheus TTS** | [console.groq.com/keys](https://console.groq.com/keys) |
 | **Cerebras** | Wafer-scale ultra-fast inference with automatic 450 req/min failover | **Free tier** | Fast lightweight answers & brainstorming | [cloud.cerebras.ai](https://cloud.cerebras.ai/) |
 | **Qwen** *(DeepInfra)* | High-accuracy open-weight general & coding models (`Qwen3.8-27B/Flash/Max`) | Prepaid DeepInfra wallet (custom spend cap) | Balanced chat & coding contributor | [deepinfra.com/dash/keys](https://deepinfra.com/dash/keys) |
@@ -162,6 +162,7 @@ You do **not** need a separate voice company unless you want studio voice acting
 | **Gemini Neural** (`gemini-3.8-flash-lite-tts`) | `~$0.012 / min` | Fast, expressive, lowest-cost major neural voice | Everyday speech + lowest cost if you have a Gemini key |
 | **Groq Orpheus** (`orpheus-v1-english`) | `~$0.02 / min` | Punchy, fast English voice | Fast replies if you use Groq |
 | **Mistral Voxtral** (`voxtral-mini-tts-latest`) | Pay-as-you-go / Mistral plan | Clean modern neural voice | Users already using a Mistral key |
+| **DeepSeek Neural** (`stella` / `tide`) | `~$0.023 / 1k chars` | Crisp 24 kHz streaming voices | Users already using a DeepSeek key |
 | **OpenRouter Audio** (`gpt-audio-mini`) | Per OpenRouter audio rates | Neural voices routed through your OpenRouter key | 1-key OpenRouter setups with zero extra accounts |
 
 #### Group 2 — Dedicated Specialist Voice Companies *(Separate API Key)*

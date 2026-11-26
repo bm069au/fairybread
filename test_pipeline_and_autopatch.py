@@ -4176,7 +4176,8 @@ class V092fConformanceWeatherAndIntegrityTests(unittest.TestCase):
         self.assertEqual(version_to_windows_4part("0.92f"), "0.92.6.0")
         self.assertEqual(version_to_windows_4part("0.95"), "0.95.0.0")
         self.assertEqual(version_to_windows_4part("0.95a"), "0.95.1.0")
-        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.95.1.0")
+        self.assertEqual(version_to_windows_4part("0.95b"), "0.95.2.0")
+        self.assertEqual(FAIRYBREAD_WINDOWS_VERSION, "0.95.2.0")
         self.assertEqual(version_to_windows_4part("0.9.1a"), "0.9.1.1")
         self.assertFalse(DEFAULT_UI_SETTINGS["close_to_tray"])
         self.assertTrue((Path(__file__).with_name("PRIVACY.md")).is_file())
@@ -4759,8 +4760,8 @@ class V093ReleaseFeaturesTests(unittest.TestCase):
 
     def test_7_installer_iss_v093_and_update_only(self):
         iss = (Path(__file__).with_name("fairybread_setup.iss")).read_text(encoding="utf-8")
-        self.assertIn('AppDispVer "0.95a"', iss)
-        self.assertIn('AppWinVer "0.95.1.0"', iss)
+        self.assertIn('AppDispVer "0.95b"', iss)
+        self.assertIn('AppWinVer "0.95.2.0"', iss)
         self.assertIn("1. Update only (Recommended", iss)
         self.assertIn("/UPDATEONLY", iss)
         self.assertIn("ShouldAutoRelaunchUpdateOnly", iss)
@@ -5279,7 +5280,7 @@ class GraphicsOpenAIAndDeepChatProfileTests(unittest.TestCase):
             self.assertEqual(squads["deep_chat"]["context_depth"], "deep")
             self.assertEqual(squads["deep_chat"]["model_overrides"]["openai"], "gpt-6.2-sol")
             self.assertEqual(squads["deep_chat"]["model_overrides"]["gemini"], "gemini-4-carbon")
-            self.assertEqual(squads["deep_chat"]["model_overrides"]["deepseek"], "deepseek-reasoner")
+            self.assertEqual(squads["deep_chat"]["model_overrides"]["deepseek"], "deepseek-v4-pro")
             self.assertIn("claude", squads["deep_chat"]["model_overrides"])
 
             # Deleted built-in stays deleted across reloads

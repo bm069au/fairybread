@@ -102,6 +102,12 @@ class OpenAIProvider(AIProvider):
         model_override: str | None = None,
     ) -> ProviderResponse:
         eff_model = (model_override or "").strip() or self.model
+        if (
+            self.base_url
+            and "api.deepseek.com" in str(self.base_url).lower()
+            and eff_model.lower() == "deepseek-reasoner"
+        ):
+            eff_model = "deepseek-v4-pro"
         sys_clean = (system_prompt or "").strip()
         clean_hist: list[dict[str, str]] = []
         if history_messages and isinstance(history_messages, list):

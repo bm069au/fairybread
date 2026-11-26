@@ -35,6 +35,7 @@ TTS_ENGINES: list[tuple[str, str]] = [
     ("groq", "Groq Orpheus (orpheus-v1-english · ~$0.02/min)"),
     ("openrouter", "OpenRouter Audio (gpt-audio-mini · Neural Voices)"),
     ("mistral", "Mistral Voxtral (voxtral-mini-tts-latest · Neural)"),
+    ("deepseek", "DeepSeek Neural (stella / tide · ~$0.023/1k chars)"),
     ("cartesia", "Cartesia Sonic (~$0.045/1k chars · ~50ms streaming)"),
     ("elevenlabs", "ElevenLabs (~$0.18/1k chars · Studio / Cloning)"),
     ("deepgram", "Deepgram Flux / Aura-2 (~$0.025–$0.03/1k chars · Low-Latency)"),
@@ -48,6 +49,7 @@ TTS_ENGINE_SHORT_LABELS: dict[str, str] = {
     "groq": "Groq Orpheus",
     "openrouter": "OpenRouter Audio",
     "mistral": "Mistral Voxtral",
+    "deepseek": "DeepSeek Neural",
     "cartesia": "Cartesia Sonic",
     "elevenlabs": "ElevenLabs",
     "deepgram": "Deepgram Flux / Aura-2",
@@ -2794,6 +2796,43 @@ def _synthesize_mistral_voxtral_pcm(
     return _decode_audio_payload(raw_bytes, "audio/wav")
 
 
+DEEPSEEK_TTS_VOICES: list[tuple[str, str]] = [
+    ("stella", "Stella — Female Neural"),
+    ("tide", "Tide — Male Neural"),
+]
+
+
+def _stream_deepseek_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice_id: str = "stella",
+    cancel_event: threading.Event | None = None,
+):
+    """Stream raw 24 kHz 16-bit signed mono PCM chunks from DeepSeek `POST /v1/tools/tts`."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        raise ValueError("deepseek: missing API key")
+    vid = (voice_id or "stella").strip().lower()
+    if vid not in {"stella", "tide"}:
+        vid = "stella"
+    body = json.dumps({
+        "text": str(chunk_text or "").strip(),
+        "voice_id": vid,
+        "format": "pcm",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.deepseek.com/v1/tools/tts",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {clean_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    yield from _iter_http_pcm_stream(req, cancel_event=cancel_event)
+
+
 _TTS_HTTPX_LOCK = threading.Lock()
 _TTS_HTTPX_CLIENT: Any = None
 _STT_CLIENT_CACHE: dict[tuple[str, str], Any] = {}
@@ -3021,17 +3060,18 @@ def synthesize_speech_pcm(
     )
 
     order = {
-        "auto": ["openai", "gemini", "groq", "mistral", "openrouter"],
-        "openai": ["openai", "gemini", "groq", "mistral", "openrouter"],
-        "gemini": ["gemini", "openai", "groq", "mistral", "openrouter"],
-        "groq": ["groq", "openai", "gemini", "mistral", "openrouter"],
-        "mistral": ["mistral", "openai", "gemini", "openrouter"],
+        "auto": ["openai", "gemini", "groq", "deepseek", "mistral", "openrouter"],
+        "openai": ["openai", "gemini", "groq", "deepseek", "mistral", "openrouter"],
+        "gemini": ["gemini", "openai", "groq", "deepseek", "mistral", "openrouter"],
+        "groq": ["groq", "openai", "gemini", "deepseek", "mistral", "openrouter"],
+        "mistral": ["mistral", "openai", "gemini", "deepseek", "openrouter"],
+        "deepseek": ["deepseek", "openai", "gemini", "mistral", "openrouter"],
         "openrouter": ["openrouter", "openai", "gemini"],
         "cartesia": ["cartesia", "openai", "gemini", "openrouter"],
         "elevenlabs": ["elevenlabs", "openai", "gemini", "openrouter"],
         "deepgram": ["deepgram", "openai", "gemini", "openrouter"],
         "system": [],
-    }.get(engine, ["openai", "gemini", "groq", "mistral", "openrouter"])
+    }.get(engine, ["openai", "gemini", "groq", "deepseek", "mistral", "openrouter"])
 
     errors: list[str] = []
     for candidate in order:
@@ -3111,6 +3151,22 @@ def synthesize_speech_pcm(
                     return pcm, sr, "mistral:voxtral-mini-tts-latest"
             except Exception as exc:
                 errors.append(f"mistral: {exc}")
+        elif candidate == "deepseek":
+            ds_key = store.get_api_key("deepseek")
+            if not ds_key:
+                errors.append("deepseek: missing API key")
+                continue
+            try:
+                ds_v = str(cfg.get("deepseek_voice_name") or "stella").strip().lower()
+                if ds_v not in {"stella", "tide"}:
+                    ds_v = "stella"
+                buf = bytearray()
+                for c_bytes in _stream_deepseek_pcm(spoken, api_key=ds_key, voice_id=ds_v):
+                    buf.extend(c_bytes)
+                if buf:
+                    return bytes(buf), 24000, f"deepseek:{ds_v}"
+            except Exception as exc:
+                errors.append(f"deepseek: {exc}")
         elif candidate == "cartesia":
             ckey = store.get_api_key("cartesia")
             if not ckey:
@@ -3218,12 +3274,12 @@ def _build_tts_candidate_order(
     fb = (fallback_engine or "auto").strip().lower()
     all_ready = [
         eid
-        for eid in ("openai", "gemini", "groq", "mistral", "openrouter", "cartesia", "elevenlabs", "deepgram")
+        for eid in ("openai", "gemini", "groq", "deepseek", "mistral", "openrouter", "cartesia", "elevenlabs", "deepgram")
         if is_tts_engine_ready(eid, credential_store=store)
     ]
     order: list[str] = []
     if pri == "auto":
-        for eid in ("openai", "gemini", "groq", "mistral", "openrouter"):
+        for eid in ("openai", "gemini", "groq", "deepseek", "mistral", "openrouter"):
             if eid not in order:
                 order.append(eid)
         for eid in all_ready:
@@ -3676,6 +3732,68 @@ def speak_agent_response(
                             break
                         continue
 
+                elif candidate == "deepseek":
+                    ds_key = store.get_api_key("deepseek")
+                    if not ds_key:
+                        if engine == "deepseek":
+                            errors.append("deepseek: missing API key")
+                        continue
+                    try:
+                        ds_voice = str(cfg.get("deepseek_voice_name") or "stella").strip().lower()
+                        if ds_voice not in {"stella", "tide"}:
+                            ds_voice = "stella"
+                        for ch_txt in chunks:
+                            if cancel_ev.is_set():
+                                break
+                            ch_pcm_bytes = 0
+                            for pcm_piece in _stream_deepseek_pcm(
+                                ch_txt,
+                                api_key=ds_key,
+                                voice_id=ds_voice,
+                                cancel_event=cancel_ev,
+                            ):
+                                if cancel_ev.is_set():
+                                    break
+                                if not pcm_piece or len(pcm_piece) < 2:
+                                    continue
+                                if stream is None:
+                                    stream = _WaveOutStream(sample_rate=24000, channels=1, bits_per_sample=16)
+                                    with _TTS_LOCK:
+                                        if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                            stream.stop()
+                                            stream = None
+                                            break
+                                        _ACTIVE_WAVEOUT = stream
+                                        _LAST_TTS_ENGINE_USED = f"deepseek:{ds_voice}"
+                                    if on_engine_status is not None:
+                                        try:
+                                            on_engine_status(_LAST_TTS_ENGINE_USED)
+                                        except Exception:
+                                            pass
+                                _write_or_raise(pcm_piece, "deepseek")
+                                _emit_meta("deepseek", f"DeepSeek ({ds_voice.title()})")
+                                ch_pcm_bytes += len(pcm_piece)
+                            if ch_pcm_bytes > 0:
+                                try:
+                                    from cost_service import emit_tts_cost
+                                    emit_tts_cost(f"deepseek:{ds_voice}", ch_pcm_bytes / 48000.0, char_count=len(ch_txt))
+                                except Exception:
+                                    pass
+                        if stream is not None and not cancel_ev.is_set() and played_any:
+                            stream.drain(cancel_ev)
+                        if played_any:
+                            break
+                    except Exception as exc:
+                        err_s = f"deepseek: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
+                        if stream is not None:
+                            stream.stop()
+                            stream = None
+                        if played_any:
+                            break
+                        continue
+
                 elif candidate in {"cartesia", "elevenlabs", "deepgram"}:
                     ext_key = store.get_api_key(candidate)
                     if not ext_key:
@@ -3929,6 +4047,25 @@ def transcribe_audio_file(
             txt = (getattr(tr, "text", "") or "").strip()
             if txt:
                 _emit_stt("mistral:voxtral-mini-transcribe-3")
+                return txt
+        except Exception:
+            pass
+
+    ds_key = store.get_api_key("deepseek")
+    if ds_key:
+        try:
+            import httpx
+            with httpx.Client(timeout=25.0) as cli:
+                resp = cli.post(
+                    "https://api.deepseek.com/v1/tools/asr",
+                    headers={"Authorization": f"Bearer {ds_key}"},
+                    files={"file": (audio_path.name or "speech.wav", audio_path.read_bytes(), "audio/wav")},
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+            txt = str((payload.get("text") if isinstance(payload, dict) else "") or "").strip()
+            if txt:
+                _emit_stt("deepseek:asr")
                 return txt
         except Exception:
             pass

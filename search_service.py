@@ -349,9 +349,110 @@ def _clean_html_to_text(raw_html: str, max_chars: int = 2400) -> str:
     return txt
 
 
+def _get_deepseek_tools_api_key(credential_store=None) -> str:
+    """Return stored DeepSeek API key for Search & Fetch tools (skips live vault lookup in offscreen unit tests unless injected)."""
+    if credential_store is None and os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return ""
+    try:
+        from credential_store import CredentialStore
+        store = credential_store or CredentialStore()
+        return (store.get_api_key("deepseek") or "").strip()
+    except Exception:
+        return ""
+
+
+def _fetch_deepseek_markdown(
+    url: str,
+    max_chars: int = 2400,
+    timeout: float = 6.5,
+    *,
+    api_key: str = "",
+) -> str:
+    """Fetch a webpage as clean Markdown via DeepSeek `POST /v1/tools/fetch` ($0.00075/success)."""
+    clean_url = (url or "").strip()
+    key = (api_key or "").strip() or _get_deepseek_tools_api_key()
+    if not key or not clean_url.startswith(("http://", "https://")) or len(clean_url) > 8192:
+        return ""
+    try:
+        body = json.dumps({"url": clean_url}).encode("utf-8")
+        req = urllib_request.Request(
+            "https://api.deepseek.com/v1/tools/fetch",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=max(4.0, float(timeout))) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        content = str((payload.get("content") if isinstance(payload, dict) else "") or "").strip()
+        content = re.sub(r"\s+", " ", content).strip()
+        if len(content) > max_chars:
+            content = content[:max_chars] + " …"
+        return content
+    except Exception:
+        return ""
+
+
+def _search_deepseek_api(
+    query: str,
+    max_results: int = 8,
+    angle: str = "general",
+    *,
+    api_key: str = "",
+) -> list[WebSearchHit]:
+    """Query DeepSeek `POST /v1/tools/search` ($0.00075/success) for ranked web results."""
+    clean_q = (query or "").strip()[:128]
+    key = (api_key or "").strip() or _get_deepseek_tools_api_key()
+    if not key or not clean_q:
+        return []
+    hits: list[WebSearchHit] = []
+    try:
+        body = json.dumps({
+            "query": clean_q,
+            "count": max(1, min(50, int(max_results or 8))),
+            "need_content": False,
+        }).encode("utf-8")
+        req = urllib_request.Request(
+            "https://api.deepseek.com/v1/tools/search",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=7.5) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        results = (payload.get("results") if isinstance(payload, dict) else None) or []
+        for item in results[:max_results]:
+            if not isinstance(item, dict):
+                continue
+            link = str(item.get("url") or "").strip()
+            if not link.startswith(("http://", "https://")):
+                continue
+            title = _clean_html_to_text(str(item.get("title") or link), 160)
+            snip_raw = str(item.get("summary") or item.get("snippet") or "")
+            snip = _clean_html_to_text(snip_raw, 360)
+            hits.append(
+                WebSearchHit(
+                    title=title or link,
+                    url=link,
+                    snippet=snip,
+                    source="deepseek",
+                    angle=angle,
+                )
+            )
+    except Exception:
+        pass
+    return hits
+
+
 def fetch_page_clean_text(url: str, max_chars: int = 2400, timeout: float = 6.5) -> str:
     if not url or not url.startswith(("http://", "https://")):
         return ""
+    extracted = ""
     try:
         req = urllib_request.Request(
             url,
@@ -366,9 +467,13 @@ def fetch_page_clean_text(url: str, max_chars: int = 2400, timeout: float = 6.5)
                 return ""
             raw_bytes = resp.read(160_000)
             decoded = raw_bytes.decode("utf-8", errors="replace")
-            return _clean_html_to_text(decoded, max_chars=max_chars)
+            extracted = _clean_html_to_text(decoded, max_chars=max_chars)
     except Exception:
-        return ""
+        extracted = ""
+    if len(extracted) >= 80:
+        return extracted
+    ds_md = _fetch_deepseek_markdown(url, max_chars=max_chars, timeout=timeout)
+    return ds_md or extracted
 
 
 _WMO_WEATHER_CODES: dict[int, str] = {
@@ -2380,9 +2485,12 @@ def run_multi_tier_search(
 
     angles = build_query_angles(question, norm_depth)
     raw_hits: list[WebSearchHit] = []
+    ds_search_key = _get_deepseek_tools_api_key()
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         futs = []
+        if ds_search_key and angles:
+            futs.append(ex.submit(_search_deepseek_api, angles[0][1], 8, "primary", api_key=ds_search_key))
         if angles:
             futs.append(ex.submit(_search_bing_rss, angles[0][1], 8, "primary"))
         for angle_name, q_str in angles:

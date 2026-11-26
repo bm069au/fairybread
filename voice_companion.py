@@ -480,6 +480,8 @@ class VoiceCompanion:
             ) or "deepseek-chat"
             if talk_only and not (ov_model and pref == "deepseek") and "reasoner" in ds_model.lower():
                 ds_model = "deepseek-chat"
+            elif talk_only and not (ov_model and pref == "deepseek") and "v4-pro" in ds_model.lower():
+                ds_model = "deepseek-flash"
             self._last_models["deepseek"] = ds_model
 
             def _call_deepseek(

@@ -752,6 +752,14 @@ class ChatBrowser(QTextBrowser):
     (working around Qt QTextDocument's CSS border-radius limitation while keeping text 100% selectable).
     """
     anchor_action_requested = Signal(str)
+    paste_requested = Signal()
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self.paste_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1295,6 +1303,12 @@ class Composer(QTextEdit):
 
     def contextMenuEvent(self, event):
         menu = self.createStandardContextMenu(event.pos())
+        cb_mime = QApplication.clipboard().mimeData()
+        if cb_mime is not None and self.canInsertFromMimeData(cb_mime):
+            for act in menu.actions():
+                clean_lbl = (act.text() or '').split('\t', 1)[0].replace('&', '').strip().lower()
+                if clean_lbl == 'paste':
+                    act.setEnabled(True)
         sp_hl = getattr(self, '_spell_highlighter', None)
         sp_enabled = bool(getattr(sp_hl, 'enabled', False))
         checker = sp_hl._get_checker() if (sp_enabled and sp_hl is not None) else None
@@ -1397,24 +1411,64 @@ class Composer(QTextEdit):
             return
         super().dropEvent(event)
 
+    @staticmethod
+    def _extract_qimage_from_mime(source) -> QImage:
+        if source is None:
+            return QImage()
+        has_raw_img = source.hasImage() or any(
+            source.hasFormat(fmt) for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'application/x-qt-image')
+        )
+        if not has_raw_img:
+            return QImage()
+        if source.hasImage():
+            img_data = source.imageData()
+            if isinstance(img_data, QImage) and not img_data.isNull():
+                return img_data
+            if isinstance(img_data, QPixmap) and not img_data.isNull():
+                return img_data.toImage()
+        for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'application/x-qt-image'):
+            if source.hasFormat(fmt):
+                raw_fmt = bytes(source.data(fmt))
+                if raw_fmt:
+                    qimg = QImage.fromData(raw_fmt)
+                    if not qimg.isNull():
+                        return qimg
+        cb = QApplication.clipboard()
+        if cb is not None:
+            cb_img = cb.image()
+            if not cb_img.isNull():
+                return cb_img
+            cb_pm = cb.pixmap()
+            if not cb_pm.isNull():
+                return cb_pm.toImage()
+        return QImage()
+
     def canInsertFromMimeData(self, source):
-        return source.hasUrls() or source.hasImage() or super().canInsertFromMimeData(source)
+        if source is None:
+            return False
+        has_local_urls = source.hasUrls() and any(url.isLocalFile() for url in source.urls())
+        has_raw_img = source.hasImage() or any(
+            source.hasFormat(fmt) for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp')
+        )
+        return has_local_urls or has_raw_img or super().canInsertFromMimeData(source)
 
     def insertFromMimeData(self, source):
+        if source is None:
+            return
         if source.hasUrls() and any(url.isLocalFile() for url in source.urls()):
             self.files_added.emit([url.toLocalFile() for url in source.urls() if url.isLocalFile()])
-        elif source.hasImage():
-            img_data = source.imageData()
-            qimg = img_data if isinstance(img_data, QImage) else QImage(img_data)
-            if not qimg.isNull():
-                buf = QBuffer()
-                buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                qimg.save(buf, 'PNG')
-                raw_bytes = bytes(buf.data())
-                buf.close()
-                if raw_bytes:
-                    self.image_pasted.emit(raw_bytes)
-                    return
+            return
+        qimg = self._extract_qimage_from_mime(source)
+        if not qimg.isNull():
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            qimg.save(buf, 'PNG')
+            raw_bytes = bytes(buf.data())
+            buf.close()
+            if raw_bytes:
+                self.image_pasted.emit(raw_bytes)
+                return
+        if source.hasImage():
             self.unsupported_paste.emit()
         else:
             super().insertFromMimeData(source)
@@ -8522,6 +8576,7 @@ class PalaceWindow(QMainWindow):
         self.composer.image_pasted.connect(self.add_pasted_image)
         self.composer.send_requested.connect(self.send_message)
         self.composer.unsupported_paste.connect(lambda: self.show_notice('Clipboard image could not be decoded. Attach a picture, text document, PDF, or Word file.'))
+        self.chat.paste_requested.connect(self._forward_chat_paste_to_composer)
         card_layout.addWidget(self.composer)
 
         # Row 1: Primary actions (+, / Commands, Choose AIs, stretch, [Busy: Steer/Stop], Mic, Live Voice, Send)
@@ -9858,6 +9913,11 @@ class PalaceWindow(QMainWindow):
         except Exception as exc:
             self.show_notice(f'Could not import theme: {exc}')
 
+    def _forward_chat_paste_to_composer(self):
+        if hasattr(self, 'composer') and self.composer is not None:
+            self.composer.setFocus()
+            self.composer.paste()
+
     def _run_focused_text_edit_action(self, op: str):
         fw = QApplication.focusWidget()
         if op == 'copy':
@@ -9870,6 +9930,9 @@ class PalaceWindow(QMainWindow):
                 if hasattr(cand, 'hasSelectedText') and cand.hasSelectedText() and hasattr(cand, 'copy'):
                     cand.copy()
                     return
+            return
+        if op == 'paste' and fw is not None and callable(getattr(fw, 'isReadOnly', None)) and fw.isReadOnly():
+            self._forward_chat_paste_to_composer()
             return
         if fw is not None and hasattr(fw, op):
             getattr(fw, op)()

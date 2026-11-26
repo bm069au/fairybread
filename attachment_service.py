@@ -119,6 +119,48 @@ def attachment_from_image_bytes(raw: bytes, filename: str = "clipboard-image.png
     )
 
 
+def _ocr_scanned_pdf_with_deepseek(
+    raw_pdf_bytes: bytes,
+    *,
+    filename: str = "document.pdf",
+    credential_store=None,
+) -> str:
+    """Fallback OCR via DeepSeek `/v1/tools/ocr` ($0.225 / 1k pages) when local pypdf extracts zero text."""
+    if not raw_pdf_bytes:
+        return ""
+    if credential_store is None and os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return ""
+    try:
+        from credential_store import CredentialStore
+        store = credential_store or CredentialStore()
+        ds_key = (store.get_api_key("deepseek") or "").strip()
+    except Exception:
+        return ""
+    if not ds_key:
+        return ""
+    try:
+        import httpx
+        safe_name = Path(filename or "document.pdf").name or "document.pdf"
+        with httpx.Client(timeout=60.0) as cli:
+            resp = cli.post(
+                "https://api.deepseek.com/v1/tools/ocr",
+                headers={"Authorization": f"Bearer {ds_key}"},
+                data={"purpose": "text_recognition"},
+                files={"file": (safe_name, raw_pdf_bytes, "application/pdf")},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        pages = payload.get("pages") if isinstance(payload, dict) else []
+        parts = [
+            str(pg.get("text") or "").strip()
+            for pg in (pages or [])
+            if isinstance(pg, dict) and str(pg.get("text") or "").strip()
+        ]
+        return "\n\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
 def _ocr_scanned_pdf_with_mistral(
     raw_pdf_bytes: bytes,
     *,
@@ -227,7 +269,13 @@ def extract_attachment(path: str | Path, *, credential_store=None) -> Attachment
                 break
         text = '\n\n'.join(pieces)
         if not text.strip():
-            ocr_txt = _ocr_scanned_pdf_with_mistral(raw_all, credential_store=credential_store)
+            ocr_txt = _ocr_scanned_pdf_with_deepseek(
+                raw_all,
+                filename=path.name,
+                credential_store=credential_store,
+            )
+            if not ocr_txt.strip():
+                ocr_txt = _ocr_scanned_pdf_with_mistral(raw_all, credential_store=credential_store)
             if ocr_txt.strip():
                 text = ocr_txt
     elif suffix == '.docx':
@@ -250,7 +298,7 @@ def extract_attachment(path: str | Path, *, credential_store=None) -> Attachment
     else:
         raise ValueError('Supported: text/code, PDF with selectable text, Word .docx, and standard images (.png, .jpg, .webp, .gif, .bmp).')
     if not text.strip():
-        raise ValueError('No readable text found. Scanned pages need OCR (connect a Mistral API key with active billing for automatic Mistral OCR).')
+        raise ValueError('No readable text found. Scanned pages need OCR (connect a DeepSeek or Mistral API key with active billing for automatic OCR).')
     return Attachment(path, text[:MAX_TEXT_CHARS], len(text) > MAX_TEXT_CHARS, stored_path=stored_copy)
 
 

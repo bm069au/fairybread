@@ -93,7 +93,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.95"
-FAIRYBREAD_VERSION = "0.95a"
+FAIRYBREAD_VERSION = "0.95b"
 FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
@@ -253,9 +253,9 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#0f2930",
         "key_url": "https://platform.deepseek.com/api_keys",
         "default_base_url": "https://api.deepseek.com/v1",
-        "default_model": "deepseek-chat",
-        "suggested_models": ["deepseek-chat", "deepseek-reasoner"],
-        "billing_note": "Strict prepaid top-up balance ($2/$5/$10) — never auto-charges past your balance.",
+        "default_model": "deepseek-flash",
+        "suggested_models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"],
+        "billing_note": "Strict prepaid top-up balance ($2/$5/$10) — unlocks DeepSeek-V4.1-Flash (1M context + Vision), DeepSeek-V4-Pro, Web Search/Fetch, OCR, and Neural TTS/ASR.",
     },
     "qwen": {
         "display_name": "Qwen",
@@ -1133,6 +1133,8 @@ OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
     "gpt-5-mini": "openai/gpt-5-mini",
     "gemini-4-carbon": "google/gemini-4-carbon",
     "gemini-4-neon": "google/gemini-4-neon",
+    "deepseek-v4-pro": "deepseek/deepseek-r1-0528",
+    "deepseek-flash": "deepseek/deepseek-chat",
     "deepseek-reasoner": "deepseek/deepseek-r1-0528",
     "deepseek-chat": "deepseek/deepseek-chat",
     "claude-3-7-sonnet-latest": "anthropic/claude-sonnet-5.5",
@@ -1235,7 +1237,7 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "model_overrides": {
             "openai": "gpt-6.2-sol",
             "gemini": "gemini-4-carbon",
-            "deepseek": "deepseek-reasoner",
+            "deepseek": "deepseek-v4-pro",
             "mistral": "mistral-large-latest",
             "anthropic": "claude-3-7-sonnet-latest",
             "claude": "anthropic/claude-sonnet-5.5",

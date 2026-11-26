@@ -21,6 +21,17 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v095b-release',
+    title: 'Fairybread v0.95b: DeepSeek V4.1-Flash (1M Context + Vision) & V4-Pro, Web Search/Fetch, OCR, Neural TTS/ASR & Ctrl+V Picture Paste Fix',
+    tag: 'Release v0.95b',
+    date: '2026-11-26',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95b (Win_x64) is live on GitHub Releases with 1-click Update Only support:
+
+• Full DeepSeek V4.1-Flash & V4-Pro + Tool Suite: Upgrades DeepSeek to deepseek-flash (DeepSeek-V4.1-Flash-1017 with 1M context & native Vision) and deepseek-v4-pro (Deeper Chat flagship), plus DeepSeek Web Search (/v1/tools/search) & Markdown Page Fetch (/v1/tools/fetch), Scanned-PDF OCR (/v1/tools/ocr), and DeepSeek Neural TTS (stella/tide) & ASR (/v1/tools/asr).
+• Ctrl+V & Right-Click Clipboard Picture Paste Fix: Fixes Python 3.13 / PySide6 QPixmap clipboard image decoding, enables right-click Paste when an image is on the clipboard, and forwards Ctrl+V from the chat history view directly to the message box.`,
+  },
+  {
     id: 'news-v095a-release',
     title: 'Fairybread v0.95a: Universal Mistral (Medium/Small/Large/Codestral + Voxtral Voice + Scanned-PDF OCR), Accurate Failure Chips & Beginner Setup Guide',
     tag: 'Release v0.95a',
@@ -935,7 +946,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.95a';
+    const currentSiteVersion = 'v0.95b';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

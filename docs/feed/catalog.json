@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-26T07:07:33Z",
-  "latest_app_version": "0.95a",
-  "release_summary": "v0.95a Beta: Universal Direct & OpenRouter Mistral (Medium/Small/Large/Codestral, Vision, Voxtral TTS/STT, Automatic Scanned-PDF OCR), Accurate Failure-Code Status Chips (No Plan / Auth Err / Bad Model / Limited), 19 Built-In Themes with Bundled Artwork & Recent-First Scrollable Picker, Reorganized Email & Alerts with Gmail Recent/Unread Fix & Silent Plain-English Tool Execution, Python 3.13 Dialog Close [X] Fix, New Beginner-Friendly User Guide, and Unified Physical Distro License.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95a/Fairybread_v0.95a_Win_x64_Setup.exe",
+  "updated_at": "2026-11-26T09:38:35Z",
+  "latest_app_version": "0.95b",
+  "release_summary": "v0.95b Beta: Full DeepSeek V4.1-Flash (1M Context + Vision) & V4-Pro, DeepSeek Web Search (/v1/tools/search) & Markdown Page Fetch (/v1/tools/fetch), Scanned-PDF OCR (/v1/tools/ocr), DeepSeek Neural TTS (stella/tide) & ASR (/v1/tools/asr), Ctrl+V & Right-Click Clipboard Picture Paste Fix, Universal Mistral + Voxtral + OCR, Accurate Failure-Code Status Chips, 19 Themes with Bundled Art, and New Beginner-Friendly User Guide.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95b/Fairybread_v0.95b_Win_x64_Setup.exe",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "80ba61bab848b666f022ef64d6d6715134ce67b8967cebd11b69bc1771ce87eb",
+  "installer_sha256": "fa7ff1e112a1a1b281207aee9b362a3810a1402c7da893cc573c3494a5b61a0e",
   "model_token_rates_per_1m": {
     "gemini-4-carbon": [
       2.0,
@@ -123,6 +123,14 @@
       3.0,
       15.0
     ],
+    "deepseek-v4-pro": [
+      0.66,
+      1.98
+    ],
+    "deepseek-flash": [
+      0.15,
+      0.6
+    ],
     "deepseek-reasoner": [
       0.55,
       2.19
@@ -192,6 +200,7 @@
   },
   "stt_cost_per_minute_usd": {
     "groq:whisper-large-v3-turbo": 0.00067,
+    "deepseek:asr": 0.00097,
     "openai:whisper-1": 0.006,
     "gemini:gemini-4-hydrogen": 0.002,
     "gemini:gemini-2.5-flash": 0.002,
@@ -260,13 +269,15 @@
       "billing_note": "Prepaid credits & monthly invoice caps in xAI Console."
     },
     "deepseek": {
-      "default_model": "deepseek-chat",
+      "default_model": "deepseek-flash",
       "suggested_models": [
+        "deepseek-flash",
+        "deepseek-v4-pro",
         "deepseek-chat",
         "deepseek-reasoner"
       ],
       "key_url": "https://platform.deepseek.com/api_keys",
-      "billing_note": "Strict prepaid top-up balance ($2/$5/$10) \u2014 never auto-charges past your balance."
+      "billing_note": "Strict prepaid top-up balance ($2/$5/$10) \u2014 unlocks DeepSeek-V4.1-Flash (1M context + Vision), DeepSeek-V4-Pro, Web Search/Fetch, OCR, and Neural TTS/ASR."
     },
     "qwen": {
       "default_model": "Qwen/Qwen3.8-27B",
