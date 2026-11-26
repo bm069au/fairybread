@@ -308,16 +308,12 @@ class GuidedSetupWizardDialog(QDialog):
         self._zip_info: dict[str, Any] = {}
 
         self.setWindowTitle("Fairybread — Guided Setup & Restore Wizard")
-        self.setWindowFlags(
-            (
-                self.windowFlags()
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowSystemMenuHint
-                | Qt.WindowType.WindowMaximizeButtonHint
-                | Qt.WindowType.WindowCloseButtonHint
-            )
-            & ~Qt.WindowType.WindowContextHelpButtonHint
-        )
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
         self.resize(900, 680)
         self.setMinimumSize(780, 560)
         self.setStyleSheet(
@@ -1153,16 +1149,12 @@ class SpendBillingDialog(QDialog):
         self._balance_cache: dict[str, str] = {}
 
         self.setWindowTitle("Fairybread — Spend & Billing Tickers")
-        self.setWindowFlags(
-            (
-                self.windowFlags()
-                | Qt.WindowType.WindowTitleHint
-                | Qt.WindowType.WindowSystemMenuHint
-                | Qt.WindowType.WindowMaximizeButtonHint
-                | Qt.WindowType.WindowCloseButtonHint
-            )
-            & ~Qt.WindowType.WindowContextHelpButtonHint
-        )
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, False)
         self.resize(820, 620)
         self.setMinimumSize(700, 500)
         self.setStyleSheet(

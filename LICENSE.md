@@ -1,58 +1,79 @@
-# Fairybread Proprietary Source-Available & Commercial Threshold License
+# Fairybread Software License Agreement
 
-**Copyright © 2026 Brett Martin Moore (`bm069au@gmail.com`). All Rights Reserved.**
+**Proprietary Source-Available & Commercial Threshold License (NOT Open Source)**
 
-> **IMPORTANT NOTICE — THIS SOFTWARE IS PROPRIETARY SOURCE-AVAILABLE (NOT "OPEN SOURCE"):**  
-> Making the source code of **Fairybread** visible for security auditing, personal transparency, and community contributions **does NOT grant an Open Source license**. All intellectual property, architecture, branding, and copyright remain the exclusive property of **Brett Martin Moore**.
+**Copyright © 2026 Brett Martin Moore (`bm069au@gmail.com`). All Rights Reserved.**  
+**Product:** Fairybread (Multi-AI Desktop Workspace) — **Official Website:** [https://fairybread.me](https://fairybread.me)
+
+> **IMPORTANT NOTICE — PROPRIETARY SOURCE-AVAILABLE SOFTWARE (NOT "OPEN SOURCE"):**  
+> Making the source code of **Fairybread** visible for security auditing, personal transparency, and community contributions **does NOT grant an Open Source license**. All intellectual property, architecture, branding, and copyright remain the exclusive property of **Brett Martin Moore** ("Licensor").
 
 ---
 
-## 1. Personal & Small-Team Use (Up to 2 Seats) — Free Donationware
+## 1. Grant of License (Free Personal & Small Business Use — Up to 2 Seats)
 
-Subject to the restrictions in Section 2, permission is granted, free of charge, to any individual, student, or small business operating on **up to two (2) seats / machines** to:
-1. **Run & Use Fairybread** for personal, educational, or small-team productivity.
-2. **Inspect & Read the Source Code** locally or on `Fairybread.me` to verify privacy, security, and local-only data handling, or to submit bug fixes and pull requests back to the official Fairybread repository.
-3. **Create & Share Custom Themes (`.json`)** and Experimental Mode prompts on `Fairybread.me`.
+Subject to the terms and conditions of this Agreement, Brett Martin Moore ("Licensor") grants you a non-exclusive, non-transferable, revocable license to download, install, and use **Fairybread** and its associated source code and documentation files (the "Software") free of charge, provided you qualify under one of the following tiers:
+
+- **Individual Use:** Personal, educational, or non-commercial use by an individual.
+- **Small Business Use:** Internal business or small-team use by an organization or entity with **two (2) or fewer total users ("Seats")** accessing or using the Software.
 
 **Voluntary Donations Appreciated (Donationware):**  
-Fairybread is provided without artificial paywalls or monthly subscriptions. Voluntary USD donations of any amount (`$5`, `$10`, `$25`, `$50`, `$350`, or custom USD) are deeply appreciated and help support the creator directly:
-- **Donate via GitHub Sponsors (USD):** [https://github.com/sponsors/bm069au?frequency=one-time](https://github.com/sponsors/bm069au?frequency=one-time)
-- **Official Website & Community:** [https://fairybread.me](https://fairybread.me)
+Fairybread is provided without artificial paywalls or monthly subscriptions. Voluntary donations help support continued development:
+- **Donate via GitHub Sponsors:** [https://github.com/sponsors/bm069au?frequency=one-time](https://github.com/sponsors/bm069au?frequency=one-time)
+- **Official Website:** [https://fairybread.me](https://fairybread.me)
 
 ---
 
-## 2. Strict Prohibitions (No Redistribution, No Competing Forks, No Rebranding)
+## 2. Commercial License Requirement (3+ Seats)
 
-Without prior written permission from **Brett Martin Moore**, you may **NOT**:
-1. **Redistribute or Fork Publicly:** You may not publish, host, mirror, or redistribute modified or unmodified copies of the Fairybread source code or installers on public repositories, websites, or package managers.
-2. **Commercialize or Rebrand:** You may not repackage, white-label, sell, rent, lease, or offer Fairybread (or any derivative work based on its source code or architecture) as a commercial product, SaaS, or competing software.
-3. **Remove Attribution or Licensing Notices:** You may not remove, obscure, or alter any copyright notices, creator credits, donation links, or license dialogs inside the software or its source files.
+If your business, corporation, government agency, or organization has **three (3) or more Seats** (users or machines) accessing or using the Software, free use is **not** permitted. You must contact the Licensor at [`bm069au@gmail.com`](mailto:bm069au@gmail.com?subject=Fairybread%20Commercial%20License%20Inquiry%20%283%2B%20Seats%29) prior to use to negotiate and obtain a separate written commercial license.
 
 ---
 
-## 3. Business, Corporate & Enterprise Use (More Than 2 Seats)
+## 3. Permitted Uses (Private Modification & Custom Themes)
 
-For any business, corporation, government agency, or organization deploying or using **Fairybread** across **more than two (2) seats, users, or machines**:
-- A paid **Corporate / Commercial Seat License** is required.
-- Corporate licensing fees are negotiable based on seat count or site-wide deployment.
-- **To arrange a Corporate License, contact:**  
-  **Brett Martin Moore** — [`bm069au@gmail.com`](mailto:bm069au@gmail.com?subject=Fairybread%20Corporate%20License%20Inquiry%20%28%3E2%20Seats%29)
+- You may inspect, audit, and **privately modify** the Software solely for your own permitted personal or internal business use (within your authorized Seat limit).
+- You may create and share original **custom `.json` themes** and Experimental Mode prompts for Fairybread (including on [https://fairybread.me](https://fairybread.me)).
 
 ---
 
-## 4. Contributions & Pull Requests
+## 4. Strict Restrictions
 
-By submitting any patch, pull request, theme, or suggestion to the official Fairybread repository or `Fairybread.me` forums, you grant **Brett Martin Moore** a perpetual, worldwide, royalty-free, irrevocable license to include, modify, and distribute your contribution under the terms of this license.
+Without prior written permission from the Licensor, you may **NOT**:
 
----
-
-## 5. Third-Party Libraries & LGPLv3 Notice
-
-- **Qt for Python (`PySide6`):** Dynamically linked under the GNU Lesser General Public License v3 (`LGPL-3.0-only`). Users remain free to inspect or replace the dynamically linked Qt libraries inside their Python environment in accordance with the LGPL v3.
-- **Provider SDKs (`openai`, `google-genai`, `cohere`, `mistralai`, `groq`, `cerebras-cloud-sdk`, `mempalace`):** Used under their respective permissive `MIT` and `Apache-2.0` licenses.
+- **Distribute, Host, or Mirror:** Distribute, publish, host, mirror, sublicense, sell, rent, lease, or otherwise make available any copy of the Software (whether modified or unmodified) or any derivative work to any third party, public repository, website, or package manager. The sole authorized official distribution channels are [https://fairybread.me](https://fairybread.me) and [https://github.com/bm069au/fairybread](https://github.com/bm069au/fairybread).
+- **Remove Notices:** Remove, alter, or obscure any copyright, trademark, attribution, donation, or licensing notices included in the Software or its source files.
+- **Rebrand or Compete:** Rebrand, white-label, or present the Software (or any derivative work based on its source code or architecture) as your own product or competing software.
+- **Bypass Seat Limits:** Bypass Seat limits by sharing accounts, rotating credentials, splitting entities, or hosting or wrapping the Software as a service (SaaS) for third parties.
 
 ---
 
-## 6. Disclaimer of Warranty
+## 5. Contributions, Pull Requests & Submitted Themes
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+By submitting any patch, bug fix, pull request, custom theme, or suggestion to the official Fairybread repository or [https://fairybread.me](https://fairybread.me), you grant **Brett Martin Moore** a perpetual, worldwide, royalty-free, irrevocable license to use, include, modify, sublicense, and distribute your contribution under this License and under any commercial Fairybread licenses.
+
+---
+
+## 6. Third-Party Libraries & GNU LGPLv3 Notice
+
+- **Qt for Python (`PySide6`):** Dynamically linked under the GNU Lesser General Public License v3 (`LGPL-3.0-only`). Users remain free to inspect or replace the dynamically linked Qt libraries inside their installation or Python environment in accordance with the LGPLv3.
+- **Bundled Third-Party Python Libraries & SDKs** (including `openai`, `google-genai`, `mistralai`, `groq`, `cohere`, `cerebras-cloud-sdk`, `httpx`, `cryptography`, `pypdf`, `python-docx`, `Pillow`, `websockets`, and `mempalace`): Distributed and used under their respective permissive open-source licenses (`MIT`, `Apache-2.0`, `BSD`, etc.).
+
+---
+
+## 7. Third-Party AI Services, API Billing & Output Disclaimer
+
+Fairybread is a local desktop workspace that connects directly to third-party AI APIs, email providers, and web services using the user's own accounts and API keys. Licensor does not operate those services and is not responsible for third-party API charges, billing, quotas, rate limits, service availability, provider terms of service, or AI-generated outputs.
+
+---
+
+## 8. Disclaimer of Warranty & Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+---
+
+## 9. Termination & Governing Law
+
+- **Termination:** This license terminates automatically without notice if you breach any of its terms. Upon termination, you must immediately stop using the Software and delete or destroy all copies in your possession.
+- **Governing Law:** This Agreement is governed by and construed in accordance with the laws of the **State of South Australia** and the **Commonwealth of Australia**.

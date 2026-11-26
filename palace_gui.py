@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
-    QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
 )
 
 from access_policy import (
@@ -82,6 +82,7 @@ from palace_config import (
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
+    record_recent_theme,
     save_agent_defaults,
     save_ai_squads,
     save_graphics_settings,
@@ -214,6 +215,7 @@ from palace_theme import (
     AI_DISPLAY_NAMES,
     AI_ICONS,
     NEUTRAL_GREY,
+    PICTURE_BACKED_THEMES,
     STYLES,
     build_theme_stylesheet,
     code_shield_qicon,
@@ -227,8 +229,10 @@ from palace_theme import (
     list_available_themes,
     load_theme_dict,
     mail_grey_qicon,
+    make_theme_swatch_icon,
     mic_qicon,
     no_history_qicon,
+    order_themes_with_recent,
     provider_bg_color,
     provider_color,
     provider_display_name,
@@ -709,7 +713,7 @@ class BackdropPanelWidget(QFrame):
         self._source_img = source_img if (source_img is not None and not source_img.isNull()) else None
         self._base_hex = str(base_hex or '#11161d')
         self._border_hex = str(border_hex or '#21262d')
-        self._washout_pct = max(75, min(96, int(washout_pct or 90)))
+        self._washout_pct = max(60, min(96, int(washout_pct or 90)))
         self._cached_pix = None
         self._cached_key = None
         self.update()
@@ -770,7 +774,7 @@ class ChatBrowser(QTextBrowser):
     def set_washed_backdrop(self, source_img: QImage | None, *, base_hex: str, washout_pct: int = 90) -> None:
         self._backdrop_img = source_img if (source_img is not None and not source_img.isNull()) else None
         self._backdrop_base_hex = str(base_hex or '#0d1117')
-        self._backdrop_washout_pct = max(75, min(96, int(washout_pct or 90)))
+        self._backdrop_washout_pct = max(60, min(96, int(washout_pct or 90)))
         self._backdrop_pix_cache = None
         self._backdrop_cache_key = None
         if self._backdrop_img is not None:
@@ -1443,17 +1447,12 @@ class Composer(QTextEdit):
 
 def _apply_windows_dialog_flags(dlg: QDialog, *, resizable: bool = True, allow_minimize: bool = False) -> None:
     """Guarantee Microsoft Windows compliant titlebar controls (Close X always active; Maximize on resizable dialogs)."""
-    flags = (
-        dlg.windowFlags()
-        | Qt.WindowType.WindowTitleHint
-        | Qt.WindowType.WindowSystemMenuHint
-        | Qt.WindowType.WindowCloseButtonHint
-    ) & ~Qt.WindowType.WindowContextHelpButtonHint
-    if resizable:
-        flags |= Qt.WindowType.WindowMaximizeButtonHint
-    if allow_minimize:
-        flags |= Qt.WindowType.WindowMinimizeButtonHint
-    dlg.setWindowFlags(flags)
+    dlg.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+    dlg.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, bool(resizable))
+    dlg.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, bool(allow_minimize))
 
 
 class CustomAIPickerDialog(QDialog):
@@ -2464,7 +2463,8 @@ class ManageAIsDialog(QDialog):
                         [len(cb.currentText() or "")]
                         + [len(cb.itemText(i) or "") for i in range(cb.count())]
                     )
-                    req_c = max(140, min(500, int(max_len * 6.6 + 26)))
+                    icon_pad = 20 if any(not cb.itemIcon(i).isNull() for i in range(min(cb.count(), 3))) else 0
+                    req_c = max(140, min(520, int(max_len * 6.6 + 28 + icon_pad)))
                     cb.setFixedWidth(req_c)
 
                 w.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -2485,9 +2485,9 @@ class ManageAIsDialog(QDialog):
                     view.setTextElideMode(Qt.TextElideMode.ElideNone)
             elif isinstance(w, QLineEdit):
                 tooltip_txt = (f"{w.toolTip()} {w.placeholderText()}").lower()
-                is_wide = any(k in tooltip_txt for k in ('path', 'folder', 'directory', 'key', 'url', 'endpoint', 'override'))
-                w.setMinimumWidth(150 if is_wide else 130)
-                w.setMaximumWidth(340 if is_wide else 250)
+                is_wide = any(k in tooltip_txt for k in ('path', 'folder', 'directory', 'key', 'url', 'endpoint', 'override', 'password', 'token', 'email', 'gmail', 'vault'))
+                w.setMinimumWidth(max(w.minimumWidth(), 220 if is_wide else 130))
+                w.setMaximumWidth(420 if is_wide else 250)
                 w.setMinimumHeight(25)
                 w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
@@ -4927,11 +4927,25 @@ class ManageAIsDialog(QDialog):
 
         self.theme_combo = QComboBox()
         self.theme_combo.setToolTip('Select color palette and window styling across Fairybread')
-        for tid, tname in list_available_themes():
-            self.theme_combo.addItem(tname, tid)
-        cur_theme = str(ui_cfg.get('theme', 'dark'))
+        avail_themes = list_available_themes()
+        cur_theme = str(ui_cfg.get('theme', 'dark') or 'dark').strip().lower()
         if cur_theme == 'fairybread':
             cur_theme = 'dark'
+        pinned_themes, remaining_themes = order_themes_with_recent(
+            avail_themes,
+            cur_theme,
+            ui_cfg.get('recent_themes'),
+            max_recent=3,
+        )
+        for tid, tname in pinned_themes:
+            self.theme_combo.addItem(make_theme_swatch_icon(tid), tname, tid)
+        if pinned_themes and remaining_themes:
+            self.theme_combo.insertSeparator(self.theme_combo.count())
+        for tid, tname in remaining_themes:
+            self.theme_combo.addItem(make_theme_swatch_icon(tid), tname, tid)
+        self.theme_combo.setMaxVisibleItems(12)
+        if self.theme_combo.view() is not None:
+            self.theme_combo.view().setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         t_idx = self.theme_combo.findData(cur_theme)
         if t_idx >= 0:
             self.theme_combo.setCurrentIndex(t_idx)
@@ -4972,10 +4986,10 @@ class ManageAIsDialog(QDialog):
 
         wash_row = QHBoxLayout()
         self.bg_washout_slider = QSlider(Qt.Orientation.Horizontal)
-        self.bg_washout_slider.setRange(75, 96)
+        self.bg_washout_slider.setRange(60, 96)
         self.bg_washout_slider.setValue(int(ui_cfg.get('bg_washout_percent', 90)))
         self.bg_washout_slider.setMaximumWidth(200)
-        self.bg_washout_slider.setToolTip('Higher washout blends more of the solid theme color over the picture (90% = 10% subtle image texture)')
+        self.bg_washout_slider.setToolTip('Higher washout blends more of the solid theme color over the picture (60–96%; 82% shows picture art clearly)')
         self.bg_washout_lbl = QLabel(f"{self.bg_washout_slider.value()}% washout")
         self.bg_washout_lbl.setMinimumWidth(92)
         wash_row.addWidget(self.bg_washout_slider)
@@ -5065,8 +5079,27 @@ class ManageAIsDialog(QDialog):
         self.pages.addWidget(w)
 
     def _on_theme_combo_changed(self, _idx: int = 0):
-        tid = str(self.theme_combo.currentData() or 'dark')
-        save_ui_settings({'theme': tid}, config_path=self.config_path)
+        tid = str(self.theme_combo.currentData() or 'dark').strip().lower()
+        if not tid:
+            return
+        ui_patch: dict[str, Any] = {'theme': tid}
+        if tid in PICTURE_BACKED_THEMES and hasattr(self, 'bg_source_combo'):
+            cur_src = str(self.bg_source_combo.currentData() or 'none')
+            if cur_src == 'none':
+                amb_idx = self.bg_source_combo.findData('ambient')
+                if amb_idx >= 0:
+                    self.bg_source_combo.blockSignals(True)
+                    self.bg_source_combo.setCurrentIndex(amb_idx)
+                    self.bg_source_combo.blockSignals(False)
+                    ui_patch['bg_image_source'] = 'ambient'
+                if hasattr(self, 'bg_washout_slider') and int(self.bg_washout_slider.value()) == 90:
+                    self.bg_washout_slider.blockSignals(True)
+                    self.bg_washout_slider.setValue(82)
+                    self.bg_washout_slider.blockSignals(False)
+                    if hasattr(self, 'bg_washout_lbl'):
+                        self.bg_washout_lbl.setText('82% washout')
+                    ui_patch['bg_washout_percent'] = 82
+        save_ui_settings(ui_patch, config_path=self.config_path)
         parent = self.parent()
         if parent is not None and hasattr(parent, 'apply_theme'):
             parent.apply_theme(tid)
@@ -5079,17 +5112,221 @@ class ManageAIsDialog(QDialog):
             load_email_settings,
             save_email_settings,
             send_self_notification_email,
+            test_email_connection,
         )
 
         w, lay = self._make_simple_page(
-            '📧 Email Connector & Completion Notifications',
-            'Configure Desktop Toast alerts, Email completion notifications, and Exhaustive All-Mail Inbox Search (Windows DPAPI encrypted).'
+            '📧 Email Account & Completion Alerts',
+            'Connect your email once so AIs can check mail, save drafts, or send emails (encrypted with Windows DPAPI). Notification alerts are optional below.'
         )
         cfg = load_email_settings(self.config_path)
 
-        # --- SECTION 1: COMPLETION NOTIFICATIONS ---
-        notif_hdr = QLabel('<b>1. Action Completion Notifications (Desktop &amp; Email)</b>')
+        # --- SECTION 1: EMAIL ACCOUNT & AI ACCESS ---
+        email_hdr = QLabel('<b>1. Email Account &amp; AI Access</b>')
+        email_hdr.setTextFormat(Qt.TextFormat.RichText)
+        email_hdr.setToolTip('Works with Gmail, Microsoft Outlook/365, iCloud, Yahoo, and custom IMAP/SMTP servers')
+        lay.addWidget(email_hdr)
+
+        self.email_conn_banner = QLabel('')
+        self.email_conn_banner.setWordWrap(True)
+        lay.addWidget(self.email_conn_banner)
+
+        email_form = QFormLayout()
+        prov_row = QHBoxLayout()
+        self.email_provider_combo = QComboBox()
+        for p_key, p_meta in EMAIL_PROVIDER_PRESETS.items():
+            self.email_provider_combo.addItem(str(p_meta['display_name']), p_key)
+        p_idx = self.email_provider_combo.findData(cfg.get('provider', 'gmail'))
+        if p_idx >= 0:
+            self.email_provider_combo.setCurrentIndex(p_idx)
+        prov_row.addWidget(self.email_provider_combo, 1)
+
+        self.email_portal_btn = QPushButton('🔑 App Passwords ↗')
+        self.email_portal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.email_portal_btn.setToolTip('Open this email provider’s App Password or security token page in your browser')
+
+        def _open_email_portal():
+            pkey = str(self.email_provider_combo.currentData() or 'gmail')
+            url = str(EMAIL_PROVIDER_PRESETS.get(pkey, {}).get('setup_url', '')).strip()
+            if url:
+                webbrowser.open(url)
+
+        self.email_portal_btn.clicked.connect(_open_email_portal)
+        prov_row.addWidget(self.email_portal_btn)
+        email_form.addRow('Email Provider:', prov_row)
+
+        self.email_setup_hint_label = QLabel('')
+        self.email_setup_hint_label.setObjectName('muted')
+        self.email_setup_hint_label.setWordWrap(True)
+        self.email_setup_hint_label.setStyleSheet('font-size: 11.5px; color: #8b949e;')
+        email_form.addRow('', self.email_setup_hint_label)
+
+        self.email_address_edit = QLineEdit(str(cfg.get('email_address', '')))
+        self.email_address_edit.setPlaceholderText('your.name@gmail.com or your.name@outlook.com')
+        self.email_address_edit.setToolTip('Your email account address')
+        self.email_address_edit.setMinimumWidth(340)
+        email_form.addRow('Email Address:', self.email_address_edit)
+
+        self.email_password_edit = QLineEdit()
+        self.email_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.email_password_edit.setMinimumWidth(340)
+        has_email_pw = self.credential_store.has_api_key(EMAIL_CREDENTIAL_KEY)
+        self.email_password_edit.setToolTip('Encrypted in Windows DPAPI Vault')
+        self.email_password_edit.setPlaceholderText(
+            '✓ Saved securely in Windows Vault (leave blank to keep)'
+            if has_email_pw
+            else 'Paste 16-char App Password (or oauth:<token> for Microsoft Graph)'
+        )
+        email_form.addRow('App Password / Token:', self.email_password_edit)
+
+        srv_row = QHBoxLayout()
+        self.email_imap_host_edit = QLineEdit(str(cfg.get('imap_host', 'imap.gmail.com')))
+        self.email_imap_port_spin = QSpinBox()
+        self.email_imap_port_spin.setRange(1, 65535)
+        self.email_imap_port_spin.setValue(int(cfg.get('imap_port', 993)))
+        self.email_smtp_host_edit = QLineEdit(str(cfg.get('smtp_host', 'smtp.gmail.com')))
+        self.email_smtp_port_spin = QSpinBox()
+        self.email_smtp_port_spin.setRange(1, 65535)
+        self.email_smtp_port_spin.setValue(int(cfg.get('smtp_port', 465)))
+        srv_row.addWidget(QLabel('IMAP:'))
+        srv_row.addWidget(self.email_imap_host_edit, 1)
+        srv_row.addWidget(self.email_imap_port_spin)
+        srv_row.addWidget(QLabel('SMTP:'))
+        srv_row.addWidget(self.email_smtp_host_edit, 1)
+        srv_row.addWidget(self.email_smtp_port_spin)
+        email_form.addRow('Servers:', srv_row)
+
+        self.email_access_mode_combo = QComboBox()
+        self.email_access_mode_combo.setToolTip('Choose whether AIs can only send you alerts, search mail + save drafts, or also send emails')
+        self.email_access_mode_combo.addItem(
+            '📝 Read & Drafts (Exhaustive Search · Recommended)',
+            'read_and_drafts',
+        )
+        self.email_access_mode_combo.addItem(
+            '🔔 Self-Notifications Only (Alerts Only)',
+            'notifications_only',
+        )
+        self.email_access_mode_combo.addItem(
+            '⚡ Full Email Assistant (Search, Draft & Send)',
+            'full_assistant',
+        )
+        a_idx = self.email_access_mode_combo.findData(cfg.get('access_mode', 'read_and_drafts'))
+        if a_idx >= 0:
+            self.email_access_mode_combo.setCurrentIndex(a_idx)
+        email_form.addRow('AI Access Level:', self.email_access_mode_combo)
+        lay.addLayout(email_form)
+
+        def _refresh_email_banner():
+            addr_now = self.email_address_edit.text().strip()
+            has_pw_now = self.credential_store.has_api_key(EMAIL_CREDENTIAL_KEY) or bool(self.email_password_edit.text().strip())
+            mode_val = str(self.email_access_mode_combo.currentData() or 'read_and_drafts')
+            prov_val = str(self.email_provider_combo.currentData() or 'gmail').capitalize()
+            mode_txt = {
+                'notifications_only': 'Alerts Only (AI inbox access off)',
+                'read_and_drafts': 'Search & Drafts enabled',
+                'full_assistant': 'Search, Draft & Send enabled',
+            }.get(mode_val, mode_val)
+            if addr_now and has_pw_now:
+                self.email_conn_banner.setStyleSheet('font-size: 12px; color: #22c55e; font-weight: 600;')
+                self.email_conn_banner.setText(f'✓ Ready: {addr_now} ({prov_val} — {mode_txt})')
+            else:
+                self.email_conn_banner.setStyleSheet('font-size: 12px; color: #d29922;')
+                self.email_conn_banner.setText('⚠ Not connected yet — enter your email address and App Password below.')
+
+        def _on_email_provider_changed():
+            pkey = str(self.email_provider_combo.currentData() or 'gmail')
+            meta = EMAIL_PROVIDER_PRESETS.get(pkey, {})
+            self.email_setup_hint_label.setText(str(meta.get('setup_hint', '')))
+            if meta.get('imap_host'):
+                self.email_imap_host_edit.setText(str(meta['imap_host']))
+                self.email_imap_port_spin.setValue(int(meta.get('imap_port', 993)))
+            if meta.get('smtp_host'):
+                self.email_smtp_host_edit.setText(str(meta['smtp_host']))
+                self.email_smtp_port_spin.setValue(int(meta.get('smtp_port', 465)))
+            self.email_portal_btn.setEnabled(bool(meta.get('setup_url')))
+            _refresh_email_banner()
+
+        self.email_provider_combo.currentIndexChanged.connect(_on_email_provider_changed)
+        self.email_access_mode_combo.currentIndexChanged.connect(lambda _i=0: _refresh_email_banner())
+        self.email_address_edit.textChanged.connect(lambda _t='': _refresh_email_banner())
+        self.email_password_edit.textChanged.connect(lambda _t='': _refresh_email_banner())
+        _on_email_provider_changed()
+
+        test_row = QHBoxLayout()
+        conn_test_btn = QPushButton('🔌 Test Connection')
+        conn_test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        conn_test_btn.setToolTip('Save email fields and test both reading (IMAP) and sending (SMTP) login')
+        self.email_test_conn_btn = conn_test_btn
+
+        test_btn = QPushButton('📧 Send Test Email')
+        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        test_btn.setToolTip('Save fields, trigger a desktop toast, and send a test email to your own address')
+        self.email_test_status_label = QLabel('')
+        self.email_test_status_label.setWordWrap(True)
+        self.email_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
+
+        def _run_test_connection():
+            self._save_email_and_notification_fields()
+            _refresh_email_banner()
+            self.email_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+            self.email_test_status_label.setText('Testing Inbox (IMAP) & Sending (SMTP)…')
+            QApplication.processEvents()
+            res = test_email_connection(
+                config_path=self.config_path,
+                credential_store=self.credential_store,
+            )
+            ok = bool(res.get('ok'))
+            self.email_test_status_label.setStyleSheet(
+                f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};'
+            )
+            self.email_test_status_label.setText(f'{"✓" if ok else "⚠"} {res.get("summary", "")}')
+
+        def _run_test_notifications():
+            self._save_email_and_notification_fields()
+            _refresh_email_banner()
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'show_desktop_toast'):
+                parent.show_desktop_toast(
+                    'Fairybread Test Notification',
+                    'Desktop toast notifications are active and working!',
+                )
+            addr = self.email_address_edit.text().strip()
+            if addr:
+                ok, msg = send_self_notification_email(
+                    subject='🧚 Fairybread — Test Email Notification',
+                    body_text=(
+                        'Your Fairybread Email & Notification connector is configured and working!\n\n'
+                        '• Inbox search, drafts, and sending (according to your AI Access Level) are ready.\n'
+                        '• Optional completion alerts will be delivered here when enabled.'
+                    ),
+                    config_path=self.config_path,
+                    credential_store=self.credential_store,
+                )
+                self.email_test_status_label.setStyleSheet(
+                    f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};'
+                )
+                self.email_test_status_label.setText(f'{"✓" if ok else "⚠"} {msg}')
+            else:
+                self.email_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
+                self.email_test_status_label.setText('✓ Desktop toast sent! (Enter an email address above to test email sending)')
+
+        conn_test_btn.clicked.connect(_run_test_connection)
+        test_btn.clicked.connect(_run_test_notifications)
+        test_row.addWidget(conn_test_btn)
+        test_row.addWidget(test_btn)
+        test_row.addWidget(self.email_test_status_label, 1)
+        lay.addLayout(test_row)
+
+        # --- SECTION 2: OPTIONAL COMPLETION ALERTS ---
+        notif_hdr = QLabel('<b>2. Optional Completion Alerts (Desktop &amp; Email)</b>')
+        notif_hdr.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(notif_hdr)
+
+        notif_note = QLabel('Optional: automatic alerts when long jobs finish. Turning Email Alerts off does NOT disable AI inbox search, drafts, or sending above.')
+        notif_note.setObjectName('muted')
+        notif_note.setWordWrap(True)
+        notif_note.setStyleSheet('font-size: 11.5px; color: #8b949e;')
+        lay.addWidget(notif_note)
 
         desk_row = QHBoxLayout()
         self.desktop_notify_check = QCheckBox(
@@ -5125,7 +5362,7 @@ class ManageAIsDialog(QDialog):
             'Email me finished large jobs / Idle Mode',
             checked=bool(cfg.get('email_notify_enabled', False)),
         )
-        self.email_notify_check.setToolTip('Automatically send completion summaries to your configured email address')
+        self.email_notify_check.setToolTip('Automatically send completion summaries to your own email address (optional)')
         notif_form.addRow('Email Alerts:', self.email_notify_check)
 
         email_trig_row = QHBoxLayout()
@@ -5149,147 +5386,6 @@ class ManageAIsDialog(QDialog):
         email_trig_row.addWidget(self.email_attach_images_check)
         notif_form.addRow('Email Trigger:', email_trig_row)
         lay.addLayout(notif_form)
-
-        # --- SECTION 2: EMAIL PROVIDER & EXHAUSTIVE SEARCH SETUP ---
-        email_hdr = QLabel('<b>2. Email Account Setup (IMAP / SMTP)</b>')
-        email_hdr.setToolTip('Works with Gmail, Microsoft Outlook/365, iCloud, Yahoo, and custom IMAP/SMTP servers')
-        lay.addWidget(email_hdr)
-
-        email_form = QFormLayout()
-        prov_row = QHBoxLayout()
-        self.email_provider_combo = QComboBox()
-        for p_key, p_meta in EMAIL_PROVIDER_PRESETS.items():
-            self.email_provider_combo.addItem(str(p_meta['display_name']), p_key)
-        p_idx = self.email_provider_combo.findData(cfg.get('provider', 'gmail'))
-        if p_idx >= 0:
-            self.email_provider_combo.setCurrentIndex(p_idx)
-        prov_row.addWidget(self.email_provider_combo, 1)
-
-        self.email_portal_btn = QPushButton('🔑 App Passwords ↗')
-        self.email_portal_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.email_portal_btn.setToolTip('Open this email provider’s App Password or security token page in your browser')
-
-        def _open_email_portal():
-            pkey = str(self.email_provider_combo.currentData() or 'gmail')
-            url = str(EMAIL_PROVIDER_PRESETS.get(pkey, {}).get('setup_url', '')).strip()
-            if url:
-                webbrowser.open(url)
-
-        self.email_portal_btn.clicked.connect(_open_email_portal)
-        prov_row.addWidget(self.email_portal_btn)
-        email_form.addRow('Email Provider:', prov_row)
-
-        self.email_setup_hint_label = QLabel('')
-        self.email_setup_hint_label.setObjectName('muted')
-        self.email_setup_hint_label.setWordWrap(True)
-        self.email_setup_hint_label.setStyleSheet('font-size: 11.5px; color: #8b949e;')
-        email_form.addRow('', self.email_setup_hint_label)
-
-        self.email_address_edit = QLineEdit(str(cfg.get('email_address', '')))
-        self.email_address_edit.setPlaceholderText('your.name@gmail.com or your.name@outlook.com')
-        email_form.addRow('Email Address:', self.email_address_edit)
-
-        self.email_password_edit = QLineEdit()
-        self.email_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        has_email_pw = self.credential_store.has_api_key(EMAIL_CREDENTIAL_KEY)
-        self.email_password_edit.setPlaceholderText(
-            '✓ Encrypted in Windows DPAPI Vault (paste new App Password / OAuth token to replace)'
-            if has_email_pw
-            else 'Paste 16-char App Password (or oauth:<token> for Microsoft Graph)'
-        )
-        email_form.addRow('App Password / Token:', self.email_password_edit)
-
-        srv_row = QHBoxLayout()
-        self.email_imap_host_edit = QLineEdit(str(cfg.get('imap_host', 'imap.gmail.com')))
-        self.email_imap_port_spin = QSpinBox()
-        self.email_imap_port_spin.setRange(1, 65535)
-        self.email_imap_port_spin.setValue(int(cfg.get('imap_port', 993)))
-        self.email_smtp_host_edit = QLineEdit(str(cfg.get('smtp_host', 'smtp.gmail.com')))
-        self.email_smtp_port_spin = QSpinBox()
-        self.email_smtp_port_spin.setRange(1, 65535)
-        self.email_smtp_port_spin.setValue(int(cfg.get('smtp_port', 465)))
-        srv_row.addWidget(QLabel('IMAP:'))
-        srv_row.addWidget(self.email_imap_host_edit, 1)
-        srv_row.addWidget(self.email_imap_port_spin)
-        srv_row.addWidget(QLabel('SMTP:'))
-        srv_row.addWidget(self.email_smtp_host_edit, 1)
-        srv_row.addWidget(self.email_smtp_port_spin)
-        email_form.addRow('Servers:', srv_row)
-
-        self.email_access_mode_combo = QComboBox()
-        self.email_access_mode_combo.setToolTip('Choose whether AIs can only send you alerts, search mail + save drafts, or send replies')
-        self.email_access_mode_combo.addItem(
-            '📝 Read & Drafts (Exhaustive Search · Recommended)',
-            'read_and_drafts',
-        )
-        self.email_access_mode_combo.addItem(
-            '🔔 Self-Notifications Only (Alerts Only)',
-            'notifications_only',
-        )
-        self.email_access_mode_combo.addItem(
-            '⚡ Full Email Assistant (Search, Draft & Send)',
-            'full_assistant',
-        )
-        a_idx = self.email_access_mode_combo.findData(cfg.get('access_mode', 'read_and_drafts'))
-        if a_idx >= 0:
-            self.email_access_mode_combo.setCurrentIndex(a_idx)
-        email_form.addRow('AI Access Level:', self.email_access_mode_combo)
-        lay.addLayout(email_form)
-
-        def _on_email_provider_changed():
-            pkey = str(self.email_provider_combo.currentData() or 'gmail')
-            meta = EMAIL_PROVIDER_PRESETS.get(pkey, {})
-            self.email_setup_hint_label.setText(str(meta.get('setup_hint', '')))
-            if meta.get('imap_host'):
-                self.email_imap_host_edit.setText(str(meta['imap_host']))
-                self.email_imap_port_spin.setValue(int(meta.get('imap_port', 993)))
-            if meta.get('smtp_host'):
-                self.email_smtp_host_edit.setText(str(meta['smtp_host']))
-                self.email_smtp_port_spin.setValue(int(meta.get('smtp_port', 465)))
-            self.email_portal_btn.setEnabled(bool(meta.get('setup_url')))
-
-        self.email_provider_combo.currentIndexChanged.connect(_on_email_provider_changed)
-        _on_email_provider_changed()
-
-        test_row = QHBoxLayout()
-        test_btn = QPushButton('🧪 Test Alert')
-        test_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        test_btn.setToolTip('Save email & notification fields and send a test desktop toast + test email')
-        self.email_test_status_label = QLabel('')
-        self.email_test_status_label.setStyleSheet('font-size: 12px; color: #22c55e;')
-
-        def _run_test_notifications():
-            self._save_email_and_notification_fields()
-            parent = self.parent()
-            if parent is not None and hasattr(parent, 'show_desktop_toast'):
-                parent.show_desktop_toast(
-                    'Fairybread Test Notification',
-                    'Desktop toast notifications are active and working!',
-                )
-            addr = self.email_address_edit.text().strip()
-            if addr:
-                ok, msg = send_self_notification_email(
-                    subject='🧚 Fairybread — Test Email Notification',
-                    body_text=(
-                        'Your Fairybread Email & Notification connector is configured and working!\n\n'
-                        '• Exhaustive All-Mail search (Zero Silent Truncation) is ready.\n'
-                        '• Completion notifications will be delivered here when enabled.'
-                    ),
-                    config_path=self.config_path,
-                    credential_store=self.credential_store,
-                )
-                self.email_test_status_label.setStyleSheet(
-                    f'font-size: 12px; color: {"#22c55e" if ok else "#f85149"};'
-                )
-                self.email_test_status_label.setText(f'{"✓" if ok else "⚠"} {msg}')
-            else:
-                self.email_test_status_label.setStyleSheet('font-size: 12px; color: #58a6ff;')
-                self.email_test_status_label.setText('✓ Desktop toast sent! (Enter an email address above to test email alerts)')
-
-        test_btn.clicked.connect(_run_test_notifications)
-        test_row.addWidget(test_btn)
-        test_row.addWidget(self.email_test_status_label, 1)
-        lay.addLayout(test_row)
         lay.addStretch()
         self.pages.addWidget(w)
 
@@ -7740,6 +7836,7 @@ class ManageAIsDialog(QDialog):
                 ui_updates,
                 config_path=self.config_path,
             )
+            record_recent_theme(str(ui_updates.get('theme') or 'dark'), config_path=self.config_path)
         except Exception:
             if show_warnings:
                 raise
@@ -9426,6 +9523,7 @@ class PalaceWindow(QMainWindow):
 
         # 3. View menu
         view_menu = menubar.addMenu('View')
+        self.view_menu = view_menu
         view_menu.setToolTipsVisible(True)
         self.theme_menu = view_menu.addMenu('Theme')
         self.theme_menu.setToolTipsVisible(True)
@@ -9624,10 +9722,106 @@ class PalaceWindow(QMainWindow):
         if not hasattr(self, 'theme_menu'):
             return
         self.theme_menu.clear()
-        for t_id, t_name in list_available_themes():
-            t_act = QAction(t_name, self.theme_menu)
+        self._theme_list_widget = None
+        all_themes = list_available_themes()
+        try:
+            ui_cfg = load_ui_settings(self.config_path)
+            recent_list = ui_cfg.get('recent_themes', [])
+        except Exception:
+            recent_list = []
+        active_id = str(getattr(self, 'active_theme', 'dark') or 'dark').strip().lower()
+        pinned_themes, remaining_themes = order_themes_with_recent(
+            all_themes,
+            active_id,
+            recent_list,
+            max_recent=3,
+        )
+        for t_id, t_name in pinned_themes:
+            safe_label = t_name.replace('&', '&&')
+            prefix = '✓ ' if t_id == active_id else ''
+            t_act = QAction(make_theme_swatch_icon(t_id), f'{prefix}{safe_label}', self.theme_menu)
+            t_act.setData(t_id)
             t_act.triggered.connect(lambda _c=False, tid=t_id: self._switch_theme_and_persist(tid))
             self.theme_menu.addAction(t_act)
+
+        if remaining_themes:
+            self.theme_menu.addSeparator()
+            t_dict = load_theme_dict(active_id)
+            bg_card = str(t_dict.get('bg_card') or '#161b22')
+            bg_hover = str(t_dict.get('bg_hover') or '#1f242d')
+            border = str(t_dict.get('border') or '#30363d')
+            txt_pri = str(t_dict.get('text_primary') or '#e6edf3')
+            txt_mut = str(t_dict.get('text_muted') or '#8b949e')
+            acc = str(t_dict.get('send_bg') or '#58a6ff')
+
+            container = QWidget(self.theme_menu)
+            c_lay = QVBoxLayout(container)
+            c_lay.setContentsMargins(4, 2, 4, 2)
+            c_lay.setSpacing(2)
+
+            list_w = QListWidget(container)
+            list_w.setIconSize(QSize(14, 14))
+            list_w.setMouseTracking(True)
+            list_w.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            list_w.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            list_w.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+            list_w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            list_w.setStyleSheet(
+                f'QListWidget {{ background: {bg_card}; color: {txt_pri}; border: none; outline: none; padding: 1px; font-size: 12.5px; }} '
+                f'QListWidget::item {{ padding: 4px 8px; border-radius: 5px; min-height: 20px; }} '
+                f'QListWidget::item:hover, QListWidget::item:selected {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'QScrollBar:vertical {{ background: transparent; width: 9px; margin: 1px; }} '
+                f'QScrollBar::handle:vertical {{ background: {border}; min-height: 24px; border-radius: 4px; }} '
+                f'QScrollBar::handle:vertical:hover {{ background: {acc}; }} '
+                f'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}'
+            )
+
+            fm = QFontMetrics(list_w.font())
+            max_w = 240
+            for t_id, t_name in remaining_themes:
+                item = QListWidgetItem(make_theme_swatch_icon(t_id), t_name)
+                item.setData(Qt.ItemDataRole.UserRole, t_id)
+                item.setToolTip(t_name)
+                list_w.addItem(item)
+                max_w = max(max_w, fm.horizontalAdvance(t_name) + 64)
+
+            vis_rows = min(len(remaining_themes), 11)
+            row_h = 28
+            list_w.setFixedWidth(min(350, max(280, max_w)))
+            list_w.setFixedHeight(max(32, vis_rows * row_h + 6))
+
+            def _pick_from_list(item: QListWidgetItem):
+                tid = str(item.data(Qt.ItemDataRole.UserRole) or '').strip().lower()
+                if not tid:
+                    return
+                self._theme_menu_picking = True
+                try:
+                    self.theme_menu.close()
+                    if hasattr(self, 'view_menu') and self.view_menu is not None:
+                        self.view_menu.close()
+                    self._switch_theme_and_persist(tid)
+                finally:
+                    self._theme_menu_picking = False
+
+            list_w.itemClicked.connect(_pick_from_list)
+            list_w.itemActivated.connect(_pick_from_list)
+            c_lay.addWidget(list_w)
+
+            if len(remaining_themes) > 11:
+                hint_lbl = QLabel(
+                    f'▾ Scroll for more themes ({len(remaining_themes) - 11} more)',
+                    container,
+                )
+                hint_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                hint_lbl.setStyleSheet(f'color: {txt_mut}; font-size: 11px; padding: 2px 4px; background: transparent;')
+                c_lay.addWidget(hint_lbl)
+
+            wa = QWidgetAction(self.theme_menu)
+            wa.setDefaultWidget(container)
+            self.theme_menu.addAction(wa)
+            self._theme_list_widget = list_w
+            self._theme_list_widget_action = wa
+
         self.theme_menu.addSeparator()
         import_theme_act = QAction('📥 Import Custom Theme (.json)…', self.theme_menu)
         import_theme_act.triggered.connect(self.import_custom_theme_file)
@@ -10752,7 +10946,7 @@ class PalaceWindow(QMainWindow):
             return
         cur_active = (self.provider_states.get(name) is True)
         cur_vis_status = str((self.provider_details.get(name) or {}).get('status') or '')
-        if cur_active and cur_vis_status in {'Timeout', 'Cutoff', 'Limited', 'Unavailable', 'Failed'}:
+        if cur_active and cur_vis_status in {'Timeout', 'Cutoff', 'Limited', 'No Plan', 'Auth Err', 'Bad Model', 'Unavailable', 'Failed'}:
             # Clicking a warning chip clears the transient warning back to active Enabled rather than disabling the AI!
             self.set_provider_status(name, 'Enabled', provider_color(name))
             self.status_label.setTextFormat(Qt.TextFormat.RichText)
@@ -10896,20 +11090,38 @@ class PalaceWindow(QMainWindow):
         )
 
     @staticmethod
+    def _classify_provider_error_chip(error_text: str) -> tuple[str, str]:
+        """Classify a provider error string into `(chip_status_label, hex_color)` without masking billing/auth/model bugs."""
+        err_low = str(error_text or '').lower()
+        if 'straggler cutoff' in err_low:
+            return 'Cutoff', '#6e7681'
+        if 'timed out' in err_low or 'timeout' in err_low:
+            return 'Timeout', '#6e7681'
+        if any(w in err_low for w in ('402', 'billing', 'budget', 'subscription', 'insufficient_quota', 'credit', 'balance', 'payment', 'no plan')):
+            return 'No Plan', '#d29922'
+        if any(w in err_low for w in ('401', '403', 'unauthorized', 'invalid_api_key', 'tier_not_allowed', 'authentication')):
+            return 'Auth Err', '#f85149'
+        if any(w in err_low for w in ('404', 'not found', 'model_not_found', 'deprecated', 'decommissioned', 'does not exist')):
+            return 'Bad Model', '#f85149'
+        if any(w in err_low for w in ('429', '413', 'rate', 'too many requests', 'quota', 'resource_exhausted')):
+            return 'Limited', '#6e7681'
+        return 'Failed', '#6e7681'
+
+    @staticmethod
     def _format_human_agent_issue_tooltip(display_name: str, status: str, detail: str) -> str:
         low = (detail or '').lower()
-        if any(k in low for k in ('401', '403', 'invalid_api_key', 'authentication', 'unauthorized', 'permission', 'api key')):
-            what = f'{display_name} API key was rejected or is missing.'
-            fix = f'Open Settings → AI Providers → {display_name} and paste a valid API key.'
-        elif any(k in low for k in ('402', 'insufficient_quota', 'billing', 'credit', 'balance', 'payment')):
-            what = f'{display_name} account is out of API credits.'
-            fix = f'Top up your {display_name} API balance or switch to a free model in Settings → AI Providers.'
-        elif any(k in low for k in ('429', 'rate', 'resource_exhausted', 'too many requests', 'quota')):
-            what = f'{display_name} hit a temporary rate or quota limit (too many requests at once).'
-            fix = f'Wait ~30 seconds and try again, or switch models in Settings → AI Providers → {display_name}.'
-        elif any(k in low for k in ('404', 'not found', 'deprecated', 'decommissioned', 'retired', 'does not exist')):
+        if any(k in low for k in ('402', 'insufficient_quota', 'billing', 'budget', 'subscription', 'credit', 'balance', 'payment')) or status == 'No Plan':
+            what = f'{display_name} requires an active billing plan, Experiment tier, or API budget.'
+            fix = f'Activate a plan/budget in {display_name} Billing Settings (or route via OpenRouter in Options → AI Providers).'
+        elif any(k in low for k in ('401', '403', 'invalid_api_key', 'authentication', 'unauthorized', 'permission', 'tier_not_allowed', 'api key')) or status == 'Auth Err':
+            what = f'{display_name} API key was rejected or the selected model is outside your account tier.'
+            fix = f'Open Options → AI Providers → {display_name} to check your API key or pick an included model.'
+        elif any(k in low for k in ('429', '413', 'rate', 'resource_exhausted', 'too many requests', 'quota')) or status == 'Limited':
+            what = f'{display_name} hit a temporary rate or tokens-per-minute limit.'
+            fix = f'Wait ~30 seconds and try again, or switch models in Options → AI Providers → {display_name}.'
+        elif any(k in low for k in ('404', 'not found', 'deprecated', 'decommissioned', 'retired', 'does not exist')) or status == 'Bad Model':
             what = f'The configured model for {display_name} is retired or unavailable.'
-            fix = f'Open Settings → AI Providers → {display_name} and choose an active model from the dropdown.'
+            fix = f'Open Options → AI Providers → {display_name} and choose an active model from the dropdown.'
         elif any(k in low for k in ('timeout', 'timed out', 'straggler', 'connection', 'unreachable')):
             what = f'{display_name} did not finish responding before the phase time ceiling.'
             fix = f'If {display_name} was doing heavy thinking, raise Provider Timeout in Settings → Agent Defaults, or click this agent to retry.'
@@ -10960,7 +11172,7 @@ class PalaceWindow(QMainWindow):
             label.setToolTip(f'{icon} {display_name} — Active ({status})\nClick to toggle ON/OFF for this discussion')
         else:
             suffix = '' if status == 'Inactive' else f' · {status}'
-            if status in {'Cutoff', 'Timeout', 'Limited', 'Unavailable', 'Failed'}:
+            if status in {'Cutoff', 'Timeout', 'Limited', 'No Plan', 'Auth Err', 'Bad Model', 'Unavailable', 'Failed'}:
                 chip_col = str(colour or '#6e7681')
                 chip_weight = '500' if chip_col == '#6e7681' else '600'
             else:
@@ -11886,6 +12098,7 @@ class PalaceWindow(QMainWindow):
         self.composer.set_spellcheck_enabled(bool(ui_cfg.get('spellcheck_enabled', True)))
         self.badge_display_mode = str(ui_cfg.get('badge_display_mode', 'icons_only'))
         self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
+        self._rebuild_theme_menu()
         self.reload_provider_bar()
         self.idle_manager.reload_settings()
         if hasattr(self, 'idle_code_btn'):
@@ -12342,15 +12555,25 @@ class PalaceWindow(QMainWindow):
                 pass
 
     def _switch_theme_and_persist(self, theme_id: str):
-        self.apply_theme(theme_id)
+        clean_tid = str(theme_id or 'dark').strip().lower() or 'dark'
         try:
             ui_cfg = load_ui_settings(self.config_path)
-            ui_cfg['theme'] = str(theme_id or 'dark')
-            save_ui_settings(ui_cfg, config_path=self.config_path)
+            ui_patch: dict[str, Any] = {'theme': clean_tid}
+            if clean_tid in PICTURE_BACKED_THEMES and str(ui_cfg.get('bg_image_source') or 'none') == 'none':
+                ui_patch['bg_image_source'] = 'ambient'
+                if int(ui_cfg.get('bg_washout_percent', 90)) == 90:
+                    ui_patch['bg_washout_percent'] = 82
+            save_ui_settings(ui_patch, config_path=self.config_path)
+            record_recent_theme(clean_tid, config_path=self.config_path)
         except Exception as exc:
             self.show_notice(f'Theme applied, but failed to save setting: {exc}')
-        t_dict = load_theme_dict(theme_id)
-        self.status_label.setText(f'Theme applied: {t_dict.get("name", theme_id)}')
+        self.apply_theme(clean_tid)
+        if getattr(self, '_theme_menu_picking', False):
+            QTimer.singleShot(0, self._rebuild_theme_menu)
+        else:
+            self._rebuild_theme_menu()
+        t_dict = load_theme_dict(clean_tid)
+        self.status_label.setText(f'Theme applied: {t_dict.get("name", clean_tid)}')
 
     def _apply_theme_widget_styles(self, t_dict: dict):
         is_light = _is_light_theme(t_dict)
@@ -12422,7 +12645,7 @@ class PalaceWindow(QMainWindow):
         ui_cfg = load_ui_settings(self.config_path)
         src_mode = str(ui_cfg.get('bg_image_source') or 'none').strip().lower()
         placement = str(ui_cfg.get('bg_image_placement') or 'chat_sidebar').strip().lower()
-        washout = max(75, min(96, int(ui_cfg.get('bg_washout_percent', 90))))
+        washout = max(60, min(96, int(ui_cfg.get('bg_washout_percent', 90))))
         custom_path = str(ui_cfg.get('bg_image_path') or '').strip()
 
         src_img: QImage | None = None
@@ -16458,15 +16681,16 @@ class PalaceWindow(QMainWindow):
         if kind == 'provider_done':
             prov = str(ev.get('provider', ''))
             ok = bool(ev.get('succeeded', True))
+            err_txt = str(ev.get('error') or '')
             rnd = int(ev.get('round', 1))
             done_c = int(ev.get('done', 0))
             tot_c = int(ev.get('total', 1))
             if prov:
-                self.set_provider_status(
-                    prov,
-                    'Responded' if ok else 'Limited',
-                    '#90d7c1' if ok else '#6e7681',
-                )
+                if ok:
+                    self.set_provider_status(prov, 'Responded', '#90d7c1')
+                else:
+                    chip_status, chip_col = self._classify_provider_error_chip(err_txt)
+                    self.set_provider_status(prov, chip_status, chip_col, err_txt)
             self.pending_status_text = f'Round {rnd}: {done_c}/{tot_c} AIs responded ({provider_display_name(prov)} finished)'
             self._update_inline_status_banner()
         elif kind == 'phase':
@@ -16634,15 +16858,7 @@ class PalaceWindow(QMainWindow):
                 self.set_provider_status(name, 'Responded', '#90d7c1')
             else:
                 error = response.error or 'Unknown provider error'
-                err_low = error.lower()
-                if 'straggler cutoff' in err_low:
-                    chip_status, chip_col = 'Cutoff', '#6e7681'
-                elif 'timed out' in err_low or 'timeout' in err_low:
-                    chip_status, chip_col = 'Timeout', '#6e7681'
-                elif any(w in err_low for w in ('429', 'rate', 'quota')):
-                    chip_status, chip_col = 'Limited', '#6e7681'
-                else:
-                    chip_status, chip_col = 'Failed', '#6e7681'
+                chip_status, chip_col = self._classify_provider_error_chip(error)
                 self.set_provider_status(name, chip_status, chip_col, error)
                 failed_notes.append(f'{provider_display_name(name)} ({error[:75]})')
         warnings = [result.context_error, result.memory_error]

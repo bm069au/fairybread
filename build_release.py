@@ -46,6 +46,7 @@ FORBIDDEN_STAGE_FILES = {
 
 DOC_AND_ASSET_FILES = (
     "USER_GUIDE.md",
+    "LICENSE.txt",
     "LICENSE.md",
     "PRIVACY.md",
     "CHANGELOG.md",
@@ -158,6 +159,13 @@ def stage_clean_source(edition: str, stage_dir: Path, *, public_key_b64: str) ->
         if src.is_file():
             shutil.copy2(src, stage_dir / doc)
 
+    theme_assets_src = ROOT / "theme_assets"
+    if theme_assets_src.is_dir():
+        theme_assets_dst = stage_dir / "theme_assets"
+        theme_assets_dst.mkdir(parents=True, exist_ok=True)
+        for asset_fp in sorted(theme_assets_src.glob("*.png")):
+            shutil.copy2(asset_fp, theme_assets_dst / asset_fp.name)
+
     return stage_dir
 
 
@@ -181,6 +189,10 @@ def write_pyinstaller_spec(
         ap = stage_dir / asset
         if ap.is_file():
             datas_lines.append(f"    (r'{ap}', '.'),")
+    theme_assets_stage = stage_dir / "theme_assets"
+    if theme_assets_stage.is_dir():
+        for tp in sorted(theme_assets_stage.glob("*.png")):
+            datas_lines.append(f"    (r'{tp}', 'theme_assets'),")
     datas_block = "\n".join(datas_lines)
 
     excludes = [
@@ -386,7 +398,7 @@ def compile_pyinstaller_edition(
 
     app_dir = dist_out / "Fairybread"
     # Copy readable top-level docs/icons beside Fairybread.exe for direct access & clean uninstallers
-    for doc in ("USER_GUIDE.md", "LICENSE.md", "PRIVACY.md", "CHANGELOG.md", "fairybread_icon.ico", "fairybread_icon.png"):
+    for doc in ("USER_GUIDE.md", "LICENSE.txt", "LICENSE.md", "PRIVACY.md", "CHANGELOG.md", "fairybread_icon.ico", "fairybread_icon.png"):
         src_doc = stage_dir / doc
         if src_doc.is_file():
             shutil.copy2(src_doc, app_dir / doc)

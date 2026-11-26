@@ -39,7 +39,7 @@ def load_configured_providers(
         cfg = configs.get("mistral", {})
         if cfg.get("model"):
             return MistralProvider(api_key=api_key, model=str(cfg["model"]).strip())
-        return MistralProvider(api_key=api_key)
+        return MistralProvider(api_key=api_key, model="mistral-medium-latest")
 
     def _build_gemini(api_key: str) -> AIProvider:
         cfg = configs.get("gemini", {})
@@ -154,7 +154,7 @@ def load_configured_providers(
                 if not raw_model or (
                     "/" not in raw_model
                     and tier_model
-                    and raw_model.lower() == cat_default.lower()
+                    and raw_model.lower() in {cat_default.lower(), "codestral-latest"}
                 ):
                     if tier_model:
                         return tier_model

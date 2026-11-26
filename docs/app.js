@@ -21,6 +21,19 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v095a-release',
+    title: 'Fairybread v0.95a: Universal Mistral (Medium/Small/Large/Codestral + Voxtral Voice + Scanned-PDF OCR), Accurate Failure Chips & Beginner Setup Guide',
+    tag: 'Release v0.95a',
+    date: '2026-11-26',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95a (Win_x64) is live on GitHub Releases with 1-click Update Only support:
+
+• Universal Mistral & OpenRouter Upgrade: Direct Mistral now routes intelligently across mistral-medium-latest (Generalist/Work Mode), mistral-small-latest (Light Chat), mistral-large-latest (Deeper Chat), and codestral-latest (Code AIs), plus native Vision, Mistral Voxtral neural TTS & STT, and automatic Mistral OCR fallback for scanned image-only PDFs.
+• Accurate Bottom-Bar Failure Chips: Distinguishes No Plan (402 / missing billing plan), Auth Err (401/403 bad key), Bad Model (404), and Limited (429/413 rate limits) with plain-English tooltips.
+• 19 Built-In Themes + Bundled Artwork & Recent-First Picker: Bundled high-res artwork for Deep Ocean Abyss, Royal Amethyst, and Velvet Rose (60%–96% washout) plus a recent-first scrollable View -> Theme menu.
+• Reorganized Email & Alerts, Plain-English Default Replies, Python 3.13 Dialog Close [X] Fix, New Beginner-Friendly User Guide & Unified Physical Distro License (LICENSE.txt / LICENSE.md).`,
+  },
+  {
     id: 'news-v095-release',
     title: 'Fairybread v0.95: Clean 7-Tab Menu & Options Tree, 4 New Themes + Washed-Out Wallpapers, Low-Latency Voice & Unlimited Attachments',
     tag: 'Release v0.95',
@@ -922,7 +935,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.95';
+    const currentSiteVersion = 'v0.95a';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

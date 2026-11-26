@@ -38,9 +38,9 @@ EMAIL_PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "drafts_folder": '"[Gmail]/Drafts"',
         "setup_url": "https://myaccount.google.com/apppasswords",
         "setup_hint": (
-            "1. Click '🔑 Open Google App Passwords' below (requires 2-Step Verification enabled on your Google Account).\n"
-            "2. Create an App Password named 'Fairybread' and paste the 16-character password here.\n"
-            "3. Supports 100% exhaustive search across [Gmail]/All Mail using native Google X-GM-RAW syntax."
+            "1. Click '🔑 App Passwords ↗' beside Email Provider above (requires 2-Step Verification on your Google Account).\n"
+            "2. Create an App Password named 'Fairybread' and paste the 16-character password into App Password / Token.\n"
+            "3. Supports searching your entire Gmail (All Mail), saving drafts, and sending mail when permitted."
         ),
     },
     "microsoft": {
@@ -172,14 +172,26 @@ def get_email_password(credential_store: CredentialStore | None = None) -> str:
     return (cs.get_api_key(EMAIL_CREDENTIAL_KEY) or "").strip()
 
 
+def _resolve_email_credentials(
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> tuple[dict[str, Any], str, str, str]:
+    """Return `(cfg, addr, pw, error_message)` without logging or exposing secrets."""
+    cfg = load_email_settings(config_path)
+    addr = str(cfg.get("email_address", "")).strip()
+    raw_pw = get_email_password(credential_store)
+    pw = raw_pw.replace(" ", "") if str(cfg.get("provider") or "").lower() == "gmail" else raw_pw
+    if not addr or not pw:
+        return cfg, addr, pw, "Email account or App Password is not configured yet. Open Settings -> Memory Palace -> Email & Alerts to connect your email."
+    return cfg, addr, pw, ""
+
+
 def is_email_configured(
     config_path: Path = CONFIG_PATH,
     credential_store: CredentialStore | None = None,
 ) -> bool:
-    cfg = load_email_settings(config_path)
-    addr = str(cfg.get("email_address", "")).strip()
-    pw = get_email_password(credential_store)
-    return bool(addr and pw)
+    _, addr, pw, err = _resolve_email_credentials(config_path, credential_store)
+    return not err and bool(addr and pw)
 
 
 def _decode_mime_header(raw_val: str | None) -> str:
@@ -405,29 +417,30 @@ def exhaustive_search_emails(
                 mail.select("INBOX", readonly=True)
 
             clean_q = (search_query or "").strip()
+            clean_low = clean_q.lower()
+            is_gmail = (provider == "gmail" or "gmail.com" in imap_host.lower())
             all_uids: list[str] = []
 
-            if (provider == "gmail" or "gmail.com" in imap_host.lower()) and clean_q:
+            if is_gmail and clean_low == "unread":
+                typ, data = mail.uid("SEARCH", None, "X-GM-RAW", '"is:unread"')
+            elif is_gmail and clean_q and clean_low not in {"all", "recent", "inbox", "latest", "newest", "last"}:
                 # Native Gmail X-GM-RAW search supports full Gmail search bar syntax across the entire account!
                 escaped_q = clean_q.replace("\\", "\\\\").replace('"', '\\"')
                 typ, data = mail.uid("SEARCH", None, "X-GM-RAW", f'"{escaped_q}"')
-                if typ == "OK" and data and data[0]:
-                    all_uids = [u.decode("ascii", errors="ignore") for u in data[0].split() if u]
+            elif not clean_q or clean_low in {"all", "recent", "unread", "inbox", "latest", "newest", "last"}:
+                criteria = "UNSEEN" if clean_low == "unread" else "ALL"
+                typ, data = mail.uid("SEARCH", None, criteria)
             else:
-                if not clean_q or clean_q.lower() in {"all", "recent", "unread", "inbox"}:
-                    criteria = "UNSEEN" if clean_q.lower() == "unread" else "ALL"
-                    typ, data = mail.uid("SEARCH", None, criteria)
-                else:
-                    # Standard IMAP search across TEXT (searches headers + body across the entire folder)
-                    escaped_q = (
-                        clean_q.replace("\r", " ")
-                        .replace("\n", " ")
-                        .replace("\\", "\\\\")
-                        .replace('"', '\\"')
-                    )
-                    typ, data = mail.uid("SEARCH", None, f'(TEXT "{escaped_q}")')
-                if typ == "OK" and data and data[0]:
-                    all_uids = [u.decode("ascii", errors="ignore") for u in data[0].split() if u]
+                # Standard IMAP search across TEXT (searches headers + body across the entire folder)
+                escaped_q = (
+                    clean_q.replace("\r", " ")
+                    .replace("\n", " ")
+                    .replace("\\", "\\\\")
+                    .replace('"', '\\"')
+                )
+                typ, data = mail.uid("SEARCH", None, f'(TEXT "{escaped_q}")')
+            if typ == "OK" and data and data[0]:
+                all_uids = [u.decode("ascii", errors="ignore") for u in data[0].split() if u]
 
             total_matched = len(all_uids)
             if total_matched == 0:
@@ -612,7 +625,239 @@ def _exhaustive_search_microsoft_graph(
         )
 
 
-def send_self_notification_email(
+def _open_smtp_send(cfg: dict[str, Any], addr: str, pw: str, msg: EmailMessage) -> tuple[bool, str]:
+    smtp_host = str(cfg.get("smtp_host") or "smtp.gmail.com").strip()
+    smtp_port = int(cfg.get("smtp_port") or 465)
+    smtp_mode = str(cfg.get("smtp_mode") or ("ssl" if smtp_port == 465 else "starttls")).lower()
+    try:
+        ctx = ssl.create_default_context()
+        if smtp_mode == "ssl" or smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=25) as server:
+                server.login(addr, pw)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=25) as server:
+                server.ehlo()
+                server.starttls(context=ctx)
+                server.ehlo()
+                server.login(addr, pw)
+                server.send_message(msg)
+        to_disp = str(msg.get("To") or addr).strip()
+        return True, f"Email sent to {to_disp}."
+    except Exception as exc:
+        return False, f"SMTP error ({smtp_host}:{smtp_port}): {exc}"
+
+
+def test_email_connection(
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> dict[str, Any]:
+    """Verify both inbox access (IMAP) and sending access (SMTP), or Microsoft Graph for oauth tokens."""
+    cfg, addr, pw, cred_err = _resolve_email_credentials(config_path, credential_store)
+    provider = str(cfg.get("provider") or "gmail").lower()
+    access_mode = str(cfg.get("access_mode") or "read_and_drafts")
+    if cred_err:
+        return {
+            "ok": False,
+            "imap_ok": False,
+            "imap_message": cred_err,
+            "smtp_ok": False,
+            "smtp_message": cred_err,
+            "summary": cred_err,
+            "email_address": addr,
+            "provider": provider,
+            "access_mode": access_mode,
+        }
+
+    if pw.lower().startswith("oauth:"):
+        token = pw.split(":", 1)[1].strip()
+        try:
+            req = urllib_request.Request(
+                "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName",
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
+            with urllib_request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            me_addr = str(data.get("mail") or data.get("userPrincipalName") or addr)
+            msg_ok = f"Microsoft Graph verified for {me_addr}."
+            return {
+                "ok": True,
+                "imap_ok": True,
+                "imap_message": msg_ok,
+                "smtp_ok": True,
+                "smtp_message": msg_ok,
+                "summary": msg_ok,
+                "email_address": addr,
+                "provider": provider,
+                "access_mode": access_mode,
+            }
+        except Exception as exc:
+            err_msg = f"Microsoft Graph check failed: {exc}"
+            return {
+                "ok": False,
+                "imap_ok": False,
+                "imap_message": err_msg,
+                "smtp_ok": False,
+                "smtp_message": err_msg,
+                "summary": err_msg,
+                "email_address": addr,
+                "provider": provider,
+                "access_mode": access_mode,
+            }
+
+    imap_host = str(cfg.get("imap_host") or "imap.gmail.com").strip()
+    imap_port = int(cfg.get("imap_port") or 993)
+    imap_ok = False
+    imap_msg = ""
+    try:
+        ctx = ssl.create_default_context()
+        with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ctx, timeout=15) as mail:
+            mail.login(addr, pw)
+            selected_folder = "INBOX"
+            msg_count = 0
+            candidates = (
+                ('"[Gmail]/All Mail"', '"[Google Mail]/All Mail"', "INBOX")
+                if (provider == "gmail" or "gmail.com" in imap_host.lower())
+                else ("INBOX",)
+            )
+            for cand in candidates:
+                typ, sel_data = mail.select(cand, readonly=True)
+                if typ == "OK":
+                    selected_folder = cand.strip('"')
+                    if sel_data and sel_data[0]:
+                        try:
+                            msg_count = int(sel_data[0])
+                        except (TypeError, ValueError):
+                            msg_count = 0
+                    break
+            imap_ok = True
+            imap_msg = f"Inbox connected ({selected_folder}, {msg_count} messages reachable)."
+    except Exception as exc:
+        imap_msg = f"Inbox sign-in failed ({imap_host}:{imap_port}): {exc}"
+
+    smtp_host = str(cfg.get("smtp_host") or "smtp.gmail.com").strip()
+    smtp_port = int(cfg.get("smtp_port") or 465)
+    smtp_mode = str(cfg.get("smtp_mode") or ("ssl" if smtp_port == 465 else "starttls")).lower()
+    smtp_ok = False
+    smtp_msg = ""
+    try:
+        ctx = ssl.create_default_context()
+        if smtp_mode == "ssl" or smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=15) as server:
+                server.login(addr, pw)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                server.ehlo()
+                server.starttls(context=ctx)
+                server.ehlo()
+                server.login(addr, pw)
+        smtp_ok = True
+        smtp_msg = f"Sending login verified ({smtp_host}:{smtp_port})."
+    except Exception as exc:
+        smtp_msg = f"Sending sign-in failed ({smtp_host}:{smtp_port}): {exc}"
+
+    mode_labels = {
+        "notifications_only": "Alerts Only (AI cannot read or send)",
+        "read_and_drafts": "Read & Drafts (sending disabled)",
+        "full_assistant": "Full Email Assistant (Read, Draft & Send)",
+    }
+    mode_note = mode_labels.get(access_mode, access_mode)
+    if imap_ok and smtp_ok:
+        summary = f"Both Inbox and Sending work for {addr}. Access level: {mode_note}."
+    else:
+        summary = f"Inbox: {imap_msg} Sending: {smtp_msg}"
+    return {
+        "ok": bool(imap_ok and smtp_ok),
+        "imap_ok": imap_ok,
+        "imap_message": imap_msg,
+        "smtp_ok": smtp_ok,
+        "smtp_message": smtp_msg,
+        "summary": summary,
+        "email_address": addr,
+        "provider": provider,
+        "access_mode": access_mode,
+    }
+
+
+def save_email_draft(
+    to_addr: str,
+    subject: str,
+    body_text: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> tuple[bool, str]:
+    """Save an email draft into the user's mailbox Drafts folder without sending it."""
+    cfg, addr, pw, cred_err = _resolve_email_credentials(config_path, credential_store)
+    if cred_err:
+        return False, cred_err
+    if cfg.get("access_mode") == "notifications_only":
+        return False, "AI email access is currently set to Alerts Only. Switch to Read & Drafts or Full Email Assistant in Options -> Email & Alerts to save drafts."
+
+    to_clean = str(to_addr or "").strip()
+    subj_clean = str(subject or "").strip() or "(No Subject)"
+    body_clean = str(body_text or "").strip()
+
+    if pw.lower().startswith("oauth:"):
+        token = pw.split(":", 1)[1].strip()
+        try:
+            payload_obj: dict[str, Any] = {
+                "subject": subj_clean,
+                "body": {"contentType": "Text", "content": body_clean},
+            }
+            if to_clean:
+                payload_obj["toRecipients"] = [{"emailAddress": {"address": to_clean}}]
+            req = urllib_request.Request(
+                "https://graph.microsoft.com/v1.0/me/messages",
+                data=json.dumps(payload_obj).encode("utf-8"),
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=20):
+                return True, f"Draft saved to Microsoft Graph Drafts folder (To: {to_clean or 'unspecified'}, Subject: {subj_clean})."
+        except Exception as exc:
+            return False, f"Microsoft Graph draft failed: {exc}"
+
+    msg = EmailMessage()
+    msg["From"] = addr
+    if to_clean:
+        msg["To"] = to_clean
+    msg["Subject"] = subj_clean
+    msg.set_content(body_clean)
+
+    imap_host = str(cfg.get("imap_host") or "imap.gmail.com").strip()
+    imap_port = int(cfg.get("imap_port") or 993)
+    provider = str(cfg.get("provider") or "gmail").lower()
+    preset_draft = str(EMAIL_PROVIDER_PRESETS.get(provider, {}).get("drafts_folder") or "Drafts")
+    candidates = [preset_draft]
+    if provider == "gmail" or "gmail.com" in imap_host.lower():
+        candidates.extend(['"[Gmail]/Drafts"', '"[Google Mail]/Drafts"', "Drafts"])
+    else:
+        candidates.extend(["Drafts", "Draft", "INBOX.Drafts"])
+
+    try:
+        ctx = ssl.create_default_context()
+        with imaplib.IMAP4_SSL(imap_host, imap_port, ssl_context=ctx, timeout=20) as mail:
+            mail.login(addr, pw)
+            seen_c: set[str] = set()
+            for cand in candidates:
+                if cand in seen_c:
+                    continue
+                seen_c.add(cand)
+                try:
+                    typ, _ = mail.append(cand, r"\Draft", None, msg.as_bytes())
+                    if typ == "OK":
+                        return True, f"Draft saved in {cand.strip('\"')} (To: {to_clean or 'unspecified'}, Subject: {subj_clean})."
+                except Exception:
+                    continue
+        return False, "Could not find a writable Drafts folder on the mail server."
+    except Exception as exc:
+        return False, f"Draft save failed ({imap_host}:{imap_port}): {exc}"
+
+
+def send_email_message(
+    to_addr: str,
     subject: str,
     body_text: str,
     attachments: list[Path] | None = None,
@@ -620,22 +865,35 @@ def send_self_notification_email(
     config_path: Path = CONFIG_PATH,
     credential_store: CredentialStore | None = None,
 ) -> tuple[bool, str]:
-    """Send a completion notification or test email from the user's configured account directly to their own address."""
-    cfg = load_email_settings(config_path)
-    addr = str(cfg.get("email_address", "")).strip()
-    raw_pw = get_email_password(credential_store)
-    pw = raw_pw.replace(" ", "") if cfg.get("provider") == "gmail" else raw_pw
-    if not addr or not pw:
-        return False, "Email address or password/App Password is not configured."
+    """Send an email through the user's configured SMTP or Microsoft Graph account (gated by access_mode)."""
+    cfg, addr, pw, cred_err = _resolve_email_credentials(config_path, credential_store)
+    if cred_err:
+        return False, cred_err
+
+    to_clean = str(to_addr or "").strip()
+    subj_clean = str(subject or "").strip()
+    if "@" not in to_clean or "." not in to_clean.split("@")[-1]:
+        return False, "Please provide a valid recipient email address."
+    if not subj_clean:
+        return False, "Please provide an email subject before sending."
+
+    is_self_send = (to_clean.lower() == addr.lower())
+    access_mode = str(cfg.get("access_mode") or "read_and_drafts")
+    if not is_self_send and access_mode != "full_assistant":
+        return (
+            False,
+            "Sending emails to other people is disabled under the current AI Access Level. "
+            "Switch AI Access Level to 'Full Email Assistant (Search, Draft & Send)' in Options -> Email & Alerts, or save a draft instead.",
+        )
 
     if pw.lower().startswith("oauth:"):
         token = pw.split(":", 1)[1].strip()
         try:
             payload = json.dumps({
                 "message": {
-                    "subject": subject,
+                    "subject": subj_clean,
                     "body": {"contentType": "Text", "content": body_text},
-                    "toRecipients": [{"emailAddress": {"address": addr}}],
+                    "toRecipients": [{"emailAddress": {"address": to_clean}}],
                 }
             }).encode("utf-8")
             req = urllib_request.Request(
@@ -645,18 +903,14 @@ def send_self_notification_email(
                 method="POST",
             )
             with urllib_request.urlopen(req, timeout=25):
-                return True, f"Notification sent to {addr} via Microsoft Graph."
+                return True, f"Email sent to {to_clean} via Microsoft Graph."
         except Exception as exc:
             return False, f"Microsoft Graph send failed: {exc}"
 
-    smtp_host = str(cfg.get("smtp_host") or "smtp.gmail.com").strip()
-    smtp_port = int(cfg.get("smtp_port") or 465)
-    smtp_mode = str(cfg.get("smtp_mode") or ("ssl" if smtp_port == 465 else "starttls")).lower()
-
     msg = EmailMessage()
-    msg["Subject"] = subject
+    msg["Subject"] = subj_clean
     msg["From"] = addr
-    msg["To"] = addr
+    msg["To"] = to_clean
     msg.set_content(body_text)
 
     for att_path in attachments or []:
@@ -675,27 +929,73 @@ def send_self_notification_email(
         except OSError:
             pass
 
-    try:
-        ctx = ssl.create_default_context()
-        if smtp_mode == "ssl" or smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=ctx, timeout=25) as server:
-                server.login(addr, pw)
-                server.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port, timeout=25) as server:
-                server.ehlo()
-                server.starttls(context=ctx)
-                server.ehlo()
-                server.login(addr, pw)
-                server.send_message(msg)
-        return True, f"Email sent to {addr}."
-    except Exception as exc:
-        return False, f"SMTP error ({smtp_host}:{smtp_port}): {exc}"
+    return _open_smtp_send(cfg, addr, pw, msg)
+
+
+def send_self_notification_email(
+    subject: str,
+    body_text: str,
+    attachments: list[Path] | None = None,
+    *,
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> tuple[bool, str]:
+    """Send a completion notification or test email from the user's configured account directly to their own address."""
+    cfg, addr, _pw, cred_err = _resolve_email_credentials(config_path, credential_store)
+    if cred_err:
+        return False, "Email address or password/App Password is not configured."
+    return send_email_message(
+        addr,
+        subject,
+        body_text,
+        attachments=attachments,
+        config_path=config_path,
+        credential_store=credential_store,
+    )
+
+
+def format_email_status_for_prompt(
+    config_path: Path = CONFIG_PATH,
+    credential_store: CredentialStore | None = None,
+) -> str:
+    """Return a concise non-secret email status and native action guide for agent prompts."""
+    cfg = load_email_settings(config_path)
+    addr = str(cfg.get("email_address") or "").strip()
+    provider = str(cfg.get("provider") or "gmail").strip().lower()
+    access_mode = str(cfg.get("access_mode") or "read_and_drafts").strip().lower()
+    configured = is_email_configured(config_path, credential_store)
+    if not configured:
+        return (
+            "[EMAIL CONNECTOR STATUS]: Not configured yet (missing email address or password in Options -> Memory Palace -> Email & Alerts). "
+            "If the user wants email access, tell them in plain language to open Options -> Memory Palace -> Email & Alerts, enter their email and App Password, and click Test Connection."
+        )
+
+    mode_desc = {
+        "notifications_only": "Alerts Only (only completion alerts to the user; inbox search, drafts, and sending to others are turned off)",
+        "read_and_drafts": "Read & Drafts (can test connection, search inbox, and save drafts; sending to others is turned off)",
+        "full_assistant": "Full Email Assistant (can test connection, search inbox, save drafts, and send emails)",
+    }.get(access_mode, access_mode)
+
+    lines = [
+        "[EMAIL CONNECTOR STATUS & NATIVE ACTIONS]:",
+        f"- Account connected: {addr} (provider: {provider})",
+        f"- Active AI Access Level: {mode_desc}",
+        "- Built-in Email Actions (Fairybread executes these internally — NEVER describe raw tags or code to the user):",
+        '  * Test live Inbox (IMAP) and Sending (SMTP): emit `[EMAIL_TEST]` on its own line.',
+        '  * Search or check recent/unread emails: emit `[EMAIL_SEARCH query="recent"]` (or `"unread"`, `"from:..."`, keywords).',
+        '  * Save a draft to Drafts folder: emit `[EMAIL_DRAFT to="name@example.com" subject="Subject" body="Email body"]`.',
+        '  * Send an email: emit `[EMAIL_SEND to="name@example.com" subject="Subject" body="Email body"]`.',
+        f"- SAFETY RULE FOR SENDING: Self-test emails to the user's own address (`{addr}`) may run immediately when asked. For any email to someone else, ALWAYS show the user the proposed To, Subject, and Body first and wait for their 'Yes' or 'Send' confirmation before emitting `[EMAIL_SEND ...]`.",
+    ]
+    return "\n".join(lines)
 
 
 _EMAIL_SEARCH_INTENT_RE = re.compile(
     r"\b(?:"
-    r"(?:search|check|read|scan|find|look\s+through|summarize|inspect)\s+(?:my\s+|all\s+|the\s+)?(?:unread\s+|recent\s+)?(?:emails?|inbox|gmail|mail|messages)\b|"
+    r"(?:search|check|read|scan|find|look\s+through|summarize|inspect|fetch|get|show|open)\s+(?:my\s+|all\s+|the\s+)?(?:unread\s+|recent\s+|latest\s+|newest\s+|last\s+)?(?:emails?|inbox|gmail|mail|messages)\b|"
+    r"(?:latest|newest|recent|last)\s+(?:few\s+)?(?:emails?|messages?|gmail)\b|"
+    r"can\s+you\s+(?:access|read|check|see)\s+(?:my\s+)?(?:gmail|email|emails|inbox)\b|"
+    r"(?:test|try)\s+(?:my\s+|checking\s+|reading\s+)?(?:gmail|email|emails|inbox)\b|"
     r"emails?\s+(?:from|about|regarding|sent\s+by|containing|with)\b|"
     r"in\s+my\s+(?:inbox|gmail|email|emails)\b"
     r")",

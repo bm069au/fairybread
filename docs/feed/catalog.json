@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-26T00:00:00Z",
-  "latest_app_version": "0.95",
-  "release_summary": "v0.95 Beta: LibreOffice-Style 7-Tab Menu Bar & Expandable Options Tree, Exclusive Solo-AI Menu Selector, Full Mistral via OpenRouter, 4 New Themes (Deep Ocean Abyss, Royal Amethyst, Velvet Rose, Sakura Silk) + 90%-Washed-Out Wallpaper Engine, Low-Latency Voice Mode with Live 3D Avatar Switching & { } Code Inspection, Single Auto-Saving Living User Profile, Response Timing Presets, and Unlimited Multi-Batch Attachments.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95/Fairybread_v0.95_Win_x64_Setup.exe",
+  "updated_at": "2026-11-26T07:07:33Z",
+  "latest_app_version": "0.95a",
+  "release_summary": "v0.95a Beta: Universal Direct & OpenRouter Mistral (Medium/Small/Large/Codestral, Vision, Voxtral TTS/STT, Automatic Scanned-PDF OCR), Accurate Failure-Code Status Chips (No Plan / Auth Err / Bad Model / Limited), 19 Built-In Themes with Bundled Artwork & Recent-First Scrollable Picker, Reorganized Email & Alerts with Gmail Recent/Unread Fix & Silent Plain-English Tool Execution, Python 3.13 Dialog Close [X] Fix, New Beginner-Friendly User Guide, and Unified Physical Distro License.",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95a/Fairybread_v0.95a_Win_x64_Setup.exe",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "e32e8a18253f27d30551b24c3af0a76e422f3491cfd3f82196fb9e1766822e91",
+  "installer_sha256": "80ba61bab848b666f022ef64d6d6715134ce67b8967cebd11b69bc1771ce87eb",
   "model_token_rates_per_1m": {
     "gemini-4-carbon": [
       2.0,
@@ -30,6 +30,50 @@
     "gemini-2.5-flash": [
       0.15,
       0.6
+    ],
+    "gpt-6.2-astra-pro": [
+      15.0,
+      60.0
+    ],
+    "gpt-6.2-astra": [
+      8.0,
+      40.0
+    ],
+    "gpt-6.2-sol-pro": [
+      4.0,
+      16.0
+    ],
+    "gpt-6.2-sol": [
+      2.0,
+      10.0
+    ],
+    "gpt-6-sol": [
+      2.0,
+      10.0
+    ],
+    "gpt-sol-latest": [
+      2.0,
+      10.0
+    ],
+    "gpt-6.1-terra": [
+      1.0,
+      5.0
+    ],
+    "gpt-6-luna": [
+      0.1,
+      0.5
+    ],
+    "pixtral-large-2502": [
+      2.0,
+      6.0
+    ],
+    "daisyrose-27b": [
+      0.25,
+      0.75
+    ],
+    "inkling-2-mini": [
+      0.1,
+      0.4
     ],
     "gpt-5.6-sol": [
       1.5,
@@ -139,6 +183,8 @@
   "tts_cost_per_minute_usd": {
     "openai:gpt-4o-mini-tts": 0.015,
     "openai:tts-1": 0.015,
+    "openrouter:gpt-audio-mini": 0.015,
+    "openrouter:gpt-audio": 0.06,
     "gemini:gemini-3.8-flash-lite-tts": 0.012,
     "gemini:gemini-3.8-flash-tts": 0.018,
     "gemini:gemini-2.5-flash-preview-tts": 0.015,
@@ -178,11 +224,17 @@
       "billing_note": "Free tier available via Google AI Studio, or pay-as-you-go via Google Cloud."
     },
     "openai": {
-      "default_model": "gpt-4o-mini",
+      "default_model": "gpt-5-mini",
       "suggested_models": [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "o3-mini"
+        "gpt-6-luna",
+        "gpt-6.2-sol",
+        "gpt-6.2-sol-pro",
+        "gpt-6.2-astra",
+        "gpt-6.2-astra-pro",
+        "gpt-6.1-terra",
+        "gpt-5-mini",
+        "gpt-5.4",
+        "gpt-4o-mini"
       ],
       "key_url": "https://platform.openai.com/api-keys",
       "billing_note": "Prepaid credit wallet (turn off auto-recharge for a strict spend cap)."
@@ -238,23 +290,31 @@
       "billing_note": "Free Trial keys available out of the box, or Production pay-as-you-go keys."
     },
     "mistral": {
-      "default_model": "codestral-latest",
+      "default_model": "mistral-medium-latest",
       "suggested_models": [
-        "codestral-latest",
-        "mistral-large-latest",
         "mistral-medium-latest",
-        "pixtral-large-2502",
-        "mistral-small-latest"
+        "mistral-small-latest",
+        "mistral-large-latest",
+        "magistral-medium-latest",
+        "ministral-14b-latest",
+        "codestral-latest"
       ],
       "key_url": "https://console.mistral.ai/api-keys/",
-      "billing_note": "Free Experiment tier available on La Plateforme, or full Mistral (Medium 3.1 / Large) included via OpenRouter."
+      "billing_note": "Mistral Console (console.mistral.ai) Experiment plan or pay-as-you-go budget unlocks chat, vision, Voxtral Voice, and Mistral OCR (or use OpenRouter)."
     },
     "openrouter": {
       "default_model": "qwen/qwen3-32b",
       "suggested_models": [
         "qwen/qwen3-32b",
+        "openai/gpt-6.2-sol-pro",
+        "openai/gpt-6.2-astra-pro",
+        "openai/gpt-6.2-astra",
+        "google/gemini-4-neon",
         "mistralai/mistral-large-2411",
         "mistralai/mistral-medium-3.1",
+        "mistralai/pixtral-large-2502",
+        "radixark/daisyrose-27b",
+        "thinkingmachines/inkling-2-mini",
         "anthropic/claude-3.7-sonnet",
         "deepseek/deepseek-r1",
         "google/gemini-2.5-pro"

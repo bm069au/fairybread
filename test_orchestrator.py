@@ -204,6 +204,78 @@ def test_orchestrator():
     )
 
 
+import unittest
+
+
+class OrchestratorRegressionTests(unittest.TestCase):
+    def test_basic_orchestrator_memory_flow(self):
+        test_orchestrator()
+
+    def test_plain_language_source_guard_and_silent_tools(self):
+        from unittest.mock import patch
+        from palace_config import build_palace_source_context
+        from orchestrator import _execute_internal_agent_tools
+
+        # 1. Ordinary question mentioning "this app" must NOT inject developer source tools
+        self.assertEqual(build_palace_source_context("Is this app able to access gmail?"), "")
+
+        # 2. Prompt includes plain non-technical rule on ordinary questions, and relaxes for explicit code asks
+        mem = FakeMemoryService(SimpleNamespace(succeeded=True, context="None", error=None))
+        orch_plain = PalaceOrchestrator(mem, FakeDispatcher())
+        plain_prompt = orch_plain._build_prompt("How do I connect my Gmail?", "None")
+        self.assertIn("Plain Non-Technical Language by Default", plain_prompt)
+        code_prompt = orch_plain._build_prompt("Show me the python source code for this", "None")
+        self.assertNotIn("Plain Non-Technical Language by Default", code_prompt)
+
+        # 3. Silent [TOOL: ...] / [EMAIL_TEST] follow-up produces plain-English answer without leaking raw plumbing
+        class ToolThenPlainDispatcher:
+            def __init__(self):
+                self.calls = []
+            def dispatch(self, prompt: str, provider_names=None, **_kw):
+                self.calls.append((prompt, provider_names))
+                if len(self.calls) == 1:
+                    txt = '[TOOL: search_source_code query="EMAIL_SEARCH"]\n[EMAIL_TEST]'
+                else:
+                    txt = "I checked your email connection and both receiving and sending are ready."
+                return {
+                    "openai": SimpleNamespace(
+                        succeeded=True,
+                        response=SimpleNamespace(text=txt, model="gpt-test"),
+                        error=None,
+                    )
+                }
+
+        disp = ToolThenPlainDispatcher()
+        orch = PalaceOrchestrator(mem, disp)
+        with patch("email_service.test_email_connection", return_value={
+            "ok": True,
+            "imap_ok": True,
+            "imap_message": "Inbox connected.",
+            "smtp_ok": True,
+            "smtp_message": "Sending login verified.",
+            "summary": "Both Inbox and Sending work for tester@gmail.com.",
+        }):
+            res = orch.run("I am asking you to try my email", provider_names=["openai"], include_memory=False, include_context=False)
+        self.assertGreaterEqual(len(disp.calls), 2)
+        ans = res.final_answer or ""
+        self.assertIn("both receiving and sending are ready", ans)
+        self.assertNotIn("[TOOL:", ans)
+        self.assertNotIn("[EMAIL_TEST]", ans)
+        self.assertNotIn("[ON-DEMAND SOURCE CODE TOOL RESULT]", ans)
+
+        # 4. External [EMAIL_SEND ...] requires prior confirmation
+        with patch("email_service.load_email_settings", return_value={"email_address": "me@gmail.com"}), \
+             patch("email_service.send_email_message") as mock_send:
+            out_txt, did_run = _execute_internal_agent_tools(
+                '[EMAIL_SEND to="friend@example.com" subject="Hey" body="Test email"]',
+                user_question="Send an email to friend@example.com saying Test email",
+                session_context="",
+            )
+        self.assertTrue(did_run)
+        self.assertIn("CONFIRMATION REQUIRED", out_txt)
+        mock_send.assert_not_called()
+
+
 if __name__ == "__main__":
     test_orchestrator()
-    print("Orchestrator tests passed.")
+    unittest.main()

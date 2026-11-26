@@ -1339,7 +1339,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.95')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.95a')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -2592,6 +2592,286 @@ class VoiceUpgradeTests(unittest.TestCase):
             win._force_quit = True
             win.close()
             app.processEvents()
+
+    def test_v095_close_buttons_themes_scrollable_menu_email_and_plumbing(self):
+        import ctypes
+        import imaplib
+        import smtplib
+        from unittest.mock import patch
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtWidgets import QApplication, QWidgetAction
+        from credential_store import CredentialStore
+        from email_service import (
+            EMAIL_CREDENTIAL_KEY,
+            exhaustive_search_emails,
+            save_email_draft,
+            save_email_settings,
+            send_email_message,
+            test_email_connection,
+        )
+        from palace_config import load_ui_settings
+        from palace_gui import CustomAIPickerDialog, ManageAIsDialog, RestoreDefaultSettingsDialog
+        from palace_ouroboros import audit_palace_window_geometry
+        from palace_theme import (
+            PICTURE_BACKED_THEMES,
+            list_available_themes,
+            order_themes_with_recent,
+            render_theme_ambient_qimage,
+        )
+        from setup_wizard import GuidedSetupWizardDialog, SpendBillingDialog
+
+        app = QApplication.instance() or QApplication([])
+        cfg = self.root / 'v095_cfg.json'
+        cred = CredentialStore(self.root / 'v095_creds.json')
+
+        # 1. All dialogs keep WindowCloseButtonHint=True (+ Win32 SC_CLOSE enabled on windows platform) & zero clipping
+        dialogs = [
+            ManageAIsDialog(config_path=cfg, credential_store=cred, initial_page='Email & Alerts'),
+            ManageAIsDialog(config_path=cfg, credential_store=cred, initial_page='Appearance'),
+            CustomAIPickerDialog(config_path=cfg),
+            RestoreDefaultSettingsDialog(config_path=cfg),
+            GuidedSetupWizardDialog(config_path=cfg, credential_store=cred),
+            SpendBillingDialog(credential_store=cred),
+        ]
+        user32 = ctypes.windll.user32 if os.name == 'nt' else None
+        is_win_qpa = (QGuiApplication.platformName().lower() == 'windows')
+        for dlg in dialogs:
+            try:
+                wf = dlg.windowFlags()
+                self.assertTrue(
+                    bool(wf & Qt.WindowType.WindowCloseButtonHint),
+                    msg=f'{type(dlg).__name__} lost WindowCloseButtonHint (flags={hex(int(wf.value))})',
+                )
+                if user32 is not None and is_win_qpa:
+                    hwnd = int(dlg.winId())
+                    hmenu = user32.GetSystemMenu(hwnd, False)
+                    sc_state = user32.GetMenuState(hmenu, 0xF060, 0)
+                    self.assertEqual(
+                        sc_state & 0x3,
+                        0,
+                        msg=f'{type(dlg).__name__} Win32 SC_CLOSE disabled: {hex(sc_state)}',
+                    )
+                if isinstance(dlg, ManageAIsDialog):
+                    dlg.show()
+                    app.processEvents()
+                    aud = audit_palace_window_geometry(dlg)
+                    self.assertEqual(aud['clipped_widget_count'], 0, msg=str(aud.get('clipped_widgets')))
+            finally:
+                dlg.close()
+                app.processEvents()
+
+        # 2. Themes catalog (>= 19, no 'fairybread'), real Deep Ocean PNG art, recent-first ordering & scrollable View -> Theme
+        themes = list_available_themes()
+        theme_ids = [tid for tid, _ in themes]
+        self.assertGreaterEqual(len(themes), 19)
+        self.assertNotIn('fairybread', theme_ids)
+        self.assertIn('deep_ocean', PICTURE_BACKED_THEMES)
+        ocean_img = render_theme_ambient_qimage('deep_ocean')
+        self.assertFalse(ocean_img.isNull())
+        self.assertEqual((ocean_img.width(), ocean_img.height()), (640, 360))
+
+        pinned, remaining = order_themes_with_recent(themes, 'royal_amethyst', ['deep_ocean', 'nord_frost', 'tokyo_night'], max_recent=3)
+        self.assertEqual([t[0] for t in pinned], ['royal_amethyst', 'deep_ocean', 'nord_frost'])
+        self.assertEqual(len(pinned) + len(remaining), len(themes))
+        self.assertEqual(len({t[0] for t in pinned} & {t[0] for t in remaining}), 0)
+
+        mem = MemoryService(self.root / 'theme_mem.db')
+        win = PalaceWindow(
+            store=SessionStore(self.root / 'theme_sess'),
+            palace_factory=lambda _c: PalaceOrchestrator(mem, ProviderDispatcher(ProviderRegistry())),
+            config_path=cfg,
+        )
+        try:
+            win._switch_theme_and_persist('deep_ocean')
+            app.processEvents()
+            ui_after = load_ui_settings(cfg)
+            self.assertEqual(ui_after['theme'], 'deep_ocean')
+            self.assertEqual(ui_after['bg_image_source'], 'ambient')
+            self.assertEqual(ui_after['bg_washout_percent'], 82)
+            self.assertEqual(ui_after['recent_themes'][0], 'deep_ocean')
+
+            pinned_act_texts = [
+                a.text()
+                for a in win.theme_menu.actions()
+                if not a.isSeparator() and not isinstance(a, QWidgetAction) and a.data()
+            ]
+            self.assertTrue(
+                any('Deep Ocean Abyss (Dark Blue && Ocean)' in t for t in pinned_act_texts),
+                msg=f'Expected escaped && in pinned menu label, got: {pinned_act_texts}',
+            )
+            self.assertIsNotNone(getattr(win, '_theme_list_widget', None))
+            self.assertGreaterEqual(win._theme_list_widget.count(), 16)
+            self.assertLessEqual(win._theme_list_widget.height(), 11 * 28 + 10)
+        finally:
+            win._force_quit = True
+            win.close()
+            app.processEvents()
+
+        # 3. Email service: Gmail 'recent' uses IMAP ALL (not X-GM-RAW "recent"), 'unread' uses is:unread, draft & send gating
+        save_email_settings(
+            {
+                'enabled': True,
+                'provider': 'gmail',
+                'email_address': 'tester@gmail.com',
+                'imap_host': 'imap.gmail.com',
+                'imap_port': 993,
+                'smtp_host': 'smtp.gmail.com',
+                'smtp_port': 465,
+                'smtp_mode': 'ssl',
+                'access_mode': 'read_and_drafts',
+            },
+            password='abcd efgh ijkl mnop',
+            config_path=cfg,
+            credential_store=cred,
+        )
+        uid_calls = []
+        appended_calls = []
+
+        class _FakeIMAP:
+            def __init__(self, *_a, **_kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *_a):
+                return False
+            def login(self, user, pw):
+                self.pw = pw
+                return ('OK', [b'Logged in'])
+            def select(self, folder, readonly=True):
+                return ('OK', [b'12'])
+            def uid(self, cmd, *args):
+                uid_calls.append((cmd, args))
+                if cmd == 'SEARCH':
+                    return ('OK', [b''])
+                return ('OK', [])
+            def append(self, folder, flags, date_time, msg_bytes):
+                appended_calls.append((folder, flags, msg_bytes))
+                return ('OK', [b'Appended'])
+
+        sent_msgs = []
+
+        class _FakeSMTP:
+            def __init__(self, *_a, **_kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *_a):
+                return False
+            def login(self, user, pw):
+                return (235, b'2.7.0 Accepted')
+            def send_message(self, msg):
+                sent_msgs.append(msg)
+
+        with patch.object(imaplib, 'IMAP4_SSL', _FakeIMAP), patch.object(smtplib, 'SMTP_SSL', _FakeSMTP):
+            conn_res = test_email_connection(config_path=cfg, credential_store=cred)
+            self.assertTrue(conn_res['ok'])
+            self.assertTrue(conn_res['imap_ok'])
+            self.assertTrue(conn_res['smtp_ok'])
+
+            exhaustive_search_emails('recent', config_path=cfg, credential_store=cred)
+            exhaustive_search_emails('unread', config_path=cfg, credential_store=cred)
+            self.assertIn(('SEARCH', (None, 'ALL')), uid_calls)
+            self.assertNotIn(('SEARCH', (None, 'X-GM-RAW', '"recent"')), uid_calls)
+            self.assertIn(('SEARCH', (None, 'X-GM-RAW', '"is:unread"')), uid_calls)
+
+            ok_d, msg_d = save_email_draft('friend@example.com', 'Hello', 'Draft body', config_path=cfg, credential_store=cred)
+            self.assertTrue(ok_d, msg=msg_d)
+            self.assertEqual(len(appended_calls), 1)
+
+            ok_ext_blocked, msg_ext = send_email_message('friend@example.com', 'Hi', 'Body', config_path=cfg, credential_store=cred)
+            self.assertFalse(ok_ext_blocked)
+            self.assertIn('Full Email Assistant', msg_ext)
+
+            save_email_settings({'access_mode': 'full_assistant'}, config_path=cfg, credential_store=cred)
+            ok_sent, _msg_s = send_email_message('friend@example.com', 'Hi', 'Body', config_path=cfg, credential_store=cred)
+            self.assertTrue(ok_sent)
+            self.assertEqual(len(sent_msgs), 1)
+
+    def test_v095_universal_mistral_voxtral_ocr_profiles_and_honest_chips(self):
+        import base64
+        import io
+        import wave
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from pypdf import PdfWriter
+        from attachment_service import extract_attachment
+        from credential_store import CredentialStore
+        from palace_config import DEFAULT_AI_SQUADS, PROVIDER_CATALOG, resolve_profile_model_override
+        from palace_gui import PalaceWindow
+        from voice_service import TTS_ENGINES, synthesize_speech_pcm, transcribe_audio_file
+
+        # 1. Tight 6 profiles, Mistral default = mistral-medium-latest, proper tier routing & OpenRouter mapping
+        self.assertEqual(PROVIDER_CATALOG['mistral']['default_model'], 'mistral-medium-latest')
+        self.assertEqual(set(DEFAULT_AI_SQUADS.keys()), {'code', 'light_chat', 'deep_chat', 'generalist', 'graphics', 'work_mode'})
+        self.assertIn('mistral', DEFAULT_AI_SQUADS['light_chat']['providers'])
+        self.assertEqual(DEFAULT_AI_SQUADS['light_chat']['model_overrides']['mistral'], 'mistral-small-latest')
+        self.assertEqual(DEFAULT_AI_SQUADS['generalist']['model_overrides']['mistral'], 'mistral-medium-latest')
+        self.assertEqual(DEFAULT_AI_SQUADS['deep_chat']['model_overrides']['mistral'], 'mistral-large-latest')
+        self.assertEqual(DEFAULT_AI_SQUADS['code']['model_overrides']['mistral'], 'codestral-latest')
+        self.assertEqual(resolve_profile_model_override('mistral', 'mistral-medium-latest', is_openrouter=True), 'mistralai/mistral-medium-3.1')
+        self.assertEqual(resolve_profile_model_override('mistral', 'magistral-medium-latest', is_openrouter=True), 'mistralai/magistral-medium-2506')
+
+        # 2. Honest chip classification (No Plan for 402, Auth Err for 401/403, Bad Model for 404, Limited for 429)
+        self.assertEqual(PalaceWindow._classify_provider_error_chip('Status 402 billing_no_api_budget_configured')[0], 'No Plan')
+        self.assertEqual(PalaceWindow._classify_provider_error_chip('Error 401 unauthorized')[0], 'Auth Err')
+        self.assertEqual(PalaceWindow._classify_provider_error_chip('Error 404 model_not_found')[0], 'Bad Model')
+        self.assertEqual(PalaceWindow._classify_provider_error_chip('Error 429 rate limit')[0], 'Limited')
+
+        # 3. Voxtral TTS & STT + Scanned PDF Mistral OCR fallback (mocked, no live network)
+        self.assertIn('mistral', dict(TTS_ENGINES))
+        cred = CredentialStore(self.root / 'voxtral_creds.json')
+        cred.set_api_key('mistral', 'mstrl_unit_test_key')
+        cfg = self.root / 'voxtral_cfg.json'
+
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, 'wb') as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(24000)
+            wf.writeframes(b'\x00\x20\x00\xe0' * 1200)
+        b64_wav = base64.b64encode(wav_io.getvalue()).decode('ascii')
+
+        audio_wav_path = self.root / 'mic_clip.wav'
+        audio_wav_path.write_bytes(wav_io.getvalue())
+
+        blank_pdf = self.root / 'scanned.pdf'
+        w = PdfWriter()
+        w.add_blank_page(width=100, height=100)
+        w.write(blank_pdf)
+
+        class _FakeMistralUnified:
+            def __init__(self, **_kw):
+                self.audio = SimpleNamespace(
+                    speech=SimpleNamespace(
+                        complete=lambda **_skw: SimpleNamespace(audio_data=b64_wav),
+                    ),
+                    transcriptions=SimpleNamespace(
+                        complete=lambda **_tkw: SimpleNamespace(text='Voxtral heard this clearly'),
+                    ),
+                )
+                self.ocr = SimpleNamespace(
+                    process=lambda **_okw: SimpleNamespace(
+                        pages=[SimpleNamespace(markdown='# Scanned Page 1\nOCR extracted text cleanly.')]
+                    ),
+                )
+
+        with patch('mistralai.client.Mistral', _FakeMistralUnified):
+            pcm, sr, eng = synthesize_speech_pcm(
+                'Testing Voxtral speech',
+                config_path=cfg,
+                credential_store=cred,
+                engine_override='mistral',
+            )
+            self.assertEqual(sr, 24000)
+            self.assertEqual(eng, 'mistral:voxtral-mini-tts-latest')
+            self.assertGreater(len(pcm), 100)
+
+            stt_txt = transcribe_audio_file(audio_wav_path, credential_store=cred)
+            self.assertEqual(stt_txt, 'Voxtral heard this clearly')
+
+            att = extract_attachment(blank_pdf, credential_store=cred)
+            self.assertIn('OCR extracted text cleanly.', att.text)
 
 
 if __name__ == '__main__':

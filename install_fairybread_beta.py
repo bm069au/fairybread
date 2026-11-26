@@ -442,6 +442,11 @@ def run_gui_installer() -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     dlg = QDialog()
+    dlg.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+    dlg.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
     dlg.setWindowTitle(f"{VERSION_STAMPED_NAME} — Setup Wizard")
     dlg.resize(760, 680)
     dlg.setStyleSheet("background:#0d1117; color:#f0f6fc; font-family:'Segoe UI'; font-size:13px;")

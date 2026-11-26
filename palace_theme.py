@@ -2255,12 +2255,164 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
         "send_fg": "#ffffff",
         "sprinkles": False,
     },
+    "nord_frost": {
+        "id": "nord_frost",
+        "name": "Nord Frost (Arctic Slate & Cyan)",
+        "bg_main": "#2e3440",
+        "bg_sidebar": "#242933",
+        "bg_card": "#3b4252",
+        "bg_hover": "#434c5e",
+        "border": "#4c566a",
+        "text_primary": "#eceff4",
+        "text_secondary": "#d8dee9",
+        "text_muted": "#8fbcbb",
+        "user_bubble_bg": "#2b3b4e",
+        "user_bubble_border": "#88c0d0",
+        "user_bubble_text": "#eceff4",
+        "send_bg": "#88c0d0",
+        "send_fg": "#1f242d",
+        "sprinkles": False,
+    },
+    "amber_crt_1984": {
+        "id": "amber_crt_1984",
+        "name": "Amber CRT 1984 (Monochrome Terminal)",
+        "bg_main": "#120d05",
+        "bg_sidebar": "#0a0702",
+        "bg_card": "#1b1307",
+        "bg_hover": "#291d0b",
+        "border": "#593d12",
+        "text_primary": "#ffb000",
+        "text_secondary": "#ffd27a",
+        "text_muted": "#b37b16",
+        "user_bubble_bg": "#241908",
+        "user_bubble_border": "#ff9900",
+        "user_bubble_text": "#ffe6ad",
+        "send_bg": "#ffb000",
+        "send_fg": "#0a0702",
+        "sprinkles": False,
+    },
+    "tokyo_night": {
+        "id": "tokyo_night",
+        "name": "Tokyo Night (Deep Indigo & Electric Blue)",
+        "bg_main": "#1a1b26",
+        "bg_sidebar": "#13141c",
+        "bg_card": "#24283b",
+        "bg_hover": "#2f3549",
+        "border": "#414868",
+        "text_primary": "#c0caf5",
+        "text_secondary": "#a9b1d6",
+        "text_muted": "#737aa2",
+        "user_bubble_bg": "#232946",
+        "user_bubble_border": "#7aa2f7",
+        "user_bubble_text": "#e0e7ff",
+        "send_bg": "#7aa2f7",
+        "send_fg": "#13141c",
+        "sprinkles": False,
+    },
+    "catppuccin_mocha": {
+        "id": "catppuccin_mocha",
+        "name": "Catppuccin Mocha (Warm Espresso & Mauve)",
+        "bg_main": "#1e1e2e",
+        "bg_sidebar": "#181825",
+        "bg_card": "#2a2b3d",
+        "bg_hover": "#313244",
+        "border": "#45475a",
+        "text_primary": "#cdd6f4",
+        "text_secondary": "#bac2de",
+        "text_muted": "#9399b2",
+        "user_bubble_bg": "#322b47",
+        "user_bubble_border": "#cba6f7",
+        "user_bubble_text": "#f5e0dc",
+        "send_bg": "#cba6f7",
+        "send_fg": "#11111b",
+        "sprinkles": False,
+    },
+    "gruvbox_studio": {
+        "id": "gruvbox_studio",
+        "name": "Gruvbox Warm Studio (Earthy Ochre & Cream)",
+        "bg_main": "#1d2021",
+        "bg_sidebar": "#17191a",
+        "bg_card": "#282828",
+        "bg_hover": "#3c3836",
+        "border": "#504945",
+        "text_primary": "#ebdbb2",
+        "text_secondary": "#d5c4a1",
+        "text_muted": "#a89984",
+        "user_bubble_bg": "#332b20",
+        "user_bubble_border": "#fabd2f",
+        "user_bubble_text": "#fbf1c7",
+        "send_bg": "#fe8019",
+        "send_fg": "#1d2021",
+        "sprinkles": False,
+    },
+    "emerald_blueprint": {
+        "id": "emerald_blueprint",
+        "name": "Emerald CAD Blueprint (Technical Navy & Teal)",
+        "bg_main": "#09151c",
+        "bg_sidebar": "#060e13",
+        "bg_card": "#0f222d",
+        "bg_hover": "#163140",
+        "border": "#1e4e5f",
+        "text_primary": "#d8f8f2",
+        "text_secondary": "#a8ded5",
+        "text_muted": "#589b99",
+        "user_bubble_bg": "#0d2b36",
+        "user_bubble_border": "#14b8a6",
+        "user_bubble_text": "#ecfeff",
+        "send_bg": "#14b8a6",
+        "send_fg": "#041216",
+        "sprinkles": False,
+    },
+    "outrun_synthwave": {
+        "id": "outrun_synthwave",
+        "name": "Outrun Synthwave '84",
+        "bg_main": "#191124",
+        "bg_sidebar": "#110b1a",
+        "bg_card": "#241836",
+        "bg_hover": "#32214a",
+        "border": "#ff2a85",
+        "text_primary": "#fff5f8",
+        "text_secondary": "#f3d1e4",
+        "text_muted": "#b388eb",
+        "user_bubble_bg": "#2c1642",
+        "user_bubble_border": "#00f5d4",
+        "user_bubble_text": "#ffffff",
+        "send_bg": "#00f5d4",
+        "send_fg": "#110b1a",
+        "sprinkles": False,
+    },
+    "obsidian_gold": {
+        "id": "obsidian_gold",
+        "name": "Obsidian Gold (Luxury Matte & Champagne)",
+        "bg_main": "#0c0c0e",
+        "bg_sidebar": "#070708",
+        "bg_card": "#16161a",
+        "bg_hover": "#202026",
+        "border": "#4a3f28",
+        "text_primary": "#f5ebd6",
+        "text_secondary": "#d4c5a9",
+        "text_muted": "#8c7d62",
+        "user_bubble_bg": "#1f1b12",
+        "user_bubble_border": "#d4af37",
+        "user_bubble_text": "#fff8e7",
+        "send_bg": "#d4af37",
+        "send_fg": "#0c0c0e",
+        "sprinkles": False,
+    },
 }
 
+
+PICTURE_BACKED_THEMES: dict[str, str] = {
+    "deep_ocean": "theme_assets/deep_ocean.png",
+    "royal_amethyst": "theme_assets/royal_amethyst.png",
+    "velvet_rose": "theme_assets/velvet_rose.png",
+    "sakura_silk": "theme_assets/velvet_rose.png",
+}
 
 _THEME_CACHE_LOCK = threading.Lock()
 _ENSURED_THEME_DIRS: set[str] = set()
 _THEME_DICT_CACHE: dict[str, tuple[int | None, dict[str, Any]]] = {}
+_THEME_ART_QIMAGE_CACHE: dict[str, QImage] = {}
 
 
 def get_themes_dir() -> Path:
@@ -2320,8 +2472,16 @@ def list_available_themes() -> list[tuple[str, str]]:
         ("royal_amethyst", "Royal Amethyst (Purple)"),
         ("velvet_rose", "Velvet Rose (Dark Pink)"),
         ("sakura_silk", "Sakura Silk (Soft Light Pink)"),
+        ("nord_frost", "Nord Frost (Arctic Slate & Cyan)"),
+        ("tokyo_night", "Tokyo Night (Deep Indigo & Electric Blue)"),
+        ("catppuccin_mocha", "Catppuccin Mocha (Warm Espresso & Mauve)"),
+        ("gruvbox_studio", "Gruvbox Warm Studio (Earthy Ochre & Cream)"),
+        ("emerald_blueprint", "Emerald CAD Blueprint (Technical Navy & Teal)"),
+        ("outrun_synthwave", "Outrun Synthwave '84"),
+        ("obsidian_gold", "Obsidian Gold (Luxury Matte & Champagne)"),
         ("dracula_pro", "Dracula Pro"),
         ("winamp_1999", "Winamp Classic 1999 (2.x LED)"),
+        ("amber_crt_1984", "Amber CRT 1984 (Monochrome Terminal)"),
         ("cyberpunk_2077", "Cyberpunk Night City"),
         ("matrix_crt", "Matrix Phosphor (CRT Terminal)"),
         ("light", "Clean Daylight"),
@@ -2339,6 +2499,60 @@ def list_available_themes() -> list[tuple[str, str]]:
         except Exception:
             pass
     return out
+
+
+def order_themes_with_recent(
+    themes: list[tuple[str, str]],
+    active_theme: str,
+    recent_themes: list[str] | None = None,
+    max_recent: int = 3,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split `themes` into `(pinned_recent, remaining)` putting active + up to max_recent-1 recent themes first."""
+    theme_map = {str(tid).strip().lower(): (str(tid).strip().lower(), name) for tid, name in themes}
+    active_slug = str(active_theme or "dark").strip().lower()
+    if active_slug == "fairybread":
+        active_slug = "dark"
+    pinned: list[tuple[str, str]] = []
+    pinned_ids: set[str] = set()
+    candidates: list[str] = [active_slug]
+    for r in (recent_themes or []):
+        rs = str(r or "").strip().lower()
+        if rs and rs != "fairybread":
+            candidates.append(rs)
+    for slug in candidates:
+        if slug in theme_map and slug not in pinned_ids:
+            pinned.append(theme_map[slug])
+            pinned_ids.add(slug)
+            if len(pinned) >= max(1, int(max_recent)):
+                break
+    remaining = [(tid, name) for tid, name in themes if str(tid).strip().lower() not in pinned_ids]
+    return pinned, remaining
+
+
+def make_theme_swatch_icon(theme_id: str, size: int = 14) -> QIcon:
+    """Draw a crisp split color swatch circle (bg_main / send_bg) for theme menus & dropdowns."""
+    t = load_theme_dict(theme_id)
+    bg_col = QColor(str(t.get("bg_main") or "#0d1117"))
+    acc_col = QColor(str(t.get("send_bg") or "#38bdf8"))
+    bd_col = QColor(str(t.get("border") or "#30363d"))
+    s = max(12, int(size))
+    pix = QPixmap(s * 2, s * 2)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    r = float(s * 2)
+    rect = QRectF(2.0, 2.0, r - 4.0, r - 4.0)
+    clip = QPainterPath()
+    clip.addEllipse(rect)
+    p.setClipPath(clip)
+    p.fillRect(QRectF(0.0, 0.0, r * 0.55, r), bg_col)
+    p.fillRect(QRectF(r * 0.55, 0.0, r * 0.45, r), acc_col)
+    p.setClipping(False)
+    p.setPen(QPen(bd_col, 2.0))
+    p.drawEllipse(rect)
+    p.end()
+    pix.setDevicePixelRatio(2.0)
+    return QIcon(pix)
 
 
 def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
@@ -2465,12 +2679,26 @@ QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none
 
 
 def render_theme_ambient_qimage(theme_id: str = "dark", width: int = 1280, height: int = 800) -> QImage:
-    """Generate smooth atmospheric built-in artwork matched to the theme (designed for ~90% washout)."""
+    """Return bundled picture artwork for picture-backed themes, or generate atmospheric ambient art."""
     from PySide6.QtGui import QLinearGradient, QRadialGradient
 
     tid = (theme_id or "dark").strip().lower()
     if tid == "system":
         tid = "light" if _detect_windows_light_theme() else "dark"
+
+    rel_asset = PICTURE_BACKED_THEMES.get(tid)
+    if rel_asset:
+        with _THEME_CACHE_LOCK:
+            cached_art = _THEME_ART_QIMAGE_CACHE.get(rel_asset)
+        if cached_art is not None and not cached_art.isNull():
+            return cached_art
+        asset_path = get_resource_path(rel_asset)
+        if asset_path.is_file():
+            loaded_art = QImage(str(asset_path))
+            if not loaded_art.isNull():
+                with _THEME_CACHE_LOCK:
+                    _THEME_ART_QIMAGE_CACHE[rel_asset] = loaded_art
+                return loaded_art
 
     w, h = max(320, int(width)), max(240, int(height))
     img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
@@ -2587,7 +2815,7 @@ def bake_washed_backdrop_pixmap(
         sy = max(0, (scaled.height() - ph) // 2)
         painter = QPainter(pix)
         painter.drawImage(0, 0, scaled, sx, sy, pw, ph)
-        wash_alpha = max(0.75, min(0.96, float(washout_pct) / 100.0))
+        wash_alpha = max(0.60, min(0.96, float(washout_pct) / 100.0))
         overlay = QColor(base_col.red(), base_col.green(), base_col.blue(), int(round(wash_alpha * 255)))
         painter.fillRect(0, 0, pw, ph, overlay)
         painter.end()

@@ -567,6 +567,11 @@ def _run_interactive_uninstall(install_dir: Path) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     dlg = QDialog()
+    dlg.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+    dlg.setWindowFlag(Qt.WindowType.WindowTitleHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+    dlg.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, False)
     dlg.setWindowTitle(f"Uninstall {app_name}")
     dlg.resize(560, 360)
     dlg.setStyleSheet("background:#0d1117; color:#f0f6fc; font-family:'Segoe UI'; font-size:13px;")

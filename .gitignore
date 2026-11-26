@@ -1,6 +1,7 @@
 key.txt
 capture.txt
 palace_config.json
+credentials.json
 ask_gpt_WORKING_BACKUP.py
 *.db
 *.jsonl

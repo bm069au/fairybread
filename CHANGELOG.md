@@ -1,3 +1,25 @@
+# Fairybread — Beta v0.95a (Win_x64) Changelog
+**Release Date:** 2026-11-26
+**Version:** `0.95a` (`0.95.1.0`)
+
+## Summary of Changes in `v0.95a`
+1. **▲ Universal Direct & OpenRouter Mistral Upgrade (`mistral_provider.py`, `palace_config.py`, `provider_loader.py`, `voice_service.py`, `attachment_service.py`):**
+   - Upgrades direct Mistral default from `codestral-latest` to general-purpose **`mistral-medium-latest`** with profile-aware routing (`Light Chat` → `mistral-small-latest`, `Generalist`/`Work Mode` → `mistral-medium-latest`, `Deeper Chat` → `mistral-large-latest`, `Code AIs` → `codestral-latest`), native vision (`image_url`), Magistral thinking-chunk sanitization, and `403`/`404` model failover.
+   - Adds **Mistral Voxtral** neural TTS (`voxtral-mini-tts-latest`) and microphone transcription (`voxtral-mini-transcribe-3`), plus automatic **Mistral OCR (`mistral-ocr-latest`)** fallback whenever a scanned image-only PDF extracts zero selectable text.
+2. **🚦 Accurate Failure-Code Bottom-Bar Status Chips (`orchestrator.py`, `palace_gui.py`):**
+   - Replaces catch-all `Limited` badges with exact HTTP/error classification: **`No Plan`** (amber `#d29922` for HTTP `402` / missing billing plan or zero balance), **`Auth Err`** (red `#f85149` for `401`/`403` bad/unauthorized keys), **`Bad Model`** (red `#f85149` for `404` retired/invalid models), **`Limited`** strictly for true `429`/`413` rate/size limits, and **`Failed`** for network/runtime errors.
+3. **🎨 19 Built-In Themes, Bundled Picture Artwork & Recent-First Scrollable Picker (`palace_theme.py`, `palace_config.py`, `palace_gui.py`, `build_release.py`, `theme_assets/*.png`):**
+   - Expands to 19 built-in themes with bundled high-resolution PNG artwork (`deep_ocean.png`, `royal_amethyst.png`, `velvet_rose.png`), widened `60%–96%` washout range (auto-activating at `82%` on picture-backed themes), and a recent-first scrollable 11-row `View → Theme` picker.
+4. **📧 Email Settings Reorganization, Gmail `"recent"`/`"unread"` Search Fix & Plain-English Silent Tool Follow-Ups (`email_service.py`, `palace_config.py`, `orchestrator.py`, `synthesizer.py`, `palace_gui.py`):**
+   - Reorganizes `Options → Email & Alerts` into `1. Email Account & AI Access` (with live status banner, `🔌 Test Connection`, and `📧 Send Test Email`) and `2. Optional Completion Alerts`; fixes Gmail `X-GM-RAW` natural-language `"recent"`/`"unread"` inbox queries; executes `[EMAIL_TEST]`, `[EMAIL_SEARCH]`, `[EMAIL_DRAFT]`, and confirmation-gated `[EMAIL_SEND]` tags silently with automatic synthesis follow-up; and defaults all agent replies to plain, non-technical everyday English unless technical depth is requested.
+5. **🪟 Python 3.13 / PySide6 Dialog Close `[ ✕ ]` Button Fix (`palace_gui.py`, `setup_wizard.py`, `install_fairybread_beta.py`, `uninstall_fairybread.py`):**
+   - Replaces `~Qt.WindowType.WindowContextHelpButtonHint` bitmask inversion (which cleared `WindowCloseButtonHint` in Python 3.13/Shiboken6 and disabled Win32 `SC_CLOSE`) with explicit `setWindowFlag(..., False)` calls so every dialog's top-right `[ ✕ ]` close button works natively.
+6. **📖 Beginner-Friendly Setup Handbook & Unified Physical Distro License (`USER_GUIDE.md`, `LICENSE.txt`, `LICENSE.md`, `build_release.py`, `fairybread_setup.iss`):**
+   - Overhauls `USER_GUIDE.md` with an uncluttered 2-path Recommended First Setup (Free smoke test with honest limitations vs OpenRouter + Graphics + 1 Top-Tier Voice Engine), plain-English *"What Do I Say?"* prompt table, 15-provider and 9-voice comparison tables (including Anthropic anti-roleplay notes), bottom-bar chip guide, and bug-reporting instructions.
+   - Ships both plain-text `LICENSE.txt` (wired to Inno Setup's `LicenseFile=` screen) and `LICENSE.md` in all distros with updated 2-seat / 3+ seat commercial terms, anti-bypass restrictions, contributor grant, GNU LGPLv3 (`PySide6`) notices, third-party API disclaimer, and South Australia governing law.
+
+---
+
 # Fairybread — Beta v0.95 (Win_x64) Changelog
 **Release Date:** 2026-11-25
 **Version:** `0.95` (`0.95.0.0`)

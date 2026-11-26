@@ -14,10 +14,10 @@
   #define AppIdGuid "{B7F4E2A1-6C3D-4B89-9E51-FA18B4EAD001}"
 #endif
 #ifndef AppDispVer
-  #define AppDispVer "0.95"
+  #define AppDispVer "0.95a"
 #endif
 #ifndef AppWinVer
-  #define AppWinVer "0.95.0.0"
+  #define AppWinVer "0.95.1.0"
 #endif
 #ifndef DefaultIncludeSource
   #define DefaultIncludeSource "0"
@@ -32,7 +32,7 @@
   #define OutputDirPath "dist"
 #endif
 #ifndef OutputExeBase
-  #define OutputExeBase "Fairybread_v0.95_Win_x64_Setup"
+  #define OutputExeBase "Fairybread_v0.95a_Win_x64_Setup"
 #endif
 
 [Setup]
@@ -50,7 +50,7 @@ DisableDirPage=no
 DisableProgramGroupPage=no
 DisableWelcomePage=no
 AllowNoIcons=yes
-LicenseFile=LICENSE.md
+LicenseFile=LICENSE.txt
 SetupIconFile=fairybread_icon.ico
 UninstallDisplayIcon={app}\Fairybread.exe
 UninstallDisplayName={#AppName} (Beta v{#AppDispVer})

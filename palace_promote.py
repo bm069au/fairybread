@@ -29,7 +29,7 @@ SOURCE_REPO_DIR = Path(r"E:\Visual_studio\Palace")
 SANDBOX_STAGING_DIR = Path(r"C:\Palace_Idle_Sandbox\staging")
 BACKUP_DIR = Path(r"E:\Visual_studio\Palace_Backups")
 EXCLUDED_SANDBOX_FILES = {"ask_gpt_WORKING_BACKUP.py"}
-FORBIDDEN_SECRET_FILES = {"key.txt", "capture.txt", "palace_config.json", "ask_gpt_WORKING_BACKUP.py"}
+FORBIDDEN_SECRET_FILES = {"key.txt", "capture.txt", "palace_config.json", "credentials.json", "ask_gpt_WORKING_BACKUP.py"}
 
 
 def show_diff() -> int:

@@ -34,6 +34,7 @@ TTS_ENGINES: list[tuple[str, str]] = [
     ("gemini", "Gemini Neural (gemini-3.8-flash-lite-tts · ~$0.012/min)"),
     ("groq", "Groq Orpheus (orpheus-v1-english · ~$0.02/min)"),
     ("openrouter", "OpenRouter Audio (gpt-audio-mini · Neural Voices)"),
+    ("mistral", "Mistral Voxtral (voxtral-mini-tts-latest · Neural)"),
     ("cartesia", "Cartesia Sonic (~$0.045/1k chars · ~50ms streaming)"),
     ("elevenlabs", "ElevenLabs (~$0.18/1k chars · Studio / Cloning)"),
     ("deepgram", "Deepgram Flux / Aura-2 (~$0.025–$0.03/1k chars · Low-Latency)"),
@@ -46,6 +47,7 @@ TTS_ENGINE_SHORT_LABELS: dict[str, str] = {
     "gemini": "Gemini",
     "groq": "Groq Orpheus",
     "openrouter": "OpenRouter Audio",
+    "mistral": "Mistral Voxtral",
     "cartesia": "Cartesia Sonic",
     "elevenlabs": "ElevenLabs",
     "deepgram": "Deepgram Flux / Aura-2",
@@ -2758,6 +2760,40 @@ def _synthesize_openrouter_audio_pcm(
     return _decode_audio_payload(raw_bytes, "audio/wav")
 
 
+def _synthesize_mistral_voxtral_pcm(
+    chunk_text: str,
+    *,
+    api_key: str,
+    voice_id: str = "",
+    cancel_event: threading.Event | None = None,
+) -> tuple[bytes, int]:
+    """Synthesize spoken audio via Mistral Voxtral (`voxtral-mini-tts-latest`) cleanly."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        raise ValueError("mistral: missing API key")
+    if cancel_event is not None and cancel_event.is_set():
+        return b"", 24000
+    from mistralai.client import Mistral
+
+    client = Mistral(api_key=clean_key, timeout_ms=30000)
+    kw: dict[str, Any] = {
+        "input": str(chunk_text or "").strip(),
+        "model": "voxtral-mini-tts-latest",
+        "response_format": "wav",
+    }
+    if voice_id and str(voice_id).strip():
+        kw["voice_id"] = str(voice_id).strip()
+    resp = client.audio.speech.complete(**kw)
+    raw_aud = getattr(resp, "audio_data", None)
+    if isinstance(raw_aud, str):
+        raw_bytes = base64.b64decode(raw_aud)
+    elif isinstance(raw_aud, (bytes, bytearray)):
+        raw_bytes = bytes(raw_aud)
+    else:
+        raise RuntimeError("Mistral Voxtral speech response did not contain audio_data")
+    return _decode_audio_payload(raw_bytes, "audio/wav")
+
+
 _TTS_HTTPX_LOCK = threading.Lock()
 _TTS_HTTPX_CLIENT: Any = None
 _STT_CLIENT_CACHE: dict[tuple[str, str], Any] = {}
@@ -2985,16 +3021,17 @@ def synthesize_speech_pcm(
     )
 
     order = {
-        "auto": ["openai", "gemini", "groq", "openrouter"],
-        "openai": ["openai", "gemini", "groq", "openrouter"],
-        "gemini": ["gemini", "openai", "groq", "openrouter"],
-        "groq": ["groq", "openai", "gemini", "openrouter"],
+        "auto": ["openai", "gemini", "groq", "mistral", "openrouter"],
+        "openai": ["openai", "gemini", "groq", "mistral", "openrouter"],
+        "gemini": ["gemini", "openai", "groq", "mistral", "openrouter"],
+        "groq": ["groq", "openai", "gemini", "mistral", "openrouter"],
+        "mistral": ["mistral", "openai", "gemini", "openrouter"],
         "openrouter": ["openrouter", "openai", "gemini"],
         "cartesia": ["cartesia", "openai", "gemini", "openrouter"],
         "elevenlabs": ["elevenlabs", "openai", "gemini", "openrouter"],
         "deepgram": ["deepgram", "openai", "gemini", "openrouter"],
         "system": [],
-    }.get(engine, ["openai", "gemini", "groq", "openrouter"])
+    }.get(engine, ["openai", "gemini", "groq", "mistral", "openrouter"])
 
     errors: list[str] = []
     for candidate in order:
@@ -3063,6 +3100,17 @@ def synthesize_speech_pcm(
                     return pcm, sr, "openrouter:gpt-audio-mini"
             except Exception as exc:
                 errors.append(f"openrouter: {exc}")
+        elif candidate == "mistral":
+            m_key = store.get_api_key("mistral")
+            if not m_key:
+                errors.append("mistral: missing API key")
+                continue
+            try:
+                pcm, sr = _synthesize_mistral_voxtral_pcm(spoken, api_key=m_key)
+                if pcm:
+                    return pcm, sr, "mistral:voxtral-mini-tts-latest"
+            except Exception as exc:
+                errors.append(f"mistral: {exc}")
         elif candidate == "cartesia":
             ckey = store.get_api_key("cartesia")
             if not ckey:
@@ -3170,12 +3218,12 @@ def _build_tts_candidate_order(
     fb = (fallback_engine or "auto").strip().lower()
     all_ready = [
         eid
-        for eid in ("openai", "gemini", "groq", "openrouter", "cartesia", "elevenlabs", "deepgram")
+        for eid in ("openai", "gemini", "groq", "mistral", "openrouter", "cartesia", "elevenlabs", "deepgram")
         if is_tts_engine_ready(eid, credential_store=store)
     ]
     order: list[str] = []
     if pri == "auto":
-        for eid in ("openai", "gemini", "groq", "openrouter"):
+        for eid in ("openai", "gemini", "groq", "mistral", "openrouter"):
             if eid not in order:
                 order.append(eid)
         for eid in all_ready:
@@ -3575,6 +3623,59 @@ def speak_agent_response(
                             break
                         continue
 
+                elif candidate == "mistral":
+                    m_key = store.get_api_key("mistral")
+                    if not m_key:
+                        if engine == "mistral":
+                            errors.append("mistral: missing API key")
+                        continue
+                    try:
+                        for ch_txt in chunks:
+                            if cancel_ev.is_set():
+                                break
+                            pcm, sr = _synthesize_mistral_voxtral_pcm(
+                                ch_txt,
+                                api_key=m_key,
+                                cancel_event=cancel_ev,
+                            )
+                            if not pcm:
+                                continue
+                            if stream is None:
+                                stream = _WaveOutStream(sample_rate=sr, channels=1, bits_per_sample=16)
+                                with _TTS_LOCK:
+                                    if _SPEECH_GEN != gen_token or cancel_ev.is_set():
+                                        stream.stop()
+                                        stream = None
+                                        break
+                                    _ACTIVE_WAVEOUT = stream
+                                    _LAST_TTS_ENGINE_USED = "mistral:voxtral-mini-tts-latest"
+                                if on_engine_status is not None:
+                                    try:
+                                        on_engine_status(_LAST_TTS_ENGINE_USED)
+                                    except Exception:
+                                        pass
+                            _write_or_raise(pcm, "mistral")
+                            _emit_meta("mistral", "Voxtral Neural")
+                            try:
+                                from cost_service import emit_tts_cost
+                                emit_tts_cost("mistral:voxtral-mini-tts-latest", len(pcm) / (float(sr or 24000) * 2.0), char_count=len(ch_txt))
+                            except Exception:
+                                pass
+                        if stream is not None and not cancel_ev.is_set() and played_any:
+                            stream.drain(cancel_ev)
+                        if played_any:
+                            break
+                    except Exception as exc:
+                        err_s = f"mistral: {exc}"
+                        errors.append(err_s)
+                        _log_voice_diagnostic(err_s)
+                        if stream is not None:
+                            stream.stop()
+                            stream = None
+                        if played_any:
+                            break
+                        continue
+
                 elif candidate in {"cartesia", "elevenlabs", "deepgram"}:
                     ext_key = store.get_api_key(candidate)
                     if not ext_key:
@@ -3815,6 +3916,23 @@ def transcribe_audio_file(
             except Exception:
                 continue
 
+    m_key = store.get_api_key("mistral")
+    if m_key:
+        try:
+            from mistralai.client import Mistral
+
+            mc = Mistral(api_key=m_key, timeout_ms=25000)
+            tr = mc.audio.transcriptions.complete(
+                model="voxtral-mini-transcribe-3",
+                file={"file_name": audio_path.name, "content": audio_path.read_bytes()},
+            )
+            txt = (getattr(tr, "text", "") or "").strip()
+            if txt:
+                _emit_stt("mistral:voxtral-mini-transcribe-3")
+                return txt
+        except Exception:
+            pass
+
     or_key = store.get_api_key("openrouter")
     if or_key:
         try:
@@ -3849,4 +3967,4 @@ def transcribe_audio_file(
         except Exception:
             pass
 
-    raise RuntimeError("Could not transcribe audio. Ensure Groq, OpenAI, Gemini, or OpenRouter has an active API key.")
+    raise RuntimeError("Could not transcribe audio. Ensure Groq, OpenAI, Gemini, Mistral, or OpenRouter has an active API key.")

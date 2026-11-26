@@ -119,7 +119,45 @@ def attachment_from_image_bytes(raw: bytes, filename: str = "clipboard-image.png
     )
 
 
-def extract_attachment(path: str | Path) -> Attachment:
+def _ocr_scanned_pdf_with_mistral(
+    raw_pdf_bytes: bytes,
+    *,
+    credential_store=None,
+) -> str:
+    """Fallback OCR via `mistral-ocr-latest` when local pypdf extracts zero text from a scanned PDF."""
+    if not raw_pdf_bytes:
+        return ""
+    # Skip hitting real network credentials during offscreen automated test runs unless a store was explicitly injected
+    if credential_store is None and os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return ""
+    try:
+        from credential_store import CredentialStore
+        store = credential_store or CredentialStore()
+        m_key = (store.get_api_key("mistral") or "").strip()
+    except Exception:
+        return ""
+    if not m_key:
+        return ""
+    try:
+        from mistralai.client import Mistral
+        b64 = base64.b64encode(raw_pdf_bytes).decode("ascii")
+        client = Mistral(api_key=m_key, timeout_ms=45000)
+        resp = client.ocr.process(
+            model="mistral-ocr-latest",
+            document={"type": "document_url", "document_url": f"data:application/pdf;base64,{b64}"},
+        )
+        pages = getattr(resp, "pages", None) or []
+        parts = [
+            str(getattr(pg, "markdown", "") or "").strip()
+            for pg in pages
+            if str(getattr(pg, "markdown", "") or "").strip()
+        ]
+        return "\n\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def extract_attachment(path: str | Path, *, credential_store=None) -> Attachment:
     path = Path(path).resolve(strict=True)
     if not path.is_file():
         raise ValueError('Choose a file, not a folder.')
@@ -188,6 +226,10 @@ def extract_attachment(path: str | Path) -> Attachment:
             if count > MAX_TEXT_CHARS:
                 break
         text = '\n\n'.join(pieces)
+        if not text.strip():
+            ocr_txt = _ocr_scanned_pdf_with_mistral(raw_all, credential_store=credential_store)
+            if ocr_txt.strip():
+                text = ocr_txt
     elif suffix == '.docx':
         from zipfile import ZipFile
         from docx import Document
@@ -208,7 +250,7 @@ def extract_attachment(path: str | Path) -> Attachment:
     else:
         raise ValueError('Supported: text/code, PDF with selectable text, Word .docx, and standard images (.png, .jpg, .webp, .gif, .bmp).')
     if not text.strip():
-        raise ValueError('No readable text found. Scanned pages need OCR, which is not included yet.')
+        raise ValueError('No readable text found. Scanned pages need OCR (connect a Mistral API key with active billing for automatic Mistral OCR).')
     return Attachment(path, text[:MAX_TEXT_CHARS], len(text) > MAX_TEXT_CHARS, stored_path=stored_copy)
 
 

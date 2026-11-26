@@ -93,7 +93,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.95"
-FAIRYBREAD_VERSION = "0.95"
+FAIRYBREAD_VERSION = "0.95a"
 FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
@@ -286,22 +286,23 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "bg_color": "#2c1517",
         "key_url": "https://console.mistral.ai/api-keys/",
         "default_base_url": "",
-        "default_model": "codestral-latest",
+        "default_model": "mistral-medium-latest",
         "suggested_models": [
-            "codestral-latest",
-            "mistral-large-latest",
             "mistral-medium-latest",
-            "pixtral-large-2502",
             "mistral-small-latest",
+            "mistral-large-latest",
+            "magistral-medium-latest",
+            "ministral-14b-latest",
+            "codestral-latest",
         ],
         "openrouter_suggested_models": [
             "mistralai/mistral-medium-3.1",
             "mistralai/mistral-large-2411",
             "mistralai/mistral-small-3.1-24b-instruct",
-            "mistralai/pixtral-large-2502",
+            "mistralai/magistral-medium-2506",
             "mistralai/codestral-2508",
         ],
-        "billing_note": "Free Experiment tier available on La Plateforme, or full Mistral (Medium 3.1 / Large) included via OpenRouter.",
+        "billing_note": "Mistral Console (console.mistral.ai) Experiment plan or pay-as-you-go budget unlocks chat, vision, Voxtral Voice, and Mistral OCR (or use OpenRouter).",
     },
     "openrouter": {
         "display_name": "OpenRouter (All Models)",
@@ -1113,7 +1114,13 @@ OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
     "mistral-large": "mistralai/mistral-large-2411",
     "mistral-medium-latest": "mistralai/mistral-medium-3.1",
     "mistral-medium-3": "mistralai/mistral-medium-3.1",
+    "mistral-medium-3.5": "mistralai/mistral-medium-3.1",
+    "mistral-medium-2604": "mistralai/mistral-medium-3.1",
     "mistral-small-latest": "mistralai/mistral-small-3.1-24b-instruct",
+    "mistral-small-2603": "mistralai/mistral-small-3.1-24b-instruct",
+    "ministral-14b-latest": "mistralai/mistral-small-3.1-24b-instruct",
+    "magistral-medium-latest": "mistralai/magistral-medium-2506",
+    "magistral-small-latest": "mistralai/magistral-small-2506",
     "codestral-latest": "mistralai/codestral-2508",
     "pixtral-large-2502": "mistralai/pixtral-large-2502",
     "daisyrose-27b": "radixark/daisyrose-27b",
@@ -1183,6 +1190,12 @@ def resolve_profile_model_override(
                 return "mistral-medium-latest"
             if tail_clean.startswith("mistral-small"):
                 return "mistral-small-latest"
+            if tail_clean.startswith("magistral-medium"):
+                return "magistral-medium-latest"
+            if tail_clean.startswith("magistral-small"):
+                return "magistral-small-latest"
+            if tail_clean.startswith("ministral-14b"):
+                return "ministral-14b-latest"
             if tail_clean.startswith("codestral"):
                 return "codestral-latest"
         return tail
@@ -1203,12 +1216,14 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
     },
     "light_chat": {
         "label": "💬 Light Chat (Free / Fast)",
-        "providers": ["groq", "cohere", "cerebras", "qwen"],
+        "providers": ["groq", "cohere", "cerebras", "qwen", "mistral"],
         "deliberate": False,
         "code_access": False,
         "max_ais": 0,
         "context_depth": "standard",
-        "model_overrides": {},
+        "model_overrides": {
+            "mistral": "mistral-small-latest",
+        },
     },
     "deep_chat": {
         "label": "🧠 Deeper Chat (Paid — Reasoning & Long)",
@@ -1228,12 +1243,14 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
     },
     "generalist": {
         "label": "🧠 Generalist",
-        "providers": ["gemini", "openai", "deepseek", "cohere"],
+        "providers": ["gemini", "openai", "deepseek", "cohere", "mistral"],
         "deliberate": True,
         "code_access": False,
         "max_ais": 0,
         "context_depth": "standard",
-        "model_overrides": {},
+        "model_overrides": {
+            "mistral": "mistral-medium-latest",
+        },
     },
     "graphics": {
         "label": "🎨 Graphics & Vision (Pictures)",
@@ -1251,7 +1268,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": True,
         "max_ais": 0,
         "context_depth": "standard",
-        "model_overrides": {},
+        "model_overrides": {
+            "mistral": "mistral-medium-latest",
+        },
     },
 }
 
@@ -1540,9 +1559,9 @@ def format_agent_defaults_prompt_block(
     if detail == "concise":
         detail_txt = "Concise (tight bullets, minimal prose, jump straight to the answer)"
     elif detail == "balanced":
-        detail_txt = "Balanced (clear structured response without unnecessary fluff)"
+        detail_txt = "Balanced (clear structured response in plain everyday language without unnecessary jargon)"
     else:
-        detail_txt = "High (thorough technical detail, exact specifics, and actionable verification)"
+        detail_txt = "High (thorough, complete, clearly explained answer in plain everyday language unless technical or code detail is requested)"
 
     if reasoning == "off":
         reason_txt = "Off (deliver the direct final answer only without reasoning commentary)"
@@ -1576,8 +1595,25 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "bg_image_source": "none",  # "none" | "ambient" | "custom"
     "bg_image_path": "",  # Local image path for washed-out background (never M: drive)
     "bg_image_placement": "chat_sidebar",  # "chat" | "sidebar" | "chat_sidebar" | "all"
-    "bg_washout_percent": 90,  # 75..96 (% of theme base color composited over picture; 90 = 10% image wash)
+    "bg_washout_percent": 90,  # 60..96 (% of theme base color composited over picture; 82-90 = subtle picture texture)
+    "recent_themes": [],  # Most-recently used theme slugs (newest first, max 5)
 }
+
+
+def _normalize_recent_themes(raw_list: Any) -> list[str]:
+    if not isinstance(raw_list, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw_list:
+        slug = str(item or "").strip().lower()
+        if not slug or slug == "fairybread" or slug in seen:
+            continue
+        seen.add(slug)
+        out.append(slug)
+        if len(out) >= 5:
+            break
+    return out
 
 
 def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -1634,9 +1670,10 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["bg_image_placement"] = str(raw["bg_image_placement"])
     if "bg_washout_percent" in raw:
         try:
-            merged["bg_washout_percent"] = max(75, min(96, int(raw["bg_washout_percent"])))
+            merged["bg_washout_percent"] = max(60, min(96, int(raw["bg_washout_percent"])))
         except (TypeError, ValueError):
             pass
+    merged["recent_themes"] = _normalize_recent_themes(raw.get("recent_themes"))
     return merged
 
 
@@ -1686,10 +1723,23 @@ def save_ui_settings(
         w_pct = int(current.get("bg_washout_percent", 90))
     except (TypeError, ValueError):
         w_pct = 90
-    current["bg_washout_percent"] = max(75, min(96, w_pct))
+    current["bg_washout_percent"] = max(60, min(96, w_pct))
+    current["recent_themes"] = _normalize_recent_themes(current.get("recent_themes"))
     data["ui_settings"] = current
     _write_raw_config(data, config_path)
     return load_ui_settings(config_path)
+
+
+def record_recent_theme(theme_id: str, config_path: Path = CONFIG_PATH) -> list[str]:
+    """Prepend `theme_id` to persisted recent_themes (newest first, deduped, max 5)."""
+    slug = str(theme_id or "").strip().lower()
+    if not slug or slug == "fairybread":
+        return load_ui_settings(config_path).get("recent_themes", [])
+    ui = load_ui_settings(config_path)
+    cur = _normalize_recent_themes(ui.get("recent_themes"))
+    updated = [slug] + [t for t in cur if t != slug]
+    saved = save_ui_settings({"recent_themes": updated[:5]}, config_path=config_path)
+    return list(saved.get("recent_themes") or [])
 
 
 HUMOR_LEVEL_CHOICES: list[tuple[str, str]] = [
@@ -1853,6 +1903,7 @@ def format_personalization_prompt_block(
         format_humor_directive(humor_lvl),
         fmt_line,
         "- Friend & Speech Grammar Alignment: Talk naturally like a trusted friend and collaborator who remembers what we've worked on in Fairybread. Match the user's everyday phrasing, directness, and casual speech grammar cleanly — warm and personal without flattery, canned reassurance, or preachy caveats.",
+        "- Plain Non-Technical Language by Default: Always explain things in clear, everyday, easy-to-understand non-technical language unless the user explicitly asks for code, developer internals, or technical detail. Never answer ordinary questions with source code, raw regexes, internal filenames, config keys, or tool syntax.",
         "- Faith, Worldview & Belief Respect: Never denigrate, mock, dismiss, or refuse benign expressions of the user's religion, faith, sacred figures (such as Jesus, Allah, God, Muhammad, Buddha), scriptures, or spiritual/philosophical worldview (e.g., never issue cold refusals to devotional phrases like 'Jesus is Lord' or 'Inshallah'). Meet any shared belief (Christian, Muslim, Jewish, Hindu, Buddhist, spiritual, or secular) with genuine warmth, respect, and thoughtful curiosity that helps the user feel accepted.",
     ]
     gen_inst = (p.get("custom_instructions_general") or "").strip()
@@ -2208,7 +2259,7 @@ def build_palace_source_context(
     code_keywords = (
         "palace_gui", "idle_service", "orchestrator", "synthesizer",
         "provider_loader", "palace_config", "session_store", "credential_store",
-        "palace code", "source code", "debug palace", "this app",
+        "palace code", "source code", "debug palace",
     )
     auto_triggered = any(k in q_lower for k in code_keywords)
     if not force_include and not auto_triggered:
