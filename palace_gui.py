@@ -10186,13 +10186,13 @@ class PalaceWindow(QMainWindow):
 
         self.mic_button = QPushButton()
         self.mic_button.setIcon(mic_qicon(False))
-        self.mic_button.setIconSize(QSize(14, 14))
+        self.mic_button.setIconSize(QSize(15, 15))
         self.mic_button.setCheckable(True)
         self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mic_button.setFixedSize(26, 26)
+        self.mic_button.setFixedSize(30, 30)
         self.mic_button.setToolTip('Quick dictate into text box (or use Speech Mode selector ▾)')
         self.mic_button.setStyleSheet(
-            'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 13px; } '
+            'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 15px; } '
             'QPushButton:hover { background: #161b22; border-color: #30363d; } '
             'QPushButton:checked { background: #2c1517; border: 1px solid #ef4444; }'
         )
@@ -10200,20 +10200,20 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.mic_button)
 
         self._live_voice_idle_style = (
-            'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 13px; } '
+            'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 15px; } '
             'QPushButton:hover { background: #f0f6fc; border-color: #f0f6fc; }'
         )
         self._live_voice_active_style = (
             'QPushButton { background: #3d1414; color: #ff6b6b; border: 2px solid #ef4444; '
-            'border-radius: 13px; font-size: 12px; font-weight: 800; } '
+            'border-radius: 15px; font-size: 13px; font-weight: 800; } '
             'QPushButton:hover { background: #5c1919; color: #ffffff; border-color: #ff6b6b; }'
         )
         self.live_voice_button = QPushButton()
         self.live_voice_button.setIcon(voice_wave_qicon(False))
-        self.live_voice_button.setIconSize(QSize(15, 15))
+        self.live_voice_button.setIconSize(QSize(16, 16))
         self.live_voice_button.setCheckable(True)
         self.live_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.live_voice_button.setFixedSize(26, 26)
+        self.live_voice_button.setFixedSize(30, 30)
         self.live_voice_button.setToolTip('Start / stop Speech Mode for active Profile (right-click or click ▾ to expand Speech Modes)')
         self.live_voice_button.setStyleSheet(self._live_voice_idle_style)
         self.live_voice_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -10237,7 +10237,7 @@ class PalaceWindow(QMainWindow):
         self.send_button = QPushButton('↑')
         self.send_button.setObjectName('sendButton')
         self.send_button.setToolTip('Send message (Enter)')
-        self.send_button.setFixedSize(28, 28)
+        self.send_button.setFixedSize(30, 30)
         self.send_button.clicked.connect(self.send_message)
         controls.addWidget(self.send_button)
         card_layout.addLayout(controls)

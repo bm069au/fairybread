@@ -2893,7 +2893,7 @@ QPushButton#plusAttachButton {{ background: transparent; border: none; color: {t
 QPushButton#plusAttachButton:hover {{ background: {bg_hover}; color: {txt}; }}
 QPushButton#aiPillButton {{ background: {bg_card}; border: 1px solid {border}; border-radius: 8px; padding: 4px 10px; font-size: 12px; font-weight: 600; color: {txt_sec}; }}
 QPushButton#aiPillButton:hover {{ background: {bg_hover}; color: {txt}; }}
-QPushButton#sendButton {{ background: {send_bg}; color: {send_fg}; font-size: 14px; font-weight: 700; border: none; border-radius: 15px; }}
+QPushButton#sendButton {{ background: {send_bg}; color: {send_fg}; font-size: 14px; font-weight: 700; border: none; border-radius: 15px; padding: 0px; }}
 QPushButton#sendButton:hover {{ opacity: 0.92; }}
 QPushButton#sendButton:disabled {{ background: {border}; color: {txt_muted}; }}
 QCheckBox {{ color: {txt_sec}; font-size: 12px; spacing: 6px; }}
