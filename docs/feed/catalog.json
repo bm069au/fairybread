@@ -1,11 +1,11 @@
-{
+﻿{
   "schema_version": 1,
   "updated_at": "2026-11-27T06:30:00Z",
   "latest_app_version": "0.95e",
-  "release_summary": "v0.95e Beta: Design 1A Slim 22px Decluttered Composer Toolbar (icon-only {} Code & ↗ Tangent pills, compact 2 AIs ▾ selector, context-aware 🧭 Steer ▾ & ⚡ Parallel hidden when idle), Option 2 Segmented Multi-Color 8–15 AI Progress Bar + [5/8 AIs ▾] Popover Pill in Live Parallel Operations Bar, uTorrent-Style System Tray Controls (Close/Minimize to tray, Always show tray icon, Single click to open, Balloon notifications, Confirm on exit), Wide 380px Auto-Completing 📍 Home Location Box, #Fairybread Rizon IRC Live Support Channel, Universal WCAG 4.5:1 Theme Contrast Engine & Dual-Stroke Checkbox Ticks, Live Voice Anti-Cutoff Sensitivity & Noise Filter, and Option 3 App/Service API Keys Vault (Jellyfin).",
+  "release_summary": "v0.95e Beta: Design 1A Slim 22px Decluttered Composer Toolbar (icon-only {} Code & â†— Tangent pills, compact 2 AIs â–¾ selector, context-aware ðŸ§­ Steer â–¾ & âš¡ Parallel hidden when idle), Option 2 Segmented Multi-Color 8â€“15 AI Progress Bar + [5/8 AIs â–¾] Popover Pill in Live Parallel Operations Bar, uTorrent-Style System Tray Controls (Close/Minimize to tray, Always show tray icon, Single click to open, Balloon notifications, Confirm on exit), Wide 380px Auto-Completing ðŸ“ Home Location Box, #Fairybread Rizon IRC Live Support Channel, Universal WCAG 4.5:1 Theme Contrast Engine & Dual-Stroke Checkbox Ticks, Live Voice Anti-Cutoff Sensitivity & Noise Filter, and Option 3 App/Service API Keys Vault (Jellyfin).",
   "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95e/Fairybread_v0.95e_Win_x64_Setup.exe",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "e9a30251d2d1b1345a6f2763d422461bac1e95df2554fa7569c7686a4ce9b300",
+  "installer_sha256": "ee4672f698db18a4e5f7e1527603feb564ea212da56a577c8bd22a08bc50e411",
   "model_token_rates_per_1m": {
     "gemini-4-carbon": [
       2.0,
@@ -394,3 +394,4 @@
     }
   }
 }
+
