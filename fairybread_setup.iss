@@ -14,10 +14,10 @@
   #define AppIdGuid "{B7F4E2A1-6C3D-4B89-9E51-FA18B4EAD001}"
 #endif
 #ifndef AppDispVer
-  #define AppDispVer "0.95c"
+  #define AppDispVer "0.95e"
 #endif
 #ifndef AppWinVer
-  #define AppWinVer "0.95.3.0"
+  #define AppWinVer "0.95.5.0"
 #endif
 #ifndef DefaultIncludeSource
   #define DefaultIncludeSource "0"
@@ -32,7 +32,7 @@
   #define OutputDirPath "dist"
 #endif
 #ifndef OutputExeBase
-  #define OutputExeBase "Fairybread_v0.95c_Win_x64_Setup"
+  #define OutputExeBase "Fairybread_v0.95e_Win_x64_Setup"
 #endif
 
 [Setup]
@@ -103,6 +103,7 @@ Source: "{#SourceStageDir}\*"; DestDir: "{app}\source"; Flags: ignoreversion rec
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\Fairybread.exe"; IconFilename: "{app}\fairybread_icon.ico"; Comment: "Launch {#AppName} Multi-AI Workspace"; Tasks: startmenuicon; Check: ShouldInstallApp
+Name: "{autoprograms}\{#AppName} (Safe Mode — Restore Default Theme)"; Filename: "{app}\Fairybread.exe"; Parameters: "--restore-default-theme"; IconFilename: "{app}\fairybread_icon.ico"; Comment: "Rescue {#AppName} UI by resetting theme to factory Midnight Dark"; Tasks: startmenuicon; Check: ShouldInstallApp
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\Fairybread.exe"; IconFilename: "{app}\fairybread_icon.ico"; Comment: "Launch {#AppName} Multi-AI Workspace"; Tasks: desktopicon; Check: ShouldInstallApp
 
 [Run]
@@ -288,7 +289,13 @@ end;
 
 function SelectedMaintMode(): Integer;
 begin
-  // -1 = fresh install or standard silent, 0 = Update only, 1 = Reinstall Clean Copy, 2 = Source Only, 3 = Uninstall
+  // -1 = fresh install or standard silent
+  //  0 = Update only
+  //  1 = Rescue: Restore Default Theme Only
+  //  2 = Rescue: Restore All Default Settings (Full)
+  //  3 = Reinstall Clean Copy
+  //  4 = Source Only
+  //  5 = Uninstall
   if IsUpdateOnlyParam() then
     Result := 0
   else if (not ExistingDetected) or (MaintPage = nil) then
@@ -299,7 +306,7 @@ end;
 
 function ShouldInstallApp(): Boolean;
 begin
-  Result := SelectedMaintMode() <> 2;
+  Result := (SelectedMaintMode() <> 4) and (SelectedMaintMode() <> 1) and (SelectedMaintMode() <> 2);
 end;
 
 function ShouldInstallSource(): Boolean;
@@ -307,10 +314,12 @@ var
   Mode: Integer;
 begin
   Mode := SelectedMaintMode();
-  if Mode = 2 then
+  if Mode = 4 then
     Result := True
   else if Mode = 0 then
     Result := DirExists(ExpandConstant('{app}\source'))
+  else if (Mode = 1) or (Mode = 2) then
+    Result := False
   else
     Result := WizardIsComponentSelected('source');
 end;
@@ -342,14 +351,16 @@ begin
       wpWelcome,
       'Existing {#AppName} Installation Detected',
       'Found installed copy at: ' + FoundInstallDir,
-      'Choose how you would like Setup to proceed. Your encrypted API keys, settings, and databases in AppData are kept safe unless you choose to remove them during uninstall.',
+      'Choose how you would like Setup to proceed. Your encrypted API keys and Memory Palace databases in AppData are always kept safe.',
       True,
       False
     );
     MaintPage.Add('1. Update only (Recommended — update binaries cleanly, touch no keys/data/settings, and relaunch)');
-    MaintPage.Add('2. Reinstall clean copy (stop running app, clean program folder, and install fresh v{#AppDispVer})');
-    MaintPage.Add('3. Install source code only (keep installed app intact and add/update packaged \source\)');
-    MaintPage.Add('4. Uninstall existing copy (remove installed binaries, shortcuts, and registry entries)');
+    MaintPage.Add('2. Rescue: Restore Default Theme Only (fix unreadable theme/layout back to Midnight Dark and launch)');
+    MaintPage.Add('3. Rescue: Restore All Default Settings (Full settings reset — keeps API keys & Memory Palace intact)');
+    MaintPage.Add('4. Reinstall clean copy (stop running app, clean program folder, and install fresh v{#AppDispVer})');
+    MaintPage.Add('5. Install source code only (keep installed app intact and add/update packaged \source\)');
+    MaintPage.Add('6. Uninstall existing copy (remove installed binaries, shortcuts, and registry entries)');
     MaintPage.SelectedValueIndex := 0;
   end;
 end;
@@ -365,7 +376,7 @@ begin
       if (PageID = wpSelectDir) or (PageID = wpSelectComponents) or (PageID = wpSelectProgramGroup) or (PageID = wpSelectTasks) then
         Result := True;
     end
-    else if MaintPage.SelectedValueIndex = 2 then
+    else if MaintPage.SelectedValueIndex = 4 then
     begin
       // Source-code-only mode goes directly to target check / Ready page without re-asking components or Start Menu icons
       if (PageID = wpSelectComponents) or (PageID = wpSelectProgramGroup) or (PageID = wpSelectTasks) then
@@ -376,12 +387,53 @@ end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
-  PromptAns: Integer;
+  PromptAns, RC: Integer;
+  TargetExe, RescueFlag, RescueDesc: String;
 begin
   Result := True;
   if (MaintPage <> nil) and (CurPageID = MaintPage.ID) then
   begin
-    if MaintPage.SelectedValueIndex = 3 then
+    if (MaintPage.SelectedValueIndex = 1) or (MaintPage.SelectedValueIndex = 2) then
+    begin
+      if MaintPage.SelectedValueIndex = 1 then
+      begin
+        RescueFlag := '--restore-default-theme';
+        RescueDesc := 'Restore Default Theme Only (Midnight Dark)';
+      end else
+      begin
+        RescueFlag := '--restore-default-settings';
+        RescueDesc := 'Restore All Default Settings (Full Settings Reset — API Keys & Memory Palace kept safe)';
+      end;
+      PromptAns := MsgBox(
+        'Run Emergency Rescue on {#AppName}?'#13#10#13#10 +
+        'Action: ' + RescueDesc + #13#10 +
+        'Your encrypted API keys and Memory Palace conversations will NOT be deleted.',
+        mbConfirmation,
+        MB_YESNO or MB_DEFBUTTON1
+      );
+      if PromptAns <> IDYES then
+      begin
+        Result := False;
+        Exit;
+      end;
+      StopRunningFairybread();
+      TargetExe := FoundInstallDir + '\Fairybread.exe';
+      if FileExists(TargetExe) then
+      begin
+        Exec(TargetExe, RescueFlag, FoundInstallDir, SW_SHOW, ewNoWait, RC);
+        MsgBox('✓ Rescue applied! Launching {#AppName} with factory defaults.', mbInformation, MB_OK);
+      end else
+      begin
+        MsgBox('Could not find Fairybread.exe in ' + FoundInstallDir + '. Please select "4. Reinstall clean copy".', mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      ForceExitSetup := True;
+      WizardForm.Close;
+      Result := False;
+      Exit;
+    end;
+    if MaintPage.SelectedValueIndex = 5 then
     begin
       PromptAns := MsgBox(
         'Uninstall the existing copy of {#AppName} from:'#13#10 + FoundInstallDir + '?'#13#10#13#10 +
@@ -403,11 +455,11 @@ begin
       Result := False;
       Exit;
     end;
-    if ((MaintPage.SelectedValueIndex = 0) or (MaintPage.SelectedValueIndex = 2)) and (FoundInstallDir <> '') then
+    if ((MaintPage.SelectedValueIndex = 0) or (MaintPage.SelectedValueIndex = 4)) and (FoundInstallDir <> '') then
     begin
       WizardForm.DirEdit.Text := FoundInstallDir;
     end;
-    DidInstallSourceOnly := (MaintPage.SelectedValueIndex = 2);
+    DidInstallSourceOnly := (MaintPage.SelectedValueIndex = 4);
   end;
 end;
 
@@ -430,14 +482,14 @@ begin
   begin
     StopRunningFairybread();
     Mode := SelectedMaintMode();
-    if (Mode = 0) or (Mode = 1) then
+    if (Mode = 0) or (Mode = 3) then
     begin
       AppDir := ExpandConstant('{app}');
       OldInternal := AppDir + '\_internal';
       if DirExists(OldInternal) then DelTree(OldInternal, True, True, True);
       if FileExists(AppDir + '\Fairybread.exe') then DeleteFile(AppDir + '\Fairybread.exe');
       if FileExists(AppDir + '\FairybreadMCP.exe') then DeleteFile(AppDir + '\FairybreadMCP.exe');
-      if (Mode = 1) and DirExists(AppDir + '\source') then DelTree(AppDir + '\source', True, True, True);
+      if (Mode = 3) and DirExists(AppDir + '\source') then DelTree(AppDir + '\source', True, True, True);
     end;
   end;
 end;

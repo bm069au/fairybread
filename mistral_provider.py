@@ -49,14 +49,21 @@ class MistralProvider(AIProvider):
         self,
         api_key: str,
         model: str = "mistral-small-latest",
-        timeout: float = 180.0,
+        timeout: float | None = 0.0,
+        handshake_timeout: float = 15.0,
     ):
+        eff_ms = (
+            3_600_000
+            if (timeout is None or float(timeout) <= 0.0)
+            else max(5000, int(float(timeout) * 1000))
+        )
         self.client = Mistral(
             api_key=api_key,
-            timeout_ms=max(5000, int(timeout * 1000)),
+            timeout_ms=eff_ms,
         )
         self.model = model
         self.timeout = timeout
+        self.handshake_timeout = max(5.0, float(handshake_timeout or 15.0))
 
     def _build_messages(
         self,

@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-26T09:38:35Z",
-  "latest_app_version": "0.95b",
-  "release_summary": "v0.95b Beta: Full DeepSeek V4.1-Flash (1M Context + Vision) & V4-Pro, DeepSeek Web Search (/v1/tools/search) & Markdown Page Fetch (/v1/tools/fetch), Scanned-PDF OCR (/v1/tools/ocr), DeepSeek Neural TTS (stella/tide) & ASR (/v1/tools/asr), Ctrl+V & Right-Click Clipboard Picture Paste Fix, Universal Mistral + Voxtral + OCR, Accurate Failure-Code Status Chips, 19 Themes with Bundled Art, and New Beginner-Friendly User Guide.",
-  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95b/Fairybread_v0.95b_Win_x64_Setup.exe",
+  "updated_at": "2026-11-27T06:30:00Z",
+  "latest_app_version": "0.95e",
+  "release_summary": "v0.95e Beta: Design 1A Slim 22px Decluttered Composer Toolbar (icon-only {} Code & ↗ Tangent pills, compact 2 AIs ▾ selector, context-aware 🧭 Steer ▾ & ⚡ Parallel hidden when idle), Option 2 Segmented Multi-Color 8–15 AI Progress Bar + [5/8 AIs ▾] Popover Pill in Live Parallel Operations Bar, uTorrent-Style System Tray Controls (Close/Minimize to tray, Always show tray icon, Single click to open, Balloon notifications, Confirm on exit), Wide 380px Auto-Completing 📍 Home Location Box, #Fairybread Rizon IRC Live Support Channel, Universal WCAG 4.5:1 Theme Contrast Engine & Dual-Stroke Checkbox Ticks, Live Voice Anti-Cutoff Sensitivity & Noise Filter, and Option 3 App/Service API Keys Vault (Jellyfin).",
+  "download_url": "https://github.com/bm069au/fairybread/releases/download/v0.95e/Fairybread_v0.95e_Win_x64_Setup.exe",
   "release_page_url": "https://github.com/bm069au/fairybread/releases/latest",
-  "installer_sha256": "fa7ff1e112a1a1b281207aee9b362a3810a1402c7da893cc573c3494a5b61a0e",
+  "installer_sha256": "e9a30251d2d1b1345a6f2763d422461bac1e95df2554fa7569c7686a4ce9b300",
   "model_token_rates_per_1m": {
     "gemini-4-carbon": [
       2.0,

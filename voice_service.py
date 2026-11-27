@@ -581,6 +581,95 @@ DEFAULT_VOICE_MODE_PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
+DEFAULT_VOICE_SUBMIT_PHRASES: tuple[str, ...] = (
+    "submit query",
+    "send this now",
+    "finished talking",
+    "submit prompt",
+    "done talking",
+    "send message now",
+    "execute query",
+)
+
+DEFAULT_VOICE_UNDO_PHRASES: tuple[str, ...] = (
+    "scratch that last",
+    "undo last phrase",
+)
+
+DEFAULT_VOICE_CLEAR_PHRASES: tuple[str, ...] = (
+    "clear input box",
+    "clear entire prompt",
+)
+
+DEFAULT_VOICE_NEWLINE_PHRASES: tuple[str, ...] = (
+    "insert new line",
+    "start new paragraph",
+)
+
+DEFAULT_PHYSICAL_NOISES_LIST: tuple[str, ...] = (
+    "cough", "coughs", "coughing", "sniff", "sniffs", "sniffle", "clears throat", "throat clear",
+    "ahem", "sneeze", "sigh", "sighs", "yawn", "groan", "grunt", "gasp", "pant", "hiccup",
+    "lip smack", "tongue click", "mic bump", "microphone bump", "breathing", "inhale", "exhale",
+    "chuckle", "giggle", "snort", "blank_audio",
+)
+
+DEFAULT_SPOKEN_FILLERS_LIST: tuple[str, ...] = (
+    "um", "umm", "uh", "uhh", "ahh", "ah", "er", "erm", "hmm", "hm", "mm", "mmm",
+    "mhm", "uh-huh", "mm-hmm", "eh",
+)
+
+
+def format_quoted_phrase_list(items: Any) -> str:
+    """Format a sequence of words/phrases as double-quoted strings: '"cough", "clears throat", "submit query"'."""
+    if isinstance(items, str):
+        parsed = parse_quoted_phrase_list(items, min_words=1)
+    else:
+        parsed = []
+        seen: set[str] = set()
+        for it in (items or ()):
+            clean = re.sub(r"\s+", " ", str(it or "").strip().strip('"').strip("'")).strip()
+            if clean and clean.lower() not in seen:
+                seen.add(clean.lower())
+                parsed.append(clean)
+    return ", ".join(f'"{p}"' for p in parsed)
+
+
+def parse_quoted_phrase_list(raw_text: str, *, min_words: int = 1) -> list[str]:
+    """Parse double-quoted items ('"cough", "clears throat"') and any unquoted comma/newline-separated items."""
+    raw = str(raw_text or "").strip()
+    if not raw:
+        return []
+    extracted: list[str] = []
+    seen: set[str] = set()
+
+    def _push(candidate: str) -> None:
+        c = re.sub(r"[^a-zA-Z0-9\s\-_']", " ", candidate.strip().lower())
+        c = re.sub(r"\s+", " ", c).strip()
+        if not c:
+            return
+        if min_words > 1 and len(c.split()) < min_words:
+            return
+        if c not in seen:
+            seen.add(c)
+            extracted.append(c)
+
+    # 1. Extract all explicit "..." quoted items in order
+    quoted_matches = list(re.finditer(r'"([^"]+)"', raw))
+    if quoted_matches:
+        for m in quoted_matches:
+            _push(m.group(1))
+        # Also pick up any unquoted leftovers separated by commas/newlines (in case user typed an item without quotes)
+        remainder = re.sub(r'"[^"]+"', ",", raw)
+        for part in re.split(r"[,;\n]+", remainder):
+            if part.strip():
+                _push(part)
+    else:
+        for part in re.split(r"[,;\n]+", raw):
+            if part.strip():
+                _push(part)
+    return extracted
+
+
 DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "tts_engine": "auto",
     "tts_fallback_engine": "auto",
@@ -604,7 +693,16 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "barge_in_enabled": True,
     "interruption_sensitivity": 35,
     "ignore_vocal_noises": True,
+    "highlight_spoken_fillers": True,
+    "physical_noises_list": format_quoted_phrase_list(DEFAULT_PHYSICAL_NOISES_LIST),
+    "spoken_fillers_list": format_quoted_phrase_list(DEFAULT_SPOKEN_FILLERS_LIST),
     "custom_ignored_noises": "",
+    "always_included_words": "",
+    "voice_submit_phrases": format_quoted_phrase_list(DEFAULT_VOICE_SUBMIT_PHRASES),
+    "voice_undo_phrases": format_quoted_phrase_list(DEFAULT_VOICE_UNDO_PHRASES),
+    "voice_clear_phrases": format_quoted_phrase_list(DEFAULT_VOICE_CLEAR_PHRASES),
+    "voice_newline_phrases": format_quoted_phrase_list(DEFAULT_VOICE_NEWLINE_PHRASES),
+    "speech_button_mode": "profile_default",  # "profile_default" | "full_conversation" | "input_only"
     "status_notification_style": "text",
     "auto_speak_responses": False,
     "voice_companion_enabled": True,
@@ -966,8 +1064,34 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
             pass
     if "ignore_vocal_noises" in raw:
         merged["ignore_vocal_noises"] = bool(raw["ignore_vocal_noises"])
+    if "highlight_spoken_fillers" in raw:
+        merged["highlight_spoken_fillers"] = bool(raw["highlight_spoken_fillers"])
+    if isinstance(raw.get("physical_noises_list"), str) and raw["physical_noises_list"].strip():
+        merged["physical_noises_list"] = format_quoted_phrase_list(raw["physical_noises_list"])[:2400]
+    else:
+        merged["physical_noises_list"] = format_quoted_phrase_list(DEFAULT_PHYSICAL_NOISES_LIST)
+    if isinstance(raw.get("spoken_fillers_list"), str) and raw["spoken_fillers_list"].strip():
+        merged["spoken_fillers_list"] = format_quoted_phrase_list(raw["spoken_fillers_list"])[:1600]
+    else:
+        merged["spoken_fillers_list"] = format_quoted_phrase_list(DEFAULT_SPOKEN_FILLERS_LIST)
     if isinstance(raw.get("custom_ignored_noises"), str):
         merged["custom_ignored_noises"] = raw["custom_ignored_noises"].strip()[:1200]
+    if isinstance(raw.get("always_included_words"), str):
+        raw_inc = raw["always_included_words"].strip()[:1200]
+        merged["always_included_words"] = format_quoted_phrase_list(raw_inc) if raw_inc else ""
+    for cmd_key, def_tup in (
+        ("voice_submit_phrases", DEFAULT_VOICE_SUBMIT_PHRASES),
+        ("voice_undo_phrases", DEFAULT_VOICE_UNDO_PHRASES),
+        ("voice_clear_phrases", DEFAULT_VOICE_CLEAR_PHRASES),
+        ("voice_newline_phrases", DEFAULT_VOICE_NEWLINE_PHRASES),
+    ):
+        if isinstance(raw.get(cmd_key), str) and raw[cmd_key].strip():
+            parsed_cmds = parse_quoted_phrase_list(raw[cmd_key], min_words=2)
+            merged[cmd_key] = format_quoted_phrase_list(parsed_cmds if parsed_cmds else def_tup)[:1600]
+        else:
+            merged[cmd_key] = format_quoted_phrase_list(def_tup)
+    sb_mode = str(raw.get("speech_button_mode") or "profile_default").strip().lower()
+    merged["speech_button_mode"] = sb_mode if sb_mode in {"profile_default", "full_conversation", "input_only"} else "profile_default"
     st_style = str(raw.get("status_notification_style") or DEFAULT_VOICE_SETTINGS["status_notification_style"]).strip().lower()
     merged["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     if "auto_speak_responses" in raw:
@@ -1289,6 +1413,22 @@ def save_voice_settings(
         current["interruption_sensitivity"] = 35
     current["ignore_vocal_noises"] = bool(current.get("ignore_vocal_noises", True))
     current["custom_ignored_noises"] = str(current.get("custom_ignored_noises") or "").strip()[:1200]
+    current["always_included_words"] = str(current.get("always_included_words") or "").strip()[:1200]
+    for cmd_key, def_tup in (
+        ("voice_submit_phrases", DEFAULT_VOICE_SUBMIT_PHRASES),
+        ("voice_undo_phrases", DEFAULT_VOICE_UNDO_PHRASES),
+        ("voice_clear_phrases", DEFAULT_VOICE_CLEAR_PHRASES),
+        ("voice_newline_phrases", DEFAULT_VOICE_NEWLINE_PHRASES),
+    ):
+        raw_cmd = str(current.get(cmd_key) or "").strip()
+        valid_phrases = [
+            re.sub(r"\s+", " ", p.strip())
+            for p in re.split(r"[,;\n]+", raw_cmd)
+            if len(p.strip().split()) >= 2
+        ]
+        current[cmd_key] = ", ".join(valid_phrases) if valid_phrases else ", ".join(def_tup)
+    sb_m = str(current.get("speech_button_mode") or "profile_default").strip().lower()
+    current["speech_button_mode"] = sb_m if sb_m in {"profile_default", "full_conversation", "input_only"} else "profile_default"
     st_style = str(current.get("status_notification_style") or "text").strip().lower()
     current["status_notification_style"] = st_style if st_style in {"text", "icons"} else "text"
     current["auto_speak_responses"] = bool(current.get("auto_speak_responses", False))
@@ -1479,20 +1619,28 @@ def get_last_tts_engine_used() -> str:
         return _LAST_TTS_ENGINE_USED
 
 
-BUILTIN_HUMAN_VOCAL_NOISES: tuple[str, ...] = (
-    # 1. Thinking & hesitation fillers
+SPOKEN_HESITATION_FILLERS: tuple[str, ...] = (
     "um", "umm", "ummm", "uh", "uhh", "uhhh", "er", "erm", "err", "ah", "ahh", "ahhh",
     "eh", "ehh", "mm", "mmm", "mmmm", "hm", "hmm", "hmmm", "uh-huh", "uh huh", "mhm",
-    "mm-hmm", "mm hmm", "huh", "oh", "ohh",
-    # 2. Throat, mouth, breath & unconscious vocal tics / stim noises
+    "mm-hmm", "mm hmm", "huh",
+)
+
+PHYSICAL_NON_SPEECH_NOISES: tuple[str, ...] = (
     "ahem", "hem", "khem", "tsk", "tut", "psst", "shh", "shhh", "pff", "pfft", "phew",
     "ugh", "argh", "oof", "ach", "urp", "hic", "brr", "brrr", "zzz", "lip smack",
     "tongue click", "throat clear", "clears throat", "cough", "coughs", "coughing",
     "sigh", "sighs", "sighing", "sniff", "sniffs", "sniffle", "snort", "sneeze",
     "yawn", "yawns", "yawning", "groan", "grunt", "grunts", "chuckle", "giggle",
     "pant", "panting", "inhale", "exhale", "breathing", "breath", "gasp",
-    # 3. Short single-syllable mouth percussives / hums
-    "buh", "duh", "puh", "tuh", "kuh", "la", "da", "ba", "na", "ha", "hah",
+    "mic bump", "microphone bump", "thud", "tap", "click", "static", "blank_audio",
+    "buh", "duh", "puh", "tuh", "kuh",
+)
+
+BUILTIN_HUMAN_VOCAL_NOISES: tuple[str, ...] = (
+    *SPOKEN_HESITATION_FILLERS,
+    "oh", "ohh",
+    *PHYSICAL_NON_SPEECH_NOISES,
+    "la", "da", "ba", "na", "ha", "hah",
 )
 
 WHISPER_SHORT_NOISE_HALLUCINATIONS: tuple[str, ...] = (
@@ -1531,38 +1679,84 @@ def compute_sensitivity_thresholds(sensitivity: int = 35) -> dict[str, int]:
     }
 
 
-def get_ignored_vocal_noise_set(config_path: Path = CONFIG_PATH, custom_csv: str | None = None) -> set[str]:
-    """Return normalized set of ignored human vocal noises & fillers (built-in catalog + user/AI custom additions)."""
-    items = {w.strip().lower() for w in BUILTIN_HUMAN_VOCAL_NOISES if w.strip()}
-    raw_custom = custom_csv
-    if raw_custom is None:
+def get_always_included_words_set(config_path: Path = CONFIG_PATH, custom_csv: str | None = None) -> set[str]:
+    """Return user/AI-approved words that must NEVER be filtered or flagged as filler words."""
+    raw = custom_csv
+    if raw is None:
         try:
-            raw_custom = str(load_voice_settings(config_path).get("custom_ignored_noises") or "")
+            raw = str(load_voice_settings(config_path).get("always_included_words") or "")
         except Exception:
-            raw_custom = ""
-    if raw_custom:
-        for tok in re.split(r"[,;\n]+", raw_custom):
-            clean = re.sub(r"[^a-z0-9\s\-']", "", tok.strip().lower()).strip()
-            if clean:
-                items.add(clean)
-    return items
+            raw = ""
+    return set(parse_quoted_phrase_list(raw, min_words=1))
+
+
+def add_always_included_word(phrase: str, config_path: Path = CONFIG_PATH) -> list[str]:
+    """Add word(s) to always_included_words (in double quotes) and remove them from physical/filler/custom lists so they are never filtered."""
+    v_cfg = load_voice_settings(config_path)
+    existing_inc = parse_quoted_phrase_list(str(v_cfg.get("always_included_words") or ""), min_words=1)
+    inc_low = {p.lower() for p in existing_inc}
+    for part in parse_quoted_phrase_list(str(phrase or ""), min_words=1):
+        if part and part.lower() not in inc_low and len(part) <= 45:
+            existing_inc.append(part)
+            inc_low.add(part.lower())
+    existing_ign = [
+        p for p in parse_quoted_phrase_list(str(v_cfg.get("custom_ignored_noises") or ""), min_words=1)
+        if p.lower() not in inc_low
+    ]
+    existing_fillers = [
+        p for p in parse_quoted_phrase_list(str(v_cfg.get("spoken_fillers_list") or ""), min_words=1)
+        if p.lower() not in inc_low
+    ]
+    save_voice_settings(
+        {
+            "always_included_words": format_quoted_phrase_list(existing_inc),
+            "custom_ignored_noises": format_quoted_phrase_list(existing_ign) if existing_ign else "",
+            "spoken_fillers_list": format_quoted_phrase_list(existing_fillers),
+        },
+        config_path=config_path,
+    )
+    return existing_inc
+
+
+def get_ignored_vocal_noise_set(config_path: Path = CONFIG_PATH, custom_csv: str | None = None) -> set[str]:
+    """Return normalized set of ignored human vocal noises & fillers (active lists + custom additions minus always_included_words)."""
+    items = {w.strip().lower() for w in BUILTIN_HUMAN_VOCAL_NOISES if w.strip()}
+    try:
+        v_cfg = load_voice_settings(config_path)
+    except Exception:
+        v_cfg = {}
+    for k in ("physical_noises_list", "spoken_fillers_list"):
+        for tok in parse_quoted_phrase_list(str(v_cfg.get(k) or ""), min_words=1):
+            items.add(tok)
+    raw_custom = custom_csv if custom_csv is not None else str(v_cfg.get("custom_ignored_noises") or "")
+    for tok in parse_quoted_phrase_list(raw_custom, min_words=1):
+        items.add(tok)
+    always_inc = get_always_included_words_set(config_path=config_path)
+    return items - always_inc
 
 
 def add_custom_ignored_noise(phrase: str, config_path: Path = CONFIG_PATH) -> list[str]:
-    """Add one or more noise/filler phrases to custom_ignored_noises in voice_settings and return updated custom list."""
+    """Add one or more noise/filler phrases to physical_noises_list and custom_ignored_noises in voice_settings."""
     v_cfg = load_voice_settings(config_path)
-    existing = [
-        p.strip()
-        for p in re.split(r"[,;\n]+", str(v_cfg.get("custom_ignored_noises") or ""))
-        if p.strip()
-    ]
+    existing = parse_quoted_phrase_list(str(v_cfg.get("custom_ignored_noises") or ""), min_words=1)
+    phys_list = parse_quoted_phrase_list(str(v_cfg.get("physical_noises_list") or ""), min_words=1)
     existing_low = {p.lower() for p in existing}
-    for part in re.split(r"[,;\n]+", str(phrase or "")):
-        clean = re.sub(r"[\[\]()*\"']", "", part).strip()
-        if clean and clean.lower() not in existing_low and len(clean) <= 45:
-            existing.append(clean)
-            existing_low.add(clean.lower())
-    save_voice_settings({"custom_ignored_noises": ", ".join(existing)}, config_path=config_path)
+    phys_low = {p.lower() for p in phys_list}
+    for part in parse_quoted_phrase_list(str(phrase or ""), min_words=1):
+        if part and len(part) <= 45:
+            if part.lower() not in existing_low:
+                existing.append(part)
+                existing_low.add(part.lower())
+            if part.lower() not in phys_low:
+                phys_list.append(part)
+                phys_low.add(part.lower())
+    save_voice_settings(
+        {
+            "custom_ignored_noises": format_quoted_phrase_list(existing),
+            "physical_noises_list": format_quoted_phrase_list(phys_list),
+        },
+        config_path=config_path,
+    )
     return existing
 
 
@@ -1617,6 +1811,172 @@ def is_unconscious_human_noise_or_filler(
             return True, f"short acoustic noise hallucination ('{raw[:35]}' in {audio_dur_sec:.2f}s)"
 
     return False, ""
+
+
+def strip_physical_non_speech_noises(text: str, *, config_path: Path = CONFIG_PATH) -> str:
+    """Silently remove physical/body noise annotations ([cough], (sniff), *clears throat*) and active physical_noises_list items."""
+    if not text:
+        return ""
+    try:
+        v_cfg = load_voice_settings(config_path)
+    except Exception:
+        v_cfg = {}
+    if not bool(v_cfg.get("ignore_vocal_noises", True)):
+        return text.strip()
+
+    always_inc = get_always_included_words_set(config_path=config_path)
+    active_phys = set(parse_quoted_phrase_list(str(v_cfg.get("physical_noises_list") or ""), min_words=1))
+    if not active_phys:
+        active_phys = {w.lower() for w in DEFAULT_PHYSICAL_NOISES_LIST}
+    active_phys = (active_phys | {w.lower() for w in PHYSICAL_NON_SPEECH_NOISES if w not in {"click", "tap", "static", "breath"}}) - always_inc
+
+    cleaned = _SOUND_TAG_BRACKET_RE.sub(" ", text)
+    phys_multi = sorted((p for p in active_phys if " " in p), key=len, reverse=True)
+    phys_single = {p for p in active_phys if " " not in p}
+
+    for multi in phys_multi:
+        cleaned = re.sub(rf"\b{re.escape(multi)}\b", " ", cleaned, flags=re.IGNORECASE)
+    tokens = cleaned.split()
+    kept: list[str] = []
+    for tok in tokens:
+        bare = re.sub(r"^[^a-zA-Z0-9']+|[^a-zA-Z0-9']+$", "", tok).lower()
+        if bare in phys_single:
+            continue
+        kept.append(tok)
+    out = re.sub(r"\s+", " ", " ".join(kept)).strip()
+    out = re.sub(r"^[,;.\-\s]+", "", out).strip()
+    return out
+
+
+def process_spoken_input_with_visual_haptics(
+    transcript: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+) -> tuple[str, str, list[str]]:
+    """Process a spoken transcript into `(display_text, clean_prompt, highlighted_fillers)`:
+    - `display_text`: physical noises 100% trashed, spoken filler words ('um', 'ahh') highlighted inline as `[um]` for visual haptic feedback
+    - `clean_prompt`: physical noises & spoken fillers stripped (sent to AI)
+    - `highlighted_fillers`: list of filler words that were highlighted/ignored
+    """
+    no_phys = strip_physical_non_speech_noises(transcript, config_path=config_path)
+    if not no_phys:
+        return "", "", []
+
+    always_inc = get_always_included_words_set(config_path=config_path)
+    v_cfg = load_voice_settings(config_path)
+    if not bool(v_cfg.get("highlight_spoken_fillers", True)):
+        return no_phys, no_phys, []
+
+    active_fillers = set(parse_quoted_phrase_list(str(v_cfg.get("spoken_fillers_list") or ""), min_words=1))
+    if not active_fillers:
+        active_fillers = {w.lower() for w in DEFAULT_SPOKEN_FILLERS_LIST}
+    custom_ign = set(parse_quoted_phrase_list(str(v_cfg.get("custom_ignored_noises") or ""), min_words=1))
+    phys_set = {w.lower() for w in PHYSICAL_NON_SPEECH_NOISES} | set(
+        parse_quoted_phrase_list(str(v_cfg.get("physical_noises_list") or ""), min_words=1)
+    )
+    filler_set = (active_fillers | (custom_ign - phys_set)) - always_inc
+
+    clean_words: list[str] = []
+    display_words: list[str] = []
+    highlighted: list[str] = []
+
+    for tok in no_phys.split():
+        m_tok = re.match(r"^([^a-zA-Z0-9'\-]*)([a-zA-Z0-9'\-]+)([^a-zA-Z0-9'\-]*)$", tok)
+        if m_tok:
+            lead_p, core_w, trail_p = m_tok.group(1), m_tok.group(2), m_tok.group(3)
+            bare = core_w.lower()
+        else:
+            lead_p, core_w, trail_p = "", tok, ""
+            bare = re.sub(r"^[^a-zA-Z0-9'\-]+|[^a-zA-Z0-9'\-]+$", "", tok).lower()
+        is_filler = bool(
+            bare
+            and bare not in always_inc
+            and (
+                bare in filler_set
+                or re.fullmatch(r"(?:u+m+|u+h+|a+h+|e+r+m*|h+m+)", bare) is not None
+            )
+        )
+        if is_filler:
+            highlighted.append(bare)
+            display_words.append(f"{lead_p}[{core_w}]{trail_p}")
+        else:
+            clean_words.append(tok)
+            display_words.append(tok)
+
+    clean_prompt = re.sub(r"\s+", " ", " ".join(clean_words)).strip()
+    clean_prompt = re.sub(r"^[,;:\-\s]+", "", clean_prompt).strip()
+    display_text = re.sub(r"\s+", " ", " ".join(display_words)).strip()
+    return display_text, clean_prompt, highlighted
+
+
+def strip_visual_haptic_filler_tags(text: str) -> str:
+    """Remove `[um]`, `[ahh]` visual haptic filler markers from composer text before dispatching to AI."""
+    if not text:
+        return ""
+    out = re.sub(r"\[(?:u+m+|u+h+|a+h+|e+r+m*|h+m+|eh+|mm+|[a-zA-Z'\-]{1,20})\][,;:\-]*", " ", text, flags=re.IGNORECASE)
+    out = re.sub(r"\s+", " ", out).strip()
+    out = re.sub(r"^[,;:\-\s]+", "", out).strip()
+    return out
+
+
+def get_voice_command_phrases_map(config_path: Path = CONFIG_PATH) -> dict[str, list[str]]:
+    """Return the active multi-word vocal command combinations (submit, undo, clear, newline)."""
+    v_cfg = load_voice_settings(config_path)
+    out: dict[str, list[str]] = {}
+    for key, attr, defaults in (
+        ("submit", "voice_submit_phrases", DEFAULT_VOICE_SUBMIT_PHRASES),
+        ("undo", "voice_undo_phrases", DEFAULT_VOICE_UNDO_PHRASES),
+        ("clear", "voice_clear_phrases", DEFAULT_VOICE_CLEAR_PHRASES),
+        ("newline", "voice_newline_phrases", DEFAULT_VOICE_NEWLINE_PHRASES),
+    ):
+        raw = str(v_cfg.get(attr) or "")
+        phrases = parse_quoted_phrase_list(raw, min_words=2)
+        out[key] = phrases if phrases else list(defaults)
+    return out
+
+
+def add_voice_submit_phrase(phrase: str, config_path: Path = CONFIG_PATH) -> list[str]:
+    """Add a 2+ word vocal submit command combination to voice_submit_phrases (stored in double quotes)."""
+    clean = re.sub(r"[^a-zA-Z0-9\s\-']", " ", str(phrase or "")).strip().lower()
+    clean = re.sub(r"\s+", " ", clean)
+    if len(clean.split()) < 2:
+        raise ValueError("Vocal submit commands must be at least 2 words (e.g. 'submit query') to prevent accidental single-word triggers.")
+    cur_map = get_voice_command_phrases_map(config_path)
+    submit_list = list(cur_map["submit"])
+    if clean not in submit_list:
+        submit_list.append(clean)
+        save_voice_settings({"voice_submit_phrases": format_quoted_phrase_list(submit_list)}, config_path=config_path)
+    return submit_list
+
+
+def match_voice_input_command(
+    transcript: str,
+    *,
+    config_path: Path = CONFIG_PATH,
+) -> tuple[str, str, str]:
+    """Check if a spoken utterance ends with (or is) a multi-word vocal command combination.
+
+    Returns `(action, matched_phrase, remaining_text)` where `action` is `'submit'`, `'undo'`, `'clear'`, `'newline'`, or `''`.
+    Never triggers on single words or when a phrase is followed by normal speech.
+    """
+    raw = (transcript or "").strip()
+    if not raw:
+        return "", "", ""
+    cmd_map = get_voice_command_phrases_map(config_path)
+    # Check trailing punctuation-stripped text against each multi-word command
+    trimmed = re.sub(r"[.!?,;:\-\s]+$", "", raw).strip()
+    for action in ("clear", "undo", "newline", "submit"):
+        # Sort longest phrase first so 'send this message now' matches before 'send this'
+        for phrase in sorted(cmd_map.get(action, []), key=len, reverse=True):
+            pat = re.compile(
+                rf"(?:^|[\s,.!?;:\-]+)({re.escape(phrase).replace(r'\ ', r'[\s\-]+')})$",
+                re.IGNORECASE,
+            )
+            m = pat.search(trimmed)
+            if m:
+                prefix = trimmed[: m.start()].rstrip(" ,.!?;:-")
+                return action, phrase, prefix
+    return "", "", raw
 
 
 class LiveAudioSession:
@@ -1937,6 +2297,13 @@ class LiveAudioSession:
             silence_ms = (now - self._last_voice_ts) * 1000.0
             min_bytes = int(self._sample_rate * 2 * 0.35)
             if silence_ms >= self._silence_timeout_ms and len(self._pcm_buffer) >= min_bytes:
+                # Reject short transient physical bumps/coughs/sniffs (< ~275ms of actual voiced ticks) before STT
+                min_voiced_ticks = max(4, idle_tks_req + 1)
+                if self._speech_ticks < min_voiced_ticks:
+                    self._pcm_buffer.clear()
+                    self._speech_detected = False
+                    self._speech_ticks = 0
+                    return
                 wav_path = self.flush_utterance_to_wav("fairybread_live_utterance.wav")
                 if wav_path and self.on_utterance_ready is not None:
                     self.on_utterance_ready(wav_path)

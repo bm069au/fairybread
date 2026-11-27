@@ -1012,6 +1012,11 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn('[Image Request', doc_html)
         self.assertIn('[GENERATE_IMAGE', doc_html)
 
+        # Explicit path="..." in [GENERATE_IMAGE path="..." title="..."] renders the existing PNG immediately
+        explicit_html = format_markdown_and_drawings(f'[GENERATE_IMAGE path="{out_png}" title="Explicit Path Render"]')
+        self.assertIn('<img src="file:///', explicit_html)
+        self.assertIn('Explicit Path Render', explicit_html)
+
         # 5. Verify 2-Mode Drawing Routing (Direct 1-Pass vs Council-Assisted Prompt Brainstorm)
         from orchestrator import classify_drawing_request
 
@@ -1339,7 +1344,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.95b')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.95e')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -1647,10 +1652,11 @@ class VoiceUpgradeTests(unittest.TestCase):
 
         with patch('voice_service.is_speaking', return_value=True), \
              patch('voice_service.stop_speaking') as mock_stop:
-            for _ in range(3):
+            req_ticks = int(getattr(sess, '_barge_ticks_required', 10))
+            for _ in range(req_ticks - 1):
                 sess._poll_audio()
             self.assertEqual(mock_stop.call_count, 0)
-            self.assertEqual(sess._barge_ticks, 3)
+            self.assertEqual(sess._barge_ticks, req_ticks - 1)
 
             sess._poll_audio()
             self.assertEqual(mock_stop.call_count, 1)
@@ -2467,6 +2473,73 @@ class VoiceUpgradeTests(unittest.TestCase):
             dlg._rebuild_nav_list(target_page_idx=prov_row_idx, voice_sub_idx=None)
             app.processEvents()
             self.assertTrue(hasattr(dlg, 'or_hub_key_edit'))
+
+            # Verify Unlimited / 5m / 7m / 10m Response Timing, Server Heartbeat, Editable Provider Handshake Overrides, Profile Timing & Pattern A Apply State
+            from palace_config import load_agent_defaults, load_ai_squads, resolve_provider_timeout_policy
+            from PySide6.QtWidgets import QComboBox, QSpinBox
+
+            self.assertEqual(dlg.ad_timing_profile_combo.currentData(), 'unlimited')
+            self.assertEqual(dlg.ad_timeout_spin.value(), 0)
+            self.assertEqual(dlg.ad_round2_timeout_spin.value(), 0)
+            self.assertEqual(dlg.ad_synth_timeout_spin.value(), 0)
+            self.assertTrue(dlg.ad_heartbeat_check.isChecked())
+            self.assertIn('Unlimited Deep-Thinking Protection', dlg.ad_timeout_warning_banner.text())
+
+            # Built-in Profiles carry their tailored timing_profile: ONLY 'light_chat' has 'quick' (1m); Generalist, Graphics, Deep Chat, Code & Work Mode are 'unlimited' (Heartbeat-Only)
+            sq_loaded = load_ai_squads(cfg)
+            self.assertEqual(sq_loaded['light_chat']['timing_profile'], 'quick')
+            self.assertEqual(sq_loaded['generalist']['timing_profile'], 'unlimited')
+            self.assertEqual(sq_loaded['graphics']['timing_profile'], 'unlimited')
+            self.assertEqual(sq_loaded['deep_chat']['timing_profile'], 'unlimited')
+            self.assertEqual(sq_loaded['code']['timing_profile'], 'unlimited')
+            self.assertEqual(sq_loaded['work_mode']['timing_profile'], 'unlimited')
+            self.assertEqual(sq_loaded['generalist']['model_overrides']['gemini'], 'gemini-4-neon')
+            self.assertEqual(sq_loaded['generalist']['model_overrides']['openai'], 'gpt-6-luna')
+            self.assertTrue(hasattr(dlg, 'squad_timing_profile_combo'))
+            self.assertTrue(hasattr(dlg, 'squad_voice_mode_combo'))
+
+            # Selecting '7m' sets (420, 300, 180) and enables Pattern A Apply button
+            idx_7m = dlg.ad_timing_profile_combo.findData('7m')
+            self.assertGreaterEqual(idx_7m, 0)
+            dlg.ad_timing_profile_combo.setCurrentIndex(idx_7m)
+            self.assertEqual(dlg.ad_timeout_spin.value(), 420)
+            self.assertEqual(dlg.ad_round2_timeout_spin.value(), 300)
+            self.assertEqual(dlg.ad_synth_timeout_spin.value(), 180)
+            self.assertTrue(dlg.apply_btn.isEnabled())
+            self.assertEqual(dlg.apply_btn.text(), 'Apply')
+
+            # Selecting 'standard' (180s) triggers the Token-Waste Warning banner
+            idx_std = dlg.ad_timing_profile_combo.findData('standard')
+            dlg.ad_timing_profile_combo.setCurrentIndex(idx_std)
+            self.assertEqual(dlg.ad_timeout_spin.value(), 180)
+            self.assertIn('Token-Waste Warning', dlg.ad_timeout_warning_banner.text())
+
+            # Switch back to 'unlimited' and edit Advanced Per-Provider Handshake table
+            idx_unl = dlg.ad_timing_profile_combo.findData('unlimited')
+            dlg.ad_timing_profile_combo.setCurrentIndex(idx_unl)
+            self.assertTrue(dlg.ad_adv_ceilings_container.isHidden())
+            dlg.ad_adv_ceilings_toggle_btn.setChecked(True)
+            self.assertFalse(dlg.ad_adv_ceilings_container.isHidden())
+            fr_widgets = dlg._provider_ceiling_widgets['frontier_reasoning']
+            hs_w = fr_widgets['handshake']
+            tc_w = fr_widgets['ceiling']
+            self.assertIsInstance(hs_w, QSpinBox)
+            self.assertIsInstance(tc_w, QComboBox)
+            self.assertEqual(hs_w.value(), 15)
+            self.assertEqual(tc_w.currentData(), 0)
+            hs_w.setValue(25)
+
+            # Clicking Apply saves to palace_config.json and disables Apply button ('✓ Applied')
+            self.assertTrue(dlg.apply_settings())
+            self.assertFalse(dlg.apply_btn.isEnabled())
+            self.assertEqual(dlg.apply_btn.text(), '✓ Applied')
+            self.assertIn('Settings saved & applied', dlg._autosave_status_label.text())
+            saved_ad = load_agent_defaults(cfg)
+            self.assertEqual(saved_ad['deliberation_budget'], 'unlimited')
+            self.assertEqual(saved_ad['provider_timeout_sec'], 0)
+            self.assertEqual(resolve_provider_timeout_policy('openai', cfg)['handshake_sec'], 25)
+            self.assertEqual(resolve_provider_timeout_policy('openai', cfg)['thinking_ceiling_sec'], 0)
+
             dlg.accept()
         finally:
             dlg.deleteLater()
@@ -2559,7 +2632,7 @@ class VoiceUpgradeTests(unittest.TestCase):
             config_path=cfg,
         )
         try:
-            self.assertIn('(3)', win.ai_pill_button.text())
+            self.assertIn('3 AIs', win.ai_pill_button.text())
             menu = QMenu(win)
             win._populate_profiles_and_ais_menu(menu)
             openai_acts = [a for a in menu.actions() if 'OpenAI' in a.text() and a.isEnabled() and a.menu() is None]
@@ -2572,7 +2645,7 @@ class VoiceUpgradeTests(unittest.TestCase):
             self.assertEqual(win.max_ais_per_turn, 1)
             self.assertFalse(win.peer_rounds_toggle.isChecked())
             self.assertIn('OpenAI', win.ai_pill_button.text())
-            self.assertNotIn('(3)', win.ai_pill_button.text())
+            self.assertNotIn('3 AIs', win.ai_pill_button.text())
 
             # Clicking OpenAI AGAIN in the menu keeps OpenAI selected (does NOT turn it off!)
             menu2 = QMenu(win)
@@ -2587,7 +2660,7 @@ class VoiceUpgradeTests(unittest.TestCase):
             app.processEvents()
             self.assertEqual(win.provider_states, {'gemini': False, 'openai': True, 'mistral': True})
             self.assertEqual(win.max_ais_per_turn, 0)
-            self.assertIn('(2)', win.ai_pill_button.text())
+            self.assertIn('2 AIs', win.ai_pill_button.text())
         finally:
             win._force_quit = True
             win.close()
@@ -2801,9 +2874,26 @@ class VoiceUpgradeTests(unittest.TestCase):
         from palace_gui import PalaceWindow
         from voice_service import TTS_ENGINES, synthesize_speech_pcm, transcribe_audio_file
 
-        # 1. Tight 6 profiles, Mistral default = mistral-medium-latest, proper tier routing & OpenRouter mapping
+        # 1. Tight 8 profiles (including Voice 1 & Voice 2), Mistral default = mistral-medium-latest, proper tier routing & OpenRouter mapping
         self.assertEqual(PROVIDER_CATALOG['mistral']['default_model'], 'mistral-medium-latest')
-        self.assertEqual(set(DEFAULT_AI_SQUADS.keys()), {'code', 'light_chat', 'deep_chat', 'generalist', 'graphics', 'work_mode'})
+        self.assertEqual(
+            set(DEFAULT_AI_SQUADS.keys()),
+            {'voice_1', 'voice_2', 'code', 'light_chat', 'deep_chat', 'generalist', 'graphics', 'work_mode'},
+        )
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_1']['timing_profile'], 'quick')
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_1']['voice_mode'], 'full_conversation')
+        self.assertTrue(DEFAULT_AI_SQUADS['voice_1']['auto_start_voice'])
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_2']['timing_profile'], 'unlimited')
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_2']['voice_mode'], 'full_conversation')
+        self.assertTrue(DEFAULT_AI_SQUADS['voice_2']['auto_start_voice'])
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_2']['model_overrides']['openai'], 'gpt-6.1-terra')
+        self.assertEqual(DEFAULT_AI_SQUADS['voice_2']['model_overrides']['gemini'], 'gemini-4-hydrogen')
+        self.assertEqual(DEFAULT_AI_SQUADS['code']['voice_mode'], 'input_only')
+        self.assertEqual(DEFAULT_AI_SQUADS['deep_chat']['voice_mode'], 'input_only')
+        self.assertEqual(DEFAULT_AI_SQUADS['work_mode']['voice_mode'], 'input_only')
+        self.assertEqual(DEFAULT_AI_SQUADS['graphics']['voice_mode'], 'input_only')
+        self.assertEqual(DEFAULT_AI_SQUADS['light_chat']['voice_mode'], 'full_conversation')
+        self.assertEqual(DEFAULT_AI_SQUADS['generalist']['voice_mode'], 'full_conversation')
         self.assertIn('mistral', DEFAULT_AI_SQUADS['light_chat']['providers'])
         self.assertEqual(DEFAULT_AI_SQUADS['light_chat']['model_overrides']['mistral'], 'mistral-small-latest')
         self.assertEqual(DEFAULT_AI_SQUADS['generalist']['model_overrides']['mistral'], 'mistral-medium-latest')
@@ -3038,6 +3128,288 @@ class VoiceUpgradeTests(unittest.TestCase):
         self.assertIn('def ', gen_code_ctx)
         self.assertNotIn('(header)', gen_code_ctx)
         self.assertGreater(len(gen_code_ctx), 2500)
+
+        # 7. Verify universal clipboard paste (Windows PNG MIME, HTML base64 img, busy-turn paste & always-visible '+' attach button)
+        mime_win_png = QMimeData()
+        mime_win_png.setData('application/x-qt-windows-mime;value="PNG"', pasted_blobs[0])
+        comp2 = Composer()
+        pasted_win: list[bytes] = []
+        comp2.image_pasted.connect(lambda b: pasted_win.append(b))
+        self.assertTrue(comp2.canInsertFromMimeData(mime_win_png))
+        comp2.insertFromMimeData(mime_win_png)
+        self.assertEqual(len(pasted_win), 1)
+
+        # 8. Verify Unified Speech Modes, Visual Haptic Filler Feedback ([um], [ahh]), Silent Physical Noise Drop, Always-Included Words & 2+ Word Vocal Commands
+        from voice_service import (
+            add_always_included_word,
+            add_voice_submit_phrase,
+            match_voice_input_command,
+            process_spoken_input_with_visual_haptics,
+            strip_physical_non_speech_noises,
+            strip_visual_haptic_filler_tags,
+        )
+
+        # Physical non-speech noises (coughs, sniffs, throat clears, mic bumps) are silently stripped, never bracketed
+        self.assertEqual(
+            strip_physical_non_speech_noises('[cough] (sniff) Check the dispatcher timeout *clears throat*', config_path=svc_cfg),
+            'Check the dispatcher timeout',
+        )
+        # Spoken hesitation fillers (um, ahh, uh) are bracketed as [um], [ahh] in display_text and stripped from clean_prompt
+        disp_h, clean_h, flagged_h = process_spoken_input_with_visual_haptics(
+            'Um, [cough] check the, ahh, timeout in dispatcher.py',
+            config_path=svc_cfg,
+        )
+        self.assertEqual(disp_h, '[Um], check the, [ahh], timeout in dispatcher.py')
+        self.assertEqual(clean_h, 'check the, timeout in dispatcher.py')
+        self.assertEqual(flagged_h, ['um', 'ahh'])
+        self.assertEqual(strip_visual_haptic_filler_tags(disp_h), 'check the, timeout in dispatcher.py')
+
+        # If user tells AI to always include a word (e.g. 'ahh'), it is no longer filtered as a filler
+        vc_inc = VoiceCompanion(
+            config_path=svc_cfg,
+            credential_store=svc_cred,
+            llm_callable=lambda _p: (
+                'Got it, I will always include ahh and added ship it now as a submit command. '
+                '[ALWAYS_INCLUDE_WORD phrase="ahh"] '
+                '[ADD_VOICE_SUBMIT_PHRASE phrase="ship it now"]'
+            ),
+        )
+        dec_inc = vc_inc.respond('Always include ahh and add ship it now as a vocal submit phrase', talk_only=True)
+        self.assertIn('ahh', dec_inc.updated_voice_settings.get('always_included_words', []))
+        self.assertIn('ship it now', dec_inc.updated_voice_settings.get('added_submit_phrases', []))
+        disp_h2, clean_h2, flagged_h2 = process_spoken_input_with_visual_haptics(
+            'Um, check the ahh timeout',
+            config_path=svc_cfg,
+        )
+        self.assertEqual(disp_h2, '[Um], check the ahh timeout')
+        self.assertEqual(clean_h2, 'check the ahh timeout')
+        self.assertEqual(flagged_h2, ['um'])
+
+        # Multi-word vocal command matching (2+ words required; single word 'submit' inside a sentence never triggers!)
+        act_single, _, rem_single = match_voice_input_command(
+            'Check why the form submit button is disabled',
+            config_path=svc_cfg,
+        )
+        self.assertEqual(act_single, '')
+        self.assertEqual(rem_single, 'Check why the form submit button is disabled')
+
+        act_sub, ph_sub, rem_sub = match_voice_input_command(
+            'Um look at the timeout in dispatcher.py, submit query.',
+            config_path=svc_cfg,
+        )
+        self.assertEqual(act_sub, 'submit')
+        self.assertEqual(ph_sub, 'submit query')
+        self.assertEqual(rem_sub, 'Um look at the timeout in dispatcher.py')
+
+        act_custom_sub, ph_custom_sub, rem_custom_sub = match_voice_input_command(
+            'Run the unit test suite now, ship it now!',
+            config_path=svc_cfg,
+        )
+        self.assertEqual(act_custom_sub, 'submit')
+        self.assertEqual(ph_custom_sub, 'ship it now')
+        self.assertEqual(rem_custom_sub, 'Run the unit test suite now')
+
+        act_undo, ph_undo, _ = match_voice_input_command('scratch that last', config_path=svc_cfg)
+        self.assertEqual(act_undo, 'undo')
+        self.assertEqual(ph_undo, 'scratch that last')
+
+        # 9. Verify double-quoted phrase parsing ("..."), theme contrast guardrails, checkbox ticks, and rescue theme reset
+        from palace_config import restore_default_theme_only, save_ui_settings, load_ui_settings
+        from palace_theme import (
+            auto_contrast_pair,
+            build_checkbox_qss,
+            contrast_ratio,
+            enforce_theme_readability_guardrails,
+            ensure_checkbox_tick_asset,
+            ensure_min_contrast_color,
+        )
+        from voice_service import format_quoted_phrase_list, parse_quoted_phrase_list
+
+        quoted_str = format_quoted_phrase_list(['cough', 'clears throat', 'submit query'])
+        self.assertEqual(quoted_str, '"cough", "clears throat", "submit query"')
+        self.assertEqual(
+            parse_quoted_phrase_list('"cough", "clears throat", "submit query", extra unquoted', min_words=1),
+            ['cough', 'clears throat', 'submit query', 'extra unquoted'],
+        )
+        self.assertEqual(
+            parse_quoted_phrase_list('"cough", "clears throat", "submit query"', min_words=2),
+            ['clears throat', 'submit query'],
+        )
+
+        # Verify white-on-white, black-on-black, and red-on-red are automatically separated to >= 4.5:1 contrast
+        for bad_fg, bad_bg in (('#ffffff', '#ffffff'), ('#000000', '#000000'), ('#aa1111', '#881111'), ('#1e293b', '#0f172a')):
+            fixed_fg = ensure_min_contrast_color(bad_fg, bad_bg, min_ratio=4.5)
+            self.assertGreaterEqual(contrast_ratio(fixed_fg, bad_bg), 4.45)
+
+        broken_theme = {
+            'bg_main': '#7f1d1d',
+            'bg_sidebar': '#7f1d1d',
+            'bg_card': '#881337',
+            'border': '#7f1d1d',
+            'text_primary': '#991b1b',
+            'text_secondary': '#991b1b',
+            'text_muted': '#991b1b',
+            'send_bg': '#ffffff',
+            'send_fg': '#fefefe',
+            'user_bubble_bg': '#111111',
+            'user_bubble_text': '#151515',
+        }
+        safe_theme = enforce_theme_readability_guardrails(broken_theme)
+        self.assertGreaterEqual(contrast_ratio(safe_theme['text_primary'], safe_theme['bg_main']), 4.45)
+        self.assertGreaterEqual(contrast_ratio(safe_theme['send_fg'], safe_theme['send_bg']), 4.45)
+        self.assertGreaterEqual(contrast_ratio(safe_theme['user_bubble_text'], safe_theme['user_bubble_bg']), 4.45)
+
+        # Verify dual-stroke tick assets exist for both dark fills (#0078d4) and bright fills (#fcee0a)
+        self.assertEqual(auto_contrast_pair('#0078d4'), ('#ffffff', '#0b0d10'))
+        self.assertEqual(auto_contrast_pair('#fcee0a'), ('#0b0d10', '#ffffff'))
+        tick_dark = ensure_checkbox_tick_asset('#0078d4')
+        tick_light = ensure_checkbox_tick_asset('#fcee0a')
+        self.assertTrue(Path(tick_dark).is_file())
+        self.assertTrue(Path(tick_light).is_file())
+        qss_chk = build_checkbox_qss('#0078d4', '#262626', '#454545', '#1e1e1e', scope_prefix='QDialog')
+        self.assertIn('image: url(', qss_chk)
+
+        # Verify restore_default_theme_only resets theme/backdrop to dark without losing other settings
+        save_ui_settings({'theme': 'cyberpunk_2077', 'bg_image_source': 'ambient', 'enter_to_send': False}, config_path=svc_cfg)
+        res_theme = restore_default_theme_only(svc_cfg)
+        self.assertEqual(res_theme['restored_theme'], 'dark')
+        after_ui = load_ui_settings(svc_cfg)
+        self.assertEqual(after_ui['theme'], 'dark')
+        self.assertEqual(after_ui['bg_image_source'], 'none')
+        self.assertFalse(after_ui['enter_to_send'])
+
+        # 10. Verify v0.95e Decluttered Composer Toolbar, Removable Chips, Parallel Operations Bar, Dedicated Parallel Launch & Live IPC Bridge
+        app = QApplication.instance() or QApplication([])
+        from dispatcher import ProviderDispatcher
+        from orchestrator import PalaceOrchestrator
+        from provider_registry import ProviderRegistry
+        mem_p = MemoryService(self.root / 'parallel_mem.db')
+        win_p = PalaceWindow(
+            store=SessionStore(self.root / 'parallel_sess'),
+            palace_factory=lambda _c: PalaceOrchestrator(mem_p, ProviderDispatcher(ProviderRegistry())),
+            provider_states={'gemini': True, 'openai': True},
+            config_path=svc_cfg,
+        )
+        win_p._memory_db_path = lambda: self.root / 'parallel_mem.db'
+        try:
+            win_p.show()
+            app.processEvents()
+            self.assertTrue(hasattr(win_p, 'composer_options_btn'))
+            self.assertTrue(hasattr(win_p, 'parallel_launch_btn'))
+            self.assertTrue(hasattr(win_p, 'parallel_ops_bar'))
+            self.assertFalse(win_p.composer_options_btn.isHidden())
+            # Design 1A: When Idle (0 queries running), Steer ▾ and ⚡ Parallel are hidden; {} and ↗ are slim 28x22 icon pills
+            self.assertTrue(win_p.parallel_launch_btn.isHidden())
+            self.assertTrue(win_p.steer_button.isHidden())
+            self.assertEqual(win_p.palace_code_btn.text(), '')
+            self.assertEqual(win_p.palace_code_btn.toolTip(), 'Insert Fairybread source code into conversation')
+            self.assertEqual(win_p.tangent_btn.text(), '')
+            self.assertEqual(win_p.tangent_btn.toolTip(), 'Tangent: Ask a side question without prior chat history')
+            self.assertIn('2 AIs ▾', win_p.ai_pill_button.text())
+
+            # Location autocomplete returns Adelaide suggestions
+            from search_service import search_location_autocomplete
+            adelaide_matches = search_location_autocomplete('Adelaide', timeout=0.1)
+            self.assertTrue(any('Adelaide, South Australia' in m for m in adelaide_matches))
+
+            # uTorrent-style System Tray & Confirm on Exit settings roundtrip
+            save_ui_settings({
+                'close_to_tray': True,
+                'minimize_to_tray': True,
+                'always_show_tray_icon': True,
+                'single_click_tray_to_open': False,
+                'show_tray_balloon_notifications': True,
+                'always_activate_when_clicked': True,
+                'confirm_on_exit': True,
+            }, config_path=svc_cfg)
+            tray_cfg = load_ui_settings(svc_cfg)
+            self.assertTrue(tray_cfg['minimize_to_tray'])
+            self.assertFalse(tray_cfg['single_click_tray_to_open'])
+            self.assertTrue(tray_cfg['confirm_on_exit'])
+
+            # Removable (Deliberate ×) chip appears when peer deliberation is ON and hides when clicked/turned OFF
+            win_p.deliberate_pill_btn.setChecked(True)
+            win_p._sync_decluttered_option_chips()
+            self.assertFalse(win_p.deliberate_pill_btn.isHidden())
+            self.assertIn('(Deliberate ×)', win_p.deliberate_pill_btn.text())
+            win_p.deliberate_pill_btn.setChecked(False)
+            win_p._sync_decluttered_option_chips()
+            self.assertTrue(win_p.deliberate_pill_btn.isHidden())
+
+            # Live IPC payload injection renders directly into the currently open conversation window
+            win_p.handle_external_ipc_payload({
+                'kind': 'external_exchange',
+                'question': '[External Agent → Fairybread Council]: Test live IPC prompt',
+                'answer': 'Live IPC answer rendered on screen!',
+                'contributors': ['gemini', 'openai'],
+            })
+            app.processEvents()
+            self.assertIn('Test live IPC prompt', win_p.chat.toPlainText())
+            self.assertIn('Live IPC answer rendered on screen!', win_p.chat.toPlainText())
+
+            # Simulated active parallel jobs (including 8 working AIs) populate Option 2 Segmented Progress Bar + [5/8 AIs ▾] Popover + reveal Steer & Parallel
+            import threading as _th
+            eight_ai_states = {
+                'gemini': {'status': 'Responded', 'elapsed_sec': 9, 'detail': ''},
+                'openai': {'status': 'Responded', 'elapsed_sec': 11, 'detail': ''},
+                'deepseek': {'status': 'Responded', 'elapsed_sec': 12, 'detail': ''},
+                'mistral': {'status': 'Responded', 'elapsed_sec': 10, 'detail': ''},
+                'groq': {'status': 'Responded', 'elapsed_sec': 3, 'detail': ''},
+                'anthropic': {'status': 'Working', 'elapsed_sec': 18, 'detail': ''},
+                'qwen': {'status': 'Working', 'elapsed_sec': 18, 'detail': ''},
+                'cohere': {'status': 'Limited', 'elapsed_sec': 14, 'detail': 'HTTP 429 rate limit'},
+            }
+            win_p.active_jobs[1] = {
+                'job_id': 1,
+                'question': 'Deep Code Audit',
+                'status_text': 'Round 1: 5/8 AIs Deliberating',
+                'progress_pct': 66,
+                'started_ts': time.time() - 18,
+                'cancel_event': _th.Event(),
+                'steering_state': {'notes': [], 'include_palace_code': False},
+                'worker': None,
+                'placeholder_idx': None,
+                'ai_states': eight_ai_states,
+            }
+            win_p.active_jobs[2] = {
+                'job_id': 2,
+                'question': 'Linux SSD Comparison',
+                'status_text': 'Round 1: 1/3 AIs Consulting',
+                'progress_pct': 24,
+                'started_ts': time.time() - 4,
+                'cancel_event': _th.Event(),
+                'steering_state': {'notes': [], 'include_palace_code': False},
+                'worker': None,
+                'placeholder_idx': None,
+            }
+            win_p._rebuild_parallel_ops_bar()
+            win_p._refresh_busy_mode_controls()
+            app.processEvents()
+            self.assertFalse(win_p.parallel_ops_bar.isHidden())
+            self.assertFalse(win_p.steer_button.isHidden())
+            self.assertFalse(win_p.parallel_launch_btn.isHidden())
+            self.assertIn('2 Parallel Running', win_p.parallel_running_badge.text())
+            self.assertEqual(win_p.parallel_jobs_rows_layout.count(), 2)
+            from palace_gui import SegmentedAIProgressBar
+            seg_bars = win_p.parallel_ops_bar.findChildren(SegmentedAIProgressBar)
+            self.assertEqual(len(seg_bars), 2)
+            self.assertEqual(len(seg_bars[0]._segments), 8)
+
+            # Steer Job #2 directly
+            win_p.composer.setPlainText('Focus on PCIe 4.0 thermals')
+            win_p.steer_parallel_job(2)
+            self.assertEqual(win_p.active_jobs[2]['steering_state']['notes'], ['Focus on PCIe 4.0 thermals'])
+
+            # Stop Job #1 without stopping Job #2
+            win_p.stop_parallel_job(1)
+            self.assertNotIn(1, win_p.active_jobs)
+            self.assertIn(2, win_p.active_jobs)
+            win_p.stop_parallel_job(2)
+            self.assertTrue(win_p.parallel_ops_bar.isHidden())
+        finally:
+            win_p._force_quit = True
+            win_p.close()
+            app.processEvents()
 
 
 if __name__ == '__main__':

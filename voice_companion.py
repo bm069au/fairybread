@@ -314,14 +314,20 @@ from voice_service import clean_text_for_speech, load_voice_personas, load_voice
 _SET_AGENT_NAME_TAG_RE = re.compile(r"\[SET_AGENT_NAME\s+([^\]]+)\]", re.IGNORECASE)
 _SET_VOICE_SENSITIVITY_TAG_RE = re.compile(r"\[SET_VOICE_SENSITIVITY\s+([^\]]+)\]", re.IGNORECASE)
 _ADD_IGNORED_NOISE_TAG_RE = re.compile(r"\[ADD_IGNORED_NOISE\s+([^\]]+)\]", re.IGNORECASE)
+_ALWAYS_INCLUDE_WORD_TAG_RE = re.compile(r"\[ALWAYS_INCLUDE_WORD\s+([^\]]+)\]", re.IGNORECASE)
+_ADD_VOICE_SUBMIT_PHRASE_TAG_RE = re.compile(r"\[ADD_VOICE_SUBMIT_PHRASE\s+([^\]]+)\]", re.IGNORECASE)
 _KV_ATTR_RE = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"|([a-zA-Z_]+)\s*=\s*\'([^\']*)\'')
 
 
 def parse_voice_sensitivity_and_noise_tags(text: str) -> tuple[str, list[dict[str, Any]], list[str]]:
-    """Extract and strip `[SET_VOICE_SENSITIVITY ...]` and `[ADD_IGNORED_NOISE ...]` tags from AI replies."""
+    """Extract and strip `[SET_VOICE_SENSITIVITY ...]`, `[ADD_IGNORED_NOISE ...]`,
+    `[ALWAYS_INCLUDE_WORD ...]`, and `[ADD_VOICE_SUBMIT_PHRASE ...]` tags from AI replies.
+    """
     raw = text or ""
     sens_updates: list[dict[str, Any]] = []
     added_noises: list[str] = []
+    always_included: list[str] = []
+    added_submit_phrases: list[str] = []
 
     def _repl_sens(match: re.Match[str]) -> str:
         attrs_raw = match.group(1) or ""
@@ -354,25 +360,46 @@ def parse_voice_sensitivity_and_noise_tags(text: str) -> tuple[str, list[dict[st
             sens_updates.append(upd)
         return ""
 
-    def _repl_noise(match: re.Match[str]) -> str:
-        attrs_raw = match.group(1) or ""
+    def _extract_phrase_attr(attrs_raw: str) -> str:
         parsed: dict[str, str] = {}
         for m in _KV_ATTR_RE.finditer(attrs_raw):
             k = (m.group(1) or m.group(3) or "").strip().lower()
             v = (m.group(2) if m.group(1) else m.group(4)) or ""
             if k:
                 parsed[k] = v.strip()
-        phrase = parsed.get("phrase") or parsed.get("noise") or parsed.get("sound") or parsed.get("word") or ""
+        phrase = parsed.get("phrase") or parsed.get("noise") or parsed.get("sound") or parsed.get("word") or parsed.get("command") or ""
         if not phrase and attrs_raw:
             bare = re.sub(r"[\"'`]", "", attrs_raw).strip()
             if bare and "=" not in bare:
                 phrase = bare
-        if phrase:
-            added_noises.append(phrase)
+        return phrase
+
+    def _repl_noise(match: re.Match[str]) -> str:
+        ph = _extract_phrase_attr(match.group(1) or "")
+        if ph:
+            added_noises.append(ph)
+        return ""
+
+    def _repl_always_inc(match: re.Match[str]) -> str:
+        ph = _extract_phrase_attr(match.group(1) or "")
+        if ph:
+            always_included.append(ph)
+        return ""
+
+    def _repl_submit_ph(match: re.Match[str]) -> str:
+        ph = _extract_phrase_attr(match.group(1) or "")
+        if ph:
+            added_submit_phrases.append(ph)
         return ""
 
     cleaned = _SET_VOICE_SENSITIVITY_TAG_RE.sub(_repl_sens, raw)
     cleaned = _ADD_IGNORED_NOISE_TAG_RE.sub(_repl_noise, cleaned)
+    cleaned = _ALWAYS_INCLUDE_WORD_TAG_RE.sub(_repl_always_inc, cleaned)
+    cleaned = _ADD_VOICE_SUBMIT_PHRASE_TAG_RE.sub(_repl_submit_ph, cleaned)
+    if always_included:
+        sens_updates.append({"_always_included_words": always_included})
+    if added_submit_phrases:
+        sens_updates.append({"_added_submit_phrases": added_submit_phrases})
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
     return cleaned, sens_updates, added_noises
 
@@ -1242,13 +1269,26 @@ class VoiceCompanion:
         sens_updates: list[dict[str, Any]],
         added_noises: list[str],
     ) -> dict[str, Any]:
-        """Persist AI-adjusted microphone sensitivity / barge-in / ignored human noise updates to voice_settings."""
-        from voice_service import add_custom_ignored_noise, save_voice_settings
+        """Persist AI-adjusted microphone sensitivity / barge-in / ignored human noise / always-included word / vocal submit phrase updates."""
+        from voice_service import (
+            add_always_included_word,
+            add_custom_ignored_noise,
+            add_voice_submit_phrase,
+            save_voice_settings,
+        )
 
         combined_upd: dict[str, Any] = {}
+        always_inc_list: list[str] = []
+        submit_ph_list: list[str] = []
         for item in sens_updates or []:
             if isinstance(item, dict):
-                combined_upd.update(item)
+                for k, v in item.items():
+                    if k == "_always_included_words" and isinstance(v, list):
+                        always_inc_list.extend(str(x) for x in v if str(x or "").strip())
+                    elif k == "_added_submit_phrases" and isinstance(v, list):
+                        submit_ph_list.extend(str(x) for x in v if str(x or "").strip())
+                    else:
+                        combined_upd[k] = v
         if combined_upd:
             try:
                 save_voice_settings(combined_upd, config_path=self.config_path)
@@ -1264,6 +1304,26 @@ class VoiceCompanion:
                     pass
         if clean_noises:
             combined_upd["added_ignored_noises"] = clean_noises
+        clean_always: list[str] = []
+        for ph in always_inc_list:
+            if str(ph or "").strip():
+                try:
+                    add_always_included_word(str(ph), config_path=self.config_path)
+                    clean_always.append(str(ph).strip())
+                except Exception:
+                    pass
+        if clean_always:
+            combined_upd["always_included_words"] = clean_always
+        clean_submits: list[str] = []
+        for ph in submit_ph_list:
+            if str(ph or "").strip():
+                try:
+                    add_voice_submit_phrase(str(ph), config_path=self.config_path)
+                    clean_submits.append(str(ph).strip())
+                except Exception:
+                    pass
+        if clean_submits:
+            combined_upd["added_submit_phrases"] = clean_submits
         return combined_upd
 
     def respond(
@@ -1421,7 +1481,9 @@ class VoiceCompanion:
             "- If the user asks you to lower/raise microphone or interruption sensitivity, stop cutting off when they make noises/coughs/sighs, or ignore their 'ums', 'ahs', or specific sounds:\n"
             "  • Emit `[SET_VOICE_SENSITIVITY level=\"20\" ignore_fillers=\"true\"]` (pick 15-25 for low sensitivity/high noise immunity, 35 for relaxed, 50 for balanced, or add `barge_in=\"false\"` if they want zero interruption while you speak, or `silence_ms=\"1800\"` to wait longer after pauses).\n"
             "  • If they mention a specific word/sound to ignore, also emit `[ADD_IGNORED_NOISE phrase=\"word or sound\"]`.\n"
-            "  • Place these tags at the very end of your reply (Fairybread applies them live to the microphone slider and strips the tags before speaking) and confirm naturally out loud.\n"
+            "  • If a word was highlighted/ignored as a filler (`[word]`) and the user tells you to include that word or always include that word, emit `[ALWAYS_INCLUDE_WORD phrase=\"word\"]`.\n"
+            "  • If the user asks to add a custom 2+ word vocal command phrase to submit/send voice input (e.g. 'fire away' or 'ship it now'), emit `[ADD_VOICE_SUBMIT_PHRASE phrase=\"two words\"]`.\n"
+            "  • Place these tags at the very end of your reply (Fairybread applies them live and strips the tags before speaking) and confirm naturally out loud.\n"
         )
 
         if talk_only:

@@ -1481,6 +1481,9 @@ def _unwrap_real_image_tags(text: str) -> str:
         tag = m.group(1)
         attrs = _parse_generate_image_attrs(tag)
         p = attrs.get("prompt", "").strip()
+        explicit_p = attrs.get("path", "").strip()
+        if explicit_p and Path(explicit_p).is_file():
+            return tag
         if len(p) >= 10 and p.lower() not in {"example", "...", "rich visual description"}:
             return tag
         return m.group(0)
@@ -1689,28 +1692,42 @@ def format_markdown_and_drawings(content: str, *, theme_id: str = "") -> str:
 
     processed = re.sub(r"`([^`\n]+)`", _replace_inline_code, processed)
 
-    # 3. Extract and render any real [GENERATE_IMAGE ...] tags
+    # 3. Extract and render any real [GENERATE_IMAGE ...] tags (supports both path="..." and prompt="...")
     def _replace_gen_img(match: re.Match) -> str:
         nonlocal all_media_rendered
         attrs = _parse_generate_image_attrs(match.group(1))
-        img_prompt = attrs.get("prompt", "")
-        if not img_prompt:
+        explicit_path_str = (attrs.get("path") or "").strip()
+        img_prompt = (attrs.get("prompt") or "").strip()
+        explicit_path = Path(explicit_path_str) if explicit_path_str else None
+        has_explicit_file = bool(explicit_path and explicit_path.is_file())
+        if not img_prompt and not has_explicit_file:
             return match.group(0)
-        img_title = attrs.get("title") or img_prompt[:40]
+        img_title = attrs.get("title") or (img_prompt[:40] if img_prompt else (explicit_path.stem if explicit_path else "Generated Image"))
         img_size = attrs.get("size") or attrs.get("preset") or ""
         img_quality = attrs.get("quality") or "high"
         img_style = attrs.get("style") or ""
         img_model = attrs.get("model") or ""
         target_w, target_h, size_label = resolve_target_image_size(img_size, img_prompt)
-        png_path = generate_ai_image_to_png(
-            img_prompt,
-            title=img_title,
-            size=img_size,
-            quality=img_quality,
-            style=img_style,
-            model=img_model,
-            allow_network=False,
-        )
+        if has_explicit_file and explicit_path is not None:
+            png_path: Path | None = explicit_path
+            try:
+                qimg_dim = QImage(str(png_path))
+                if not qimg_dim.isNull() and qimg_dim.width() > 0 and qimg_dim.height() > 0:
+                    target_w, target_h = qimg_dim.width(), qimg_dim.height()
+                    if not img_size:
+                        size_label = f"{target_w}×{target_h} px"
+            except Exception:
+                pass
+        else:
+            png_path = generate_ai_image_to_png(
+                img_prompt,
+                title=img_title,
+                size=img_size,
+                quality=img_quality,
+                style=img_style,
+                model=img_model,
+                allow_network=False,
+            )
         if png_path and png_path.exists():
             try:
                 rendered_deps.append((str(png_path), png_path.stat().st_mtime_ns))
@@ -2555,6 +2572,217 @@ def make_theme_swatch_icon(theme_id: str, size: int = 14) -> QIcon:
     return QIcon(pix)
 
 
+# ---------------------------------------------------------------------------
+# Universal Theme Readability Guardrail & Dual-Stroke Checkbox Tick Engine
+# ---------------------------------------------------------------------------
+
+def _parse_rgb_hex(hex_color: str, fallback: tuple[int, int, int] = (13, 17, 23)) -> tuple[int, int, int]:
+    s = str(hex_color or "").strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join(ch * 2 for ch in s)
+    if len(s) >= 6:
+        try:
+            return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+        except ValueError:
+            pass
+    return fallback
+
+
+def color_luma_255(hex_color: str) -> float:
+    """Fast perceptual sRGB luma (0.0 .. 255.0) using ITU-R BT.709 coefficients."""
+    r, g, b = _parse_rgb_hex(hex_color)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def color_relative_luminance(hex_color: str) -> float:
+    """WCAG 2.1 linearized relative luminance L in [0.0, 1.0]."""
+    r, g, b = _parse_rgb_hex(hex_color)
+    channels = []
+    for c in (r, g, b):
+        v = c / 255.0
+        channels.append(v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def contrast_ratio(hex_a: str, hex_b: str) -> float:
+    """Return WCAG contrast ratio (1.0 .. 21.0) between two hex colors."""
+    la = color_relative_luminance(hex_a)
+    lb = color_relative_luminance(hex_b)
+    hi = max(la, lb)
+    lo = min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def auto_contrast_pair(bg_hex: str) -> tuple[str, str]:
+    """Return `(primary_fg_hex, opposite_halo_hex)` for Microsoft cursor-style dual-stroke contrast."""
+    if color_luma_255(bg_hex) >= 150.0:
+        return "#0b0d10", "#ffffff"
+    return "#ffffff", "#0b0d10"
+
+
+def ensure_min_contrast_color(
+    fg_hex: str,
+    bg_hex: str,
+    min_ratio: float = 4.5,
+) -> str:
+    """Guarantee at least `min_ratio` contrast between `fg_hex` and `bg_hex`.
+
+    If `fg_hex` is already readable against `bg_hex`, returns `fg_hex` unchanged.
+    Otherwise, preserves the user's Hue and Saturation in HSL space while stepping
+    Lightness away from `bg_hex` so white-on-white, black-on-black, red-on-red, or
+    dark/light bleedover can never make menus, buttons, or borders unreadable.
+    """
+    if contrast_ratio(fg_hex, bg_hex) >= min_ratio:
+        return fg_hex
+
+    import colorsys
+
+    fr, fg, fb = _parse_rgb_hex(fg_hex, (240, 246, 252))
+    h, _l, s = colorsys.rgb_to_hls(fr / 255.0, fg / 255.0, fb / 255.0)
+    bg_lum = color_relative_luminance(bg_hex)
+    prefer_lighter = (bg_lum < 0.36)
+    directions = (True, False) if prefer_lighter else (False, True)
+
+    best_hex = fg_hex
+    best_cr = contrast_ratio(fg_hex, bg_hex)
+
+    for go_lighter in directions:
+        for step in range(1, 51):
+            frac = step / 50.0
+            cand_l = (_l + (1.0 - _l) * frac) if go_lighter else (_l * (1.0 - frac))
+            cand_s = s * (1.0 - 0.35 * (frac ** 2))
+            cr_f, cg_f, cb_f = colorsys.hls_to_rgb(h, max(0.0, min(1.0, cand_l)), max(0.0, min(1.0, cand_s)))
+            cand_hex = f"#{int(round(cr_f * 255)):02x}{int(round(cg_f * 255)):02x}{int(round(cb_f * 255)):02x}"
+            cr_val = contrast_ratio(cand_hex, bg_hex)
+            if cr_val > best_cr:
+                best_cr = cr_val
+                best_hex = cand_hex
+            if cr_val >= min_ratio:
+                return cand_hex
+
+    primary, _halo = auto_contrast_pair(bg_hex)
+    return primary if contrast_ratio(primary, bg_hex) > best_cr else best_hex
+
+
+def enforce_theme_readability_guardrails(theme_dict: dict[str, Any]) -> dict[str, Any]:
+    """Enforce minimum visible difference on all menus, text, buttons, bubbles, and borders."""
+    t = dict(theme_dict or {})
+    bg_main = str(t.get("bg_main") or "#0d1117")
+    bg_side = str(t.get("bg_sidebar") or bg_main)
+    bg_card = str(t.get("bg_card") or "#161b22")
+    bg_hover = str(t.get("bg_hover") or "#1f242d")
+
+    txt = str(t.get("text_primary") or "#e6edf3")
+    txt = ensure_min_contrast_color(txt, bg_main, min_ratio=4.5)
+    txt = ensure_min_contrast_color(txt, bg_card, min_ratio=4.5)
+    t["text_primary"] = txt
+
+    txt_sec = str(t.get("text_secondary") or "#9da7b3")
+    txt_sec = ensure_min_contrast_color(txt_sec, bg_main, min_ratio=3.6)
+    txt_sec = ensure_min_contrast_color(txt_sec, bg_side, min_ratio=3.6)
+    txt_sec = ensure_min_contrast_color(txt_sec, bg_card, min_ratio=3.4)
+    t["text_secondary"] = txt_sec
+
+    txt_muted = str(t.get("text_muted") or "#7d8590")
+    txt_muted = ensure_min_contrast_color(txt_muted, bg_main, min_ratio=2.8)
+    txt_muted = ensure_min_contrast_color(txt_muted, bg_side, min_ratio=2.8)
+    t["text_muted"] = txt_muted
+
+    border = str(t.get("border") or "#30363d")
+    border = ensure_min_contrast_color(border, bg_main, min_ratio=1.55)
+    t["border"] = border
+
+    send_bg = str(t.get("send_bg") or "#38bdf8")
+    send_bg = ensure_min_contrast_color(send_bg, bg_main, min_ratio=2.0)
+    t["send_bg"] = send_bg
+    send_fg = str(t.get("send_fg") or "#0b0d10")
+    t["send_fg"] = ensure_min_contrast_color(send_fg, send_bg, min_ratio=4.5)
+
+    ub_bg = str(t.get("user_bubble_bg") or bg_card)
+    ub_txt = str(t.get("user_bubble_text") or txt)
+    t["user_bubble_text"] = ensure_min_contrast_color(ub_txt, ub_bg, min_ratio=4.5)
+    ub_bd = str(t.get("user_bubble_border") or send_bg)
+    t["user_bubble_border"] = ensure_min_contrast_color(ub_bd, bg_main, min_ratio=1.65)
+    t["bg_hover"] = bg_hover
+    return t
+
+
+_TICK_ASSET_CACHE: dict[str, str] = {}
+
+
+def ensure_checkbox_tick_asset(fill_hex: str) -> str:
+    """Render & cache a HiDPI dual-stroke (Microsoft inverted-cursor halo) checkmark PNG for `fill_hex`."""
+    primary_fg, halo_fg = auto_contrast_pair(fill_hex)
+    key = f"{primary_fg.lstrip('#').lower()}_{halo_fg.lstrip('#').lower()}"
+    with _THEME_CACHE_LOCK:
+        cached_path = _TICK_ASSET_CACHE.get(key)
+    if cached_path and Path(cached_path).is_file():
+        return cached_path
+
+    ticks_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Palace" / "cache" / "ticks"
+    ticks_dir.mkdir(parents=True, exist_ok=True)
+    out_fp = ticks_dir / f"tick_{key}.png"
+
+    if not out_fp.is_file():
+        try:
+            img = QImage(32, 32, QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(Qt.GlobalColor.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+            path = QPainterPath()
+            path.moveTo(6.5, 16.5)
+            path.lineTo(13.2, 23.2)
+            path.lineTo(25.8, 9.2)
+
+            halo_col = QColor(halo_fg)
+            halo_col.setAlpha(175)
+            halo_pen = QPen(halo_col, 5.4)
+            halo_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            halo_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(halo_pen)
+            p.drawPath(path)
+
+            core_pen = QPen(QColor(primary_fg), 3.3)
+            core_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            core_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(core_pen)
+            p.drawPath(path)
+            p.end()
+            img.save(str(out_fp), "PNG")
+        except Exception:
+            pass
+
+    posix_path = out_fp.resolve().as_posix()
+    with _THEME_CACHE_LOCK:
+        _TICK_ASSET_CACHE[key] = posix_path
+    return posix_path
+
+
+def build_checkbox_qss(
+    fill_hex: str,
+    bg_ctrl_hex: str,
+    border_hex: str,
+    surface_hex: str,
+    *,
+    scope_prefix: str = "",
+) -> str:
+    """Build QSS rules for QCheckBox & QListWidget/QTableWidget indicators with both Color AND a high-contrast Tick."""
+    safe_fill = ensure_min_contrast_color(fill_hex, surface_hex, min_ratio=1.85)
+    safe_unchecked_bd = ensure_min_contrast_color(border_hex, surface_hex, min_ratio=1.65)
+    safe_checked_bd = ensure_min_contrast_color(safe_fill, surface_hex, min_ratio=2.1)
+    tick_url = ensure_checkbox_tick_asset(safe_fill)
+    pfx = f"{scope_prefix.strip()} " if scope_prefix.strip() else ""
+    return (
+        f"{pfx}QCheckBox::indicator, {pfx}QGroupBox::indicator, {pfx}QListWidget::indicator, {pfx}QTableWidget::indicator "
+        f"{{ width: 15px; height: 15px; border: 1px solid {safe_unchecked_bd}; border-radius: 3px; background: {bg_ctrl_hex}; }} "
+        f"{pfx}QCheckBox::indicator:hover, {pfx}QGroupBox::indicator:hover, {pfx}QListWidget::indicator:hover, {pfx}QTableWidget::indicator:hover "
+        f"{{ border-color: {safe_fill}; }} "
+        f"{pfx}QCheckBox::indicator:checked, {pfx}QGroupBox::indicator:checked, {pfx}QListWidget::indicator:checked, {pfx}QTableWidget::indicator:checked "
+        f"{{ background-color: {safe_fill}; border: 1px solid {safe_checked_bd}; image: url('{tick_url}'); }}"
+    )
+
+
 def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
     tdir = ensure_builtin_theme_files()
     clean = (theme_id or "dark").strip().lower()
@@ -2580,6 +2808,7 @@ def load_theme_dict(theme_id: str = "dark") -> dict[str, Any]:
                 base.update(loaded)
         except Exception:
             pass
+    base = enforce_theme_readability_guardrails(base)
     with _THEME_CACHE_LOCK:
         _THEME_DICT_CACHE[cache_key] = (cur_mtime_ns, dict(base))
     return base
@@ -2597,6 +2826,7 @@ def build_theme_stylesheet(theme_id: str = "dark") -> str:
     txt_muted = t["text_muted"]
     send_bg = t["send_bg"]
     send_fg = t["send_fg"]
+    chk_qss = build_checkbox_qss(send_bg, bg_card, border, bg_main)
     return f"""
 QMainWindow {{ background: {bg_main}; color: {txt}; font-family: "Segoe UI Variable", "Segoe UI"; font-size: 13px; }}
 QDialog, QDialog QLabel, QDialog QCheckBox, QDialog QPushButton, QDialog QComboBox, QDialog QLineEdit, QDialog QSpinBox, QDialog QTextEdit, QDialog QListWidget#sidebarList {{ background: transparent; color: {txt}; font-family: "Segoe UI Variable Text", "Inter", "Aptos", "Segoe UI", sans-serif; font-size: 11.5px; }}
@@ -2666,8 +2896,8 @@ QPushButton#aiPillButton:hover {{ background: {bg_hover}; color: {txt}; }}
 QPushButton#sendButton {{ background: {send_bg}; color: {send_fg}; font-size: 14px; font-weight: 700; border: none; border-radius: 15px; }}
 QPushButton#sendButton:hover {{ opacity: 0.92; }}
 QPushButton#sendButton:disabled {{ background: {border}; color: {txt_muted}; }}
-QCheckBox {{ color: {txt_sec}; font-size: 12px; spacing: 5px; }}
-QCheckBox::indicator {{ width: 14px; height: 14px; }}
+QCheckBox {{ color: {txt_sec}; font-size: 12px; spacing: 6px; }}
+{chk_qss}
 QCheckBox:checked {{ color: {txt}; font-weight: 600; }}
 QSplitter::handle {{ background: {border}; width: 1px; }}
 QScrollBar:vertical {{ background: {bg_main}; width: 12px; margin: 2px; border-radius: 6px; }}

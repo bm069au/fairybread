@@ -524,7 +524,7 @@ _INTERNAL_EMAIL_TAG_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _INTERNAL_SERVICE_TAG_RE = re.compile(
-    r"\[(JELLYFIN_STATUS|JELLYFIN_SEARCH|JELLYFIN_REFRESH|SERVICE_API|SET_VOICE_SENSITIVITY|ADD_IGNORED_NOISE)\b([^\]]*)\]",
+    r"\[(JELLYFIN_STATUS|JELLYFIN_SEARCH|JELLYFIN_REFRESH|SERVICE_API|SET_VOICE_SENSITIVITY|ADD_IGNORED_NOISE|ALWAYS_INCLUDE_WORD|ADD_VOICE_SUBMIT_PHRASE)\b([^\]]*)\]",
     re.IGNORECASE | re.DOTALL,
 )
 _INTERNAL_CODE_TOOL_RE = re.compile(
@@ -711,6 +711,18 @@ def _execute_internal_agent_tools(
                 if ph:
                     updated_list = add_custom_ignored_noise(ph)
                     outputs.append(f"[INTERNAL IGNORED NOISE ADDED]: '{ph}' (custom list: {', '.join(updated_list)})")
+            elif tag_kind == "ALWAYS_INCLUDE_WORD":
+                from voice_service import add_always_included_word
+                ph = attrs.get("phrase") or attrs.get("word") or attrs.get("query") or ""
+                if ph:
+                    updated_list = add_always_included_word(ph)
+                    outputs.append(f"[INTERNAL ALWAYS INCLUDED WORD ADDED]: '{ph}' (always include list: {', '.join(updated_list)})")
+            elif tag_kind == "ADD_VOICE_SUBMIT_PHRASE":
+                from voice_service import add_voice_submit_phrase
+                ph = attrs.get("phrase") or attrs.get("command") or attrs.get("query") or ""
+                if ph:
+                    updated_list = add_voice_submit_phrase(ph)
+                    outputs.append(f"[INTERNAL VOICE SUBMIT COMMAND ADDED]: '{ph}' (submit commands: {', '.join(updated_list)})")
         except Exception as exc:
             outputs.append(f"[INTERNAL SERVICE CONNECTOR ERROR]: {exc}")
 
@@ -1099,6 +1111,7 @@ Instructions:
         project_name: str = "",
         model_overrides: dict[str, str] | None = None,
         context_depth: str = "standard",
+        timing_profile: str = "",
     ) -> PalaceRunResult:
 
         try:
@@ -2075,8 +2088,11 @@ Instructions:
                 if on_speaker_message is not None:
                     on_speaker_message(msg)
 
-        p_timeout = float(agent_defaults.get("provider_timeout_sec", 180) or 180)
+        raw_p_timeout = float(agent_defaults.get("provider_timeout_sec", 0) or 0)
+        raw_r2_timeout = float(agent_defaults.get("round2_timeout_sec", 0) or 0)
         s_grace = float(agent_defaults.get("straggler_grace_sec", 0) or 0)
+        hb_enabled = bool(agent_defaults.get("heartbeat_enabled", True))
+        hb_interval = float(agent_defaults.get("heartbeat_interval_sec", 15) or 15)
         eff_prov_list = list(effective_providers) if effective_providers is not None else list(pool)
         eff_count = len(eff_prov_list)
         total_ctx_chars = len(cleaned_q or "") + len(session_context or "") + len(memory_context or "")
@@ -2107,26 +2123,57 @@ Instructions:
             and conversational_scale == "casual"
             and len(cleaned_q or "") <= 115
         )
+        budget_mode = str(agent_defaults.get("deliberation_budget") or "unlimited").strip().lower()
+        prof_tp = str(timing_profile or "").strip().lower()
+        has_explicit_prof_tp = prof_tp in {"unlimited", "10m", "7m", "5m", "deep", "standard", "quick"}
+        if has_explicit_prof_tp:
+            budget_mode = prof_tp
         try:
-            from palace_config import resolve_council_time_budget
+            from palace_config import resolve_council_time_budget, resolve_provider_timeout_policy
             phase_budget = resolve_council_time_budget(
-                str(agent_defaults.get("deliberation_budget") or "standard"),
-                is_deep_task=is_deep_delib_task,
-                is_quick_task=is_quick_delib_task,
+                budget_mode,
+                is_deep_task=is_deep_delib_task and not has_explicit_prof_tp,
+                is_quick_task=is_quick_delib_task and not has_explicit_prof_tp,
             )
+            prov_ceilings: dict[str, float] = {}
+            for _pn in eff_prov_list:
+                _pol = resolve_provider_timeout_policy(_pn)
+                _tc = float(_pol.get("thinking_ceiling_sec", 0) or 0)
+                if _tc > 0:
+                    prov_ceilings[_pn] = _tc
         except Exception:
-            phase_budget = (
-                {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 90}
-                if is_deep_delib_task
-                else (
-                    {"round1_sec": 60, "round2_sec": 0, "synthesis_sec": 30}
-                    if is_quick_delib_task
-                    else {"round1_sec": 180, "round2_sec": 120, "synthesis_sec": 90}
-                )
-            )
-        r1_phase_ceiling = float(phase_budget.get("round1_sec", 180))
-        r2_phase_ceiling = float(phase_budget.get("round2_sec", 120))
-        p_timeout = max(p_timeout, r1_phase_ceiling) if (s_grace == 0 or s_grace >= 5.0) else p_timeout
+            phase_budget = {"round1_sec": 0, "round2_sec": 0, "synthesis_sec": 0}
+            prov_ceilings = {}
+
+        if has_explicit_prof_tp:
+            if prof_tp == "unlimited":
+                raw_p_timeout = 0.0
+                raw_r2_timeout = 0.0
+            elif prof_tp == "quick":
+                raw_p_timeout = float(phase_budget.get("round1_sec", 60) or 60)
+                raw_r2_timeout = -1.0
+            else:
+                raw_p_timeout = float(phase_budget.get("round1_sec", 180) or 180)
+                raw_r2_timeout = float(phase_budget.get("round2_sec", 120) or 120)
+
+        if raw_r2_timeout < 0:
+            effective_max_rounds = 1
+            r2_phase_ceiling: float | None = 0.0
+        elif raw_r2_timeout == 0:
+            r2_phase_ceiling = None
+        else:
+            r2_b = float(phase_budget.get("round2_sec", 0) or 0)
+            r2_phase_ceiling = max(raw_r2_timeout, r2_b) if r2_b > 0 else raw_r2_timeout
+
+        if raw_p_timeout <= 0:
+            p_timeout: float | None = None
+        else:
+            r1_b = float(phase_budget.get("round1_sec", 0) or 0)
+            if r1_b > 0 and (s_grace == 0 or s_grace >= 5.0):
+                p_timeout = max(raw_p_timeout, r1_b)
+            else:
+                p_timeout = raw_p_timeout
+
         if (
             s_grace >= 5.0
             and eff_count >= 3
@@ -2152,7 +2199,11 @@ Instructions:
                 or drawing_mode != "none"
                 or bool(attached_images)
             ) else 120.0
-            s_grace = min(p_timeout, max(s_grace, target_grace))
+            s_grace = (
+                min(p_timeout, max(s_grace, target_grace))
+                if (p_timeout is not None and p_timeout > 0)
+                else max(s_grace, target_grace)
+            )
 
         parsed_history_messages = (
             []
@@ -2192,6 +2243,12 @@ Instructions:
                 kw["model_overrides"] = eff_overrides
             if _supports("per_provider_timeout"):
                 kw["per_provider_timeout"] = p_timeout
+            if _supports("provider_ceilings") and prov_ceilings:
+                kw["provider_ceilings"] = prov_ceilings
+            if _supports("heartbeat_enabled"):
+                kw["heartbeat_enabled"] = hb_enabled
+            if _supports("heartbeat_interval_sec"):
+                kw["heartbeat_interval_sec"] = hb_interval
             if _supports("straggler_grace_seconds"):
                 kw["straggler_grace_seconds"] = s_grace if (allow_grace and s_grace > 0) else None
             if _supports("cancel_event"):
@@ -2333,7 +2390,11 @@ Instructions:
                 if (f_vk or "model_overrides" in f_params) and eff_overrides:
                     f_kw["model_overrides"] = eff_overrides
                 if f_vk or "per_provider_timeout" in f_params:
-                    f_kw["per_provider_timeout"] = min(float(p_timeout or 60.0), 60.0)
+                    f_kw["per_provider_timeout"] = None if p_timeout is None else min(float(p_timeout), 120.0)
+                if f_vk or "heartbeat_enabled" in f_params:
+                    f_kw["heartbeat_enabled"] = hb_enabled
+                if f_vk or "heartbeat_interval_sec" in f_params:
+                    f_kw["heartbeat_interval_sec"] = hb_interval
                 if (f_vk or "cancel_event" in f_params) and cancel_event is not None:
                     f_kw["cancel_event"] = cancel_event
                 res_m = fn(fu_prompt, **f_kw)
@@ -2576,21 +2637,31 @@ Instructions:
                             on_speaker_message(msg)
 
                 try:
+                    _r2_timeout = (
+                        max(float(r2_phase_ceiling), 60.0)
+                        if (r2_phase_ceiling is not None and float(r2_phase_ceiling) > 0)
+                        else p_timeout
+                    )
                     _r2_kw: dict[str, Any] = {
                         "provider_names": active_names,
                         "on_result": _record_peer,
-                        "per_provider_timeout": max(r2_phase_ceiling, 60.0) if r2_phase_ceiling > 0 else p_timeout,
+                        "per_provider_timeout": _r2_timeout,
                         "straggler_grace_seconds": s_grace if s_grace > 0 else None,
                     }
-                    if eff_overrides:
-                        try:
-                            _r2_sig = inspect.signature(self.dispatcher.dispatch)
-                            _r2_params = _r2_sig.parameters
-                            _r2_vk = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in _r2_params.values())
-                            if _r2_vk or "model_overrides" in _r2_params:
-                                _r2_kw["model_overrides"] = eff_overrides
-                        except (TypeError, ValueError):
-                            pass
+                    try:
+                        _r2_sig = inspect.signature(self.dispatcher.dispatch)
+                        _r2_params = _r2_sig.parameters
+                        _r2_vk = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in _r2_params.values())
+                        if (_r2_vk or "model_overrides" in _r2_params) and eff_overrides:
+                            _r2_kw["model_overrides"] = eff_overrides
+                        if (_r2_vk or "provider_ceilings" in _r2_params) and prov_ceilings:
+                            _r2_kw["provider_ceilings"] = prov_ceilings
+                        if _r2_vk or "heartbeat_enabled" in _r2_params:
+                            _r2_kw["heartbeat_enabled"] = hb_enabled
+                        if _r2_vk or "heartbeat_interval_sec" in _r2_params:
+                            _r2_kw["heartbeat_interval_sec"] = hb_interval
+                    except (TypeError, ValueError):
+                        pass
                     round_results = self.dispatcher.dispatch(peer_prompt, **_r2_kw)
                 except TypeError:
                     try:

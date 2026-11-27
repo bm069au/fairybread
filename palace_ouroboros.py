@@ -90,6 +90,20 @@ EDITABLE_PALACE_FILES: frozenset[str] = frozenset({
     "memory_service.py",
     "search_service.py",
     "dispatcher.py",
+    "voice_service.py",
+    "voice_companion.py",
+    "voice_visualizer.py",
+    "service_connectors.py",
+    "email_service.py",
+    "cost_service.py",
+    "setup_wizard.py",
+    "provider_loader.py",
+    "openai_provider.py",
+    "gemini_provider.py",
+    "mistral_provider.py",
+    "cohere_provider.py",
+    "cerebras_provider.py",
+    "local_cli_provider.py",
 })
 
 MAX_REBOOTS_IN_WINDOW = 3

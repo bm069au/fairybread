@@ -2,9 +2,12 @@
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)**
 
-👉 **Download the Windows x64 Installer (Latest — v0.95c):** [**Fairybread_v0.95c_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/latest)  
+👉 **Download the Windows x64 Installer (Latest — v0.95e):** [**Fairybread_v0.95e_Win_x64_Setup.exe**](https://github.com/bm069au/fairybread/releases/latest)  
 👉 **Website & Release Notes:** [**fairybread.me**](https://fairybread.me) · [**Releases**](https://github.com/bm069au/fairybread/releases)  
-👉 **Full Operating & Drawing Instructions:** See [USER_GUIDE.md](USER_GUIDE.md) (or press **`F1`** / **`Help → 📖 User Guide & Drawing Instructions…`** inside the app).
+👉 **Live IRC Support Channel:** [**`#Fairybread` on Rizon IRC**](https://qchat.rizon.net/?channels=Fairybread) (`irc.rizon.net:+6697` · channel `#Fairybread`)  
+👉 **Full Operating & Drawing Instructions:** See [USER_GUIDE.md](USER_GUIDE.md) (or press **`F1`** / **`Help → Fairybread Help & Guide…`** inside the app).
+
+![Fairybread v0.95e — Slim 22px Composer Toolbar, Option 2 Segmented 8-AI Progress Bar & uTorrent-Style System Tray](theme_assets/composer_and_tray_guide.png)
 
 ---
 
@@ -47,7 +50,10 @@ I made Fairybread **Source-Available Donationware** under the [Fairybread Dual L
 
 ---
 
-## Key Technical Highlights (`v0.95c`)
+## Key Technical Highlights (`v0.95e`)
+
+- **Live Parallel Operations Bar, Option 2 Segmented 8–15 AI Progress Bar, Dedicated `⚡ Parallel` Launch & Slim `22px` Composer Toolbar:**
+  - Launch multiple AI queries and screenshot analyses simultaneously with the electric-cyan **`⚡ Parallel`** button while keeping **`🧭 Steer ▾`** (with **`⏳ Queue`** option) as the default busy action for `Enter` / `↑`. **`🧭 Steer ▾`** and **`⚡ Parallel`** stay hidden while idle and appear automatically when a query is processing. Monitor, steer, or stop individual parallel jobs from the **Live Parallel Operations Bar** (`⚡ N Parallel Running`) with a **Segmented Multi-Color 8–15 AI Progress Bar** and clickable **`[ 5/8 AIs ▾ ]` Popover Pill**, and enjoy a slim `22px` single-row composer toolbar with icon-only **`{}`** & **`↗`**, **`2 AIs ▾`**, **`⚙ Options ▾`**, uTorrent-style **System Tray** controls, auto-completing **`📍 Home Location:`**, and **`#Fairybread` on Rizon IRC** live support.
 
 - **Guided Setup & Selective Backup Restore Wizard:**
   - Automatically launches once on fresh installs (only when zero AI agents are configured) and can be re-opened anytime via **`Settings → 🧭 Guided Setup & Restore Wizard…`**. Walks you through a plain-English needs questionnaire, builds a clickable tick-off API key checklist, or selectively restores Memories, Settings, and Encrypted API Keys from backup.

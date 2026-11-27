@@ -93,7 +93,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.95"
-FAIRYBREAD_VERSION = "0.95c"
+FAIRYBREAD_VERSION = "0.95e"
 FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
@@ -1205,6 +1205,40 @@ def resolve_profile_model_override(
 
 
 DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
+    "voice_1": {
+        "label": "🎙️ Voice 1 — Light & Fast",
+        "providers": ["groq", "gemini", "openai", "deepseek"],
+        "deliberate": False,
+        "code_access": False,
+        "max_ais": 0,
+        "context_depth": "standard",
+        "timing_profile": "quick",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": True,
+        "model_overrides": {
+            "gemini": "gemini-4-neon",
+            "openai": "gpt-6-luna",
+            "deepseek": "deepseek-flash",
+        },
+    },
+    "voice_2": {
+        "label": "🎙️ Voice 2 — Smart Conversation",
+        "providers": ["openai", "gemini", "deepseek", "mistral", "anthropic"],
+        "deliberate": False,
+        "code_access": False,
+        "max_ais": 0,
+        "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": True,
+        "model_overrides": {
+            "openai": "gpt-6.1-terra",
+            "gemini": "gemini-4-hydrogen",
+            "deepseek": "deepseek-v4-pro",
+            "mistral": "mistral-medium-latest",
+            "anthropic": "claude-3-7-sonnet-latest",
+        },
+    },
     "code": {
         "label": "💻 Code AIs",
         "providers": ["deepseek", "mistral", "gemini"],
@@ -1212,6 +1246,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": True,
         "max_ais": 0,
         "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "input_only",
+        "auto_start_voice": False,
         "model_overrides": {
             "mistral": "codestral-latest",
         },
@@ -1223,6 +1260,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": False,
         "max_ais": 0,
         "context_depth": "standard",
+        "timing_profile": "quick",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": False,
         "model_overrides": {
             "mistral": "mistral-small-latest",
         },
@@ -1234,6 +1274,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": False,
         "max_ais": 0,
         "context_depth": "deep",
+        "timing_profile": "unlimited",
+        "voice_mode": "input_only",
+        "auto_start_voice": False,
         "model_overrides": {
             "openai": "gpt-6.2-sol",
             "gemini": "gemini-4-carbon",
@@ -1250,8 +1293,15 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": False,
         "max_ais": 0,
         "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": False,
         "model_overrides": {
+            "gemini": "gemini-4-neon",
+            "openai": "gpt-6-luna",
+            "deepseek": "deepseek-flash",
             "mistral": "mistral-medium-latest",
+            "cohere": "command-a-03-2025",
         },
     },
     "graphics": {
@@ -1261,6 +1311,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": False,
         "max_ais": 0,
         "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "input_only",
+        "auto_start_voice": False,
         "model_overrides": {},
     },
     "work_mode": {
@@ -1270,6 +1323,9 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "code_access": True,
         "max_ais": 0,
         "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "input_only",
+        "auto_start_voice": False,
         "model_overrides": {
             "mistral": "mistral-medium-latest",
         },
@@ -1292,6 +1348,28 @@ def _normalize_squad_entry(slug: str, val: dict[str, Any]) -> dict[str, Any]:
     depth = str(val.get("context_depth") or "standard").strip().lower()
     if depth not in CONTEXT_DEPTH_LIMITS:
         depth = "standard"
+    builtin_def = DEFAULT_AI_SQUADS.get(slug) or {}
+    default_tp = str(builtin_def.get("timing_profile") or "unlimited").strip().lower()
+    timing_prof = str(val.get("timing_profile") or default_tp or "unlimited").strip().lower()
+    if timing_prof not in {"default", "unlimited", "10m", "7m", "5m", "deep", "standard", "quick"}:
+        timing_prof = default_tp if default_tp in {"default", "unlimited", "10m", "7m", "5m", "deep", "standard", "quick"} else "unlimited"
+    default_vm = str(builtin_def.get("voice_mode") or "full_conversation").strip().lower()
+    raw_vm = str(val.get("voice_mode") or "").strip().lower()
+    if raw_vm in {"", "off"}:
+        voice_mode = default_vm
+    elif raw_vm in {"full_conversation", "council_voice", "fast_voice"}:
+        voice_mode = "full_conversation"
+    elif raw_vm == "input_only":
+        voice_mode = "input_only"
+    else:
+        voice_mode = default_vm
+    default_auto_voice = bool(builtin_def.get("auto_start_voice", slug in {"voice_1", "voice_2"}))
+    if "auto_start_voice" in val:
+        auto_start_voice = bool(val.get("auto_start_voice"))
+    elif raw_vm in {"council_voice", "fast_voice"}:
+        auto_start_voice = True
+    else:
+        auto_start_voice = default_auto_voice
     raw_ov = val.get("model_overrides")
     overrides: dict[str, str] = {}
     if isinstance(raw_ov, dict):
@@ -1307,6 +1385,9 @@ def _normalize_squad_entry(slug: str, val: dict[str, Any]) -> dict[str, Any]:
         "code_access": bool(val.get("code_access", False)),
         "max_ais": max(0, int(val.get("max_ais") or 0)),
         "context_depth": depth,
+        "timing_profile": timing_prof,
+        "voice_mode": voice_mode,
+        "auto_start_voice": auto_start_voice,
         "model_overrides": overrides,
     }
 
@@ -1331,6 +1412,10 @@ def load_ai_squads(config_path: Path = CONFIG_PATH) -> dict[str, dict[str, Any]]
         for x in (data.get("deleted_builtin_squads") or [])
         if str(x).strip()
     } if isinstance(data.get("deleted_builtin_squads"), list) else set()
+    for v_slug in ("voice_2", "voice_1"):
+        if v_slug not in out and v_slug not in deleted_builtins:
+            v_entry = _normalize_squad_entry(v_slug, DEFAULT_AI_SQUADS[v_slug])
+            out = {v_slug: v_entry, **out}
     if "deep_chat" not in out and "deep_chat" not in deleted_builtins:
         dc_entry = _normalize_squad_entry("deep_chat", DEFAULT_AI_SQUADS["deep_chat"])
         ordered: dict[str, dict[str, Any]] = {}
@@ -1458,19 +1543,116 @@ def save_graphics_settings(
 
 
 COUNCIL_TIME_BUDGETS: dict[str, dict[str, int]] = {
-    "quick": {"round1_sec": 60, "round2_sec": 0, "synthesis_sec": 30},
+    "unlimited": {"round1_sec": 0, "round2_sec": 0, "synthesis_sec": 0},
+    "10m": {"round1_sec": 600, "round2_sec": 420, "synthesis_sec": 300},
+    "7m": {"round1_sec": 420, "round2_sec": 300, "synthesis_sec": 180},
+    "5m": {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 120},
+    "deep": {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 120},
     "standard": {"round1_sec": 180, "round2_sec": 120, "synthesis_sec": 90},
-    "deep": {"round1_sec": 300, "round2_sec": 240, "synthesis_sec": 90},
+    "quick": {"round1_sec": 60, "round2_sec": 0, "synthesis_sec": 30},
+}
+
+COUNCIL_TIMING_PROFILE_CHOICES: list[tuple[str, str]] = [
+    ("unlimited", "Unlimited — Server Heartbeat & Error-Only (Recommended)"),
+    ("10m", "10 Minutes — Heavy Reasoning & Code (600s / 420s / 300s)"),
+    ("7m", "7 Minutes — Extended Thinking (420s / 300s / 180s)"),
+    ("5m", "5 Minutes — Deep Analysis (300s / 240s / 120s)"),
+    ("standard", "3 Minutes — Standard (180s / 120s / 90s)"),
+    ("quick", "1 Minute — Quick Lookups (60s / Off / 30s)"),
+    ("custom", "Custom Phase Timers"),
+]
+
+PHASE_TIMEOUT_PRESET_CHOICES: list[tuple[int, str]] = [
+    (0, "Unlimited (Heartbeat & Error-Only)"),
+    (600, "10 minutes (600 sec)"),
+    (420, "7 minutes (420 sec)"),
+    (300, "5 minutes (300 sec)"),
+    (240, "4 minutes (240 sec)"),
+    (180, "3 minutes (180 sec)"),
+    (120, "2 minutes (120 sec)"),
+    (90, "90 seconds"),
+    (60, "1 minute (60 sec)"),
+    (30, "30 seconds"),
+]
+
+PROVIDER_CEILING_GROUPS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("fast_inference", "Cerebras / Groq (Fast Inference)", ("cerebras", "groq")),
+    ("standard_cloud", "Mistral / Cohere / Qwen", ("mistral", "cohere", "qwen")),
+    ("frontier_reasoning", "DeepSeek / OpenAI / Anthropic / xAI", ("deepseek", "openai", "anthropic", "claude", "xai", "grok", "openrouter")),
+    ("gemini_vision", "Gemini High / Vision & Graphics", ("gemini",)),
+    ("local_cli", "Local CLI Agents (Antigravity / Codex / Claude / Grok)", ("antigravity_cli", "codex_cli", "claude_cli", "grok_cli", "ollama")),
+]
+
+DEFAULT_PROVIDER_CEILING_OVERRIDES: dict[str, dict[str, int]] = {
+    "fast_inference": {"handshake_sec": 15, "thinking_ceiling_sec": 0},
+    "standard_cloud": {"handshake_sec": 15, "thinking_ceiling_sec": 0},
+    "frontier_reasoning": {"handshake_sec": 15, "thinking_ceiling_sec": 0},
+    "gemini_vision": {"handshake_sec": 15, "thinking_ceiling_sec": 0},
+    "local_cli": {"handshake_sec": 15, "thinking_ceiling_sec": 0},
 }
 
 
-def resolve_council_time_budget(mode: str = "standard", *, is_deep_task: bool = False, is_quick_task: bool = False) -> dict[str, int]:
-    key = (mode or "standard").strip().lower()
-    if is_deep_task or key == "deep":
+def normalize_provider_ceiling_overrides(raw: Any) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {
+        k: dict(v) for k, v in DEFAULT_PROVIDER_CEILING_OVERRIDES.items()
+    }
+    if not isinstance(raw, dict):
+        return out
+    for g_key, defaults in DEFAULT_PROVIDER_CEILING_OVERRIDES.items():
+        entry = raw.get(g_key)
+        if not isinstance(entry, dict):
+            continue
+        try:
+            hs = int(entry.get("handshake_sec", defaults["handshake_sec"]))
+            out[g_key]["handshake_sec"] = max(5, min(120, hs))
+        except (TypeError, ValueError):
+            pass
+        try:
+            tc = int(entry.get("thinking_ceiling_sec", defaults["thinking_ceiling_sec"]))
+            out[g_key]["thinking_ceiling_sec"] = 0 if tc <= 0 else max(15, min(7200, tc))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def resolve_provider_timeout_policy(
+    provider_name: str,
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    """Return handshake timeout (sec), optional thinking ceiling (0 = Unlimited), and heartbeat settings for a provider."""
+    ad = load_agent_defaults(config_path)
+    overrides = normalize_provider_ceiling_overrides(ad.get("provider_ceiling_overrides"))
+    clean = (provider_name or "").strip().lower()
+    matched_group = "frontier_reasoning"
+    for g_key, _g_label, members in PROVIDER_CEILING_GROUPS:
+        if clean in members:
+            matched_group = g_key
+            break
+    g_cfg = overrides.get(matched_group, DEFAULT_PROVIDER_CEILING_OVERRIDES["frontier_reasoning"])
+    return {
+        "group_key": matched_group,
+        "handshake_sec": int(g_cfg.get("handshake_sec", 15)),
+        "thinking_ceiling_sec": int(g_cfg.get("thinking_ceiling_sec", 0)),
+        "heartbeat_enabled": bool(ad.get("heartbeat_enabled", True)),
+        "heartbeat_interval_sec": int(ad.get("heartbeat_interval_sec", 15)),
+    }
+
+
+def resolve_council_time_budget(mode: str = "unlimited", *, is_deep_task: bool = False, is_quick_task: bool = False) -> dict[str, int]:
+    key = (mode or "unlimited").strip().lower()
+    if key == "unlimited":
+        return dict(COUNCIL_TIME_BUDGETS["unlimited"])
+    if key in COUNCIL_TIME_BUDGETS:
+        if key == "standard" and is_deep_task:
+            return dict(COUNCIL_TIME_BUDGETS["deep"])
+        if key == "standard" and is_quick_task:
+            return dict(COUNCIL_TIME_BUDGETS["quick"])
+        return dict(COUNCIL_TIME_BUDGETS[key])
+    if is_deep_task:
         return dict(COUNCIL_TIME_BUDGETS["deep"])
-    if is_quick_task or key == "quick":
+    if is_quick_task:
         return dict(COUNCIL_TIME_BUDGETS["quick"])
-    return dict(COUNCIL_TIME_BUDGETS["standard"])
+    return dict(COUNCIL_TIME_BUDGETS["unlimited"])
 
 
 DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
@@ -1482,9 +1664,14 @@ DEFAULT_AGENT_DEFAULTS: dict[str, Any] = {
     "synthesizer_mode": "auto_fast",     # "auto_fast" | "deepseek" | "gemini" | "openai" | "cerebras" | "match_primary"
     "smart_routing": True,
     "show_inline_status_messages": True,
-    "deliberation_budget": "standard",   # "quick" | "standard" | "deep"
-    "provider_timeout_sec": 180,
+    "deliberation_budget": "unlimited",  # "unlimited" | "10m" | "7m" | "5m" | "deep" | "standard" | "quick" | "custom"
+    "provider_timeout_sec": 0,           # 0 = Unlimited (Server Heartbeat & Error-Only), or 15..7200 sec
+    "round2_timeout_sec": 0,             # 0 = Unlimited, -1 = Off (skip Round 2), or 15..7200 sec
+    "synthesis_timeout_sec": 0,          # 0 = Unlimited, or 15..7200 sec
     "straggler_grace_sec": 0,
+    "heartbeat_enabled": True,
+    "heartbeat_interval_sec": 15,
+    "provider_ceiling_overrides": normalize_provider_ceiling_overrides(None),
 }
 
 
@@ -1494,6 +1681,7 @@ def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     out = dict(DEFAULT_AGENT_DEFAULTS)
+    out["provider_ceiling_overrides"] = normalize_provider_ceiling_overrides(raw.get("provider_ceiling_overrides"))
 
     ap = str(raw.get("approval_policy") or out["approval_policy"]).strip().lower()
     if ap in {"on_request", "auto_deploy", "read_only", "request_review", "default", "auto", "turbo"}:
@@ -1524,14 +1712,35 @@ def load_agent_defaults(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
     if "show_inline_status_messages" in raw:
         out["show_inline_status_messages"] = bool(raw["show_inline_status_messages"])
 
+    db = str(raw.get("deliberation_budget") or out["deliberation_budget"]).strip().lower()
+    if db in {"unlimited", "10m", "7m", "5m", "deep", "standard", "quick", "custom"}:
+        out["deliberation_budget"] = db
+
     try:
         t_sec = int(raw.get("provider_timeout_sec", out["provider_timeout_sec"]))
-        out["provider_timeout_sec"] = max(15, min(600, t_sec))
+        out["provider_timeout_sec"] = 0 if t_sec <= 0 else max(15, min(7200, t_sec))
+    except (TypeError, ValueError):
+        pass
+    try:
+        r2_sec = int(raw.get("round2_timeout_sec", out["round2_timeout_sec"]))
+        out["round2_timeout_sec"] = -1 if r2_sec < 0 else (0 if r2_sec == 0 else max(15, min(7200, r2_sec)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        syn_sec = int(raw.get("synthesis_timeout_sec", out["synthesis_timeout_sec"]))
+        out["synthesis_timeout_sec"] = 0 if syn_sec <= 0 else max(15, min(7200, syn_sec))
     except (TypeError, ValueError):
         pass
     try:
         g_sec = int(raw.get("straggler_grace_sec", out["straggler_grace_sec"]))
-        out["straggler_grace_sec"] = max(0, min(300, g_sec))
+        out["straggler_grace_sec"] = max(0, min(600, g_sec))
+    except (TypeError, ValueError):
+        pass
+    if "heartbeat_enabled" in raw:
+        out["heartbeat_enabled"] = bool(raw["heartbeat_enabled"])
+    try:
+        hb_sec = int(raw.get("heartbeat_interval_sec", out["heartbeat_interval_sec"]))
+        out["heartbeat_interval_sec"] = max(5, min(120, hb_sec))
     except (TypeError, ValueError):
         pass
     return out
@@ -1587,6 +1796,12 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "custom_data_dir": "",  # Empty = %LOCALAPPDATA%\Palace; or custom directory path on any drive
     "custom_experimental_dir": "",  # Empty = default sandbox dir; or custom directory path on any drive
     "close_to_tray": False,  # False: window X exits cleanly (Windows/Store compliant); user can opt-in to tray
+    "minimize_to_tray": False,  # True: clicking window minimize (_) hides to system tray instead of taskbar
+    "always_show_tray_icon": True,  # True: keep tray icon visible at all times; False: show only while hidden to tray
+    "single_click_tray_to_open": True,  # True: single left-click opens; False: double-click opens
+    "show_tray_balloon_notifications": True,  # True: show tray balloon/toast popups
+    "always_activate_when_clicked": True,  # True: raise_() and activateWindow() when tray icon is clicked
+    "confirm_on_exit": False,  # True: show confirmation dialog before exiting Fairybread
     "auto_refresh_catalog": True,  # Auto-fetch rates/model updates & release notifications from fairybread.me
     "dismissed_update_version": "",  # Version tag dismissed by user until a newer release arrives
     "spellcheck_enabled": True,  # Live red-underline spellcheck + right-click suggestions in Composer
@@ -1630,6 +1845,16 @@ def load_ui_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["include_palace_code"] = bool(raw["include_palace_code"])
     if "close_to_tray" in raw:
         merged["close_to_tray"] = bool(raw["close_to_tray"])
+    for tray_bool_key in (
+        "minimize_to_tray",
+        "always_show_tray_icon",
+        "single_click_tray_to_open",
+        "show_tray_balloon_notifications",
+        "always_activate_when_clicked",
+        "confirm_on_exit",
+    ):
+        if tray_bool_key in raw:
+            merged[tray_bool_key] = bool(raw[tray_bool_key])
     if "auto_refresh_catalog" in raw:
         merged["auto_refresh_catalog"] = bool(raw["auto_refresh_catalog"])
     if "spellcheck_enabled" in raw:
@@ -1689,6 +1914,12 @@ def save_ui_settings(
     current["enter_to_send"] = bool(current.get("enter_to_send", True))
     current["include_palace_code"] = bool(current.get("include_palace_code", False))
     current["close_to_tray"] = bool(current.get("close_to_tray", False))
+    current["minimize_to_tray"] = bool(current.get("minimize_to_tray", False))
+    current["always_show_tray_icon"] = bool(current.get("always_show_tray_icon", True))
+    current["single_click_tray_to_open"] = bool(current.get("single_click_tray_to_open", True))
+    current["show_tray_balloon_notifications"] = bool(current.get("show_tray_balloon_notifications", True))
+    current["always_activate_when_clicked"] = bool(current.get("always_activate_when_clicked", True))
+    current["confirm_on_exit"] = bool(current.get("confirm_on_exit", False))
     current["auto_refresh_catalog"] = bool(current.get("auto_refresh_catalog", True))
     current["spellcheck_enabled"] = bool(current.get("spellcheck_enabled", True))
     if current.get("busy_submit_mode") not in {"steer", "queue"}:
@@ -2386,6 +2617,27 @@ def build_project_folder_context(
         except OSError:
             pass
     return "\n".join(out)
+
+
+def restore_default_theme_only(
+    config_path: Path = CONFIG_PATH,
+) -> dict[str, Any]:
+    """Reset only the Fairybread UI Theme and Background Artwork back to factory Midnight Dark ('dark'),
+    preserving all other user settings, profiles, voice settings, API keys, and Memory Palace databases.
+    """
+    existing = _read_raw_config(config_path)
+    ui = dict(existing.get("ui_settings")) if isinstance(existing.get("ui_settings"), dict) else dict(DEFAULT_UI_SETTINGS)
+    old_theme = str(ui.get("theme") or "dark")
+    ui["theme"] = "dark"
+    ui["bg_image_source"] = "none"
+    ui["bg_image_path"] = ""
+    ui["bg_washout_percent"] = 90
+    existing["ui_settings"] = ui
+    _write_raw_config(existing, config_path)
+    return {
+        "previous_theme": old_theme,
+        "restored_theme": "dark",
+    }
 
 
 def restore_default_settings(

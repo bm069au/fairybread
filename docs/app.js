@@ -21,6 +21,27 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v095e-release',
+    title: 'Fairybread v0.95e: Slim 22px Composer Toolbar, Option 2 Segmented 8–15 AI Progress Bar, uTorrent System Tray, Location Autocomplete & #Fairybread Rizon IRC',
+    tag: 'Release v0.95e',
+    date: '2026-11-27',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95e (Win_x64) is live on GitHub Releases with 1-click Update Only support:
+
+• Design 1A Slim 22px Decluttered Composer Toolbar: Icon-only {} (Code) and ↗ (Tangent) pills with clear tooltips, compact 2 AIs ▾ selector, ⚙ Options ▾ menu, and context-aware 🧭 Steer ▾ & ⚡ Parallel buttons that stay hidden while idle and appear automatically when a query is processing.
+• Option 2 Segmented Multi-Color 8–15 AI Progress Bar + [5/8 AIs ▾] Popover: Scales cleanly when 8–15 AIs are working in parallel—each AI gets its own color-coded segment inside the progress bar plus a clickable [5/8 AIs ▾] popover showing every AI's status and elapsed time.
+• uTorrent-Style System Tray & Wide Auto-Completing Home Location: Full 2-column System Tray controls (Close/Minimize to tray, Always show tray icon, Single click to open, Balloon notifications, Confirm on exit) and a wide 380px live auto-completing 📍 Home Location box in Tools -> Options -> General.
+• Live IRC Support (#Fairybread on Rizon): Join #Fairybread on Rizon IRC (irc.rizon.net:+6697 or qchat.rizon.net/?channels=Fairybread) for live community and creator support!`,
+  },
+  {
+    id: 'news-v095c-release',
+    title: 'Fairybread v0.95c: Live Voice Anti-Cutoff Sensitivity, 60+ Human Noise Filter, Full Talk Mode Code Access & Option 3 App/Service API Vault (Jellyfin)',
+    tag: 'Release v0.95c',
+    date: '2026-11-26',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95c (Win_x64) adds sustained vocal-cadence barge-in gating, a 60+ human noise & hesitation filler filter, full 18,000-char codebase inspection in Talk Mode, and an encrypted Option 3 App & Service API Keys vault for Jellyfin, TMDB, Plex, Home Assistant, GitHub, and Brave Search.`,
+  },
+  {
     id: 'news-v095b-release',
     title: 'Fairybread v0.95b: DeepSeek V4.1-Flash (1M Context + Vision) & V4-Pro, Web Search/Fetch, OCR, Neural TTS/ASR & Ctrl+V Picture Paste Fix',
     tag: 'Release v0.95b',
@@ -946,7 +967,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.95b';
+    const currentSiteVersion = 'v0.95e';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }

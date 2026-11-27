@@ -1,3 +1,4 @@
+import httpx
 from cerebras.cloud.sdk import Cerebras
 
 from cost_service import extract_sdk_usage_tokens
@@ -12,14 +13,22 @@ class CerebrasProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gpt-oss-120b",
-        timeout: float = 120.0,
+        timeout: float | None = 0.0,
+        handshake_timeout: float = 15.0,
     ):
-        self.client = Cerebras(api_key=api_key, timeout=timeout, max_retries=0)
+        hs = max(5.0, float(handshake_timeout or 15.0))
+        eff_timeout = (
+            httpx.Timeout(connect=hs, read=None, write=60.0, pool=hs)
+            if (timeout is None or float(timeout) <= 0.0)
+            else httpx.Timeout(float(timeout), connect=min(hs, float(timeout)))
+        )
+        self.client = Cerebras(api_key=api_key, timeout=eff_timeout, max_retries=0)
         clean_model = (model or "gpt-oss-120b").strip()
         if clean_model.lower() in _RETIRED_CEREBRAS_MODELS:
             clean_model = "gpt-oss-120b"
         self.model = clean_model
         self.timeout = timeout
+        self.handshake_timeout = hs
 
     def generate(self, prompt: str) -> ProviderResponse:
         candidates = [self.model]

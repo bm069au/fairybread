@@ -15,7 +15,7 @@ import time
 from typing import Any
 import webbrowser
 
-from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QRect, QRectF, QSize, QThread, QTimer, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, QObject, QPoint, QRect, QRectF, QSize, QStringListModel, QThread, QTimer, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QCursor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut, QSyntaxHighlighter, QTextCharFormat, QTextCursor
 try:
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -23,7 +23,7 @@ except Exception:
     QLocalServer = None
     QLocalSocket = None
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QCompleter, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox,
     QSplitter, QStackedWidget, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QToolButton, QVBoxLayout, QWidget, QWidgetAction,
@@ -53,7 +53,9 @@ from palace_config import (
     COMMUNITY_CONTRIBUTORS,
     CONFIG_PATH,
     CONTEXT_DEPTH_CHOICES,
+    COUNCIL_TIMING_PROFILE_CHOICES,
     DEFAULT_AI_SQUADS,
+    DEFAULT_PROVIDER_CEILING_OVERRIDES,
     DRAFT_IMAGE_ENGINE_CHOICES,
     GRAPHICS_PIPELINE_MODES,
     IDLE_CREDIT_LIMIT_CHOICES,
@@ -61,8 +63,10 @@ from palace_config import (
     IDLE_TOKEN_LIMIT_CHOICES,
     IS_DEVELOPER_EDITION,
     OPENROUTER_PRESET_TIERS,
+    PHASE_TIMEOUT_PRESET_CHOICES,
     PRIMARY_IMAGE_ENGINE_CHOICES,
     PROVIDER_CATALOG,
+    PROVIDER_CEILING_GROUPS,
     clean_given_name,
     get_app_install_dir,
     get_appdata_root,
@@ -82,6 +86,7 @@ from palace_config import (
     load_provider_configs,
     load_tool_settings,
     load_ui_settings,
+    normalize_provider_ceiling_overrides,
     record_recent_theme,
     save_agent_defaults,
     save_ai_squads,
@@ -217,9 +222,12 @@ from palace_theme import (
     NEUTRAL_GREY,
     PICTURE_BACKED_THEMES,
     STYLES,
+    auto_contrast_pair,
+    build_checkbox_qss,
     build_theme_stylesheet,
     code_shield_qicon,
     council_qicon,
+    ensure_min_contrast_color,
     fairybread_app_qicon,
     folder_grey_qicon,
     format_ai_badge_html,
@@ -273,6 +281,114 @@ def _parse_local_naive_dt(ts_raw) -> datetime:
 
 
 SIDEBAR_META_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+
+
+class SegmentedAIProgressBar(QWidget):
+    """Option 2 Segmented Multi-Color Progress Bar: 1 colored segment per active AI in a parallel job."""
+
+    def __init__(self, segments: list[tuple[str, str]] | None = None, parent=None):
+        super().__init__(parent)
+        self._segments: list[tuple[str, str]] = list(segments or [])
+        self.setFixedSize(144, 15)
+
+    def set_segments(self, segments: list[tuple[str, str]]) -> None:
+        self._segments = list(segments or [])
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setPen(QPen(QColor('#334155'), 1.0))
+        painter.setBrush(QColor('#111827'))
+        painter.drawRoundedRect(rect, 5, 5)
+
+        segs = self._segments or [('working', '#06b6d4')]
+        n = max(1, len(segs))
+        inner = rect.adjusted(2, 2, -2, -2)
+        gap = 2 if n <= 10 else 1
+        total_gaps = gap * (n - 1)
+        avail_w = max(n, inner.width() - total_gaps)
+        seg_w = avail_w / float(n)
+
+        for i, (_state, col_hex) in enumerate(segs):
+            x0 = inner.left() + int(round(i * (seg_w + gap)))
+            x1 = inner.left() + int(round((i + 1) * seg_w + i * gap)) if i < n - 1 else inner.right()
+            w = max(2, x1 - x0)
+            seg_rect = QRectF(x0, inner.top(), w, inner.height())
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(col_hex or '#06b6d4'))
+            painter.drawRoundedRect(seg_rect, 3, 3)
+        painter.end()
+
+
+class LocationAutocompleteLineEdit(QLineEdit):
+    """Wide Home Location input with instant offline + debounced live Open-Meteo / Postcode autocomplete dropdown."""
+    _suggestions_ready = Signal(list)
+
+    def __init__(self, initial_text: str = '', parent=None):
+        super().__init__(initial_text, parent)
+        self.setMinimumWidth(370)
+        self.setMaximumWidth(480)
+        from search_service import _BUILTIN_CITY_SUGGESTIONS, search_location_autocomplete
+        self._search_fn = search_location_autocomplete
+        self._model = QStringListModel(list(_BUILTIN_CITY_SUGGESTIONS), self)
+        self._completer = QCompleter(self._model, self)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self._completer.setMaxVisibleItems(10)
+        popup = self._completer.popup()
+        if popup is not None:
+            popup.setStyleSheet(
+                'QListView { background: #131720; color: #f0f6fc; border: 1px solid #3b82f6; '
+                'border-radius: 6px; padding: 4px; font-size: 12.5px; } '
+                'QListView::item { padding: 5px 8px; border-radius: 4px; } '
+                'QListView::item:hover, QListView::item:selected { background: #1e3a8a; color: #ffffff; }'
+            )
+        self.setCompleter(self._completer)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(260)
+        self._debounce.timeout.connect(self._trigger_lookup)
+        self._suggestions_ready.connect(self._apply_suggestions)
+        self.textEdited.connect(self._on_text_edited)
+
+    def _on_text_edited(self, txt: str) -> None:
+        if len((txt or '').strip()) >= 2:
+            self._debounce.start()
+
+    def _trigger_lookup(self) -> None:
+        q = self.text().strip()
+        if len(q) < 2:
+            return
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+            try:
+                res = self._search_fn(q, count=10, timeout=1.5)
+                self._apply_suggestions(res)
+            except Exception:
+                pass
+            return
+
+        def _bg():
+            try:
+                res = self._search_fn(q, count=10, timeout=2.2)
+                if res:
+                    self._suggestions_ready.emit(res)
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg, daemon=True, name='FairybreadLocationCompleter').start()
+
+    @Slot(list)
+    def _apply_suggestions(self, items: list) -> None:
+        if not items:
+            return
+        from search_service import _BUILTIN_CITY_SUGGESTIONS
+        merged = list(dict.fromkeys([str(x) for x in items if x] + list(_BUILTIN_CITY_SUGGESTIONS)))
+        self._model.setStringList(merged)
+        if self.hasFocus() and os.environ.get('QT_QPA_PLATFORM') != 'offscreen':
+            self._completer.complete()
 
 
 class SidebarSessionList(QListWidget):
@@ -824,7 +940,18 @@ class ChatBrowser(QTextBrowser):
                     del_act.triggered.connect(lambda: self.anchor_action_requested.emit(f'delete-file:{file_path}'))
                     menu.exec(event.globalPos())
                     return
-        super().contextMenuEvent(event)
+        menu = self.createStandardContextMenu(event.pos())
+        cb_mime = QApplication.clipboard().mimeData()
+        if cb_mime is not None and (
+            cb_mime.hasImage()
+            or cb_mime.hasUrls()
+            or cb_mime.hasText()
+            or any(str(f).lower().startswith('image/') or 'png' in str(f).lower() or 'dib' in str(f).lower() or 'bitmap' in str(f).lower() for f in cb_mime.formats())
+        ):
+            menu.addSeparator()
+            paste_chat_act = menu.addAction('📋 Paste into Message Box\tCtrl+V')
+            paste_chat_act.triggered.connect(self.paste_requested.emit)
+        menu.exec(event.globalPos())
 
     def set_theme_colors(self, theme_dict: dict):
         self.user_bubble_bg = str(theme_dict.get('user_bubble_bg', '#1c2128'))
@@ -975,6 +1102,7 @@ class VoiceCompanionWorker(QThread):
                 from voice_service import (
                     _log_voice_diagnostic,
                     is_unconscious_human_noise_or_filler,
+                    process_spoken_input_with_visual_haptics,
                     transcribe_audio_file,
                 )
                 try:
@@ -996,14 +1124,19 @@ class VoiceCompanionWorker(QThread):
             if not transcript:
                 self.completed.emit(None, "")
                 return
+            from voice_service import process_spoken_input_with_visual_haptics
+            display_transcript, clean_transcript, _flagged_fillers = process_spoken_input_with_visual_haptics(transcript)
+            if not clean_transcript:
+                self.completed.emit(None, "")
+                return
             if not self.companion_enabled or self.companion is None:
-                self.completed.emit(None, transcript)
+                self.completed.emit(None, display_transcript)
                 return
             mem_ctx = self.memory_context
             if self.allow_memory_write and self.memory_db_path is not None:
                 try:
                     from memory_service import MemoryService
-                    res = MemoryService(db_path=self.memory_db_path).search(transcript)
+                    res = MemoryService(db_path=self.memory_db_path).search(clean_transcript)
                     if res.succeeded and res.context:
                         if mem_ctx and res.context not in mem_ctx:
                             mem_ctx = f"{mem_ctx}\n\n{res.context}"
@@ -1024,7 +1157,7 @@ class VoiceCompanionWorker(QThread):
                     living_prof = ""
             if hasattr(self.companion, "respond_quorum"):
                 decision = self.companion.respond_quorum(
-                    transcript,
+                    clean_transcript,
                     background_busy=self.background_busy,
                     background_status=self.background_status,
                     background_question=self.background_question,
@@ -1038,7 +1171,7 @@ class VoiceCompanionWorker(QThread):
             else:
                 try:
                     decision = self.companion.respond(
-                        transcript,
+                        clean_transcript,
                         background_busy=self.background_busy,
                         background_status=self.background_status,
                         background_question=self.background_question,
@@ -1074,7 +1207,7 @@ class VoiceCompanionWorker(QThread):
                         _modern_ok = True
                     if not _modern_ok:
                         decision = self.companion.respond(
-                            transcript,
+                            clean_transcript,
                             background_busy=self.background_busy,
                             background_status=self.background_status,
                             background_question=self.background_question,
@@ -1083,7 +1216,7 @@ class VoiceCompanionWorker(QThread):
                     else:
                         # Genuine TypeError inside respond() — propagate, do not retry.
                         raise
-            self.completed.emit(decision, transcript)
+            self.completed.emit(decision, display_transcript)
         except Exception as exc:
             self.failed.emit(str(exc) or type(exc).__name__)
 
@@ -1430,14 +1563,49 @@ class Composer(QTextEdit):
             return
         super().dropEvent(event)
 
-    @staticmethod
-    def _extract_qimage_from_mime(source) -> QImage:
+    _IMAGE_MIME_FORMATS = (
+        'image/png',
+        'image/jpeg',
+        'image/jpg',
+        'image/webp',
+        'image/gif',
+        'image/bmp',
+        'application/x-qt-image',
+        'application/x-qt-windows-mime;value="PNG"',
+        'application/x-qt-windows-mime;value="JPEG"',
+        'application/x-qt-windows-mime;value="JFIF"',
+        'application/x-qt-windows-mime;value="GIF"',
+        'application/x-qt-windows-mime;value="CF_DIB"',
+        'application/x-qt-windows-mime;value="CF_DIBV5"',
+        'application/x-qt-windows-mime;value="CF_BITMAP"',
+    )
+
+    @classmethod
+    def _mime_has_image_payload(cls, source) -> bool:
+        if source is None:
+            return False
+        if source.hasImage():
+            return True
+        if any(source.hasFormat(fmt) for fmt in cls._IMAGE_MIME_FORMATS):
+            return True
+        try:
+            for f in (source.formats() or []):
+                fl = str(f).lower()
+                if fl.startswith('image/') or any(tok in fl for tok in ('"png"', '"jpeg"', '"jfif"', '"gif"', 'cf_dib', 'cf_bitmap', 'x-qt-image')):
+                    return True
+        except Exception:
+            pass
+        if source.hasHtml():
+            html_s = source.html() or ''
+            if 'data:image/' in html_s.lower() or ('<img' in html_s.lower() and 'file:///' in html_s.lower()):
+                return True
+        return False
+
+    @classmethod
+    def _extract_qimage_from_mime(cls, source) -> QImage:
         if source is None:
             return QImage()
-        has_raw_img = source.hasImage() or any(
-            source.hasFormat(fmt) for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'application/x-qt-image')
-        )
-        if not has_raw_img:
+        if not cls._mime_has_image_payload(source):
             return QImage()
         if source.hasImage():
             img_data = source.imageData()
@@ -1445,13 +1613,44 @@ class Composer(QTextEdit):
                 return img_data
             if isinstance(img_data, QPixmap) and not img_data.isNull():
                 return img_data.toImage()
-        for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'application/x-qt-image'):
+        # Try explicit & dynamic MIME formats (including Windows PNG / DIB clipboard formats)
+        cand_formats = list(cls._IMAGE_MIME_FORMATS)
+        try:
+            for f in (source.formats() or []):
+                fs = str(f)
+                fl = fs.lower()
+                if fs not in cand_formats and (fl.startswith('image/') or any(tok in fl for tok in ('"png"', '"jpeg"', '"jfif"', '"gif"', 'x-qt-image'))):
+                    cand_formats.append(fs)
+        except Exception:
+            pass
+        for fmt in cand_formats:
             if source.hasFormat(fmt):
                 raw_fmt = bytes(source.data(fmt))
                 if raw_fmt:
                     qimg = QImage.fromData(raw_fmt)
                     if not qimg.isNull():
                         return qimg
+        # Try HTML <img src="data:image/...;base64,..."> or <img src="file:///..."> copied from web browsers
+        if source.hasHtml():
+            try:
+                import base64 as _b64
+                import urllib.parse as _up
+                html_s = source.html() or ''
+                m_b64 = re.search(r'src=["\']data:image/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\s]+)["\']', html_s, re.IGNORECASE)
+                if m_b64:
+                    raw_b = _b64.b64decode(re.sub(r'\s+', '', m_b64.group(1)))
+                    qimg = QImage.fromData(raw_b)
+                    if not qimg.isNull():
+                        return qimg
+                m_file = re.search(r'src=["\'](file:///[^"\']+)["\']', html_s, re.IGNORECASE)
+                if m_file:
+                    local_p = QUrl(_up.unquote(m_file.group(1))).toLocalFile()
+                    if local_p and Path(local_p).is_file() and not local_p.upper().startswith('M:'):
+                        qimg = QImage(local_p)
+                        if not qimg.isNull():
+                            return qimg
+            except Exception:
+                pass
         cb = QApplication.clipboard()
         if cb is not None:
             cb_img = cb.image()
@@ -1466,9 +1665,7 @@ class Composer(QTextEdit):
         if source is None:
             return False
         has_local_urls = source.hasUrls() and any(url.isLocalFile() for url in source.urls())
-        has_raw_img = source.hasImage() or any(
-            source.hasFormat(fmt) for fmt in ('image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp')
-        )
+        has_raw_img = self._mime_has_image_payload(source)
         return has_local_urls or has_raw_img or super().canInsertFromMimeData(source)
 
     def insertFromMimeData(self, source):
@@ -1516,6 +1713,38 @@ class Composer(QTextEdit):
                     super().keyPressEvent(event)
                 return
         super().keyPressEvent(event)
+
+
+class QuotedPhraseTextEdit(QTextEdit):
+    """Multi-line word-wrapped editable phrase box where all \"quoted\" items are visible at once,
+    with .text() / .setText() compatibility so existing callers and tests work seamlessly.
+    """
+    textEdited = Signal(str)
+    editingFinished = Signal()
+
+    def __init__(self, initial_text: str = '', *, min_height: int = 56, max_height: int = 86, parent=None):
+        super().__init__(parent)
+        self.setProperty('fullWidthPhraseBox', True)
+        self.setAcceptRichText(False)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setMinimumHeight(min_height)
+        self.setMaximumHeight(max_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        if initial_text:
+            self.setPlainText(str(initial_text))
+        self.textChanged.connect(lambda: self.textEdited.emit(self.toPlainText()))
+
+    def text(self) -> str:
+        return self.toPlainText()
+
+    def setText(self, val: str) -> None:
+        self.setPlainText(str(val or ''))
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.editingFinished.emit()
 
 
 def _apply_windows_dialog_flags(dlg: QDialog, *, resizable: bool = True, allow_minimize: bool = False) -> None:
@@ -1744,6 +1973,7 @@ class ManageAIsDialog(QDialog):
         self._autosave_timer.timeout.connect(self._flush_autosave)
         init_ui_snap = load_ui_settings(self.config_path)
         self._committed_theme_id = str(init_ui_snap.get('theme') or 'dark')
+        self._committed_badge_mode = str(init_ui_snap.get('badge_display_mode') or 'icons_only')
         self._committed_bg_snap = {
             'bg_image_source': str(init_ui_snap.get('bg_image_source') or 'none'),
             'bg_image_path': str(init_ui_snap.get('bg_image_path') or ''),
@@ -1840,11 +2070,12 @@ class ManageAIsDialog(QDialog):
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
 
-        apply_btn = QPushButton('Apply')
-        apply_btn.setFixedSize(84, 26)
+        apply_btn = QPushButton('✓ Applied')
+        apply_btn.setFixedSize(92, 26)
         apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         apply_btn.setToolTip('Apply and save changes without closing Options')
         apply_btn.clicked.connect(self.apply_settings)
+        self.apply_btn = apply_btn
         buttons.addWidget(apply_btn)
 
         done_btn = QPushButton('OK')
@@ -1909,6 +2140,8 @@ class ManageAIsDialog(QDialog):
             'Roleplay Personas': 2,
             'Voice Personas': 2,
             'Audio, Voices & Mic': 0,
+            'Advanced Voice Input Filters & Commands': 3,
+            'Filters & Commands': 3,
             'Response Timing': 1,
             'Image Engine': 2,
         }
@@ -1942,17 +2175,20 @@ class ManageAIsDialog(QDialog):
         self._fit_to_available_screen()
         self._wire_autosave_signals()
         self._init_complete = True
+        self._set_apply_dirty_state(False)
 
     def _apply_libreoffice_dialog_theme(self, theme_id: str = 'dark'):
         t_dict = load_theme_dict(theme_id)
         is_light = _is_light_theme(t_dict)
-        bg_dlg = '#ffffff' if is_light else '#1e1e1e'
-        bg_tree = '#f8f9fa' if is_light else '#171717'
-        bg_ctrl = '#ffffff' if is_light else '#262626'
-        fg_main = '#1f2328' if is_light else '#f0f0f0'
-        fg_muted = '#57606a' if is_light else '#a0a0a0'
-        bd_col = '#c8ccd0' if is_light else '#454545'
-        sel_bg = '#0078d4'
+        bg_dlg = str(t_dict.get('bg_main') or ('#ffffff' if is_light else '#1e1e1e'))
+        bg_tree = str(t_dict.get('bg_sidebar') or ('#f8f9fa' if is_light else '#171717'))
+        bg_ctrl = str(t_dict.get('bg_card') or ('#ffffff' if is_light else '#262626'))
+        fg_main = ensure_min_contrast_color(str(t_dict.get('text_primary') or ('#1f2328' if is_light else '#f0f0f0')), bg_dlg, min_ratio=4.5)
+        fg_muted = ensure_min_contrast_color(str(t_dict.get('text_secondary') or ('#57606a' if is_light else '#a0a0a0')), bg_dlg, min_ratio=3.2)
+        bd_col = ensure_min_contrast_color(str(t_dict.get('border') or ('#c8ccd0' if is_light else '#454545')), bg_dlg, min_ratio=1.6)
+        sel_bg = ensure_min_contrast_color('#0078d4', bg_dlg, min_ratio=1.9)
+        sel_fg = ensure_min_contrast_color('#ffffff', sel_bg, min_ratio=4.5)
+        chk_qss = build_checkbox_qss(sel_bg, bg_ctrl, bd_col, bg_dlg, scope_prefix='QDialog')
         self.setStyleSheet(
             f'QDialog {{ background: {bg_dlg}; color: {fg_main}; font-family: "Segoe UI", sans-serif; font-size: 12px; }} '
             f'QDialog QWidget {{ color: {fg_main}; font-size: 12px; }} '
@@ -1961,15 +2197,15 @@ class ManageAIsDialog(QDialog):
             f'QDialog QLabel#muted {{ color: {fg_muted}; font-size: 11.5px; }} '
             f'QDialog QListWidget#sidebarList {{ background: {bg_tree}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 0px; padding: 2px 0px; font-size: 11.5px; outline: none; }} '
             f'QDialog QListWidget#sidebarList::item {{ padding: 4px 8px; border-radius: 0px; margin: 0px; color: {fg_main}; }} '
-            f'QDialog QListWidget#sidebarList::item:selected {{ background: {sel_bg}; color: #ffffff; font-weight: 600; }} '
+            f'QDialog QListWidget#sidebarList::item:selected {{ background: {sel_bg}; color: {sel_fg}; font-weight: 600; }} '
             f'QDialog QListWidget#sidebarList::item:hover:!selected {{ background: {"#e8eef5" if is_light else "#2b2b2b"}; }} '
             f'QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox, QDialog QTextEdit {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 2px; padding: 3px 6px; min-height: 22px; }} '
             f'QDialog QPushButton {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; border-radius: 3px; padding: 3px 10px; }} '
             f'QDialog QPushButton:hover {{ border-color: {sel_bg}; background: {"#eef4fb" if is_light else "#2f343d"}; }} '
             f'QDialog QPushButton:default {{ border: 1px solid {sel_bg}; font-weight: 600; }} '
             f'QDialog QCheckBox {{ color: {fg_main}; spacing: 7px; }} '
-            f'QDialog QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {bd_col}; border-radius: 2px; background: {bg_ctrl}; }} '
-            f'QDialog QCheckBox::indicator:checked {{ background: {sel_bg}; border-color: {sel_bg}; }} '
+            f'QDialog QCheckBox:checked {{ color: {fg_main}; font-weight: 600; }} '
+            f'{chk_qss} '
             f'QDialog QTableWidget {{ background: {bg_ctrl}; color: {fg_main}; border: 1px solid {bd_col}; gridline-color: {bd_col}; }} '
             f'QDialog QHeaderView::section {{ background: {bg_tree}; color: {fg_main}; border: 1px solid {bd_col}; padding: 4px 6px; font-weight: 600; }}'
         )
@@ -2030,9 +2266,10 @@ class ManageAIsDialog(QDialog):
             ),
             (
                 'Voice & Audio',
-                'Microphone, text-to-speech voice engines, Table Quorum cast, and Roleplay Personas',
+                'Microphone, text-to-speech voice engines, advanced voice input filters/commands, Table Quorum cast, and Roleplay Personas',
                 [
                     (p_idx('Voice & Audio'), 0, 'Audio & Mic', 'Thinking AI, speaking voice, mic level & 3D avatar mode', 'audio voice mic microphone tts deepgram cartesia elevenlabs avatar'),
+                    (p_idx('Voice & Audio'), 3, 'Advanced Voice Input Filters & Commands', 'Quoted physical mic noises, spoken filler words, never-filtered words & 2+ word vocal SUBMIT commands', 'voice filters commands physical noises cough sniff filler um ahh submit query undo clear newline'),
                     (p_idx('Voice & Audio'), 1, 'Voice Cast', '1–4 AI slots, distinct voices, Table Quorum & Mode presets', 'voice cast multi ai table quorum slots preset'),
                     (p_idx('Voice & Audio'), 2, 'Personas', 'Editable roleplay blueprints & profile learning', 'roleplay persona character blueprint speaker'),
                 ],
@@ -2267,6 +2504,38 @@ class ManageAIsDialog(QDialog):
             self._screen_clamped_once = True
             self._fit_to_available_screen(only_if_overflow=True)
 
+    def _set_apply_dirty_state(self, dirty: bool, status_text: str = ''):
+        self._autosave_dirty = bool(dirty)
+        if hasattr(self, 'apply_btn') and self.apply_btn is not None:
+            if dirty:
+                self.apply_btn.setEnabled(True)
+                self.apply_btn.setText('Apply')
+                self.apply_btn.setStyleSheet(
+                    'QPushButton { background: #0078d4; color: #ffffff; border: 1px solid #38bdf8; '
+                    'font-weight: 700; border-radius: 3px; padding: 3px 10px; } '
+                    'QPushButton:hover { background: #1084df; }'
+                )
+            else:
+                self.apply_btn.setEnabled(False)
+                self.apply_btn.setText('✓ Applied')
+                self.apply_btn.setStyleSheet(
+                    'QPushButton { color: #22c55e; font-weight: 600; border: 1px solid #238636; '
+                    'border-radius: 3px; padding: 3px 10px; }'
+                )
+        if hasattr(self, '_autosave_status_label') and self._autosave_status_label is not None:
+            if dirty:
+                self._autosave_status_label.setStyleSheet('color: #eab308; font-weight: 600; font-size: 11.5px;')
+                self._autosave_status_label.setText(status_text or '● Unsaved changes — click Apply or OK to save')
+                self._autosave_status_label.show()
+            else:
+                self._autosave_status_label.setStyleSheet('color: #22c55e; font-weight: 600; font-size: 11.5px;')
+                if status_text:
+                    self._autosave_status_label.setText(status_text)
+                    self._autosave_status_label.show()
+                else:
+                    self._autosave_status_label.setText('✓ All settings saved & applied')
+                    self._autosave_status_label.show()
+
     def _schedule_autosave(self, *_args):
         if (
             not getattr(self, '_init_complete', False)
@@ -2275,10 +2544,7 @@ class ManageAIsDialog(QDialog):
             or getattr(self, '_voice_dlg_closed', False)
         ):
             return
-        self._autosave_dirty = True
-        if hasattr(self, '_autosave_status_label'):
-            self._autosave_status_label.setText('● Unsaved changes')
-            self._autosave_status_label.show()
+        self._set_apply_dirty_state(True)
 
     def _flush_autosave(self):
         tmr = getattr(self, '_autosave_timer', None)
@@ -2385,6 +2651,18 @@ class ManageAIsDialog(QDialog):
             ui_cfg = load_ui_settings(self.config_path)
             if hasattr(self, 'close_to_tray_check'):
                 self.close_to_tray_check.setChecked(bool(ui_cfg.get('close_to_tray', False)))
+            if hasattr(self, 'minimize_to_tray_check'):
+                self.minimize_to_tray_check.setChecked(bool(ui_cfg.get('minimize_to_tray', False)))
+            if hasattr(self, 'always_show_tray_icon_check'):
+                self.always_show_tray_icon_check.setChecked(bool(ui_cfg.get('always_show_tray_icon', True)))
+            if hasattr(self, 'single_click_tray_check'):
+                self.single_click_tray_check.setChecked(bool(ui_cfg.get('single_click_tray_to_open', True)))
+            if hasattr(self, 'show_tray_balloons_check'):
+                self.show_tray_balloons_check.setChecked(bool(ui_cfg.get('show_tray_balloon_notifications', True)))
+            if hasattr(self, 'always_activate_tray_check'):
+                self.always_activate_tray_check.setChecked(bool(ui_cfg.get('always_activate_when_clicked', True)))
+            if hasattr(self, 'confirm_on_exit_check'):
+                self.confirm_on_exit_check.setChecked(bool(ui_cfg.get('confirm_on_exit', False)))
             if hasattr(self, 'auto_refresh_catalog_check'):
                 self.auto_refresh_catalog_check.setChecked(bool(ui_cfg.get('auto_refresh_catalog', True)))
             if hasattr(self, 'spellcheck_check'):
@@ -2429,10 +2707,24 @@ class ManageAIsDialog(QDialog):
                         cb.setCurrentIndex(ci)
             if hasattr(self, 'ad_smart_routing_check'):
                 self.ad_smart_routing_check.setChecked(bool(ad_cfg.get('smart_routing', True)))
+            if hasattr(self, 'ad_timing_profile_combo'):
+                bi = self.ad_timing_profile_combo.findData(str(ad_cfg.get('deliberation_budget', 'unlimited')))
+                if bi >= 0:
+                    self.ad_timing_profile_combo.setCurrentIndex(bi)
             if hasattr(self, 'ad_timeout_spin'):
-                self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 180)))
+                self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 0)))
+            if hasattr(self, 'ad_round2_timeout_spin'):
+                self.ad_round2_timeout_spin.setValue(int(ad_cfg.get('round2_timeout_sec', 0)))
+            if hasattr(self, 'ad_synth_timeout_spin'):
+                self.ad_synth_timeout_spin.setValue(int(ad_cfg.get('synthesis_timeout_sec', 0)))
             if hasattr(self, 'ad_straggler_spin'):
                 self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 0)))
+            if hasattr(self, 'ad_heartbeat_check'):
+                self.ad_heartbeat_check.setChecked(bool(ad_cfg.get('heartbeat_enabled', True)))
+            if hasattr(self, 'ad_heartbeat_interval_spin'):
+                self.ad_heartbeat_interval_spin.setValue(int(ad_cfg.get('heartbeat_interval_sec', 15)))
+            if hasattr(self, '_populate_provider_ceiling_table'):
+                self._populate_provider_ceiling_table(ad_cfg.get('provider_ceiling_overrides'))
             g_cfg = load_graphics_settings(self.config_path)
             for attr_nm, cfg_k in (
                 ('ad_primary_img_combo', 'primary_image_engine'),
@@ -2446,22 +2738,22 @@ class ManageAIsDialog(QDialog):
                         cb.setCurrentIndex(ci)
             if hasattr(self, '_load_selected_provider'):
                 self._load_selected_provider(getattr(self, '_active_provider_slug', 'openai'))
-            self._autosave_dirty = False
-            if hasattr(self, '_autosave_status_label'):
-                self._autosave_status_label.setText('↺ Page reset to saved settings')
-                self._autosave_status_label.show()
+            self._set_apply_dirty_state(False, '↺ Page reset to saved settings')
         finally:
             self._init_complete = True
 
     def _revert_preview_theme_if_needed(self):
         committed_tid = getattr(self, '_committed_theme_id', None)
         committed_bg = getattr(self, '_committed_bg_snap', None)
+        committed_bm = getattr(self, '_committed_badge_mode', None)
         if not committed_tid:
             return
         cur_ui = load_ui_settings(self.config_path)
         restore_payload: dict[str, Any] = {}
         if str(cur_ui.get('theme') or 'dark') != committed_tid:
             restore_payload['theme'] = committed_tid
+        if committed_bm and str(cur_ui.get('badge_display_mode') or 'icons_only') != committed_bm:
+            restore_payload['badge_display_mode'] = committed_bm
         if isinstance(committed_bg, dict):
             for bk, bv in committed_bg.items():
                 if cur_ui.get(bk) != bv:
@@ -2469,10 +2761,16 @@ class ManageAIsDialog(QDialog):
         if restore_payload:
             save_ui_settings(restore_payload, config_path=self.config_path)
             parent = self.parent()
-            if parent is not None and hasattr(parent, 'apply_theme'):
-                parent.apply_theme(committed_tid)
+            if parent is not None:
+                if 'badge_display_mode' in restore_payload:
+                    parent.badge_display_mode = committed_bm
+                    if hasattr(parent, 'reload_provider_bar'):
+                        parent.reload_provider_bar()
+                if hasattr(parent, 'apply_theme'):
+                    parent.apply_theme(committed_tid)
 
     def apply_settings(self):
+        from datetime import datetime
         tmr = getattr(self, '_autosave_timer', None)
         if tmr is not None and tmr.isActive():
             tmr.stop()
@@ -2480,6 +2778,7 @@ class ManageAIsDialog(QDialog):
             return False
         cur_ui = load_ui_settings(self.config_path)
         self._committed_theme_id = str(cur_ui.get('theme') or 'dark')
+        self._committed_badge_mode = str(cur_ui.get('badge_display_mode') or 'icons_only')
         self._committed_bg_snap = {
             'bg_image_source': str(cur_ui.get('bg_image_source') or 'none'),
             'bg_image_path': str(cur_ui.get('bg_image_path') or ''),
@@ -2487,11 +2786,18 @@ class ManageAIsDialog(QDialog):
             'bg_washout_percent': int(cur_ui.get('bg_washout_percent', 90)),
         }
         parent = self.parent()
-        if parent is not None and hasattr(parent, 'apply_theme'):
-            parent.apply_theme(self._committed_theme_id, render_chat=False)
-        if hasattr(self, '_autosave_status_label'):
-            self._autosave_status_label.setText('✓ Changes applied')
-            self._autosave_status_label.show()
+        if parent is not None:
+            parent.badge_display_mode = self._committed_badge_mode
+            if hasattr(parent, 'reload_providers_from_config'):
+                parent.reload_providers_from_config()
+            if hasattr(parent, 'apply_theme'):
+                parent.apply_theme(self._committed_theme_id, render_chat=True)
+            if hasattr(parent, 'status_label'):
+                parent.status_label.setText('✓ Settings saved and applied')
+            if hasattr(parent, 'show_notice'):
+                parent.show_notice('✓ Settings saved and applied.')
+        stamp = datetime.now().strftime('%H:%M:%S')
+        self._set_apply_dirty_state(False, f'✓ Settings saved & applied ({stamp})')
         return True
 
     def reject(self):
@@ -2560,9 +2866,9 @@ class ManageAIsDialog(QDialog):
                     view.setTextElideMode(Qt.TextElideMode.ElideNone)
             elif isinstance(w, QLineEdit):
                 tooltip_txt = (f"{w.toolTip()} {w.placeholderText()}").lower()
-                is_wide = any(k in tooltip_txt for k in ('path', 'folder', 'directory', 'key', 'url', 'endpoint', 'override', 'password', 'token', 'email', 'gmail', 'vault'))
-                w.setMinimumWidth(max(w.minimumWidth(), 220 if is_wide else 130))
-                w.setMaximumWidth(420 if is_wide else 250)
+                is_wide = isinstance(w, LocationAutocompleteLineEdit) or any(k in tooltip_txt for k in ('path', 'folder', 'directory', 'key', 'url', 'endpoint', 'override', 'password', 'token', 'email', 'gmail', 'vault', 'location', 'city', 'suburb', 'postcode', 'adelaide'))
+                w.setMinimumWidth(max(w.minimumWidth(), 360 if isinstance(w, LocationAutocompleteLineEdit) else (220 if is_wide else 130)))
+                w.setMaximumWidth(480 if isinstance(w, LocationAutocompleteLineEdit) else (420 if is_wide else 250))
                 w.setMinimumHeight(25)
                 w.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
             elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
@@ -2575,24 +2881,31 @@ class ManageAIsDialog(QDialog):
                     w.setMaximumWidth(220)
                 w.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             elif isinstance(w, QTextEdit):
-                if w.maximumWidth() > 540:
+                if bool(w.property('fullWidthPhraseBox')):
+                    w.setMinimumWidth(260)
+                    w.setMaximumWidth(16777215)
+                    w.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                elif w.maximumWidth() > 540:
                     w.setMaximumWidth(520)
 
         def _cap_layout_items(lay_obj) -> None:
             if lay_obj is None:
                 return
             has_stretch = False
+            has_expanding_phrase_box = False
             for i in range(lay_obj.count()):
                 it = lay_obj.itemAt(i)
                 if it is None:
                     continue
                 if it.widget() is not None:
+                    if bool(it.widget().property('fullWidthPhraseBox')):
+                        has_expanding_phrase_box = True
                     _cap_control_widget(it.widget())
                 elif it.layout() is not None:
                     _cap_layout_items(it.layout())
                 elif it.spacerItem() is not None:
                     has_stretch = True
-            if isinstance(lay_obj, QHBoxLayout) and not has_stretch:
+            if isinstance(lay_obj, QHBoxLayout) and not has_stretch and not has_expanding_phrase_box:
                 lay_obj.addStretch(1)
 
         for form in self.findChildren(QFormLayout):
@@ -2637,17 +2950,18 @@ class ManageAIsDialog(QDialog):
 
     def _build_general_page(self):
         w, lay = self._make_simple_page('General', 'Startup behavior, system tray behavior, location & composer preferences.')
+        ui_cfg = load_ui_settings(self.config_path)
+
         restore_chk = QCheckBox('Restore last active conversation on startup', checked=True)
         restore_chk.setToolTip('Automatically reopens your most recent conversation when Fairybread starts')
         lay.addWidget(restore_chk)
 
-        ui_cfg = load_ui_settings(self.config_path)
-        self.close_to_tray_check = QCheckBox(
-            'Minimize to System Tray on close (✕)',
-            checked=bool(ui_cfg.get('close_to_tray', False)),
+        self.confirm_on_exit_check = QCheckBox(
+            'Show confirmation dialog on exit',
+            checked=bool(ui_cfg.get('confirm_on_exit', False)),
         )
-        self.close_to_tray_check.setToolTip('Keep Fairybread running in the Windows System Tray instead of exiting when clicking ✕ (right-click tray icon to Expand or Exit)')
-        lay.addWidget(self.close_to_tray_check)
+        self.confirm_on_exit_check.setToolTip('Ask for confirmation before exiting Fairybread')
+        lay.addWidget(self.confirm_on_exit_check)
 
         self.auto_refresh_catalog_check = QCheckBox(
             'Auto-refresh model catalog & pricing on startup',
@@ -2663,6 +2977,65 @@ class ManageAIsDialog(QDialog):
         self.spellcheck_check.setToolTip('Highlights spelling mistakes in red while typing using your Windows dictionary (skips commands, URLs, file paths, and code) with right-click suggestions')
         lay.addWidget(self.spellcheck_check)
 
+        # uTorrent-Style System Tray Group Box (2-Column Grid)
+        tray_card = QFrame()
+        tc_lay = QVBoxLayout(tray_card)
+        _style_settings_card(tray_card, 'systemTrayCard', tc_lay, pad_h=12, pad_v=10)
+        tc_lay.setSpacing(6)
+        tray_hdr = QLabel('<b>System Tray</b>')
+        tray_hdr.setTextFormat(Qt.TextFormat.RichText)
+        tc_lay.addWidget(tray_hdr)
+
+        tray_grid = QGridLayout()
+        tray_grid.setContentsMargins(0, 2, 0, 2)
+        tray_grid.setHorizontalSpacing(28)
+        tray_grid.setVerticalSpacing(6)
+
+        self.close_to_tray_check = QCheckBox(
+            'Close to tray',
+            checked=bool(ui_cfg.get('close_to_tray', False)),
+        )
+        self.close_to_tray_check.setToolTip('Clicking the window Close (✕) button hides Fairybread to the Windows System Tray instead of exiting')
+
+        self.minimize_to_tray_check = QCheckBox(
+            'Minimize to tray',
+            checked=bool(ui_cfg.get('minimize_to_tray', False)),
+        )
+        self.minimize_to_tray_check.setToolTip('Clicking the window Minimize (—) button hides Fairybread to the Windows System Tray instead of the taskbar')
+
+        self.always_show_tray_icon_check = QCheckBox(
+            'Always show tray icon',
+            checked=bool(ui_cfg.get('always_show_tray_icon', True)),
+        )
+        self.always_show_tray_icon_check.setToolTip('Keep the Fairybread icon visible in the Windows System Tray at all times')
+
+        self.single_click_tray_check = QCheckBox(
+            'Single click on tray icon to open',
+            checked=bool(ui_cfg.get('single_click_tray_to_open', True)),
+        )
+        self.single_click_tray_check.setToolTip('Open/restore Fairybread with a single left-click on the tray icon (when unchecked, double-click opens)')
+
+        self.show_tray_balloons_check = QCheckBox(
+            'Show balloon notifications in tray',
+            checked=bool(ui_cfg.get('show_tray_balloon_notifications', True)),
+        )
+        self.show_tray_balloons_check.setToolTip('Show Windows System Tray balloon/toast notifications when minimizing to tray or completing background jobs')
+
+        self.always_activate_tray_check = QCheckBox(
+            'Always activate when clicked',
+            checked=bool(ui_cfg.get('always_activate_when_clicked', True)),
+        )
+        self.always_activate_tray_check.setToolTip('Bring the Fairybread window to the front and focus it whenever the tray icon is clicked')
+
+        tray_grid.addWidget(self.close_to_tray_check, 0, 0)
+        tray_grid.addWidget(self.minimize_to_tray_check, 0, 1)
+        tray_grid.addWidget(self.always_show_tray_icon_check, 1, 0)
+        tray_grid.addWidget(self.single_click_tray_check, 1, 1)
+        tray_grid.addWidget(self.show_tray_balloons_check, 2, 0)
+        tray_grid.addWidget(self.always_activate_tray_check, 2, 1)
+        tc_lay.addLayout(tray_grid)
+        lay.addWidget(tray_card)
+
         enter_form = QFormLayout()
         self.enter_mode_combo = QComboBox()
         self.enter_mode_combo.setToolTip('Choose whether pressing Enter sends your message immediately or inserts a new line')
@@ -2671,19 +3044,19 @@ class ManageAIsDialog(QDialog):
         self.enter_mode_combo.setCurrentIndex(0 if ui_cfg.get('enter_to_send', True) else 1)
         enter_form.addRow('Composer Enter key:', self.enter_mode_combo)
 
-        self.home_location_edit = QLineEdit(str(ui_cfg.get('home_location') or ''))
-        self.home_location_edit.setPlaceholderText('e.g. Adelaide, South Australia or 5075')
+        self.home_location_edit = LocationAutocompleteLineEdit(str(ui_cfg.get('home_location') or ''))
+        self.home_location_edit.setPlaceholderText('Start typing a city or postcode (e.g. Adelaide, Melbourne, 5000)…')
         self.home_location_edit.setToolTip(
-            'Your home city, suburb, or postcode for local weather radar and location-aware queries (100% local — no automatic Geo-IP tracking)'
+            'Type your home city, suburb, or postcode and pick from the autocomplete list (e.g. "Adelaide, South Australia, Australia"). 100% local — no silent Geo-IP tracking.'
         )
         enter_form.addRow('📍 Home Location:', self.home_location_edit)
 
         self.weather_display_combo = QComboBox()
-        self.weather_display_combo.addItem('Radar Map + Text (Free · No Key)', True)
-        self.weather_display_combo.addItem('Basic Text Forecast Only (No Map)', False)
+        self.weather_display_combo.addItem('Radar Map + 7-Day Forecast', True)
+        self.weather_display_combo.addItem('Text Forecast Only (No Radar Map)', False)
         self.weather_display_combo.setCurrentIndex(0 if ui_cfg.get('weather_map_enabled', True) else 1)
         self.weather_display_combo.setToolTip(
-            'Choose between a free dark radar map card (ArcGIS Dark Gray + RainViewer + Open-Meteo/BOM, zero API key needed) or basic text-only weather forecasts'
+            'Choose between a live dark radar map card + 7-day forecast (powered by built-in Open-Meteo / BOM ACCESS-G + RainViewer) or text-only weather forecasts'
         )
         enter_form.addRow('🌦️ Weather Display:', self.weather_display_combo)
         lay.addLayout(enter_form)
@@ -3057,13 +3430,20 @@ class ManageAIsDialog(QDialog):
         t_title = QLabel('<b>Response Timing</b>')
         t_title.setStyleSheet('font-size: 15px; font-weight: 700;')
         t_lay.addWidget(t_title)
-        t_sub = QLabel('Set maximum response times for each discussion phase.')
+        t_sub = QLabel(
+            'Configure response time limits, server heartbeat detection, and deep-thinking protection.'
+        )
         t_sub.setObjectName('muted')
         t_lay.addWidget(t_sub)
         t_div = QFrame()
         t_div.setFrameShape(QFrame.Shape.HLine)
         t_div.setFixedHeight(1)
         t_lay.addWidget(t_div)
+
+        self.ad_timeout_warning_banner = QLabel('')
+        self.ad_timeout_warning_banner.setWordWrap(True)
+        self.ad_timeout_warning_banner.setTextFormat(Qt.TextFormat.RichText)
+        t_lay.addWidget(self.ad_timeout_warning_banner)
 
         perf_card = QFrame()
         p_lay = QVBoxLayout(perf_card)
@@ -3072,85 +3452,345 @@ class ManageAIsDialog(QDialog):
 
         form2 = QFormLayout()
         self.ad_timing_profile_combo = QComboBox()
-        self.ad_timing_profile_combo.setToolTip('Select a preset Council phase time budget (Quick, Standard, or Deep)')
-        self.ad_timing_profile_combo.addItem('Standard (180s / 120s / 90s)', 'standard')
-        self.ad_timing_profile_combo.addItem('Deep — Code & Architecture (300s / 240s / 90s)', 'deep')
-        self.ad_timing_profile_combo.addItem('Quick — Fast Lookups (60s / Off / 30s)', 'quick')
-        cur_bud = str(ad_cfg.get('deliberation_budget', 'standard') or 'standard')
+        self.ad_timing_profile_combo.setToolTip(
+            'Select Unlimited (Server Heartbeat & Error-Only) or a 1, 3, 5, 7, or 10 minute phase budget'
+        )
+        for prof_slug, prof_lbl in COUNCIL_TIMING_PROFILE_CHOICES:
+            self.ad_timing_profile_combo.addItem(prof_lbl, prof_slug)
+        cur_bud = str(ad_cfg.get('deliberation_budget', 'unlimited') or 'unlimited').strip().lower()
+        if cur_bud == 'deep':
+            cur_bud = '5m'
         b_idx = self.ad_timing_profile_combo.findData(cur_bud)
         if b_idx >= 0:
             self.ad_timing_profile_combo.setCurrentIndex(b_idx)
         form2.addRow('Timing profile:', self.ad_timing_profile_combo)
 
-        self.ad_timeout_spin = QSpinBox()
-        self.ad_timeout_spin.setRange(15, 600)
-        self.ad_timeout_spin.setSuffix(' sec')
-        self.ad_timeout_spin.setValue(int(ad_cfg.get('provider_timeout_sec', 180)))
-        self.ad_timeout_spin.setToolTip('Round 1 maximum wait for independent answers (moves on immediately as soon as all replies land)')
-        form2.addRow('Round 1 — Independent answers:', self.ad_timeout_spin)
+        def _make_phase_timeout_row(
+            init_sec: int,
+            *,
+            allow_off: bool = False,
+            tip: str = '',
+        ) -> tuple[QWidget, QComboBox, QSpinBox]:
+            row_w = QWidget()
+            row_l = QHBoxLayout(row_w)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(6)
+            preset_cb = QComboBox()
+            preset_cb.setToolTip(tip)
+            if allow_off:
+                preset_cb.addItem('Off (Skip Round 2)', -1)
+            for p_sec, p_lbl in PHASE_TIMEOUT_PRESET_CHOICES:
+                preset_cb.addItem(p_lbl, p_sec)
+            preset_cb.addItem('Custom seconds…', -999)
 
-        self.ad_round2_timeout_spin = QSpinBox()
-        self.ad_round2_timeout_spin.setRange(0, 600)
-        self.ad_round2_timeout_spin.setSuffix(' sec')
-        self.ad_round2_timeout_spin.setValue(120)
-        self.ad_round2_timeout_spin.setToolTip('Round 2 maximum wait for peer critique & follow-up')
-        form2.addRow('Round 2 — Critique & follow-up:', self.ad_round2_timeout_spin)
+            spin = QSpinBox()
+            if allow_off:
+                spin.setRange(-1, 7200)
+                spin.setSpecialValueText('Off (Skip)')
+            else:
+                spin.setRange(0, 7200)
+                spin.setSpecialValueText('Unlimited')
+            spin.setSuffix(' sec')
+            spin.setToolTip(tip + ' (0 = Unlimited with Server Heartbeat)')
+            spin.setValue(init_sec)
 
-        self.ad_synth_timeout_spin = QSpinBox()
-        self.ad_synth_timeout_spin.setRange(30, 600)
-        self.ad_synth_timeout_spin.setSuffix(' sec')
-        self.ad_synth_timeout_spin.setValue(90)
-        self.ad_synth_timeout_spin.setToolTip('Final combined reply synthesis maximum wait')
-        form2.addRow('Final synthesis:', self.ad_synth_timeout_spin)
+            def _sync_combo_from_spin(val: int):
+                idx = preset_cb.findData(val)
+                preset_cb.blockSignals(True)
+                if idx >= 0:
+                    preset_cb.setCurrentIndex(idx)
+                else:
+                    c_idx = preset_cb.findData(-999)
+                    if c_idx >= 0:
+                        preset_cb.setCurrentIndex(c_idx)
+                preset_cb.blockSignals(False)
+
+            def _sync_spin_from_combo(_idx: int = 0):
+                d_val = preset_cb.currentData()
+                if isinstance(d_val, int) and d_val != -999:
+                    spin.blockSignals(True)
+                    spin.setValue(d_val)
+                    spin.blockSignals(False)
+                    _refresh_timing_impact_banner()
+                    self._schedule_autosave()
+
+            _sync_combo_from_spin(init_sec)
+            preset_cb.currentIndexChanged.connect(_sync_spin_from_combo)
+            spin.valueChanged.connect(lambda v: (_sync_combo_from_spin(v), _refresh_timing_impact_banner()))
+            row_l.addWidget(preset_cb)
+            row_l.addWidget(spin)
+            row_l.addStretch(1)
+            return row_w, preset_cb, spin
+
+        r1_row, self.ad_r1_preset_combo, self.ad_timeout_spin = _make_phase_timeout_row(
+            int(ad_cfg.get('provider_timeout_sec', 0)),
+            allow_off=False,
+            tip='Round 1 maximum wait for independent answers (0 = Unlimited — waits while server heartbeat is alive; fails immediately on HTTP/socket error)',
+        )
+        form2.addRow('Round 1 — Independent answers:', r1_row)
+
+        r2_row, self.ad_r2_preset_combo, self.ad_round2_timeout_spin = _make_phase_timeout_row(
+            int(ad_cfg.get('round2_timeout_sec', 0)),
+            allow_off=True,
+            tip='Round 2 maximum wait for peer critique & follow-up (0 = Unlimited, -1 = Off)',
+        )
+        form2.addRow('Round 2 — Critique & follow-up:', r2_row)
+
+        syn_row, self.ad_synth_preset_combo, self.ad_synth_timeout_spin = _make_phase_timeout_row(
+            int(ad_cfg.get('synthesis_timeout_sec', 0)),
+            allow_off=False,
+            tip='Final combined reply synthesis maximum wait (0 = Unlimited)',
+        )
+        form2.addRow('Final synthesis:', syn_row)
 
         self.ad_straggler_spin = QSpinBox()
-        self.ad_straggler_spin.setRange(0, 300)
+        self.ad_straggler_spin.setRange(0, 600)
         self.ad_straggler_spin.setSuffix(' s (0 = off)')
         self.ad_straggler_spin.setValue(int(ad_cfg.get('straggler_grace_sec', 0)))
         self.ad_straggler_spin.setToolTip('Optional early straggler cutoff after majority quorum (0 = Off — never cut off thinking agents early)')
         form2.addRow('Early straggler cutoff:', self.ad_straggler_spin)
 
-        def _on_timing_profile_picked(_i: int = 0):
-            prof = str(self.ad_timing_profile_combo.currentData() or 'standard')
-            if prof == 'quick':
-                self.ad_timeout_spin.setValue(60)
-                self.ad_round2_timeout_spin.setValue(0)
-                self.ad_synth_timeout_spin.setValue(30)
-            elif prof == 'deep':
-                self.ad_timeout_spin.setValue(300)
-                self.ad_round2_timeout_spin.setValue(240)
-                self.ad_synth_timeout_spin.setValue(90)
+        hb_row = QWidget()
+        hb_lay = QHBoxLayout(hb_row)
+        hb_lay.setContentsMargins(0, 0, 0, 0)
+        hb_lay.setSpacing(10)
+        self.ad_heartbeat_check = QCheckBox('Enable Server Heartbeat & Socket Liveness Detection')
+        self.ad_heartbeat_check.setChecked(bool(ad_cfg.get('heartbeat_enabled', True)))
+        self.ad_heartbeat_check.setToolTip(
+            'Monitors active socket/process liveness every interval so deep-thinking AIs can run for 10+ minutes or hours without timing out, while dead connections or HTTP errors fail immediately.'
+        )
+        self.ad_heartbeat_interval_spin = QSpinBox()
+        self.ad_heartbeat_interval_spin.setRange(5, 120)
+        self.ad_heartbeat_interval_spin.setSuffix(' sec pulse')
+        self.ad_heartbeat_interval_spin.setValue(int(ad_cfg.get('heartbeat_interval_sec', 15)))
+        self.ad_heartbeat_interval_spin.setToolTip('How often Fairybread verifies the server socket or local CLI process is still alive')
+        hb_lay.addWidget(self.ad_heartbeat_check)
+        hb_lay.addWidget(self.ad_heartbeat_interval_spin)
+        hb_lay.addStretch(1)
+        form2.addRow('Heartbeat detection:', hb_row)
+
+        _in_profile_sync = [False]
+
+        def _refresh_timing_impact_banner():
+            r1_val = int(self.ad_timeout_spin.value())
+            r2_val = int(self.ad_round2_timeout_spin.value())
+            syn_val = int(self.ad_synth_timeout_spin.value())
+            strag_val = int(self.ad_straggler_spin.value())
+            hb_on = bool(self.ad_heartbeat_check.isChecked())
+            hb_int = int(self.ad_heartbeat_interval_spin.value())
+            any_short_timer = (
+                (0 < r1_val < 420)
+                or (0 < r2_val < 300)
+                or (0 < syn_val < 180)
+                or (strag_val > 0)
+            )
+            if not any_short_timer and r1_val == 0:
+                hb_txt = f'active ({hb_int}s liveness pulse)' if hb_on else 'disabled'
+                self.ad_timeout_warning_banner.setStyleSheet(
+                    'background: #11281b; color: #4ade80; border: 1px solid #22c55e; '
+                    'border-radius: 6px; padding: 8px 10px; font-size: 11.5px;'
+                )
+                self.ad_timeout_warning_banner.setText(
+                    '<b>✓ Unlimited Deep-Thinking Protection (Heartbeat &amp; Error-Only Failover):</b> '
+                    f'Providers use a fast <b>15s connection handshake</b> and <b>Server Heartbeat Detection ({hb_txt})</b>. '
+                    'Fairybread will never cut off an AI that is actively thinking or reasoning — it only skips an agent '
+                    'if the server reports an actual error (rate limit, billing, auth, or dropped socket) or if you click <b>■ Stop</b>.'
+                )
+            elif not any_short_timer:
+                self.ad_timeout_warning_banner.setStyleSheet(
+                    'background: #132238; color: #93c5fd; border: 1px solid #3b82f6; '
+                    'border-radius: 6px; padding: 8px 10px; font-size: 11.5px;'
+                )
+                self.ad_timeout_warning_banner.setText(
+                    f'<b>ℹ Extended Timer ({r1_val // 60}m Round 1):</b> Long reasoning queries have a {r1_val}s ceiling. '
+                    'Note: if a very large codebase or multi-step reasoning task exceeds this timer, cutting it off early '
+                    'will discard the reply after the provider has already billed for the reasoning tokens. '
+                    'Select <b>Unlimited</b> to rely purely on Server Heartbeat &amp; Error-Only failover.'
+                )
             else:
-                self.ad_timeout_spin.setValue(180)
-                self.ad_round2_timeout_spin.setValue(120)
-                self.ad_synth_timeout_spin.setValue(90)
+                self.ad_timeout_warning_banner.setStyleSheet(
+                    'background: #29230f; color: #fde047; border: 1px solid #eab308; '
+                    'border-radius: 6px; padding: 8px 10px; font-size: 11.5px;'
+                )
+                self.ad_timeout_warning_banner.setText(
+                    '<b>⚠ Deep-Thinking &amp; Token-Waste Warning:</b> '
+                    'Short timers (under 7–10 minutes) or early straggler cutoffs will forcefully terminate deep reasoning models '
+                    '(<i>GPT-6.2, DeepSeek-V4-Pro, Gemini-4-Carbon, Claude, Local CLI agents</i>) while they are still thinking. '
+                    '<b>Upstream providers bill you for all input and internal reasoning tokens even when a local timer aborts the wait</b> — '
+                    'wasting those tokens for zero output. Use <b>Unlimited (Server Heartbeat &amp; Error-Only)</b> or <b>7–10 Minutes</b> for deep tasks.'
+                )
+
+        def _on_timing_profile_picked(_i: int = 0):
+            if _in_profile_sync[0]:
+                return
+            prof = str(self.ad_timing_profile_combo.currentData() or 'unlimited')
+            if prof == 'custom':
+                _refresh_timing_impact_banner()
+                return
+            presets = {
+                'unlimited': (0, 0, 0),
+                '10m': (600, 420, 300),
+                '7m': (420, 300, 180),
+                '5m': (300, 240, 120),
+                'deep': (300, 240, 120),
+                'standard': (180, 120, 90),
+                'quick': (60, -1, 30),
+            }
+            r1_s, r2_s, syn_s = presets.get(prof, (0, 0, 0))
+            _in_profile_sync[0] = True
+            try:
+                self.ad_timeout_spin.setValue(r1_s)
+                self.ad_round2_timeout_spin.setValue(r2_s)
+                self.ad_synth_timeout_spin.setValue(syn_s)
+            finally:
+                _in_profile_sync[0] = False
+            _refresh_timing_impact_banner()
 
         self.ad_timing_profile_combo.currentIndexChanged.connect(_on_timing_profile_picked)
+        self.ad_straggler_spin.valueChanged.connect(lambda _v: _refresh_timing_impact_banner())
+        self.ad_heartbeat_check.toggled.connect(lambda _b: _refresh_timing_impact_banner())
+        self.ad_heartbeat_interval_spin.valueChanged.connect(lambda _v: _refresh_timing_impact_banner())
         p_lay.addLayout(form2)
 
-        ceil_note = QLabel('<i>Maximum waits, not countdowns. Each phase moves on as soon as all replies land.</i>')
+        ceil_note = QLabel(
+            '<i>Maximum waits, not countdowns. Each phase moves on immediately as soon as all active AIs reply or report an error.</i>'
+        )
         ceil_note.setObjectName('muted')
         p_lay.addWidget(ceil_note)
 
-        ceil_hdr = QLabel('<b>Provider Ceilings (HTTP Socket &amp; Liveness Caps)</b>')
-        p_lay.addWidget(ceil_hdr)
-        ceil_tbl = QTableWidget(4, 2, perf_card)
-        ceil_tbl.setHorizontalHeaderLabels(['Provider (or Group)', 'Maximum Wait'])
-        ceil_tbl.verticalHeader().setVisible(False)
-        ceil_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        ceil_tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        ceil_tbl.setFixedHeight(138)
-        ceil_tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        ceil_tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        for r_i, (p_grp, p_wait) in enumerate([
-            ('Cerebras / Groq (Fast Inference)', '120 sec (15s handshake)'),
-            ('Mistral / Cohere / Qwen', '180 sec (15s handshake)'),
-            ('DeepSeek / OpenAI', '300 sec (15s handshake)'),
-            ('Gemini High / Vision & Graphics', '300 sec (15s handshake)'),
-        ]):
-            ceil_tbl.setItem(r_i, 0, QTableWidgetItem(p_grp))
-            ceil_tbl.setItem(r_i, 1, QTableWidgetItem(p_wait))
-        p_lay.addWidget(ceil_tbl)
+        # Collapsible Advanced Per-Provider Handshake & Ceiling Overrides (Editable)
+        adv_hdr_row = QHBoxLayout()
+        adv_hdr_lbl = QLabel('<b>Per-Provider Handshake &amp; Ceiling Overrides:</b>')
+        adv_hdr_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.ad_adv_ceilings_toggle_btn = QPushButton('▸ Advanced Overrides')
+        self.ad_adv_ceilings_toggle_btn.setCheckable(True)
+        self.ad_adv_ceilings_toggle_btn.setChecked(False)
+        self.ad_adv_ceilings_toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ad_adv_ceilings_toggle_btn.setToolTip(
+            'Advanced: Edit TCP/TLS connection handshake timeouts (default 15s) and optional per-provider thinking ceilings (default Unlimited with Server Heartbeat)'
+        )
+        self.ad_reset_ceilings_btn = QPushButton('↺ Reset Defaults')
+        self.ad_reset_ceilings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ad_reset_ceilings_btn.setToolTip('Reset all provider groups to 15-second connection handshake and Unlimited thinking (Server Heartbeat)')
+        self.ad_reset_ceilings_btn.hide()
+        adv_hdr_row.addWidget(adv_hdr_lbl)
+        adv_hdr_row.addWidget(self.ad_adv_ceilings_toggle_btn)
+        adv_hdr_row.addWidget(self.ad_reset_ceilings_btn)
+        adv_hdr_row.addStretch(1)
+        p_lay.addLayout(adv_hdr_row)
+
+        self.ad_adv_ceilings_container = QWidget()
+        adv_c_lay = QVBoxLayout(self.ad_adv_ceilings_container)
+        adv_c_lay.setContentsMargins(0, 4, 0, 0)
+        adv_c_lay.setSpacing(6)
+        adv_help = QLabel(
+            'By default, providers only enforce a <b>15-second TCP/TLS handshake timeout</b> to detect offline endpoints immediately, '
+            'with <b>Unlimited thinking time</b> monitored by Server Heartbeat Detection. You can customize each group below:'
+        )
+        adv_help.setWordWrap(True)
+        adv_help.setObjectName('muted')
+        adv_c_lay.addWidget(adv_help)
+
+        self.ad_ceiling_table = QTableWidget(len(PROVIDER_CEILING_GROUPS), 3, self.ad_adv_ceilings_container)
+        self.ad_ceiling_table.setHorizontalHeaderLabels([
+            'Provider Group',
+            'Handshake Timeout',
+            'Thinking / Read Ceiling (Advanced)',
+        ])
+        self.ad_ceiling_table.verticalHeader().setVisible(False)
+        self.ad_ceiling_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.ad_ceiling_table.setFixedHeight(190)
+        self.ad_ceiling_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.ad_ceiling_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.ad_ceiling_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._provider_ceiling_widgets: dict[str, dict[str, QWidget]] = {}
+
+        ceiling_choices = [
+            (0, 'Unlimited (Heartbeat & Error-Only)'),
+            (60, '1 min (60 sec)'),
+            (120, '2 min (120 sec)'),
+            (180, '3 min (180 sec)'),
+            (300, '5 min (300 sec)'),
+            (420, '7 min (420 sec)'),
+            (600, '10 min (600 sec)'),
+            (900, '15 min (900 sec)'),
+            (1800, '30 min (1800 sec)'),
+        ]
+
+        for r_i, (g_key, g_label, _g_members) in enumerate(PROVIDER_CEILING_GROUPS):
+            it_lbl = QTableWidgetItem(g_label)
+            it_lbl.setFlags(it_lbl.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.ad_ceiling_table.setItem(r_i, 0, it_lbl)
+
+            hs_spin = QSpinBox()
+            hs_spin.setRange(5, 120)
+            hs_spin.setSuffix(' sec handshake')
+            hs_spin.setToolTip(f'TCP/TLS connection handshake timeout for {g_label} (default 15 sec)')
+            hs_spin.valueChanged.connect(self._schedule_autosave)
+            self.ad_ceiling_table.setCellWidget(r_i, 1, hs_spin)
+
+            tc_combo = QComboBox()
+            tc_combo.setToolTip(f'Thinking/read ceiling after handshake for {g_label} (Recommended: Unlimited with Server Heartbeat)')
+            for c_sec, c_txt in ceiling_choices:
+                tc_combo.addItem(c_txt, c_sec)
+            tc_combo.currentIndexChanged.connect(self._schedule_autosave)
+            self.ad_ceiling_table.setCellWidget(r_i, 2, tc_combo)
+            self._provider_ceiling_widgets[g_key] = {'handshake': hs_spin, 'ceiling': tc_combo}
+
+        def _populate_provider_ceiling_table(raw_overrides: Any = None):
+            norm_ov = normalize_provider_ceiling_overrides(raw_overrides)
+            for g_key, widgets in self._provider_ceiling_widgets.items():
+                entry = norm_ov.get(g_key, DEFAULT_PROVIDER_CEILING_OVERRIDES.get(g_key, {'handshake_sec': 15, 'thinking_ceiling_sec': 0}))
+                hs_w = widgets['handshake']
+                tc_w = widgets['ceiling']
+                if isinstance(hs_w, QSpinBox):
+                    hs_w.blockSignals(True)
+                    hs_w.setValue(int(entry.get('handshake_sec', 15)))
+                    hs_w.blockSignals(False)
+                if isinstance(tc_w, QComboBox):
+                    tc_val = int(entry.get('thinking_ceiling_sec', 0))
+                    tc_w.blockSignals(True)
+                    c_i = tc_w.findData(tc_val)
+                    if c_i < 0:
+                        tc_w.addItem(f'{tc_val} sec', tc_val)
+                        c_i = tc_w.count() - 1
+                    tc_w.setCurrentIndex(c_i)
+                    tc_w.blockSignals(False)
+
+        def _collect_provider_ceiling_overrides() -> dict[str, dict[str, int]]:
+            out_ov: dict[str, dict[str, int]] = {}
+            for g_key, widgets in self._provider_ceiling_widgets.items():
+                hs_w = widgets['handshake']
+                tc_w = widgets['ceiling']
+                hs_v = int(hs_w.value()) if isinstance(hs_w, QSpinBox) else 15
+                tc_v = int(tc_w.currentData() or 0) if isinstance(tc_w, QComboBox) else 0
+                out_ov[g_key] = {'handshake_sec': hs_v, 'thinking_ceiling_sec': tc_v}
+            return normalize_provider_ceiling_overrides(out_ov)
+
+        self._populate_provider_ceiling_table = _populate_provider_ceiling_table
+        self._collect_provider_ceiling_overrides = _collect_provider_ceiling_overrides
+        _populate_provider_ceiling_table(ad_cfg.get('provider_ceiling_overrides'))
+
+        def _on_toggle_adv_ceilings(checked: bool):
+            self.ad_adv_ceilings_container.setVisible(checked)
+            self.ad_reset_ceilings_btn.setVisible(checked)
+            self.ad_adv_ceilings_toggle_btn.setText(
+                '▾ Hide Overrides'
+                if checked
+                else '▸ Advanced Overrides'
+            )
+
+        def _on_reset_adv_ceilings():
+            _populate_provider_ceiling_table(DEFAULT_PROVIDER_CEILING_OVERRIDES)
+            self._schedule_autosave()
+
+        self.ad_adv_ceilings_toggle_btn.toggled.connect(_on_toggle_adv_ceilings)
+        self.ad_reset_ceilings_btn.clicked.connect(_on_reset_adv_ceilings)
+        adv_c_lay.addWidget(self.ad_ceiling_table)
+        self.ad_adv_ceilings_container.hide()
+        p_lay.addWidget(self.ad_adv_ceilings_container)
+
+        _refresh_timing_impact_banner()
         t_lay.addWidget(perf_card)
         t_lay.addStretch(1)
         self.council_sub_pages.addWidget(sub_timing)
@@ -3287,6 +3927,7 @@ class ManageAIsDialog(QDialog):
         self._voice_sub_tab_btns: list[QPushButton] = []
         sub_tab_specs = [
             (0, '🔊 Audio && Mic', 'Thinking AI, speaking voice, mic level & 3D avatar mode'),
+            (3, '🛡️ Filters && Commands', 'Jump to Advanced Voice Input Filters & Multi-Word Vocal Commands ("..." double-quoted lists)'),
             (1, '🗣️ Voice Cast', 'Enable Multi-AI Table Quorum (1–4 AI slots, voices, personas) & save Mode presets'),
             (2, '🎭 Personas', 'Inspect & edit in-depth Roleplay Personas and profile learning'),
         ]
@@ -3988,31 +4629,7 @@ class ManageAIsDialog(QDialog):
         )
         mc_lay.addWidget(self.barge_in_check)
 
-        self.ignore_vocal_noises_check = QCheckBox(
-            'Ignore unconscious human noises, coughs, sighs & fillers ("um", "uh", "hmm", "ah")',
-            checked=bool(v_cfg.get('ignore_vocal_noises', True)),
-        )
-        self.ignore_vocal_noises_check.setToolTip(
-            'Automatically filters out 60+ built-in human vocal noises (ums, ahs, throat clearing, coughs, sighs, sniffs, lip smacks, and short Whisper noise hallucinations) so they never cut off or confuse the AI.'
-        )
-        mc_lay.addWidget(self.ignore_vocal_noises_check)
-
-        noise_row = QHBoxLayout()
-        noise_row.setSpacing(6)
-        noise_lbl = QLabel('Extra Ignored Noises / Words:')
-        noise_lbl.setToolTip('Optional comma-separated extra sounds or words for Talk Mode to ignore (AIs can also add to this list when you ask)')
-        self.custom_ignored_noises_edit = QLineEdit(str(v_cfg.get('custom_ignored_noises') or ''))
-        self.custom_ignored_noises_edit.setPlaceholderText(
-            'Built-in: um, uh, hmm, ah, er, mm, mhm, ahem, cough, sigh, sniff, groan, yawn… (add extra comma-separated words here)'
-        )
-        self.custom_ignored_noises_edit.setToolTip(
-            'Built-in filter already ignores 60+ common human vocal noises & fillers. Add any personal words/sounds Whisper mistranscribes from your mic.'
-        )
-        noise_row.addWidget(noise_lbl)
-        noise_row.addWidget(self.custom_ignored_noises_edit, 1)
-        mc_lay.addLayout(noise_row)
-
-        # Live Microphone Level Meter & Test Row
+        # Live Microphone Level Meter & Test Row (Placed directly under basic mic controls)
         meter_row = QHBoxLayout()
         self.mic_level_bar = QProgressBar()
         self.mic_level_bar.setRange(0, 100)
@@ -4047,6 +4664,258 @@ class ManageAIsDialog(QDialog):
         self.mic_test_status_label.setWordWrap(True)
         self.mic_test_status_label.setStyleSheet('font-size: 12px; color: #8b949e;')
         mc_lay.addWidget(self.mic_test_status_label)
+
+        # ----------------------------------------------------------------------
+        # CLEAR DIVIDER & SUB-SECTION BRANCHING FROM AUDIO & MIC:
+        # "Advanced Voice Input Filters & Commands"
+        # ----------------------------------------------------------------------
+        from voice_service import (
+            DEFAULT_PHYSICAL_NOISES_LIST,
+            DEFAULT_SPOKEN_FILLERS_LIST,
+            DEFAULT_VOICE_CLEAR_PHRASES,
+            DEFAULT_VOICE_NEWLINE_PHRASES,
+            DEFAULT_VOICE_SUBMIT_PHRASES,
+            DEFAULT_VOICE_UNDO_PHRASES,
+            format_quoted_phrase_list,
+        )
+
+        adv_divider = QFrame()
+        adv_divider.setFrameShape(QFrame.Shape.HLine)
+        adv_divider.setFrameShadow(QFrame.Shadow.Plain)
+        adv_divider.setFixedHeight(2)
+        adv_divider.setStyleSheet('background-color: #38bdf8; border: none; margin-top: 6px; margin-bottom: 4px;')
+        mc_lay.addWidget(adv_divider)
+
+        self.adv_voice_filters_section = QFrame()
+        adv_lay = QVBoxLayout(self.adv_voice_filters_section)
+        adv_lay.setContentsMargins(0, 4, 0, 2)
+        adv_lay.setSpacing(8)
+
+        adv_hdr_row = QHBoxLayout()
+        adv_hdr_lbl = QLabel('<b>🛡️ Advanced Voice Input Filters &amp; Commands</b>')
+        adv_hdr_lbl.setTextFormat(Qt.TextFormat.RichText)
+        adv_hdr_lbl.setStyleSheet('font-size: 13px;')
+        reset_vcmd_btn = QPushButton('↺ Reset Filters & Lists')
+        reset_vcmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_vcmd_btn.setToolTip('Restore all built-in quoted physical noises, spoken fillers, and 2+ word vocal commands')
+        adv_hdr_row.addWidget(adv_hdr_lbl, 1)
+        adv_hdr_row.addWidget(reset_vcmd_btn)
+        adv_lay.addLayout(adv_hdr_row)
+
+        adv_inst_lbl = QLabel(
+            '<b>Instruction:</b> Surround each noise, word, or multi-word command phrase with double quotes <code>"..."</code> '
+            '(for example: <code>"cough"</code>, <code>"clears throat"</code>, <code>"submit query"</code>). '
+            'Every active item is visible and directly editable in the multi-line boxes below.'
+        )
+        adv_inst_lbl.setTextFormat(Qt.TextFormat.RichText)
+        adv_inst_lbl.setWordWrap(True)
+        adv_inst_lbl.setObjectName('muted')
+        adv_lay.addWidget(adv_inst_lbl)
+
+        default_phys_quoted = format_quoted_phrase_list(DEFAULT_PHYSICAL_NOISES_LIST)
+        default_fillers_quoted = format_quoted_phrase_list(DEFAULT_SPOKEN_FILLERS_LIST)
+        default_submit_quoted = format_quoted_phrase_list(DEFAULT_VOICE_SUBMIT_PHRASES)
+        default_undo_quoted = format_quoted_phrase_list(DEFAULT_VOICE_UNDO_PHRASES)
+        default_clear_quoted = format_quoted_phrase_list(DEFAULT_VOICE_CLEAR_PHRASES)
+        default_newline_quoted = format_quoted_phrase_list(DEFAULT_VOICE_NEWLINE_PHRASES)
+
+        # BOX 1: Physical Mic Noises (On/Off toggle on the left + visible editable multi-line box beside it)
+        box1_row = QHBoxLayout()
+        box1_row.setSpacing(10)
+        box1_left = QVBoxLayout()
+        box1_left.setSpacing(3)
+        self.ignore_vocal_noises_check = QCheckBox(
+            'Ignore physical mic noises\n& non-speech interrupts',
+            checked=bool(v_cfg.get('ignore_vocal_noises', True)),
+        )
+        self.ignore_vocal_noises_check.setMinimumWidth(215)
+        self.ignore_vocal_noises_check.setToolTip(
+            'When checked, physical body/mic noises listed in the box beside this button (coughs, sniffs, throat clears, mic bumps) are silently dropped.'
+        )
+        box1_hint = QLabel('Silently dropped (never typed or sent).\nSurround each noise with "…":')
+        box1_hint.setObjectName('muted')
+        box1_hint.setWordWrap(True)
+        box1_left.addWidget(self.ignore_vocal_noises_check)
+        box1_left.addWidget(box1_hint)
+        box1_left.addStretch(1)
+
+        init_phys_txt = str(v_cfg.get('physical_noises_list') or default_phys_quoted)
+        extra_legacy = str(v_cfg.get('custom_ignored_noises') or '').strip()
+        if extra_legacy:
+            init_phys_txt = format_quoted_phrase_list(f"{init_phys_txt}, {extra_legacy}")
+        self.physical_noises_edit = QuotedPhraseTextEdit(init_phys_txt, min_height=66, max_height=92)
+        self.physical_noises_edit.setPlaceholderText(default_phys_quoted)
+        self.physical_noises_edit.setToolTip(
+            'Editable list of physical mic & body noises surrounded by double quotes ("cough", "sniff", "clears throat", "mic bump"). All items are visible at once.'
+        )
+        # Keep alias so any caller referencing custom_ignored_noises_edit works seamlessly
+        self.custom_ignored_noises_edit = self.physical_noises_edit
+        box1_row.addLayout(box1_left)
+        box1_row.addWidget(self.physical_noises_edit, 1)
+        adv_lay.addLayout(box1_row)
+
+        # BOX 2: Spoken Hesitation / Filler Words (On/Off toggle on the left + visible editable multi-line box beside it)
+        box2_row = QHBoxLayout()
+        box2_row.setSpacing(10)
+        box2_left = QVBoxLayout()
+        box2_left.setSpacing(3)
+        self.highlight_spoken_fillers_check = QCheckBox(
+            'Highlight spoken filler words\nas [um], [ahh] (ignored by AI)',
+            checked=bool(v_cfg.get('highlight_spoken_fillers', True)),
+        )
+        self.highlight_spoken_fillers_check.setMinimumWidth(215)
+        self.highlight_spoken_fillers_check.setToolTip(
+            'Shows spoken hesitation fillers inline as [um], [ahh] in the input box for visual haptic feedback while stripping them from the AI prompt.'
+        )
+        box2_hint = QLabel('Shown as [um] in input box; stripped from AI.\nSurround each filler word with "…":')
+        box2_hint.setObjectName('muted')
+        box2_hint.setWordWrap(True)
+        box2_left.addWidget(self.highlight_spoken_fillers_check)
+        box2_left.addWidget(box2_hint)
+        box2_left.addStretch(1)
+
+        self.spoken_fillers_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('spoken_fillers_list') or default_fillers_quoted),
+            min_height=54,
+            max_height=76,
+        )
+        self.spoken_fillers_edit.setPlaceholderText(default_fillers_quoted)
+        self.spoken_fillers_edit.setToolTip(
+            'Editable list of spoken hesitation filler words surrounded by double quotes ("um", "uh", "ahh", "erm", "hmm").'
+        )
+        box2_row.addLayout(box2_left)
+        box2_row.addWidget(self.spoken_fillers_edit, 1)
+        adv_lay.addLayout(box2_row)
+
+        # BOX 3: Words That Should NEVER Be Filtered (Always Included List)
+        box3_row = QHBoxLayout()
+        box3_row.setSpacing(10)
+        box3_left = QVBoxLayout()
+        box3_left.setSpacing(2)
+        always_inc_lbl = QLabel('<b>Words Never Filtered</b>\n(Always Included in Prompt):')
+        always_inc_lbl.setTextFormat(Qt.TextFormat.RichText)
+        always_inc_lbl.setMinimumWidth(215)
+        always_inc_hint = QLabel('Protected from noise/filler filters.\nOr tell the AI: "Always include that word".')
+        always_inc_hint.setObjectName('muted')
+        always_inc_hint.setWordWrap(True)
+        box3_left.addWidget(always_inc_lbl)
+        box3_left.addWidget(always_inc_hint)
+        box3_left.addStretch(1)
+
+        self.always_included_words_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('always_included_words') or ''),
+            min_height=46,
+            max_height=68,
+        )
+        self.always_included_words_edit.setPlaceholderText(
+            'Surround protected words with double quotes, e.g. "well", "right", "like" (or tell the AI: "Always include that word")'
+        )
+        self.always_included_words_edit.setToolTip(
+            'Any word or phrase surrounded by "..." here will NEVER be filtered as a noise or bracketed as a filler word.'
+        )
+        box3_row.addLayout(box3_left)
+        box3_row.addWidget(self.always_included_words_edit, 1)
+        adv_lay.addLayout(box3_row)
+
+        # BOX 4: Vocal SUBMIT Commands & Hands-Free Editing Commands (2+ Words Minimum in Quotes)
+        vcmd_hdr = QLabel(
+            '<b>🗣️ Vocal SUBMIT &amp; Editing Commands (Used in 🎤 Voice Input Only Mode — 2+ Words in <code>"..."</code> Quotes):</b>'
+        )
+        vcmd_hdr.setTextFormat(Qt.TextFormat.RichText)
+        vcmd_hdr.setToolTip(
+            'In 🎤 Voice Input Only mode, your words stream live into the input box as you talk and NEVER auto-submit on silence. '
+            'Say any 2+ word Submit command combination below at the end of your thought to send hands-free.'
+        )
+        adv_lay.addWidget(vcmd_hdr)
+
+        sub_cmd_row = QHBoxLayout()
+        sub_cmd_row.setSpacing(10)
+        sub_cmd_left = QVBoxLayout()
+        sub_cmd_left.setSpacing(2)
+        sub_cmd_lbl = QLabel('<b>Vocal SUBMIT Commands:</b>')
+        sub_cmd_lbl.setTextFormat(Qt.TextFormat.RichText)
+        sub_cmd_lbl.setMinimumWidth(215)
+        sub_cmd_hint = QLabel('Say at the end of speech to send your prompt.\nUse 2+ words in "..." quotes:')
+        sub_cmd_hint.setObjectName('muted')
+        sub_cmd_hint.setWordWrap(True)
+        sub_cmd_left.addWidget(sub_cmd_lbl)
+        sub_cmd_left.addWidget(sub_cmd_hint)
+        sub_cmd_left.addStretch(1)
+
+        self.voice_submit_phrases_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('voice_submit_phrases') or default_submit_quoted),
+            min_height=54,
+            max_height=76,
+        )
+        self.voice_submit_phrases_edit.setPlaceholderText(default_submit_quoted)
+        self.voice_submit_phrases_edit.setToolTip(
+            'Double-quoted 2+ word vocal commands that submit your live-streamed voice prompt (all commands visible at once)'
+        )
+        sub_cmd_row.addLayout(sub_cmd_left)
+        sub_cmd_row.addWidget(self.voice_submit_phrases_edit, 1)
+        adv_lay.addLayout(sub_cmd_row)
+
+        undo_cmd_row = QHBoxLayout()
+        undo_cmd_row.setSpacing(10)
+        undo_lbl = QLabel('<b>Undo Last Spoken Phrase:</b>')
+        undo_lbl.setTextFormat(Qt.TextFormat.RichText)
+        undo_lbl.setMinimumWidth(215)
+        self.voice_undo_phrases_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('voice_undo_phrases') or default_undo_quoted),
+            min_height=42,
+            max_height=60,
+        )
+        self.voice_undo_phrases_edit.setPlaceholderText(default_undo_quoted)
+        self.voice_undo_phrases_edit.setToolTip('Double-quoted 2+ word vocal commands that remove the last spoken clause from the input box')
+        undo_cmd_row.addWidget(undo_lbl)
+        undo_cmd_row.addWidget(self.voice_undo_phrases_edit, 1)
+        adv_lay.addLayout(undo_cmd_row)
+
+        clear_cmd_row = QHBoxLayout()
+        clear_cmd_row.setSpacing(10)
+        clear_lbl = QLabel('<b>Clear Entire Input Box:</b>')
+        clear_lbl.setTextFormat(Qt.TextFormat.RichText)
+        clear_lbl.setMinimumWidth(215)
+        self.voice_clear_phrases_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('voice_clear_phrases') or default_clear_quoted),
+            min_height=42,
+            max_height=60,
+        )
+        self.voice_clear_phrases_edit.setPlaceholderText(default_clear_quoted)
+        self.voice_clear_phrases_edit.setToolTip('Double-quoted 2+ word vocal commands that clear the entire input box')
+        clear_cmd_row.addWidget(clear_lbl)
+        clear_cmd_row.addWidget(self.voice_clear_phrases_edit, 1)
+        adv_lay.addLayout(clear_cmd_row)
+
+        nl_cmd_row = QHBoxLayout()
+        nl_cmd_row.setSpacing(10)
+        nl_lbl = QLabel('<b>Insert New Line / Paragraph:</b>')
+        nl_lbl.setTextFormat(Qt.TextFormat.RichText)
+        nl_lbl.setMinimumWidth(215)
+        self.voice_newline_phrases_edit = QuotedPhraseTextEdit(
+            str(v_cfg.get('voice_newline_phrases') or default_newline_quoted),
+            min_height=42,
+            max_height=60,
+        )
+        self.voice_newline_phrases_edit.setPlaceholderText(default_newline_quoted)
+        self.voice_newline_phrases_edit.setToolTip('Double-quoted 2+ word vocal commands that insert a new line / paragraph')
+        nl_cmd_row.addWidget(nl_lbl)
+        nl_cmd_row.addWidget(self.voice_newline_phrases_edit, 1)
+        adv_lay.addLayout(nl_cmd_row)
+
+        def _reset_vocal_commands():
+            self.ignore_vocal_noises_check.setChecked(True)
+            self.highlight_spoken_fillers_check.setChecked(True)
+            self.physical_noises_edit.setText(default_phys_quoted)
+            self.spoken_fillers_edit.setText(default_fillers_quoted)
+            self.always_included_words_edit.setText('')
+            self.voice_submit_phrases_edit.setText(default_submit_quoted)
+            self.voice_undo_phrases_edit.setText(default_undo_quoted)
+            self.voice_clear_phrases_edit.setText(default_clear_quoted)
+            self.voice_newline_phrases_edit.setText(default_newline_quoted)
+
+        reset_vcmd_btn.clicked.connect(_reset_vocal_commands)
+        mc_lay.addWidget(self.adv_voice_filters_section)
 
         def _collect_voice_slots_payload() -> list[dict]:
             slot_widgets = getattr(self, '_voice_cast_slot_widgets', None)
@@ -4105,7 +4974,15 @@ class ManageAIsDialog(QDialog):
                 'barge_in_enabled': self.barge_in_check.isChecked(),
                 'interruption_sensitivity': int(self.interruption_sens_slider.value()) if hasattr(self, 'interruption_sens_slider') else 35,
                 'ignore_vocal_noises': bool(self.ignore_vocal_noises_check.isChecked()) if hasattr(self, 'ignore_vocal_noises_check') else True,
-                'custom_ignored_noises': self.custom_ignored_noises_edit.text().strip() if hasattr(self, 'custom_ignored_noises_edit') else '',
+                'highlight_spoken_fillers': bool(self.highlight_spoken_fillers_check.isChecked()) if hasattr(self, 'highlight_spoken_fillers_check') else True,
+                'physical_noises_list': format_quoted_phrase_list(self.physical_noises_edit.text().strip()) if hasattr(self, 'physical_noises_edit') else '',
+                'spoken_fillers_list': format_quoted_phrase_list(self.spoken_fillers_edit.text().strip()) if hasattr(self, 'spoken_fillers_edit') else '',
+                'custom_ignored_noises': '',
+                'always_included_words': format_quoted_phrase_list(self.always_included_words_edit.text().strip()) if hasattr(self, 'always_included_words_edit') and self.always_included_words_edit.text().strip() else '',
+                'voice_submit_phrases': format_quoted_phrase_list(self.voice_submit_phrases_edit.text().strip()) if hasattr(self, 'voice_submit_phrases_edit') else '',
+                'voice_undo_phrases': format_quoted_phrase_list(self.voice_undo_phrases_edit.text().strip()) if hasattr(self, 'voice_undo_phrases_edit') else '',
+                'voice_clear_phrases': format_quoted_phrase_list(self.voice_clear_phrases_edit.text().strip()) if hasattr(self, 'voice_clear_phrases_edit') else '',
+                'voice_newline_phrases': format_quoted_phrase_list(self.voice_newline_phrases_edit.text().strip()) if hasattr(self, 'voice_newline_phrases_edit') else '',
                 'status_notification_style': str(self.status_style_combo.currentData() or 'text'),
                 'voice_companion_enabled': self.voice_companion_check.isChecked(),
                 'spoken_summary_for_background': self.spoken_summary_check.isChecked(),
@@ -5027,22 +5904,36 @@ class ManageAIsDialog(QDialog):
         self.voice_sub_pages.addWidget(pers_scroll)
 
         def _select_voice_subpage(sub_idx: int, sync_sidebar: bool = False):
-            clean_i = max(0, min(2, int(sub_idx)))
-            self.voice_sub_pages.setCurrentIndex(clean_i)
+            raw_i = int(sub_idx)
+            scroll_to_filters = (raw_i == 3)
+            stack_i = 0 if scroll_to_filters else max(0, min(2, raw_i))
+            self.voice_sub_pages.setCurrentIndex(stack_i)
+            btn_match_idx = 1 if scroll_to_filters else (0 if stack_i == 0 else stack_i + 1)
             for b_i, btn in enumerate(self._voice_sub_tab_btns):
                 btn.blockSignals(True)
-                btn.setChecked(b_i == clean_i)
+                btn.setChecked(b_i == btn_match_idx)
                 btn.blockSignals(False)
+            if scroll_to_filters and hasattr(self, 'adv_voice_filters_section'):
+                QTimer.singleShot(
+                    25,
+                    lambda: scroll.ensureWidgetVisible(self.adv_voice_filters_section, 0, 24),
+                )
+            elif stack_i == 0:
+                QTimer.singleShot(
+                    15,
+                    lambda: scroll.verticalScrollBar().setValue(0) if scroll.verticalScrollBar() is not None else None,
+                )
             if sync_sidebar:
                 voice_page_idx = self.SETTINGS_PAGES.index('Voice & Audio')
+                nav_sub_target = 3 if scroll_to_filters else stack_i
                 if not getattr(self, '_voice_nav_expanded', False):
                     self._voice_nav_expanded = True
-                    self._rebuild_nav_list(target_page_idx=voice_page_idx, voice_sub_idx=clean_i)
+                    self._rebuild_nav_list(target_page_idx=voice_page_idx, voice_sub_idx=nav_sub_target)
                 else:
                     for r in range(self.nav_list.count()):
                         it = self.nav_list.item(r)
                         u_meta = it.data(Qt.ItemDataRole.UserRole) if it else None
-                        if isinstance(u_meta, tuple) and u_meta[:2] == (voice_page_idx, clean_i) and not (len(u_meta) >= 4 and u_meta[3]):
+                        if isinstance(u_meta, tuple) and u_meta[:2] == (voice_page_idx, nav_sub_target) and not (len(u_meta) >= 4 and u_meta[3]):
                             self.nav_list.blockSignals(True)
                             self.nav_list.setCurrentRow(r)
                             self.nav_list.blockSignals(False)
@@ -5095,6 +5986,21 @@ class ManageAIsDialog(QDialog):
         b_idx = self.badge_mode_combo.findData(cur_badge_mode)
         if b_idx >= 0:
             self.badge_mode_combo.setCurrentIndex(b_idx)
+
+        def _preview_badge_mode_live(_idx: int = 0):
+            if not getattr(self, '_init_complete', False):
+                return
+            bm = str(self.badge_mode_combo.currentData() or 'icons_only')
+            save_ui_settings({'badge_display_mode': bm}, config_path=self.config_path)
+            parent = self.parent()
+            if parent is not None:
+                parent.badge_display_mode = bm
+                if hasattr(parent, 'reload_provider_bar'):
+                    parent.reload_provider_bar()
+                if hasattr(parent, '_render_chat_items') and getattr(parent, 'chat_items', None):
+                    parent._render_chat_items(scroll_to_bottom=False)
+
+        self.badge_mode_combo.currentIndexChanged.connect(_preview_badge_mode_live)
         badge_form.addRow('Agent Chip Display Style:', self.badge_mode_combo)
 
         self.bg_source_combo = QComboBox()
@@ -6250,13 +7156,40 @@ class ManageAIsDialog(QDialog):
             self.squad_context_depth_combo.addItem(cd_lbl, cd_slug)
         form.addRow('Context Depth:', self.squad_context_depth_combo)
 
+        self.squad_timing_profile_combo = QComboBox()
+        self.squad_timing_profile_combo.setToolTip(
+            'Attach a Response Timing budget to this Profile (1m Quick timer for Light Chat; Unlimited with Server Heartbeat for Generalist, Graphics, Code, Deep Chat & Work Mode)'
+        )
+        self.squad_timing_profile_combo.addItem('Use Global Timing Default', 'default')
+        for tp_slug, tp_lbl in COUNCIL_TIMING_PROFILE_CHOICES:
+            if tp_slug != 'custom':
+                self.squad_timing_profile_combo.addItem(tp_lbl, tp_slug)
+        form.addRow('Response Timing:', self.squad_timing_profile_combo)
+
+        self.squad_voice_mode_combo = QComboBox()
+        self.squad_voice_mode_combo.setToolTip(
+            'Default Speech Mode when you press the Speech button in this Profile:\n'
+            '• 🎙️ Full Conversation (Speak & Listen): Two-way spoken conversation (default on Voice 1, Voice 2, Light Chat & Generalist).\n'
+            '• 🎤 Voice Input Only (Stream to Box → Vocal Command): Streams your words live into the input box and waits for a 2+ word vocal command like "Submit Query" or "Send This Now" (default on Code AIs, Deeper Chat, Work Mode & Graphics).'
+        )
+        self.squad_voice_mode_combo.addItem('🎙️ Full Conversation (Speak & Listen — Two-Way Audio)', 'full_conversation')
+        self.squad_voice_mode_combo.addItem('🎤 Voice Input Only (Live Stream to Box → Vocal Command)', 'input_only')
+        form.addRow('Default Speech Mode:', self.squad_voice_mode_combo)
+
+        self.squad_auto_voice_check = QCheckBox('Auto-start speech microphone immediately when selecting this Profile (Voice 1 & Voice 2)')
+        self.squad_auto_voice_check.setToolTip(
+            'When checked, selecting this Profile automatically turns on the Speech microphone (used by Voice 1 and Voice 2)'
+        )
+
         self.squad_overrides_edit = QLineEdit()
-        self.squad_overrides_edit.setPlaceholderText('e.g. openai=gpt-5.6-sol, gemini=gemini-4-carbon, deepseek=deepseek-reasoner')
+        self.squad_overrides_edit.setPlaceholderText('e.g. openai=gpt-6.1-terra, gemini=gemini-4-hydrogen, deepseek=deepseek-v4-pro')
         self.squad_overrides_edit.setToolTip(
             'Optional per-profile model overrides (provider=model, comma-separated). Automatically translates for OpenRouter seats.'
         )
         form.addRow('Model Overrides:', self.squad_overrides_edit)
         right_lay.addLayout(form)
+
+        right_lay.addWidget(self.squad_auto_voice_check)
 
         self.squad_delib_check = QCheckBox('2-Round Council Deliberation (Peer Review ON)')
         self.squad_delib_check.setToolTip('Run 2-round peer review when this Profile is selected')
@@ -6315,6 +7248,9 @@ class ManageAIsDialog(QDialog):
             lbl = self.squad_label_edit.text().strip() or self._active_squad_key
             provs = [p for p, c in self.squad_provider_checks.items() if c.isChecked()]
             depth_val = str(self.squad_context_depth_combo.currentData() or 'standard').strip().lower()
+            tp_val = str(self.squad_timing_profile_combo.currentData() or 'unlimited').strip().lower()
+            vm_val = str(self.squad_voice_mode_combo.currentData() or 'full_conversation').strip().lower() if hasattr(self, 'squad_voice_mode_combo') else 'full_conversation'
+            auto_v_val = bool(self.squad_auto_voice_check.isChecked()) if hasattr(self, 'squad_auto_voice_check') else False
             ov_val = _parse_overrides(self.squad_overrides_edit.text())
             self._squads_data[self._active_squad_key] = {
                 'label': lbl,
@@ -6323,6 +7259,9 @@ class ManageAIsDialog(QDialog):
                 'code_access': self.squad_code_check.isChecked(),
                 'max_ais': int(self.squad_max_ais_combo.currentData() or 0),
                 'context_depth': depth_val,
+                'timing_profile': tp_val,
+                'voice_mode': vm_val,
+                'auto_start_voice': auto_v_val,
                 'model_overrides': ov_val,
             }
             cur_item = self.squad_list_widget.currentItem()
@@ -6347,7 +7286,8 @@ class ManageAIsDialog(QDialog):
         def _on_squad_selected(current: QListWidgetItem | None, _prev: QListWidgetItem | None = None):
             if current is None:
                 return
-            _save_current_squad_edits()
+            if _prev is not None:
+                _save_current_squad_edits()
             key = str(current.data(Qt.ItemDataRole.UserRole) or '')
             if key not in self._squads_data:
                 return
@@ -6359,6 +7299,16 @@ class ManageAIsDialog(QDialog):
             self.squad_max_ais_combo.setCurrentIndex(max_idx if max_idx >= 0 else 0)
             depth_idx = self.squad_context_depth_combo.findData(str(sq.get('context_depth') or 'standard').strip().lower())
             self.squad_context_depth_combo.setCurrentIndex(depth_idx if depth_idx >= 0 else 0)
+            tp_idx = self.squad_timing_profile_combo.findData(str(sq.get('timing_profile') or 'unlimited').strip().lower())
+            self.squad_timing_profile_combo.setCurrentIndex(tp_idx if tp_idx >= 0 else 0)
+            if hasattr(self, 'squad_voice_mode_combo'):
+                raw_vm_sq = str(sq.get('voice_mode') or 'full_conversation').strip().lower()
+                if raw_vm_sq in {'council_voice', 'fast_voice', 'off', ''}:
+                    raw_vm_sq = 'full_conversation'
+                vm_idx = self.squad_voice_mode_combo.findData(raw_vm_sq)
+                self.squad_voice_mode_combo.setCurrentIndex(vm_idx if vm_idx >= 0 else 0)
+            if hasattr(self, 'squad_auto_voice_check'):
+                self.squad_auto_voice_check.setChecked(bool(sq.get('auto_start_voice', key in {'voice_1', 'voice_2'})))
             self.squad_overrides_edit.setText(_format_overrides(sq.get('model_overrides')))
             self.squad_delib_check.setChecked(bool(sq.get('deliberate', True)))
             self.squad_code_check.setChecked(bool(sq.get('code_access', False)))
@@ -6422,6 +7372,9 @@ class ManageAIsDialog(QDialog):
         self.squad_label_edit.textEdited.connect(lambda _t: _save_current_squad_edits())
         self.squad_max_ais_combo.currentIndexChanged.connect(lambda _i: _save_current_squad_edits())
         self.squad_context_depth_combo.currentIndexChanged.connect(lambda _i: (_save_current_squad_edits(), self._schedule_autosave()))
+        self.squad_timing_profile_combo.currentIndexChanged.connect(lambda _i: (_save_current_squad_edits(), self._schedule_autosave()))
+        self.squad_voice_mode_combo.currentIndexChanged.connect(lambda _i: (_save_current_squad_edits(), self._schedule_autosave()))
+        self.squad_auto_voice_check.toggled.connect(lambda _b: (_save_current_squad_edits(), self._schedule_autosave()))
         self.squad_overrides_edit.textEdited.connect(lambda _t: (_save_current_squad_edits(), self._schedule_autosave()))
         self.squad_delib_check.toggled.connect(lambda _b: _save_current_squad_edits())
         self.squad_code_check.toggled.connect(lambda _b: _save_current_squad_edits())
@@ -8220,6 +9173,12 @@ class ManageAIsDialog(QDialog):
             ui_updates = {
                 'enter_to_send': bool(self.enter_mode_combo.currentData()),
                 'close_to_tray': bool(self.close_to_tray_check.isChecked()) if hasattr(self, 'close_to_tray_check') else False,
+                'minimize_to_tray': bool(self.minimize_to_tray_check.isChecked()) if hasattr(self, 'minimize_to_tray_check') else False,
+                'always_show_tray_icon': bool(self.always_show_tray_icon_check.isChecked()) if hasattr(self, 'always_show_tray_icon_check') else True,
+                'single_click_tray_to_open': bool(self.single_click_tray_check.isChecked()) if hasattr(self, 'single_click_tray_check') else True,
+                'show_tray_balloon_notifications': bool(self.show_tray_balloons_check.isChecked()) if hasattr(self, 'show_tray_balloons_check') else True,
+                'always_activate_when_clicked': bool(self.always_activate_tray_check.isChecked()) if hasattr(self, 'always_activate_tray_check') else True,
+                'confirm_on_exit': bool(self.confirm_on_exit_check.isChecked()) if hasattr(self, 'confirm_on_exit_check') else False,
                 'auto_refresh_catalog': bool(self.auto_refresh_catalog_check.isChecked()) if hasattr(self, 'auto_refresh_catalog_check') else True,
                 'spellcheck_enabled': bool(self.spellcheck_check.isChecked()) if hasattr(self, 'spellcheck_check') else True,
                 'badge_display_mode': str(self.badge_mode_combo.currentData() or 'icons_only'),
@@ -8297,17 +9256,25 @@ class ManageAIsDialog(QDialog):
                     config_path=self.config_path,
                 )
             if hasattr(self, 'ad_web_search_combo'):
+                ad_payload: dict[str, Any] = {
+                    'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
+                    'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
+                    'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
+                    'synthesizer_mode': str(self.ad_synth_combo.currentData() or 'auto_fast'),
+                    'smart_routing': bool(self.ad_smart_routing_check.isChecked()),
+                    'show_inline_status_messages': bool(self.ad_inline_status_check.isChecked()) if hasattr(self, 'ad_inline_status_check') else True,
+                    'deliberation_budget': str(self.ad_timing_profile_combo.currentData() or 'unlimited') if hasattr(self, 'ad_timing_profile_combo') else 'unlimited',
+                    'provider_timeout_sec': int(self.ad_timeout_spin.value()),
+                    'round2_timeout_sec': int(self.ad_round2_timeout_spin.value()) if hasattr(self, 'ad_round2_timeout_spin') else 0,
+                    'synthesis_timeout_sec': int(self.ad_synth_timeout_spin.value()) if hasattr(self, 'ad_synth_timeout_spin') else 0,
+                    'straggler_grace_sec': int(self.ad_straggler_spin.value()),
+                    'heartbeat_enabled': bool(self.ad_heartbeat_check.isChecked()) if hasattr(self, 'ad_heartbeat_check') else True,
+                    'heartbeat_interval_sec': int(self.ad_heartbeat_interval_spin.value()) if hasattr(self, 'ad_heartbeat_interval_spin') else 15,
+                }
+                if hasattr(self, '_collect_provider_ceiling_overrides') and callable(self._collect_provider_ceiling_overrides):
+                    ad_payload['provider_ceiling_overrides'] = self._collect_provider_ceiling_overrides()
                 save_agent_defaults(
-                    {
-                        'web_search_default': str(self.ad_web_search_combo.currentData() or 'default'),
-                        'output_detail': str(self.ad_output_detail_combo.currentData() or 'high'),
-                        'reasoning_summary': str(self.ad_reasoning_combo.currentData() or 'auto'),
-                        'synthesizer_mode': str(self.ad_synth_combo.currentData() or 'auto_fast'),
-                        'smart_routing': bool(self.ad_smart_routing_check.isChecked()),
-                        'show_inline_status_messages': bool(self.ad_inline_status_check.isChecked()) if hasattr(self, 'ad_inline_status_check') else True,
-                        'provider_timeout_sec': int(self.ad_timeout_spin.value()),
-                        'straggler_grace_sec': int(self.ad_straggler_spin.value()),
-                    },
+                    ad_payload,
                     config_path=self.config_path,
                 )
             if hasattr(self, 'ad_primary_img_combo'):
@@ -8342,11 +9309,14 @@ class ManageAIsDialog(QDialog):
                 raise
 
         self._saved_any_change = True
-        self._autosave_dirty = False
-        if hasattr(self, '_autosave_status_label'):
-            self._autosave_status_label.setText('✓ Saved automatically')
+        self._set_apply_dirty_state(False)
         parent = self.parent()
         if parent is not None:
+            if hasattr(parent, 'reload_providers_from_config'):
+                try:
+                    parent.reload_providers_from_config()
+                except Exception:
+                    pass
             if hasattr(parent, '_apply_voice_avatar_settings'):
                 try:
                     parent._apply_voice_avatar_settings()
@@ -8366,6 +9336,12 @@ class ManageAIsDialog(QDialog):
             tmr.stop()
         if not self._persist_all_settings(show_warnings=True):
             return
+        parent = self.parent()
+        if parent is not None:
+            if hasattr(parent, 'status_label'):
+                parent.status_label.setText('✓ Settings saved and applied')
+            if hasattr(parent, 'show_notice'):
+                parent.show_notice('✓ Settings saved and applied.')
         self._voice_dlg_closed = True
         self._stop_settings_mic_test()
         self.accept()
@@ -8399,6 +9375,9 @@ class PalaceWindow(QMainWindow):
         self.palace_factory = palace_factory or self._build_palace
         self.attachments = []
         self.worker = None
+        self.active_jobs: dict[int, dict[str, Any]] = {}
+        self._next_parallel_job_id: int = 1
+        self._target_steer_job_id: int | None = None
         self._voice_companion = None
         self._voice_threads = []
         self._voice_session_gen = 0
@@ -8415,6 +9394,9 @@ class PalaceWindow(QMainWindow):
         self._suppress_mail_auto_read = False
         self._background_delegated_from_voice = False
         self._talk_only_mode = False
+        self.active_voice_mode = 'full_conversation'
+        self._voice_input_clause_stack: list[str] = []
+        self._turn_silent_screen_only = False
         self._pending_workspace_actions = []
         self.last_answer = ''
         self.last_question = ''
@@ -8485,7 +9467,7 @@ class PalaceWindow(QMainWindow):
         sidebar.setMinimumWidth(250)
         sidebar.setMaximumWidth(285)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(10, 10, 10, 8)
+        side.setContentsMargins(10, 10, 10, 10)
         side.setSpacing(2)
 
         self.new_button = QPushButton('+ New Conversation')
@@ -8603,7 +9585,7 @@ class PalaceWindow(QMainWindow):
         panel = QWidget(splitter)
         panel.setObjectName('chatPanel')
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 10, 18, 8)
+        layout.setContentsMargins(18, 10, 18, 10)
         layout.setSpacing(6)
 
         # --- ULTRA-SLIM TOP SESSION STRIP (40px, Zero Crowding) ---
@@ -8819,6 +9801,44 @@ class PalaceWindow(QMainWindow):
         self.approval_banner.hide()
         normal_lay.addWidget(self.approval_banner)
 
+        # --- LIVE PARALLEL OPERATIONS BAR (Matches Approved Mockup: Hidden when 0 jobs running) ---
+        self.parallel_ops_bar = QFrame()
+        self.parallel_ops_bar.setObjectName('parallelOpsBar')
+        self.parallel_ops_bar.setStyleSheet(
+            'QFrame#parallelOpsBar { background: #0b131e; border: 1.5px solid #06b6d4; border-radius: 10px; }'
+        )
+        p_ops_outer = QVBoxLayout(self.parallel_ops_bar)
+        p_ops_outer.setContentsMargins(12, 8, 12, 8)
+        p_ops_outer.setSpacing(6)
+
+        p_ops_hdr_row = QHBoxLayout()
+        p_ops_hdr_row.setSpacing(8)
+        self.parallel_ops_title_lbl = QLabel(
+            '<span style="color:#38bdf8; font-weight:800; font-size:12.5px;">⚡ LIVE PARALLEL OPERATIONS BAR</span>'
+            ' &nbsp;<span style="color:#6e7681;">|</span>&nbsp; '
+            '<span style="color:#9da7b3; font-size:11.5px;">Run multiple AI queries at the same time</span>'
+        )
+        self.parallel_ops_title_lbl.setTextFormat(Qt.TextFormat.RichText)
+        p_ops_hdr_row.addWidget(self.parallel_ops_title_lbl)
+        p_ops_hdr_row.addStretch(1)
+
+        self.parallel_running_badge = QLabel('⚡ 0 Parallel Running')
+        self.parallel_running_badge.setStyleSheet(
+            'background: #0d2818; color: #4ade80; border: 1px solid #22c55e; '
+            'border-radius: 10px; padding: 2px 10px; font-size: 11.5px; font-weight: 700;'
+        )
+        p_ops_hdr_row.addWidget(self.parallel_running_badge)
+        p_ops_outer.addLayout(p_ops_hdr_row)
+
+        self.parallel_jobs_rows_host = QWidget()
+        self.parallel_jobs_rows_layout = QVBoxLayout(self.parallel_jobs_rows_host)
+        self.parallel_jobs_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.parallel_jobs_rows_layout.setSpacing(5)
+        p_ops_outer.addWidget(self.parallel_jobs_rows_host)
+
+        self.parallel_ops_bar.hide()
+        normal_lay.addWidget(self.parallel_ops_bar)
+
         # --- UNIFIED ROUNDED COMPOSER CARD ---
         composer_card = QFrame()
         composer_card.setObjectName('composerCard')
@@ -8971,61 +9991,193 @@ class PalaceWindow(QMainWindow):
         self.chat.paste_requested.connect(self._forward_chat_paste_to_composer)
         card_layout.addWidget(self.composer)
 
-        # Row 1: Primary actions (+, / Commands, Choose AIs, stretch, [Busy: Steer/Stop], Mic, Live Voice, Send)
+        # Single Decluttered Composer Toolbar Row (Design 1A Slim 22px Bar:
+        # Left: [+] [{}] [↗] [N AIs ▾] [⚙ Options ▾] + Removable Override Chips
+        # Right (only when active/processing): [🧭 Steer ▾] [⚡ Parallel] · Always: [🎤] [|||✨ ▾] [↑])
         controls = QHBoxLayout()
         controls.setContentsMargins(0, 2, 0, 0)
-        controls.setSpacing(6)
+        controls.setSpacing(5)
         self.attach_button = QPushButton('+')
         self.attach_button.setObjectName('plusAttachButton')
+        self.attach_button.setFixedSize(24, 22)
+        self.attach_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.attach_button.setToolTip('Attach files or pictures (Ctrl+O)')
         self.attach_button.clicked.connect(self.choose_files)
         controls.addWidget(self.attach_button)
 
         self.slash_cmd_btn = QPushButton('/ Commands ▾')
-        self.slash_cmd_btn.setMinimumWidth(98)
+        self.slash_cmd_btn.setMinimumWidth(86)
+        self.slash_cmd_btn.setFixedHeight(22)
         self.slash_cmd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.slash_cmd_btn.setToolTip('Insert slash command switch (/autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, /fullrender)')
         self.slash_cmd_btn.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 1px 6px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
             'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
         )
         self.slash_cmd_btn.clicked.connect(self._show_slash_commands_menu)
+        self.slash_cmd_btn.hide()
         controls.addWidget(self.slash_cmd_btn)
 
-        self.ai_pill_button = QPushButton('Choose AIs  ▾')
+        self.palace_code_btn = QPushButton('')
+        self.palace_code_btn.setIcon(code_shield_qicon(False))
+        self.palace_code_btn.setIconSize(QSize(15, 15))
+        self.palace_code_btn.setFixedSize(28, 22)
+        self.palace_code_btn.setCheckable(True)
+        self.palace_code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.palace_code_btn.setToolTip('Insert Fairybread source code into conversation')
+        self.palace_code_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 1px 4px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; border-color: #38bdf8; } '
+            'QPushButton:checked { background: #0f2930; color: #06b6d4; border: 1px solid #06b6d4; }'
+        )
+        self.palace_code_btn.toggled.connect(self._on_palace_code_btn_toggled)
+        controls.addWidget(self.palace_code_btn)
+
+        self.tangent_btn = QPushButton('')
+        self.tangent_btn.setIcon(tangent_qicon(False))
+        self.tangent_btn.setIconSize(QSize(15, 15))
+        self.tangent_btn.setFixedSize(28, 22)
+        self.tangent_btn.setCheckable(True)
+        self.tangent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.tangent_btn.setToolTip('Tangent: Ask a side question without prior chat history')
+        self.tangent_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
+            'padding: 1px 4px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; border-color: #eab308; } '
+            'QPushButton:checked { background: #29230f; color: #eab308; border: 1px solid #eab308; }'
+        )
+        self.tangent_btn.toggled.connect(lambda on: self.tangent_btn.setIcon(tangent_qicon(on)))
+        controls.addWidget(self.tangent_btn)
+
+        self.ai_pill_button = QPushButton('2 AIs ▾')
         self.ai_pill_button.setObjectName('aiPillButton')
-        self.ai_pill_button.setMinimumWidth(126)
-        self.ai_pill_button.setToolTip('Select active AIs or Squad')
+        self.ai_pill_button.setMinimumWidth(68)
+        self.ai_pill_button.setFixedHeight(22)
+        self.ai_pill_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.ai_pill_button.setToolTip('Select active AIs or Squad for the next query')
         self.ai_pill_button.clicked.connect(self._show_choose_ais_menu)
         controls.addWidget(self.ai_pill_button)
+
+        self.composer_options_btn = QPushButton('⚙ Options ▾')
+        self.composer_options_btn.setObjectName('composerOptionsButton')
+        self.composer_options_btn.setFixedHeight(22)
+        self.composer_options_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.composer_options_btn.setToolTip('Configure Deliberation (2-Round Peer Review), Web Search Depth, Access Permissions & Slash Commands')
+        self.composer_options_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
+            'padding: 1px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.composer_options_btn.clicked.connect(self._show_composer_options_menu)
+        controls.addWidget(self.composer_options_btn)
+
+        # Removable Active Override Chip: (Deliberate ×)
+        self.deliberate_pill_btn = QPushButton(' (Deliberate ×)')
+        self.deliberate_pill_btn.setIcon(council_qicon(True))
+        self.deliberate_pill_btn.setIconSize(QSize(13, 13))
+        self.deliberate_pill_btn.setMinimumWidth(98)
+        self.deliberate_pill_btn.setFixedHeight(22)
+        self.deliberate_pill_btn.setCheckable(True)
+        self.deliberate_pill_btn.setChecked(True)
+        self.deliberate_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.deliberate_pill_btn.setToolTip('Active Override: 2-Round Peer Deliberation ON (click × to switch to Direct 1-Round, or re-enable in ⚙ Options ▾)')
+        self.deliberate_pill_btn.setStyleSheet(
+            'QPushButton { background: #11281b; color: #4ade80; border: 1px solid #22c55e; '
+            'padding: 1px 7px; border-radius: 9px; font-size: 10.5px; font-weight: 700; } '
+            'QPushButton:hover { background: #163824; color: #ffffff; }'
+        )
+        self.deliberate_pill_btn.toggled.connect(self._on_deliberate_pill_toggled)
+        controls.addWidget(self.deliberate_pill_btn)
+
+        self.current_search_depth = 'default'
+        self.search_depth_btn = QPushButton('🔍 Default ▾')
+        self.search_depth_btn.setMinimumWidth(78)
+        self.search_depth_btn.setFixedHeight(22)
+        self.search_depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.search_depth_btn.setToolTip('Web search depth (Default / Moderate / Deep — click to change or reset)')
+        self.search_depth_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
+        )
+        self.search_depth_btn.clicked.connect(self._show_search_depth_menu)
+        self.search_depth_btn.hide()
+        controls.addWidget(self.search_depth_btn)
+
+        self.permission_pill_btn = QPushButton('🛡 Default ▾')
+        self.permission_pill_btn.setObjectName('permissionPillButton')
+        self.permission_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.permission_pill_btn.setMinimumWidth(80)
+        self.permission_pill_btn.setFixedHeight(22)
+        self.permission_pill_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
+            'padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.permission_pill_btn.clicked.connect(self._show_permission_mode_menu)
+        self.permission_pill_btn.hide()
+        controls.addWidget(self.permission_pill_btn)
+
+        self.history_toggle = QCheckBox('History')
+        self.history_toggle.setChecked(True)
+        self.history_toggle.setToolTip('Use & save session history')
+        self.history_toggle.toggled.connect(self._on_history_toggle_changed)
+        self.history_toggle.hide()
+        controls.addWidget(self.history_toggle)
+
+        self.peer_rounds_toggle = QCheckBox('Peer deliberation')
+        self.peer_rounds_toggle.setChecked(True)
+        self.peer_rounds_toggle.setToolTip('2-round peer review')
+        self.peer_rounds_toggle.toggled.connect(self._on_peer_rounds_toggle_changed)
+        self.peer_rounds_toggle.hide()
+        controls.addWidget(self.peer_rounds_toggle)
 
         controls.addStretch()
 
         self._neutral_busy_btn_style = (
-            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
+            'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; '
+            'padding: 1px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
+            'QPushButton:hover { color: #ffffff; border-color: #58a6ff; }'
         )
         self.steer_button = QPushButton('🧭 Steer ▾')
+        self.steer_button.setFixedHeight(22)
         self.steer_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.steer_button.setToolTip('Choose default busy action (Steer active turn or Queue for next turn)')
+        self.steer_button.setToolTip('Default busy action: Steer active turn or switch to Queue for next turn')
         self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
         self.steer_button.clicked.connect(self._show_busy_action_menu)
         self.steer_button.hide()
         controls.addWidget(self.steer_button)
 
-        # Keep queue_button reference for unit tests, hidden from layout so only one dropdown is shown
+        self.parallel_launch_btn = QPushButton('⚡ Parallel')
+        self.parallel_launch_btn.setObjectName('parallelLaunchButton')
+        self.parallel_launch_btn.setFixedHeight(22)
+        self.parallel_launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.parallel_launch_btn.setToolTip(
+            'Fire your current prompt & attachments immediately as a Parallel Query alongside any running jobs (Ctrl+Shift+Enter)'
+        )
+        self.parallel_launch_btn.setStyleSheet(
+            'QPushButton { background: #0891b2; color: #ffffff; border: 1px solid #22d3ee; '
+            'padding: 1px 9px; border-radius: 5px; font-size: 11px; font-weight: 800; } '
+            'QPushButton:hover { background: #06b6d4; border-color: #67e8f9; }'
+        )
+        self.parallel_launch_btn.clicked.connect(self.send_parallel_message)
+        self.parallel_launch_btn.hide()
+        controls.addWidget(self.parallel_launch_btn)
+
+        # Keep queue_button & stop_button references for unit tests
         self.queue_button = QPushButton('Queue')
         self.queue_button.clicked.connect(self.queue_next_turn)
         self.queue_button.hide()
 
         self.stop_button = QPushButton('■ Stop')
+        self.stop_button.setFixedHeight(22)
         self.stop_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.stop_button.setToolTip('Stop turn (Esc)')
+        self.stop_button.setToolTip('Stop latest active turn (Esc)')
         self.stop_button.setStyleSheet(
             'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+            'padding: 1px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; } '
             'QPushButton:hover { background: #2c1517; color: #f87171; border: 1px solid #ef4444; }'
         )
         self.stop_button.clicked.connect(self.stop_active_turn)
@@ -9034,13 +10186,13 @@ class PalaceWindow(QMainWindow):
 
         self.mic_button = QPushButton()
         self.mic_button.setIcon(mic_qicon(False))
-        self.mic_button.setIconSize(QSize(15, 15))
+        self.mic_button.setIconSize(QSize(14, 14))
         self.mic_button.setCheckable(True)
         self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mic_button.setFixedSize(30, 30)
-        self.mic_button.setToolTip('Dictate voice into text box')
+        self.mic_button.setFixedSize(26, 26)
+        self.mic_button.setToolTip('Quick dictate into text box (or use Speech Mode selector ▾)')
         self.mic_button.setStyleSheet(
-            'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 15px; } '
+            'QPushButton { background: transparent; border: 1px solid transparent; border-radius: 13px; } '
             'QPushButton:hover { background: #161b22; border-color: #30363d; } '
             'QPushButton:checked { background: #2c1517; border: 1px solid #ef4444; }'
         )
@@ -9048,127 +10200,50 @@ class PalaceWindow(QMainWindow):
         controls.addWidget(self.mic_button)
 
         self._live_voice_idle_style = (
-            'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 15px; } '
+            'QPushButton { background: #d0d7de; border: 1px solid #d0d7de; border-radius: 13px; } '
             'QPushButton:hover { background: #f0f6fc; border-color: #f0f6fc; }'
         )
         self._live_voice_active_style = (
             'QPushButton { background: #3d1414; color: #ff6b6b; border: 2px solid #ef4444; '
-            'border-radius: 15px; font-size: 13px; font-weight: 800; } '
+            'border-radius: 13px; font-size: 12px; font-weight: 800; } '
             'QPushButton:hover { background: #5c1919; color: #ffffff; border-color: #ff6b6b; }'
         )
         self.live_voice_button = QPushButton()
         self.live_voice_button.setIcon(voice_wave_qicon(False))
-        self.live_voice_button.setIconSize(QSize(16, 16))
+        self.live_voice_button.setIconSize(QSize(15, 15))
         self.live_voice_button.setCheckable(True)
         self.live_voice_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.live_voice_button.setFixedSize(30, 30)
-        self.live_voice_button.setToolTip('Start live hands-free voice chat')
+        self.live_voice_button.setFixedSize(26, 26)
+        self.live_voice_button.setToolTip('Start / stop Speech Mode for active Profile (right-click or click ▾ to expand Speech Modes)')
         self.live_voice_button.setStyleSheet(self._live_voice_idle_style)
+        self.live_voice_button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.live_voice_button.customContextMenuRequested.connect(lambda _p: self._show_speech_mode_menu())
         self.live_voice_button.toggled.connect(self._toggle_live_voice_mode)
         controls.addWidget(self.live_voice_button)
+
+        self.speech_mode_expand_btn = QPushButton('▾')
+        self.speech_mode_expand_btn.setObjectName('speechModeExpandButton')
+        self.speech_mode_expand_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.speech_mode_expand_btn.setFixedSize(16, 22)
+        self.speech_mode_expand_btn.setToolTip('Expand Speech Mode options: 🎙️ Full Conversation vs 🎤 Voice Input Only (Stream to Box → Vocal Command)')
+        self.speech_mode_expand_btn.setStyleSheet(
+            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
+            'border-radius: 5px; font-size: 10px; font-weight: 700; padding: 0px; } '
+            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
+        )
+        self.speech_mode_expand_btn.clicked.connect(self._show_speech_mode_menu)
+        controls.addWidget(self.speech_mode_expand_btn)
 
         self.send_button = QPushButton('↑')
         self.send_button.setObjectName('sendButton')
         self.send_button.setToolTip('Send message (Enter)')
-        self.send_button.setFixedSize(30, 30)
+        self.send_button.setFixedSize(28, 28)
         self.send_button.clicked.connect(self.send_message)
         controls.addWidget(self.send_button)
         card_layout.addLayout(controls)
-
-        # Row 2: Compact option pills (Council, Tangent, Code, Search Depth, Access Permission)
-        options_row = QHBoxLayout()
-        options_row.setContentsMargins(0, 0, 0, 0)
-        options_row.setSpacing(6)
-
-        self.deliberate_pill_btn = QPushButton(' Council')
-        self.deliberate_pill_btn.setIcon(council_qicon(True))
-        self.deliberate_pill_btn.setIconSize(QSize(15, 15))
-        self.deliberate_pill_btn.setCheckable(True)
-        self.deliberate_pill_btn.setChecked(True)
-        self.deliberate_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.deliberate_pill_btn.setToolTip('2-round peer review (ON) / Direct (OFF)')
-        self.deliberate_pill_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #c9d1d9; } '
-            'QPushButton:checked { background: #231536; color: #a855f7; border: 1px solid #a855f7; }'
-        )
-        self.deliberate_pill_btn.toggled.connect(self._on_deliberate_pill_toggled)
-        options_row.addWidget(self.deliberate_pill_btn)
-
-        self.tangent_btn = QPushButton(' Tangent')
-        self.tangent_btn.setIcon(tangent_qicon(False))
-        self.tangent_btn.setIconSize(QSize(15, 15))
-        self.tangent_btn.setCheckable(True)
-        self.tangent_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.tangent_btn.setToolTip('Side question (ignores prior chat context)')
-        self.tangent_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #c9d1d9; } '
-            'QPushButton:checked { background: #29230f; color: #eab308; border: 1px solid #eab308; }'
-        )
-        self.tangent_btn.toggled.connect(lambda on: self.tangent_btn.setIcon(tangent_qicon(on)))
-        options_row.addWidget(self.tangent_btn)
-
-        self.palace_code_btn = QPushButton(' Code')
-        self.palace_code_btn.setIcon(code_shield_qicon(False))
-        self.palace_code_btn.setIconSize(QSize(15, 15))
-        self.palace_code_btn.setCheckable(True)
-        self.palace_code_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.palace_code_btn.setToolTip('Let AIs read Fairybread source code')
-        self.palace_code_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #6e7681; border: 1px solid #21262d; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #c9d1d9; } '
-            'QPushButton:checked { background: #0f2930; color: #06b6d4; border: 1px solid #06b6d4; }'
-        )
-        self.palace_code_btn.toggled.connect(self._on_palace_code_btn_toggled)
-        options_row.addWidget(self.palace_code_btn)
-
-        self.current_search_depth = 'default'
-        self.search_depth_btn = QPushButton('🔍 Default ▾')
-        self.search_depth_btn.setMinimumWidth(82)
-        self.search_depth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.search_depth_btn.setToolTip('Web search depth (Default / Moderate / Deep)')
-        self.search_depth_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
-        )
-        self.search_depth_btn.clicked.connect(self._show_search_depth_menu)
-        options_row.addWidget(self.search_depth_btn)
-
-        self.permission_pill_btn = QPushButton('🛡 Default ▾')
-        self.permission_pill_btn.setObjectName('permissionPillButton')
-        self.permission_pill_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.permission_pill_btn.setMinimumWidth(86)
-        self.permission_pill_btn.setStyleSheet(
-            'QPushButton { background: #161b22; color: #c9d1d9; border: 1px solid #262c3a; '
-            'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
-            'QPushButton:hover { color: #f0f6fc; border-color: #3b82f6; }'
-        )
-        self.permission_pill_btn.clicked.connect(self._show_permission_mode_menu)
-        options_row.addWidget(self.permission_pill_btn)
-        self._refresh_permission_pill_text()
-
-        self.history_toggle = QCheckBox('History')
-        self.history_toggle.setChecked(True)
-        self.history_toggle.setToolTip('Use & save session history')
-        self.history_toggle.toggled.connect(self._on_history_toggle_changed)
-        self.history_toggle.hide()
-        options_row.addWidget(self.history_toggle)
-
-        self.peer_rounds_toggle = QCheckBox('Peer deliberation')
-        self.peer_rounds_toggle.setChecked(True)
-        self.peer_rounds_toggle.setToolTip('2-round peer review')
-        self.peer_rounds_toggle.toggled.connect(self._on_peer_rounds_toggle_changed)
-        self.peer_rounds_toggle.hide()
-        options_row.addWidget(self.peer_rounds_toggle)
-
-        options_row.addStretch()
-        card_layout.addLayout(options_row)
         normal_lay.addWidget(composer_card)
+        self._refresh_permission_pill_text()
+        self._sync_decluttered_option_chips()
         self.workspace_tabs.addTab(normal_tab, '💬 Normal Mode')
 
         # ================= TAB 1: EXPERIMENTAL MODE (BETA) =================
@@ -9742,6 +10817,7 @@ class PalaceWindow(QMainWindow):
     def _ensure_system_tray(self):
         try:
             if hasattr(self, '_tray_icon') and self._tray_icon is not None:
+                self._sync_system_tray_visibility()
                 return self._tray_icon
             self._tray_icon = QSystemTrayIcon(fairybread_app_qicon(), self)
             self._tray_icon.setToolTip('Fairybread — Right-click to Expand or Exit')
@@ -9757,22 +10833,89 @@ class PalaceWindow(QMainWindow):
             tray_menu.addAction(quit_act)
             self._tray_icon.setContextMenu(tray_menu)
             self._tray_icon.activated.connect(self._on_tray_icon_activated)
-            self._tray_icon.show()
+            self._sync_system_tray_visibility()
             return self._tray_icon
         except Exception:
             return None
 
-    def _on_tray_icon_activated(self, reason):
-        if reason in (
-            QSystemTrayIcon.ActivationReason.Trigger,
-            QSystemTrayIcon.ActivationReason.DoubleClick,
+    def _sync_system_tray_visibility(self):
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+            return
+        tray = getattr(self, '_tray_icon', None)
+        if tray is None:
+            return
+        try:
+            ui_cfg = load_ui_settings(self.config_path)
+            always_show = bool(ui_cfg.get('always_show_tray_icon', True))
+            should_show = always_show or self.isHidden()
+            if should_show and not tray.isVisible():
+                tray.show()
+            elif not should_show and tray.isVisible():
+                tray.hide()
+        except Exception:
+            pass
+
+    def _hide_to_system_tray(self, toast_title: str = 'Fairybread Minimized to Tray'):
+        if os.environ.get('QT_QPA_PLATFORM') == 'offscreen':
+            return
+        try:
+            self._close_voice_avatar_window()
+            self.stop_all_voice_modes(exit_talk_only=False)
+        except Exception:
+            pass
+        tray = self._ensure_system_tray()
+        if tray is not None:
+            try:
+                tray.show()
+            except Exception:
+                pass
+        self.hide()
+        if not getattr(self, '_tray_hint_shown', False):
+            self._tray_hint_shown = True
+            self.show_desktop_toast(
+                toast_title,
+                'Fairybread is running in the system tray. Click or right-click the tray icon to Expand or Exit.',
+            )
+
+    def changeEvent(self, event):
+        if (
+            event.type() == QEvent.Type.WindowStateChange
+            and self.isMinimized()
+            and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
         ):
+            try:
+                if bool(load_ui_settings(self.config_path).get('minimize_to_tray', False)):
+                    QTimer.singleShot(0, lambda: self._hide_to_system_tray('Fairybread Minimized to Tray'))
+            except Exception:
+                pass
+        super().changeEvent(event)
+
+    def _on_tray_icon_activated(self, reason):
+        try:
+            ui_cfg = load_ui_settings(self.config_path)
+            single_click = bool(ui_cfg.get('single_click_tray_to_open', True))
+        except Exception:
+            single_click = True
+        if single_click:
+            valid_reasons = (
+                QSystemTrayIcon.ActivationReason.Trigger,
+                QSystemTrayIcon.ActivationReason.DoubleClick,
+            )
+        else:
+            valid_reasons = (QSystemTrayIcon.ActivationReason.DoubleClick,)
+        if reason in valid_reasons:
             self.restore_from_tray()
 
     def restore_from_tray(self):
         self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        try:
+            always_act = bool(load_ui_settings(self.config_path).get('always_activate_when_clicked', True))
+        except Exception:
+            always_act = True
+        if always_act:
+            self.raise_()
+            self.activateWindow()
+        self._sync_system_tray_visibility()
 
     def exit_application(self):
         self._force_quit = True
@@ -9951,9 +11094,12 @@ class PalaceWindow(QMainWindow):
         copy_sel_act.triggered.connect(lambda: self._run_focused_text_edit_action('copy'))
         edit_menu.addAction(copy_sel_act)
         paste_act = QAction('Paste\tCtrl+V', self)
-        paste_act.setToolTip('Paste text or image from clipboard into the message box')
+        paste_act.setShortcut(QKeySequence.StandardKey.Paste)
+        paste_act.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        paste_act.setToolTip('Paste text, image, screenshot, or files from clipboard into the message box (Ctrl+V)')
         paste_act.triggered.connect(lambda: self._run_focused_text_edit_action('paste'))
         edit_menu.addAction(paste_act)
+        self._shift_ins_paste_sc = QShortcut(QKeySequence('Shift+Ins'), self, lambda: self._run_focused_text_edit_action('paste'))
         sel_all_act = QAction('Select All\tCtrl+A', self)
         sel_all_act.setToolTip('Select all text in the focused view or message box')
         sel_all_act.triggered.connect(lambda: self._run_focused_text_edit_action('selectAll'))
@@ -10039,6 +11185,10 @@ class PalaceWindow(QMainWindow):
         web_act.setToolTip('Visit fairybread.me in your web browser')
         web_act.triggered.connect(lambda: webbrowser.open('https://fairybread.me'))
         help_menu.addAction(web_act)
+        irc_act = QAction('💬 Live IRC Support (#Fairybread on Rizon) ↗', self)
+        irc_act.setToolTip('Join #Fairybread on Rizon IRC (irc.rizon.net:+6697 or Rizon Webchat) for live community & creator support')
+        irc_act.triggered.connect(lambda: webbrowser.open('https://qchat.rizon.net/?channels=Fairybread'))
+        help_menu.addAction(irc_act)
         upd_label = 'Refresh Model Catalog & Rates…' if store_packaged else 'Check for Updates…'
         check_updates_act = QAction(upd_label, self)
         check_updates_act.setToolTip('Fetch updated AI model lists & pricing rates and check for newer releases')
@@ -10048,6 +11198,15 @@ class PalaceWindow(QMainWindow):
         donate_act.setToolTip('Support Fairybread development or arrange a corporate team license')
         donate_act.triggered.connect(self.show_donation_license_dialog)
         help_menu.addAction(donate_act)
+        help_menu.addSeparator()
+        rescue_act = QAction('🛟 Rescue: Restore Default Theme or Settings…\tCtrl+Shift+Alt+R', self)
+        rescue_act.setShortcut(QKeySequence('Ctrl+Shift+Alt+R'))
+        rescue_act.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        rescue_act.setToolTip(
+            'Emergency UI Rescue (Ctrl+Shift+Alt+R): Restore factory Midnight Dark theme only, or restore all default settings while keeping API keys & Memory Palace'
+        )
+        rescue_act.triggered.connect(self.open_emergency_rescue_dialog)
+        help_menu.addAction(rescue_act)
         help_menu.addSeparator()
         about_act = QAction('About Fairybread', self)
         about_act.setToolTip('View Fairybread version, edition, and license information')
@@ -10064,6 +11223,43 @@ class PalaceWindow(QMainWindow):
             'settings': tools_menu,
             'help': help_menu,
         }
+
+    def open_emergency_rescue_dialog(self):
+        """High-contrast failsafe dialog to restore Default Theme Only or All Default Settings."""
+        from palace_config import restore_default_settings, restore_default_theme_only
+
+        box = QMessageBox(self)
+        box.setWindowTitle('Fairybread — Emergency UI & Settings Rescue')
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText('<b>Need to rescue your Fairybread interface or settings?</b>')
+        box.setInformativeText(
+            'Your encrypted API keys (Windows DPAPI) and Memory Palace conversations are ALWAYS kept 100% safe.\n\n'
+            '• Restore Default Theme Only: Resets only the color theme & background artwork to Midnight Dark.\n'
+            '• Restore All Default Settings (Full): Saves a backup snapshot of palace_config.json and resets all app settings to factory defaults.'
+        )
+        box.setStyleSheet(
+            'QMessageBox { background: #111318; color: #ffffff; font-size: 12.5px; } '
+            'QMessageBox QLabel { color: #ffffff; } '
+            'QMessageBox QPushButton { background: #1f2937; color: #ffffff; border: 1px solid #60a5fa; border-radius: 5px; padding: 6px 12px; font-weight: 700; } '
+            'QMessageBox QPushButton:hover { background: #2563eb; }'
+        )
+        theme_btn = box.addButton('🎨 Restore Default Theme Only', QMessageBox.ButtonRole.AcceptRole)
+        full_btn = box.addButton('↺ Restore All Default Settings (Full)', QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton('Cancel', QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == theme_btn:
+            restore_default_theme_only(self.config_path)
+            self.apply_theme('dark', render_chat=True)
+            self._rebuild_theme_menu()
+            self.show_notice('✓ Rescued interface: restored factory Midnight Dark theme.')
+        elif clicked == full_btn:
+            res = restore_default_settings(self.config_path)
+            self.reload_providers_from_config()
+            self.apply_theme('dark', render_chat=True)
+            self._rebuild_theme_menu()
+            bak_p = res.get('backup_path') or ''
+            self.show_notice(f'✓ Restored all factory default settings (API keys & Memory kept). Backup: {bak_p}')
 
     def _rebuild_audio_menu(self):
         if not hasattr(self, 'audio_menu'):
@@ -10323,9 +11519,21 @@ class PalaceWindow(QMainWindow):
                     cand.copy()
                     return
             return
-        if op == 'paste' and fw is not None and callable(getattr(fw, 'isReadOnly', None)) and fw.isReadOnly():
-            self._forward_chat_paste_to_composer()
-            return
+        if op == 'paste':
+            cb_mime = QApplication.clipboard().mimeData()
+            has_img_or_files = cb_mime is not None and (
+                Composer._mime_has_image_payload(cb_mime)
+                or (cb_mime.hasUrls() and any(u.isLocalFile() for u in cb_mime.urls()))
+            )
+            if (
+                fw is None
+                or fw is getattr(self, 'composer', None)
+                or has_img_or_files
+                or (callable(getattr(fw, 'isReadOnly', None)) and fw.isReadOnly())
+                or not isinstance(fw, (QLineEdit, QTextEdit))
+            ):
+                self._forward_chat_paste_to_composer()
+                return
         if fw is not None and hasattr(fw, op):
             getattr(fw, op)()
             return
@@ -10588,6 +11796,7 @@ class PalaceWindow(QMainWindow):
             'Free for personal use &amp; small teams (up to 2 seats); no redistribution, competing forks, or rebranding without written permission. '
             'For businesses/companies using more than 2 seats, a negotiable corporate license applies.</p>'
             '<p style="color:#8b949e; font-size:11.5px;">UI powered by Qt for Python (PySide6, dynamically linked under LGPL v3).</p>'
+            '<p><b>Live Community &amp; Support IRC:</b> <a href="https://qchat.rizon.net/?channels=Fairybread"><b>#Fairybread</b> on Rizon IRC</a> (<code>irc.rizon.net</code> / SSL <code>+6697</code>)</p>'
             '<p>Contact &amp; Corporate Licensing: <a href="mailto:bm069au@gmail.com">bm069au@gmail.com</a></p>',
             dlg,
         )
@@ -10610,6 +11819,12 @@ class PalaceWindow(QMainWindow):
         privacy_btn.setToolTip('Read the local-first Fairybread Privacy Policy')
         privacy_btn.clicked.connect(lambda: self.show_privacy_policy_dialog(parent_widget=dlg))
         btn_row.addWidget(privacy_btn)
+
+        irc_btn = QPushButton('💬 #Fairybread IRC', dlg)
+        irc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        irc_btn.setToolTip('Join #Fairybread on Rizon IRC (irc.rizon.net:+6697) for live support')
+        irc_btn.clicked.connect(lambda: webbrowser.open('https://qchat.rizon.net/?channels=Fairybread'))
+        btn_row.addWidget(irc_btn)
 
         contact_btn = QPushButton('Contact / Corporate License', dlg)
         contact_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -10943,24 +12158,26 @@ class PalaceWindow(QMainWindow):
 
     def _update_ai_pill_text(self):
         if getattr(self, '_talk_only_mode', False):
-            self.ai_pill_button.setText('🎙️ Talk Only  ▾')
+            self.ai_pill_button.setText('🎙️ Talk ▾')
             self.ai_pill_button.setToolTip(
                 'Talk Mode Only active — 1 fast voice AI, zero council/tools/delegation (click to switch modes)'
             )
             return
-        self.ai_pill_button.setToolTip('Select active AIs or Squad')
         active_names = [n for n, en in self.provider_states.items() if en is True]
         active_count = len(active_names)
         cap_suffix = f'/{self.max_ais_per_turn}' if self.max_ais_per_turn and self.max_ais_per_turn < active_count else ''
-        if self.current_squad_label:
-            self.ai_pill_button.setText(f'{self.current_squad_label} ({active_count}{cap_suffix})  ▾')
-        elif active_count == 1:
+        disp_names = ', '.join(provider_display_name(n, config_path=self.config_path) for n in active_names) if active_names else 'None'
+        squad_tip = f' ({self.current_squad_label})' if self.current_squad_label else ''
+        self.ai_pill_button.setToolTip(
+            f'Select active AIs or Squad{squad_tip} — Currently active ({active_count}): {disp_names}'
+        )
+        if active_count == 1 and not self.current_squad_label:
             only = active_names[0]
-            self.ai_pill_button.setText(f'{provider_icon(only)} {provider_display_name(only, config_path=self.config_path)}  ▾')
+            self.ai_pill_button.setText(f'{provider_icon(only)} {provider_display_name(only, config_path=self.config_path)} ▾')
         elif active_count > 0:
-            self.ai_pill_button.setText(f'Choose AIs ({active_count}{cap_suffix})  ▾')
+            self.ai_pill_button.setText(f'{active_count}{cap_suffix} AIs ▾')
         else:
-            self.ai_pill_button.setText('Choose AIs  ▾')
+            self.ai_pill_button.setText('0 AIs ▾')
 
     def _populate_profiles_and_ais_menu(self, menu: QMenu, menu_style: str = ''):
         configs = load_provider_configs(self.config_path)
@@ -11065,6 +12282,9 @@ class PalaceWindow(QMainWindow):
             max_cap = int(sq_val.get('max_ais') or 0)
             sq_ov = dict(sq_val.get('model_overrides') or {})
             sq_depth = str(sq_val.get('context_depth') or 'standard').strip().lower()
+            sq_tp = str(sq_val.get('timing_profile') or 'unlimited').strip().lower()
+            sq_vm = str(sq_val.get('voice_mode') or 'full_conversation').strip().lower()
+            sq_auto_v = bool(sq_val.get('auto_start_voice', _sq_key in {'voice_1', 'voice_2'}))
             avail_members = [m for m in members if m in all_names] or members
             if 'anthropic' in avail_members and 'claude' in avail_members:
                 avail_members = [m for m in avail_members if m != 'claude']
@@ -11077,10 +12297,24 @@ class PalaceWindow(QMainWindow):
             depth_note = ' [Deep 64K]' if sq_depth == 'deep' else (' [Extended]' if sq_depth == 'extended' else '')
             all_act = QAction(f'All {squad_title_menu}{cap_note}{depth_note}: {joined_disp}', sub)
             all_act.triggered.connect(
-                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap, ov=sq_ov, cd=sq_depth:
-                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc, model_overrides=ov, context_depth=cd)
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap, ov=sq_ov, cd=sq_depth, tp=sq_tp, vm=sq_vm, av=sq_auto_v:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc, model_overrides=ov, context_depth=cd, timing_profile=tp, voice_mode=vm, auto_start_voice=av)
             )
             sub.addAction(all_act)
+            talk_sq_act = QAction(f'🎙️ Full Conversation with {squad_title_menu} (Speak & Listen)', sub)
+            talk_sq_act.setToolTip(f'Activate {squad_title} and turn on Two-Way Voice Conversation')
+            talk_sq_act.triggered.connect(
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap, ov=sq_ov, cd=sq_depth, tp=sq_tp:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc, model_overrides=ov, context_depth=cd, timing_profile=tp, voice_mode='full_conversation', auto_start_voice=True)
+            )
+            sub.addAction(talk_sq_act)
+            input_sq_act = QAction(f'🎤 Voice Input Only with {squad_title_menu} (Stream to Box → Say "Submit Query")', sub)
+            input_sq_act.setToolTip(f'Activate {squad_title} with Voice Input Only (words stream live to input box; say a 2+ word vocal command like "Submit Query" to send)')
+            input_sq_act.triggered.connect(
+                lambda _c=False, st=squad_title, ms=avail_members, dl=default_delib, dc=default_code, mc=max_cap, ov=sq_ov, cd=sq_depth, tp=sq_tp:
+                self._apply_squad_preset(st, ms, deliberate=dl, palace_code=dc, max_ais=mc, model_overrides=ov, context_depth=cd, timing_profile=tp, voice_mode='input_only', auto_start_voice=True)
+            )
+            sub.addAction(input_sq_act)
             sub.addSeparator()
             for m in avail_members:
                 single_ov = {m: sq_ov[m]} if m in sq_ov else {}
@@ -11090,7 +12324,7 @@ class PalaceWindow(QMainWindow):
                     sub,
                 )
                 single_act.triggered.connect(
-                    lambda _c=False, m_name=m, dc=default_code, sov=single_ov, cd=sq_depth:
+                    lambda _c=False, m_name=m, dc=default_code, sov=single_ov, cd=sq_depth, tp=sq_tp:
                     self._apply_squad_preset(
                         f'{provider_icon(m_name)} {provider_display_name(m_name)}',
                         [m_name],
@@ -11099,6 +12333,7 @@ class PalaceWindow(QMainWindow):
                         max_ais=1,
                         model_overrides=sov,
                         context_depth=cd,
+                        timing_profile=tp,
                     )
                 )
                 sub.addAction(single_act)
@@ -11240,7 +12475,9 @@ class PalaceWindow(QMainWindow):
 
     def _activate_talk_only_mode(self, auto_start_live_voice: bool = True):
         self._talk_only_mode = True
-        self.current_squad_label = '🎙️ Talk Only'
+        self.active_voice_mode = 'full_conversation'
+        if not self.current_squad_label:
+            self.current_squad_label = '🎙️ Voice 1 — Light & Fast'
         if self.idle_switch_btn.isChecked():
             self.idle_switch_btn.setChecked(False)
         self._update_ai_pill_text()
@@ -11261,7 +12498,7 @@ class PalaceWindow(QMainWindow):
         self._sync_voice_footer_state()
         self.status_label.setTextFormat(Qt.TextFormat.RichText)
         self.status_label.setText(
-            '<b>🎙️ Talk Mode Only</b> · Use <b>🧠</b> to pick Thinking AI &amp; <b>🔊</b> to pick Voice · Click <b>✕ End Talk</b> or <b>■</b> anytime to stop'
+            f'<b>🎙️ Full Conversation ({html.escape(self.current_squad_label)})</b> · Use <b>🧠</b> to pick Thinking AI &amp; <b>🔊</b> to pick Voice · Click <b>✕ End Talk</b> or <b>■</b> anytime to stop'
         )
         if (
             auto_start_live_voice
@@ -11293,7 +12530,7 @@ class PalaceWindow(QMainWindow):
         self._update_ai_pill_text()
         if not silent:
             self.status_label.setTextFormat(Qt.TextFormat.PlainText)
-            self.status_label.setText('Talk Mode Only OFF · Normal AI squad active')
+            self.status_label.setText('Speech Mode OFF · Active Profile preserved')
 
     def _apply_squad_preset(
         self,
@@ -11304,10 +12541,26 @@ class PalaceWindow(QMainWindow):
         max_ais: int = 0,
         model_overrides: dict[str, str] | None = None,
         context_depth: str = 'standard',
+        timing_profile: str = 'unlimited',
+        voice_mode: str = 'full_conversation',
+        auto_start_voice: bool | None = None,
     ):
-        if getattr(self, '_talk_only_mode', False) or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked()):
+        raw_vm = str(voice_mode or 'full_conversation').strip().lower()
+        if raw_vm in {'input_only'}:
+            eff_voice_mode = 'input_only'
+        else:
+            eff_voice_mode = 'full_conversation'
+        if auto_start_voice is None:
+            should_auto_start = raw_vm in {'council_voice', 'fast_voice'} or ('voice 1' in label.lower()) or ('voice 2' in label.lower())
+        else:
+            should_auto_start = bool(auto_start_voice)
+
+        if not should_auto_start and (
+            getattr(self, '_talk_only_mode', False)
+            or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+        ):
             self.stop_all_voice_modes(exit_talk_only=True)
-        self._talk_only_mode = False
+        self._talk_only_mode = (raw_vm == 'fast_voice')
         self.current_squad_label = label
         self.max_ais_per_turn = max(0, int(max_ais or 0))
         self.active_model_overrides = {
@@ -11316,6 +12569,8 @@ class PalaceWindow(QMainWindow):
             if str(k).strip() and str(v or '').strip()
         }
         self.active_context_depth = str(context_depth or 'standard').strip().lower()
+        self.active_timing_profile = 'quick' if raw_vm == 'fast_voice' else str(timing_profile or 'unlimited').strip().lower()
+        self.active_voice_mode = eff_voice_mode
         if self.idle_switch_btn.isChecked():
             self.idle_switch_btn.setChecked(False)
         all_known = list(dict.fromkeys([*self.provider_states.keys(), *active_list]))
@@ -11355,9 +12610,31 @@ class PalaceWindow(QMainWindow):
             extra_bits.append('Context: Extended 36K')
         if self.active_model_overrides:
             extra_bits.append('Reasoning/Profile Models Active')
+        tp_labels = {
+            'unlimited': 'Timer: Unlimited (Heartbeat)',
+            '10m': 'Timer: 10m',
+            '7m': 'Timer: 7m',
+            '5m': 'Timer: 5m',
+            'deep': 'Timer: 5m',
+            'standard': 'Timer: 3m',
+            'quick': 'Timer: 1m Quick',
+        }
+        if self.active_timing_profile in tp_labels:
+            extra_bits.append(tp_labels[self.active_timing_profile])
+        if self.active_voice_mode == 'input_only':
+            extra_bits.append('🎤 Speech Default: Voice Input Only')
+        else:
+            extra_bits.append('🎙️ Speech Default: Full Conversation')
         extra_suffix = (' · ' + ' · '.join(extra_bits)) if extra_bits else ''
         self.status_label.setTextFormat(Qt.TextFormat.RichText)
         self.status_label.setText(f'Squad: <b>{html.escape(label)}</b> · {badges} · {delib_txt}{html.escape(extra_suffix)}')
+        if (
+            should_auto_start
+            and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
+            and hasattr(self, 'live_voice_button')
+            and not self.live_voice_button.isChecked()
+        ):
+            self.live_voice_button.setChecked(True)
 
     def _open_custom_ai_picker(self):
         dlg = CustomAIPickerDialog(
@@ -11521,19 +12798,23 @@ class PalaceWindow(QMainWindow):
 
     def _on_deliberate_pill_toggled(self, checked: bool):
         self.deliberate_pill_btn.setIcon(council_qicon(checked))
-        self.deliberate_pill_btn.setText(' Council' if checked else ' Direct')
+        self.deliberate_pill_btn.setText(' (Deliberate ×)' if checked else ' Deliberate')
         if self.peer_rounds_toggle.isChecked() != checked:
             self.peer_rounds_toggle.blockSignals(True)
             self.peer_rounds_toggle.setChecked(checked)
             self.peer_rounds_toggle.blockSignals(False)
+        if hasattr(self, '_sync_decluttered_option_chips'):
+            self._sync_decluttered_option_chips()
 
     def _on_peer_rounds_toggle_changed(self, checked: bool):
         if self.deliberate_pill_btn.isChecked() != checked:
             self.deliberate_pill_btn.blockSignals(True)
             self.deliberate_pill_btn.setChecked(checked)
             self.deliberate_pill_btn.setIcon(council_qicon(checked))
-            self.deliberate_pill_btn.setText(' Council' if checked else ' Direct')
+            self.deliberate_pill_btn.setText(' (Deliberate ×)' if checked else ' Deliberate')
             self.deliberate_pill_btn.blockSignals(False)
+        if hasattr(self, '_sync_decluttered_option_chips'):
+            self._sync_decluttered_option_chips()
 
     def _show_provider_badge_info(self, name: str):
         info = self.provider_details.get(name, {})
@@ -12555,6 +13836,7 @@ class PalaceWindow(QMainWindow):
         self.apply_theme(str(ui_cfg.get('theme', 'dark') or 'dark'))
         self._rebuild_theme_menu()
         self.reload_provider_bar()
+        self._sync_system_tray_visibility()
         self.idle_manager.reload_settings()
         if hasattr(self, 'idle_code_btn'):
             idle_s = load_idle_settings(self.config_path)
@@ -12895,8 +14177,6 @@ class PalaceWindow(QMainWindow):
         self.status_label.setText(f"🛡 <b>AI Access Mode:</b> {html.escape(meta['label'])} — {html.escape(meta['description'])}")
 
     def _show_permission_mode_menu(self):
-        if self.worker is not None:
-            return
         ap = load_access_permissions(self.config_path)
         cur_mk = normalize_permission_mode(ap.get('permission_mode'))
         menu_style = (
@@ -13063,14 +14343,14 @@ class PalaceWindow(QMainWindow):
             if b_w is not None:
                 b_w.setStyleSheet(
                     f'QPushButton {{ background: {bg_card}; color: {txt_sec}; border: 1px solid {border}; '
-                    f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                    f'padding: 1px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; }} '
                     f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; border-color: #3b82f6; }}'
                 )
         if hasattr(self, 'deliberate_pill_btn'):
             c_bg, c_fg, c_bd = ('#f3e8ff', '#7e22ce', '#a855f7') if is_light else ('#231536', '#a855f7', '#a855f7')
             self.deliberate_pill_btn.setStyleSheet(
                 f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
-                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
+                f'padding: 1px 7px; border-radius: 9px; font-size: 10.5px; font-weight: 600; }} '
                 f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
                 f'QPushButton:checked {{ background: {c_bg}; color: {c_fg}; border: 1px solid {c_bd}; }}'
             )
@@ -13078,16 +14358,16 @@ class PalaceWindow(QMainWindow):
             t_bg, t_fg, t_bd = ('#fef9c3', '#a16207', '#eab308') if is_light else ('#29230f', '#eab308', '#eab308')
             self.tangent_btn.setStyleSheet(
                 f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
-                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
-                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'padding: 1px 4px; border-radius: 5px; font-size: 11px; font-weight: 600; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; border-color: #eab308; }} '
                 f'QPushButton:checked {{ background: {t_bg}; color: {t_fg}; border: 1px solid {t_bd}; }}'
             )
         if hasattr(self, 'palace_code_btn'):
             cd_bg, cd_fg, cd_bd = ('#ecfeff', '#0e7490', '#06b6d4') if is_light else ('#0f2930', '#06b6d4', '#06b6d4')
             self.palace_code_btn.setStyleSheet(
                 f'QPushButton {{ background: {bg_card}; color: {txt_mut}; border: 1px solid {border}; '
-                f'padding: 4px 7px; border-radius: 6px; font-size: 11.5px; font-weight: 600; }} '
-                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; }} '
+                f'padding: 1px 4px; border-radius: 5px; font-size: 11px; font-weight: 600; }} '
+                f'QPushButton:hover {{ background: {bg_hover}; color: {txt_pri}; border-color: #06b6d4; }} '
                 f'QPushButton:checked {{ background: {cd_bg}; color: {cd_fg}; border: 1px solid {cd_bd}; }}'
             )
         if hasattr(self, '_refresh_permission_pill_text'):
@@ -14863,8 +16143,85 @@ class PalaceWindow(QMainWindow):
             except Exception as exc:
                 self.show_notice(f'Voice transcription notice: {exc}')
 
+    @Slot()
+    def _show_speech_mode_menu(self):
+        from voice_service import get_voice_command_phrases_map, load_voice_settings, save_voice_settings
+
+        v_cfg = load_voice_settings(self.config_path)
+        cur_mode = str(getattr(self, 'active_voice_mode', '') or v_cfg.get('speech_button_mode') or 'full_conversation').strip().lower()
+        if cur_mode not in {'full_conversation', 'input_only'}:
+            cur_mode = 'full_conversation'
+        live_on = bool(hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
+        cmd_map = get_voice_command_phrases_map(self.config_path)
+        submit_examples = ', '.join(f'"{p}"' for p in (cmd_map.get('submit') or [])[:3]) or '"submit query", "send this now"'
+
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        menu.setStyleSheet(
+            'QMenu { background: #161922; color: #e6edf3; border: 1px solid #2b313e; padding: 6px; border-radius: 8px; } '
+            'QMenu::item { padding: 6px 14px; border-radius: 5px; font-size: 12.5px; } '
+            'QMenu::item:selected { background: #232938; }'
+        )
+        prof_lbl = self.current_squad_label or 'Active Profile'
+        hdr = menu.addAction(f'🎙️ Speech Mode ({prof_lbl} — Never Changes Your Profile)')
+        hdr.setEnabled(False)
+        menu.addSeparator()
+
+        def _pick_speech_mode(mode_slug: str, start_now: bool = True):
+            self.active_voice_mode = mode_slug
+            if mode_slug == 'input_only':
+                self._talk_only_mode = False
+            save_voice_settings({'speech_button_mode': mode_slug}, config_path=self.config_path)
+            self._update_ai_pill_text()
+            if start_now:
+                if hasattr(self, 'live_voice_button'):
+                    if not self.live_voice_button.isChecked():
+                        self.live_voice_button.setChecked(True)
+                    else:
+                        self._refresh_voice_bar_pills()
+                        mode_banner = (
+                            f'🎤 Voice Input Only active — words stream live into the input box; say {submit_examples} to send.'
+                            if mode_slug == 'input_only'
+                            else '🎙️ Full Conversation active — two-way spoken audio.'
+                        )
+                        self.show_notice(mode_banner)
+
+        act_full = QAction('🎙️ Full Conversation (Speak & Listen — Two-Way Audio)', menu)
+        act_full.setCheckable(True)
+        act_full.setChecked(cur_mode == 'full_conversation')
+        act_full.setToolTip('Talk back and forth out loud with your active Profile without switching profiles')
+        act_full.triggered.connect(lambda: _pick_speech_mode('full_conversation', start_now=True))
+        menu.addAction(act_full)
+
+        act_input = QAction(f'🎤 Voice Input Only (Live Stream to Box → Say {submit_examples})', menu)
+        act_input.setCheckable(True)
+        act_input.setChecked(cur_mode == 'input_only')
+        act_input.setToolTip(
+            'Streams your spoken words live into the input box (highlighting fillers as [um], [ahh] and ignoring coughs/sniffs). '
+            'Never auto-sends on silence — say any 2+ word vocal command like "Submit Query" or "Send This Now" to submit!'
+        )
+        act_input.triggered.connect(lambda: _pick_speech_mode('input_only', start_now=True))
+        menu.addAction(act_input)
+
+        if live_on:
+            menu.addSeparator()
+            stop_act = QAction('⏹ Stop Speech Microphone', menu)
+            stop_act.triggered.connect(lambda: self.stop_all_voice_modes(exit_talk_only=True, notice='Speech microphone turned OFF.'))
+            menu.addAction(stop_act)
+
+        menu.addSeparator()
+        cfg_cmd_act = QAction('⚙ Customize Vocal Command Combinations ("Submit Query", etc.)…', menu)
+        cfg_cmd_act.triggered.connect(lambda: self.open_manage_ais('Voice & Audio'))
+        menu.addAction(cfg_cmd_act)
+
+        anchor_w = getattr(self, 'speech_mode_expand_btn', None) or self.live_voice_button
+        pos = anchor_w.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 4))
+        if pos.y() < 40:
+            pos = anchor_w.mapToGlobal(QPoint(0, anchor_w.height() + 4))
+        menu.exec(pos)
+
     def _toggle_live_voice_mode(self, active: bool):
-        from voice_service import LiveAudioSession, is_loopback_audio_device
+        from voice_service import LiveAudioSession, get_voice_command_phrases_map, is_loopback_audio_device
         if active:
             # Always tear down any existing voice/mic session cleanly first so two listeners never coexist
             prev_s = getattr(self, '_active_voice_session', None)
@@ -14881,6 +16238,11 @@ class PalaceWindow(QMainWindow):
                 self.mic_button.setChecked(False)
                 self.mic_button.setIcon(mic_qicon(False))
                 self.mic_button.blockSignals(False)
+            cur_vmode = str(getattr(self, 'active_voice_mode', 'full_conversation') or 'full_conversation').strip().lower()
+            if cur_vmode not in {'full_conversation', 'input_only'}:
+                cur_vmode = 'full_conversation'
+            self.active_voice_mode = cur_vmode
+            self._voice_input_clause_stack = []
             self._voice_session_gen = int(getattr(self, '_voice_session_gen', 0)) + 1
             sess = LiveAudioSession(
                 config_path=self.config_path,
@@ -14905,20 +16267,21 @@ class PalaceWindow(QMainWindow):
             self._active_voice_session = sess
             self.live_voice_button.setIcon(QIcon())
             self.live_voice_button.setText('■')
-            self.live_voice_button.setToolTip('Stop Live Voice / Talk Mode')
+            self.live_voice_button.setToolTip('Stop Speech Mode (click ▾ to switch between Full Conversation & Voice Input Only)')
             if hasattr(self, '_live_voice_active_style'):
                 self.live_voice_button.setStyleSheet(self._live_voice_active_style)
             self._refresh_voice_bar_pills()
+            is_input_only = (self.active_voice_mode == 'input_only')
             if hasattr(self, 'voice_brain_btn'):
-                self.voice_brain_btn.show()
+                self.voice_brain_btn.setVisible(not is_input_only)
             if hasattr(self, 'voice_tts_btn'):
-                self.voice_tts_btn.show()
+                self.voice_tts_btn.setVisible(not is_input_only)
             if hasattr(self, 'voice_cost_badge'):
                 self.voice_cost_badge.show()
                 self._refresh_bottom_cost_label()
             if hasattr(self, 'voice_avatar_btn'):
                 self._refresh_voice_avatar_btn_text()
-                self.voice_avatar_btn.show()
+                self.voice_avatar_btn.setVisible(not is_input_only)
             if hasattr(self, 'voice_mute_btn'):
                 self.voice_mute_btn.blockSignals(True)
                 self.voice_mute_btn.setChecked(False)
@@ -14929,18 +16292,25 @@ class PalaceWindow(QMainWindow):
                 self.end_talk_btn.show()
             self._on_voice_level_update(0, '▁▁▁▁▁▁', False)
             self._sync_voice_footer_state()
-            self._maybe_open_voice_avatar_for_live_voice()
-            self._sync_voice_avatar_status(state='listening', muted=False)
+            if not is_input_only:
+                self._maybe_open_voice_avatar_for_live_voice()
+                self._sync_voice_avatar_status(state='listening', muted=False)
             if is_loopback_audio_device(dev_desc):
                 self.show_notice(
-                    f'⚠ Live Voice opened "{dev_desc}" (speaker loopback, NOT a mic!). Open Settings → Voice & Audio to pick System default.'
+                    f'⚠ Speech opened "{dev_desc}" (speaker loopback, NOT a mic!). Open Settings → Voice & Audio to pick System default.'
+                )
+            elif is_input_only:
+                cmd_map = get_voice_command_phrases_map(self.config_path)
+                sub_ex = ', '.join(f'"{p}"' for p in (cmd_map.get('submit') or [])[:3]) or '"submit query", "send this now"'
+                self.show_notice(
+                    f'🎤 Voice Input Only ON ({dev_desc}) — Words stream live into box as you talk (fillers shown as [um]). Say {sub_ex} to send!'
                 )
             else:
                 self.show_notice(
-                    f'🟢 Live Voice ON ({dev_desc}) — Switch 🧠 Thinking AI or 🔊 Voice anytime · Click ■ or ✕ End Talk to stop.'
+                    f'🟢 Full Conversation Voice ON ({dev_desc}) — Switch 🧠 Thinking AI or 🔊 Voice anytime · Click ▾ for Voice Input Only.'
                 )
         else:
-            self.stop_all_voice_modes(exit_talk_only=True, notice='Live Voice / Talk Mode turned OFF.')
+            self.stop_all_voice_modes(exit_talk_only=True, notice='Speech Mode turned OFF.')
 
     def _get_voice_companion(self):
         if getattr(self, '_voice_companion', None) is None:
@@ -15102,6 +16472,10 @@ class PalaceWindow(QMainWindow):
                     parts_msg.append(f'Ignore vocal noises → {"ON" if updated_v_cfg["ignore_vocal_noises"] else "OFF"}')
                 if 'added_ignored_noises' in updated_v_cfg:
                     parts_msg.append(f'Ignored sounds += {updated_v_cfg["added_ignored_noises"]}')
+                if 'always_included_words' in updated_v_cfg:
+                    parts_msg.append(f'Always include += {updated_v_cfg["always_included_words"]}')
+                if 'added_submit_phrases' in updated_v_cfg:
+                    parts_msg.append(f'Submit commands += {updated_v_cfg["added_submit_phrases"]}')
                 if parts_msg:
                     summary_v = ' · '.join(parts_msg)
                     self.show_notice(f'🎙 AI updated voice settings: {summary_v}')
@@ -15347,18 +16721,114 @@ class PalaceWindow(QMainWindow):
             self._schedule_voice_profile_evolution(raw_user_for_profile, beats)
         return beats
 
+    def _handle_voice_input_only_transcript(self, raw_transcript: str) -> None:
+        """Stream spoken clauses live into `self.composer` with `[um]` visual haptic filler tags,
+        and execute 2+ word vocal commands (`submit query`, `scratch that last`, `clear input box`, `insert new line`).
+        """
+        from voice_service import (
+            match_voice_input_command,
+            process_spoken_input_with_visual_haptics,
+            strip_visual_haptic_filler_tags,
+        )
+
+        text = (raw_transcript or '').strip()
+        if not text:
+            return
+        cmd_action, matched_phrase, remaining_text = match_voice_input_command(
+            text,
+            config_path=self.config_path,
+        )
+        disp_clause, _clean_clause, flagged_fillers = process_spoken_input_with_visual_haptics(
+            remaining_text,
+            config_path=self.config_path,
+        )
+        if not hasattr(self, '_voice_input_clause_stack') or self._voice_input_clause_stack is None:
+            self._voice_input_clause_stack = []
+
+        if disp_clause:
+            cur_box = self.composer.toPlainText()
+            if not cur_box:
+                self._voice_input_clause_stack.clear()
+                new_box = disp_clause
+            elif cur_box.endswith('\n'):
+                new_box = f'{cur_box}{disp_clause}'
+            else:
+                new_box = f'{cur_box.rstrip()} {disp_clause}'.strip()
+            self._voice_input_clause_stack.append(disp_clause)
+            self.composer.setPlainText(new_box)
+            cursor = self.composer.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.composer.setTextCursor(cursor)
+
+        if cmd_action == 'clear':
+            self._voice_input_clause_stack.clear()
+            self.composer.clear()
+            self.show_notice(f'🎤 Vocal Command "{matched_phrase}": Cleared input box.')
+            return
+
+        if cmd_action == 'undo':
+            if self._voice_input_clause_stack:
+                removed = self._voice_input_clause_stack.pop()
+                rebuilt = ' '.join(self._voice_input_clause_stack).replace(' \n ', '\n').strip()
+                self.composer.setPlainText(rebuilt)
+                cursor = self.composer.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.composer.setTextCursor(cursor)
+                self.show_notice(f'🎤 Vocal Command "{matched_phrase}": Removed last phrase ("{removed[:45]}").')
+            else:
+                self.composer.clear()
+                self.show_notice(f'🎤 Vocal Command "{matched_phrase}": Undid input.')
+            return
+
+        if cmd_action == 'newline':
+            cur_box = self.composer.toPlainText()
+            if cur_box and not cur_box.endswith('\n'):
+                self.composer.setPlainText(cur_box + '\n')
+                self._voice_input_clause_stack.append('\n')
+                cursor = self.composer.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.composer.setTextCursor(cursor)
+            self.show_notice(f'🎤 Vocal Command "{matched_phrase}": Inserted new line.')
+            return
+
+        if cmd_action == 'submit':
+            raw_box = self.composer.toPlainText().strip()
+            clean_to_send = strip_visual_haptic_filler_tags(raw_box)
+            if not clean_to_send:
+                self.show_notice(
+                    f'🎤 Heard vocal command "{matched_phrase}", but the input box is empty — speak your question first.'
+                )
+                return
+            self._voice_input_clause_stack.clear()
+            self.composer.setPlainText(clean_to_send)
+            self._turn_silent_screen_only = True
+            self._turn_triggered_by_live_voice = False
+            self.show_notice(f'🎤 Vocal Command "{matched_phrase}" → Submitting query (screen output only, no spoken audio)…')
+            self.send_message()
+            return
+
+        if disp_clause:
+            filler_note = f' (ignored filler: {", ".join(f"[{w}]" for w in flagged_fillers)})' if flagged_fillers else ''
+            self.show_notice(
+                f'🎤 Streamed to box: "{disp_clause[:70]}"{filler_note} — keep talking or say "Submit Query" to send.'
+            )
+
     def _on_live_voice_utterance(self, wav_path: Path):
         from voice_service import load_voice_settings, speak_agent_response
 
         v_cfg = load_voice_settings(self.config_path)
-        talk_only = bool(getattr(self, '_talk_only_mode', False))
-        companion_on = True if talk_only else bool(v_cfg.get('voice_companion_enabled', True))
+        is_input_only = (str(getattr(self, 'active_voice_mode', 'full_conversation') or 'full_conversation').strip().lower() == 'input_only')
+        talk_only = False if is_input_only else bool(getattr(self, '_talk_only_mode', False))
+        companion_on = False if is_input_only else (True if talk_only else bool(v_cfg.get('voice_companion_enabled', True)))
         req_gen = int(getattr(self, '_voice_session_gen', 0))
         if hasattr(self, 'voice_level_badge'):
             self.voice_level_badge.setText(
-                '⏳ Talk Mode listening…' if talk_only else ('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…')
+                '⏳ Streaming to input box…'
+                if is_input_only
+                else ('⏳ Talk Mode listening…' if talk_only else ('⏳ Listening & thinking…' if companion_on else '⏳ Transcribing spoken prompt…'))
             )
-        self._sync_voice_avatar_status(state='thinking', caption='Thinking…')
+        if not is_input_only:
+            self._sync_voice_avatar_status(state='thinking', caption='Thinking…')
 
         recent_snip = self._recent_voice_context_snippet()
         is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
@@ -15390,15 +16860,20 @@ class PalaceWindow(QMainWindow):
                 pass
             worker.deleteLater()
 
-        def _on_vw_done(decision_payload, transcript: str, gen=req_gen, can_write=allow_mem_write):
+        def _on_vw_done(decision_payload, transcript: str, gen=req_gen, can_write=allow_mem_write, input_only_turn=is_input_only):
             if gen != int(getattr(self, '_voice_session_gen', 0)):
                 return
             text = (transcript or '').strip()
             if not text:
-                self._sync_voice_avatar_status(state='listening', caption='Listening…')
+                if not input_only_turn:
+                    self._sync_voice_avatar_status(state='listening', caption='Listening…')
+                return
+            if input_only_turn:
+                self._handle_voice_input_only_transcript(text)
                 return
             if decision_payload is None:
-                self.composer.setPlainText(text)
+                from voice_service import strip_visual_haptic_filler_tags
+                self.composer.setPlainText(strip_visual_haptic_filler_tags(text))
                 if self.worker is None:
                     self._turn_triggered_by_live_voice = True
                     self.send_message()
@@ -15675,7 +17150,7 @@ class PalaceWindow(QMainWindow):
 
     def _check_external_session_updates(self):
         """Watch active session file on disk so external Foreman/CLI prompts appear live in the open GUI."""
-        if self.worker is not None or bool(getattr(self, '_voice_threads', None)):
+        if self.worker is not None or bool(getattr(self, 'active_jobs', None)) or bool(getattr(self, '_voice_threads', None)):
             return
         try:
             ctx = self.store.context(self.session_id)
@@ -15684,6 +17159,11 @@ class PalaceWindow(QMainWindow):
                 mtime = path.stat().st_mtime
                 if self._last_session_mtime == 0.0:
                     self._last_session_mtime = mtime
+                    # If the window was sitting on an empty new conversation when an external agent first wrote to it, load immediately!
+                    if not self.chat_items and path.stat().st_size > 0:
+                        self.refresh_sessions()
+                        self.load_history()
+                        self.status_label.setText('Live update received from Foreman / Council.')
                 elif mtime > self._last_session_mtime:
                     self._last_session_mtime = mtime
                     self.refresh_sessions()
@@ -15691,6 +17171,48 @@ class PalaceWindow(QMainWindow):
                     self.status_label.setText('Live update received from Foreman / Council.')
         except Exception:
             pass
+
+    def handle_external_ipc_payload(self, raw_line: str | dict) -> None:
+        """Execute or display external Foreman/MCP inputs directly inside the currently open chat window."""
+        if isinstance(raw_line, dict):
+            payload = raw_line
+        else:
+            clean = str(raw_line or '').strip()
+            if not clean or clean == 'ACTIVATE':
+                self.restore_from_tray()
+                return
+            try:
+                payload = json.loads(clean)
+            except Exception:
+                self.restore_from_tray()
+                return
+        if not isinstance(payload, dict):
+            return
+        cmd = str(payload.get('cmd') or payload.get('kind') or '').strip().upper()
+        if cmd == 'EXTERNAL_EXCHANGE':
+            u_txt = str(payload.get('user_text') or payload.get('question') or '').strip()
+            a_txt = str(payload.get('assistant_text') or payload.get('answer') or '').strip()
+            contribs = list(payload.get('contributors') or ['palace'])
+            if u_txt and a_txt:
+                try:
+                    ctx = self.store.context(self.session_id)
+                    ctx.append_exchange(u_txt, a_txt, contributors=contribs)
+                    self.store.rename_from_question(self.session_id, u_txt.replace('🤖 [External Foreman Query]:', '').replace('🤖 [External Foreman Drawing Request]:', '').strip() or u_txt)
+                    self.store.save()
+                    path = getattr(ctx, 'path', None)
+                    if path and path.exists():
+                        self._last_session_mtime = path.stat().st_mtime
+                except Exception:
+                    pass
+                self.refresh_projects()
+                self.refresh_sessions()
+                self.load_history()
+                self.show_notice('🤖 Live External Foreman exchange rendered in active chat.')
+        elif cmd == 'EXTERNAL_PROMPT':
+            p_txt = str(payload.get('prompt') or '').strip()
+            if p_txt:
+                self.composer.setPlainText(p_txt)
+                self.send_parallel_message()
 
     def _render_single_chat_item(self, item: dict, *, theme_dict: dict | None = None) -> str:
         role = item['role']
@@ -15732,6 +17254,11 @@ class PalaceWindow(QMainWindow):
             from attachment_service import parse_user_message_attachments
             clean_user_text, user_atts = parse_user_message_attachments(content)
             safe_user = html.escape(clean_user_text).replace('\n', '<br>')
+            safe_user = re.sub(
+                r'\[([A-Za-z]{2,7})\]',
+                r'<span style="color:#d29922; background:#29230f; border:1px solid #854d0e; border-radius:4px; padding:0px 4px; font-size:12px;" title="Ignored spoken filler word (say \'Always include that word\' to keep it)">[\1]</span>',
+                safe_user,
+            )
             att_rows_html = ''
             for att in user_atts:
                 a_kind = att.get('kind', 'text')
@@ -16058,14 +17585,18 @@ class PalaceWindow(QMainWindow):
             scrollbar.setValue(prev_val)
 
     def _on_pulse_tick(self):
-        if not self.pending_status_text:
+        has_jobs = bool(getattr(self, 'active_jobs', None))
+        if not self.pending_status_text and not has_jobs:
             self.pulse_timer.stop()
             self._update_inline_status_banner()
             self._sync_sidebar_working_indicator()
+            self._rebuild_parallel_ops_bar()
             return
         self.pulse_step += 1
         self._update_inline_status_banner()
         self._sync_sidebar_working_indicator()
+        if self.pulse_step % 3 == 0:
+            self._rebuild_parallel_ops_bar()
         # Pulse working provider token dots without touching self.chat scroll position!
         for name, info in list(self.provider_details.items()):
             if info.get('status') == 'Working':
@@ -16442,8 +17973,6 @@ class PalaceWindow(QMainWindow):
 
     @Slot()
     def choose_files(self):
-        if self.worker is not None:
-            return
         paths, _ = QFileDialog.getOpenFileNames(
             self,
             'Attach documents or pictures',
@@ -16454,11 +17983,9 @@ class PalaceWindow(QMainWindow):
 
     @Slot(bytes)
     def add_pasted_image(self, raw_bytes: bytes):
-        if self.worker is not None or not raw_bytes:
+        if not raw_bytes:
             return
-        # No hard cap on staged images. Context budget is enforced at send
-        # time in files_ready()/send path via MAX_TOTAL_CHARS so unlimited
-        # staging never silently drops what the user dragged in.
+        # No hard cap on staged images, and works while idle OR while a turn is busy.
         try:
             idx = sum(1 for a in self.attachments if getattr(a, 'kind', '') == 'image') + 1
             item = attachment_from_image_bytes(raw_bytes, filename=f'pasted-image-{idx}.png')
@@ -16469,7 +17996,7 @@ class PalaceWindow(QMainWindow):
 
     @Slot(list)
     def add_files(self, paths):
-        if self.worker is not None or not paths:
+        if not paths:
             return
         known = {str(item.path).casefold() for item in self.attachments}
         selected = []
@@ -16480,9 +18007,8 @@ class PalaceWindow(QMainWindow):
                 known.add(key)
         if not selected:
             return
-        # Unlimited multi-batch staging. files_ready() enforces MAX_TOTAL_CHARS
-        # at ingest so over-budget items surface as a notice rather than being
-        # silently dropped, matching the attachment_service.py budgets.
+        # Unlimited multi-batch staging. If an AI turn is currently running in self.worker,
+        # extract synchronously so we never overwrite or block the active AI worker!
 
         def extract():
             items, errors = [], []
@@ -16493,7 +18019,10 @@ class PalaceWindow(QMainWindow):
                     errors.append(f'{Path(name).name}: {exc}')
             return items, errors
 
-        self.start_task(extract, self.files_ready, 'Reading attachments locally…')
+        if self.worker is not None:
+            self.files_ready(extract())
+        else:
+            self.start_task(extract, self.files_ready, 'Reading attachments locally…')
 
     @Slot(object)
     def files_ready(self, payload):
@@ -16581,61 +18110,55 @@ class PalaceWindow(QMainWindow):
             self.staged_attachments_frame.setVisible(bool(self.attachments))
 
     def _remove_attachment_at(self, idx: int):
-        if self.worker is None and 0 <= idx < len(self.attachments):
+        if 0 <= idx < len(self.attachments):
             self.attachments.pop(idx)
             self.refresh_attachments()
 
     @Slot()
     def remove_attachment(self):
         index = self.attachment_list.currentRow()
-        if self.worker is None and index >= 0:
+        if index >= 0:
             self.attachments.pop(index)
             self.refresh_attachments()
 
     def dragEnterEvent(self, event):
         md = event.mimeData()
-        if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+        if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
             event.acceptProposedAction()
             return
-        if self.worker is None and md.hasImage():
+        if Composer._mime_has_image_payload(md):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
         md = event.mimeData()
-        if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+        if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
             event.acceptProposedAction()
             return
-        if self.worker is None and md.hasImage():
+        if Composer._mime_has_image_payload(md):
             event.acceptProposedAction()
             return
         super().dragMoveEvent(event)
 
     def dropEvent(self, event):
         md = event.mimeData()
-        if self.worker is not None:
-            return
         if md.hasUrls():
             local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
             if local:
                 self.add_files(local)
                 event.acceptProposedAction()
                 return
-        if md.hasImage():
-            # Route image drag (from browser/Explorer thumbnails) through the
-            # same paste pipeline so count and format handling stays unified.
+        qimg = Composer._extract_qimage_from_mime(md)
+        if not qimg.isNull():
             try:
-                img = md.imageData()
-                img = img if hasattr(img, 'save') else QImage(img)
-                if not img.isNull():
-                    buf = QBuffer()
-                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                    img.save(buf, 'PNG')
-                    self.add_pasted_image(bytes(buf.data()))
-                    buf.close()
-                    event.acceptProposedAction()
-                    return
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                qimg.save(buf, 'PNG')
+                self.add_pasted_image(bytes(buf.data()))
+                buf.close()
+                event.acceptProposedAction()
+                return
             except Exception as exc:
                 self.show_notice(f'Could not read dropped image: {exc}')
                 return
@@ -16653,32 +18176,30 @@ class PalaceWindow(QMainWindow):
         t = ev.type()
         if t == QEvent.Type.DragEnter or t == QEvent.Type.DragMove:
             md = ev.mimeData()
-            if self.worker is None and md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
+            if md.hasUrls() and any(u.isLocalFile() for u in md.urls()):
                 ev.acceptProposedAction()
                 return True
-            if self.worker is None and md.hasImage():
+            if Composer._mime_has_image_payload(md):
                 ev.acceptProposedAction()
                 return True
         elif t == QEvent.Type.Drop:
             md = ev.mimeData()
-            if self.worker is None and md.hasUrls():
+            if md.hasUrls():
                 local = [u.toLocalFile() for u in md.urls() if u.isLocalFile()]
                 if local:
                     self.add_files(local)
                     ev.acceptProposedAction()
                     return True
-            if self.worker is None and md.hasImage():
+            qimg = Composer._extract_qimage_from_mime(md)
+            if not qimg.isNull():
                 try:
-                    img = md.imageData()
-                    img = img if hasattr(img, 'save') else QImage(img)
-                    if not img.isNull():
-                        buf = QBuffer()
-                        buf.open(QIODevice.OpenModeFlag.WriteOnly)
-                        img.save(buf, 'PNG')
-                        self.add_pasted_image(bytes(buf.data()))
-                        buf.close()
-                        ev.acceptProposedAction()
-                        return True
+                    buf = QBuffer()
+                    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                    qimg.save(buf, 'PNG')
+                    self.add_pasted_image(bytes(buf.data()))
+                    buf.close()
+                    ev.acceptProposedAction()
+                    return True
                 except Exception:
                     pass
         return super().eventFilter(obj, ev)
@@ -16725,6 +18246,55 @@ class PalaceWindow(QMainWindow):
             self.active_steering_state['include_palace_code'] = True
             self.show_notice('✓ Live Steering: Fairybread Source Code attached to active turn.')
 
+    def _sync_decluttered_option_chips(self):
+        """Keep the decluttered composer bar's removable active override chips synced with active settings."""
+        if hasattr(self, 'deliberate_pill_btn'):
+            is_delib = bool(self.deliberate_pill_btn.isChecked())
+            self.deliberate_pill_btn.setText(' (Deliberate ×)' if is_delib else ' Deliberate')
+            self.deliberate_pill_btn.setVisible(is_delib)
+        if hasattr(self, 'search_depth_btn'):
+            cur_d = str(getattr(self, 'current_search_depth', 'default') or 'default')
+            self.search_depth_btn.setVisible(cur_d != 'default')
+
+    def _show_composer_options_menu(self):
+        """Unified ⚙ Options ▾ menu on the decluttered composer bar (Deliberation, Search Depth, Permissions, Slash Commands)."""
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+
+        delib_act = QAction('⇄ 2-Round Peer Deliberation (Council Review)', menu)
+        delib_act.setCheckable(True)
+        delib_act.setChecked(bool(self.deliberate_pill_btn.isChecked()))
+        delib_act.setToolTip('When checked, AIs review and critique each other before final synthesis (shows removable "(Deliberate ×)" chip)')
+        delib_act.triggered.connect(lambda checked=False: (self.deliberate_pill_btn.setChecked(bool(checked)), self._sync_decluttered_option_chips()))
+        menu.addAction(delib_act)
+
+        menu.addSeparator()
+        search_sub = menu.addMenu('🔍 Web Search Depth')
+        search_sub.setToolTipsVisible(True)
+        for depth_key, label in (
+            ('default', '🔍 Default (Auto Live Weather/News + Light Web)'),
+            ('moderate', '🔎 Moderate (Sharded Multi-Angle — /searchm)'),
+            ('deep', '🌐 Deep (Exhaustive 15–25 Site Research — /searchd)'),
+        ):
+            act = QAction(label, search_sub)
+            act.setCheckable(True)
+            act.setChecked(getattr(self, 'current_search_depth', 'default') == depth_key)
+            act.triggered.connect(lambda _c=False, dk=depth_key: (self._set_search_depth(dk), self._sync_decluttered_option_chips()))
+            search_sub.addAction(act)
+
+        perm_act = QAction('🛡 AI Access & Permission Mode…', menu)
+        perm_act.setToolTip('Choose Request Review, Default, Auto, or Turbo permission mode')
+        perm_act.triggered.connect(self._show_permission_mode_menu)
+        menu.addAction(perm_act)
+
+        cmd_act = QAction('/ Browse Slash Commands…', menu)
+        cmd_act.setToolTip('Insert /autopatch, /restore, /code, /search, /searchm, /searchd, /tangent, or /fullrender')
+        cmd_act.triggered.connect(self._show_slash_commands_menu)
+        menu.addAction(cmd_act)
+
+        anchor_w = getattr(self, 'composer_options_btn', self.ai_pill_button)
+        menu.exec(anchor_w.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+
     def _show_search_depth_menu(self):
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
@@ -16741,45 +18311,493 @@ class PalaceWindow(QMainWindow):
 
             def _pick(_checked=False, dk=depth_key):
                 self._set_search_depth(dk)
+                self._sync_decluttered_option_chips()
 
             act.triggered.connect(_pick)
             menu.addAction(act)
-        menu.exec(self.search_depth_btn.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
+        anchor_w = self.search_depth_btn if self.search_depth_btn.isVisible() else getattr(self, 'composer_options_btn', self.search_depth_btn)
+        menu.exec(anchor_w.mapToGlobal(QPoint(0, -menu.sizeHint().height())))
 
     def _set_search_depth(self, depth_key: str):
         self.current_search_depth = depth_key
         labels = {
             'default': '🔍 Default ▾',
-            'moderate': '🔎 Moderate ▾',
-            'deep': '🌐 Deep ▾',
+            'moderate': '🔎 Moderate ×',
+            'deep': '🌐 Deep ×',
         }
         self.search_depth_btn.setText(labels.get(depth_key, '🔍 Default ▾'))
         if depth_key == 'default':
             self.search_depth_btn.setStyleSheet(
                 'QPushButton { background: #161b22; color: #8b949e; border: 1px solid #21262d; '
-                'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 600; } '
+                'padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; } '
                 'QPushButton:hover { color: #c9d1d9; border-color: #30363d; }'
             )
         elif depth_key == 'moderate':
             self.search_depth_btn.setStyleSheet(
                 'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
-                'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                'padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }'
             )
         else:
             self.search_depth_btn.setStyleSheet(
                 'QPushButton { background: #221538; color: #c084fc; border: 1px solid #a855f7; '
-                'padding: 4px 9px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                'padding: 3px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }'
             )
+        self._sync_decluttered_option_chips()
+
+    def _rebuild_parallel_ops_bar(self):
+        """Render the LIVE PARALLEL OPERATIONS BAR above the composer showing all active parallel jobs with Option 2 Segmented Progress Bar, [N/M AIs ▾] Popover, Steer, and Stop."""
+        if not hasattr(self, 'parallel_ops_bar'):
+            return
+        jobs = list((getattr(self, 'active_jobs', None) or {}).values())
+        has_primary = self.worker is not None and not any(j.get('worker') is self.worker for j in jobs)
+        total_running = len(jobs) + (1 if has_primary else 0)
+        if total_running <= 0:
+            self.parallel_ops_bar.hide()
+            return
+
+        self.parallel_running_badge.setText(f'⚡ {total_running} Parallel Running' if total_running > 1 else '⚡ 1 Operation Running')
+        while self.parallel_jobs_rows_layout.count():
+            it = self.parallel_jobs_rows_layout.takeAt(0)
+            if it and it.widget():
+                it.widget().deleteLater()
+
+        display_jobs: list[dict[str, Any]] = []
+        if has_primary:
+            elapsed_p = max(0, int(time.time() - float(getattr(self, '_turn_start_time', time.time()))))
+            prim_states = dict(getattr(self, '_primary_ai_states', {}) or {})
+            if not prim_states:
+                for p_name, p_en in getattr(self, 'provider_states', {}).items():
+                    if p_en is True:
+                        p_st = str((self.provider_details.get(p_name) or {}).get('status') or 'Working')
+                        prim_states[p_name] = {'status': p_st, 'elapsed_sec': elapsed_p, 'detail': ''}
+            display_jobs.append({
+                'job_id': 0,
+                'question': str(getattr(self, 'last_question', '') or 'Active Turn'),
+                'status_text': str(getattr(self, 'pending_status_text', '') or 'Consulting Council'),
+                'progress_pct': int(getattr(self, '_primary_turn_pct', 35)),
+                'elapsed_sec': elapsed_p,
+                'is_primary': True,
+                'ai_states': prim_states,
+            })
+        for jb in jobs:
+            elapsed_j = max(0, int(time.time() - float(jb.get('started_ts', time.time()))))
+            display_jobs.append({
+                **jb,
+                'elapsed_sec': elapsed_j,
+                'is_primary': False,
+            })
+
+        for jb in display_jobs[:4]:
+            jid = int(jb.get('job_id', 0))
+            q_raw = str(jb.get('question') or 'Query').strip().replace('\n', ' ')
+            q_short = q_raw if len(q_raw) <= 32 else q_raw[:31] + '…'
+            st_raw = str(jb.get('status_text') or 'Consulting AIs').strip()
+            el_s = int(jb.get('elapsed_sec', 0))
+            pct = max(8, min(100, int(jb.get('progress_pct', 30))))
+            label_tag = f'Job #{jid}' if jid > 0 else 'Job #1'
+
+            ai_states: dict[str, dict[str, Any]] = dict(jb.get('ai_states') or {})
+            if not ai_states:
+                for p_name, p_en in getattr(self, 'provider_states', {}).items():
+                    if p_en is True:
+                        ai_states[p_name] = {'status': 'Working', 'elapsed_sec': el_s, 'detail': ''}
+
+            segments: list[tuple[str, str]] = []
+            done_cnt = 0
+            tot_cnt = max(1, len(ai_states))
+            tooltip_lines: list[str] = [f'{label_tag}: {q_raw} ({pct}%)']
+            for p_name, p_meta in ai_states.items():
+                st_val = str(p_meta.get('status') or 'Working')
+                p_el = int(p_meta.get('elapsed_sec', el_s))
+                disp_p = provider_display_name(p_name, config_path=self.config_path)
+                ic_p = provider_icon(p_name)
+                if st_val in {'Responded', 'Succeeded', 'Done'}:
+                    done_cnt += 1
+                    segments.append(('responded', '#22c55e'))
+                    tooltip_lines.append(f'✓ {ic_p} {disp_p} — Responded ({p_el}s)')
+                elif st_val in {'Limited', 'No Plan', 'Timeout', 'Cutoff'}:
+                    done_cnt += 1
+                    segments.append(('warning', '#eab308'))
+                    tooltip_lines.append(f'⚠ {ic_p} {disp_p} — {st_val} ({p_el}s)')
+                elif st_val in {'Failed', 'Auth Err', 'Bad Model', 'Unavailable'}:
+                    done_cnt += 1
+                    segments.append(('failed', '#ef4444'))
+                    tooltip_lines.append(f'✕ {ic_p} {disp_p} — {st_val} ({p_el}s)')
+                else:
+                    segments.append(('working', '#06b6d4'))
+                    tooltip_lines.append(f'◌ {ic_p} {disp_p} — Working ({p_el}s)')
+
+            row_frame = QFrame()
+            row_frame.setStyleSheet(
+                'QFrame { background: #111927; border: 1px solid #1e293b; border-radius: 7px; }'
+            )
+            r_lay = QHBoxLayout(row_frame)
+            r_lay.setContentsMargins(10, 4, 8, 4)
+            r_lay.setSpacing(6)
+
+            lbl = QLabel(
+                f'<span style="color:#38bdf8; font-weight:700;">❖ {html.escape(label_tag)}:</span> '
+                f'<b style="color:#f0f6fc;">{html.escape(q_short)}</b> '
+                f'<span style="color:#9da7b3; font-size:11px;">({html.escape(st_raw[:38])} · {el_s}s)</span>'
+            )
+            lbl.setTextFormat(Qt.TextFormat.RichText)
+            r_lay.addWidget(lbl, 1)
+
+            seg_bar = SegmentedAIProgressBar(segments, row_frame)
+            seg_bar.setToolTip('\n'.join(tooltip_lines))
+            r_lay.addWidget(seg_bar)
+
+            pct_lbl = QLabel(f'{pct}%')
+            pct_lbl.setStyleSheet('color:#e2e8f0; font-size:11px; font-weight:700; min-width:28px;')
+            pct_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            r_lay.addWidget(pct_lbl)
+
+            ai_pop_btn = QPushButton(f'{done_cnt}/{tot_cnt} AIs ▾')
+            ai_pop_btn.setFixedHeight(22)
+            ai_pop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            ai_pop_btn.setToolTip('\n'.join(tooltip_lines) + '\n\nClick to inspect all active AIs in this job')
+            ai_pop_btn.setStyleSheet(
+                'QPushButton { background:#162032; color:#7dd3fc; border:1px solid #1e3a5f; border-radius:5px; padding:1px 7px; font-size:10.5px; font-weight:700; } '
+                'QPushButton:hover { background:#1e3a5f; color:#ffffff; border-color:#38bdf8; }'
+            )
+            ai_pop_btn.clicked.connect(
+                lambda _c=False, b=ai_pop_btn, st_map=dict(ai_states), tag=label_tag, el=el_s: self._show_job_ais_popover(b, st_map, tag, el)
+            )
+            r_lay.addWidget(ai_pop_btn)
+
+            st_btn = QPushButton('Steer ▾')
+            st_btn.setFixedHeight(22)
+            st_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            st_btn.setToolTip(f'Steer {label_tag} with live instructions from the composer')
+            st_btn.setStyleSheet(
+                'QPushButton { background:#0f293a; color:#38bdf8; border:1px solid #0284c7; border-radius:5px; padding:1px 8px; font-size:10.5px; font-weight:700; } '
+                'QPushButton:hover { background:#0284c7; color:#ffffff; }'
+            )
+            st_btn.clicked.connect(lambda _c=False, target_id=jid: self.steer_parallel_job(target_id))
+            r_lay.addWidget(st_btn)
+
+            sp_btn = QPushButton('■ Stop')
+            sp_btn.setFixedHeight(22)
+            sp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            sp_btn.setToolTip(f'Stop only {label_tag}')
+            sp_btn.setStyleSheet(
+                'QPushButton { background:#2c1517; color:#f87171; border:1px solid #ef4444; border-radius:5px; padding:1px 8px; font-size:10.5px; font-weight:700; } '
+                'QPushButton:hover { background:#dc2626; color:#ffffff; }'
+            )
+            sp_btn.clicked.connect(lambda _c=False, target_id=jid: self.stop_parallel_job(target_id))
+            r_lay.addWidget(sp_btn)
+
+            self.parallel_jobs_rows_layout.addWidget(row_frame)
+
+        self.parallel_ops_bar.show()
+
+    def _show_job_ais_popover(self, anchor_btn: QPushButton, ai_states: dict[str, dict[str, Any]], label_tag: str, default_elapsed: int):
+        """Option 2 Popover: show all 8-15 active AIs in this job with their icon, name, status, and elapsed time."""
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        menu.setStyleSheet(
+            'QMenu { background: #131b2e; color: #f0f6fc; border: 1px solid #38bdf8; padding: 6px; border-radius: 8px; } '
+            'QMenu::item { padding: 5px 12px; border-radius: 5px; font-size: 12px; } '
+            'QMenu::item:selected { background: #1e293b; }'
+        )
+        hdr = menu.addAction(f'⚡ {label_tag} — Live Per-AI Progress ({len(ai_states)} AIs)')
+        hdr.setEnabled(False)
+        menu.addSeparator()
+        for p_name, p_meta in ai_states.items():
+            st_val = str(p_meta.get('status') or 'Working')
+            p_el = int(p_meta.get('elapsed_sec', default_elapsed))
+            det = str(p_meta.get('detail') or '').strip()
+            disp_p = provider_display_name(p_name, config_path=self.config_path)
+            if st_val in {'Responded', 'Succeeded', 'Done'}:
+                badge = f'✓ {disp_p} — Responded · {p_el}s'
+                ic_state = 'active'
+            elif st_val in {'Limited', 'No Plan', 'Timeout', 'Cutoff', 'Failed', 'Auth Err', 'Bad Model'}:
+                badge = f'⚠ {disp_p} — {st_val} · {p_el}s'
+                ic_state = 'inactive'
+            else:
+                badge = f'◌ {disp_p} — Deliberating · {p_el}s'
+                ic_state = 'working'
+            act = QAction(provider_token_qicon(p_name, ic_state, self.pulse_step), badge, menu)
+            if det:
+                act.setToolTip(det[:240])
+            menu.addAction(act)
+        menu.exec(anchor_btn.mapToGlobal(QPoint(0, anchor_btn.height() + 3)))
+
+    def steer_parallel_job(self, job_id: int):
+        """Steer a specific running job (or arm the composer to steer that job if composer is currently empty)."""
+        if job_id == 0 or job_id not in getattr(self, 'active_jobs', {}):
+            if self.composer.toPlainText().strip():
+                self.steer_active_turn()
+            else:
+                self._busy_submit_mode = 'steer'
+                self._refresh_busy_mode_controls()
+                self.composer.setFocus()
+                self.show_notice('🧭 Type your live steering instructions in the composer and press Enter.')
+            return
+        jb = self.active_jobs[job_id]
+        note = self.composer.toPlainText().strip()
+        if not note:
+            self._target_steer_job_id = job_id
+            self._busy_submit_mode = 'steer'
+            self._refresh_busy_mode_controls()
+            self.composer.setPlaceholderText(f'🧭 Steering Job #{job_id} ("{jb.get("question", "")[:38]}") — type note & press Enter…')
+            self.composer.setFocus()
+            self.show_notice(f'🧭 Targeting Job #{job_id} — type your steering note and press Enter.')
+            return
+        st_state = jb.get('steering_state')
+        if isinstance(st_state, dict):
+            st_state.setdefault('notes', []).append(note)
+            if self.palace_code_btn.isChecked():
+                st_state['include_palace_code'] = True
+            count = len(st_state['notes'])
+            self.composer.clear()
+            self._target_steer_job_id = None
+            self.append_message('user', f'[LIVE STEER → Job #{job_id} #{count}]: {note}', render=True)
+            self.show_notice(f'✓ Live Steering #{count} injected into Job #{job_id}: "{note[:55]}"')
+            self._refresh_busy_mode_controls()
+
+    def stop_parallel_job(self, job_id: int):
+        """Cancel a specific parallel job without interrupting other running parallel jobs."""
+        if job_id == 0 or (job_id not in getattr(self, 'active_jobs', {}) and self.worker is not None):
+            self.stop_active_turn()
+            self._rebuild_parallel_ops_bar()
+            return
+        jb = (getattr(self, 'active_jobs', {}) or {}).pop(job_id, None)
+        if not jb:
+            return
+        ev = jb.get('cancel_event')
+        if ev is not None:
+            ev.set()
+        w = jb.get('worker')
+        if w is not None:
+            try:
+                w.succeeded.disconnect()
+                w.failed.disconnect()
+                w.finished.disconnect()
+            except Exception:
+                pass
+            try:
+                if hasattr(w, 'requestInterruption'):
+                    w.requestInterruption()
+                if hasattr(w, 'quit'):
+                    w.quit()
+                if hasattr(w, 'wait'):
+                    w.wait(1200)
+            except Exception:
+                pass
+        p_idx = jb.get('placeholder_idx')
+        if isinstance(p_idx, int) and 0 <= p_idx < len(self.chat_items):
+            self.chat_items[p_idx]['content'] = f'*⏹ Parallel Job #{job_id} stopped by user.*'
+            self._item_html_cache.clear()
+            self._render_chat_items(scroll_to_bottom=False)
+        self._rebuild_parallel_ops_bar()
+        self._refresh_busy_mode_controls()
+        self.show_notice(f'⏹ Stopped Parallel Job #{job_id}.')
+
+    @Slot()
+    def send_parallel_message(self):
+        """Launch the current composer prompt & attachments immediately as an independent Parallel Query."""
+        if self.worker is None and not getattr(self, 'active_jobs', None):
+            self.send_message()
+            return
+        question = self.composer.toPlainText().strip()
+        if not question and self.attachments:
+            has_img_att = any(getattr(a, 'kind', '') == 'image' for a in self.attachments)
+            question = 'What is in this picture?' if has_img_att else 'Please review the attached file(s).'
+        if not question:
+            self.show_notice('Type a question (or attach a screenshot/file) first, then click ⚡ Parallel.')
+            self.composer.setFocus()
+            return
+        try:
+            prompt = compose_question(question, self.attachments, allow_unlimited=True)
+        except ValueError as exc:
+            self.show_notice(str(exc))
+            return
+
+        job_id = int(getattr(self, '_next_parallel_job_id', 1))
+        self._next_parallel_job_id = job_id + 1
+        target_sid = self.session_id
+        is_no_history = self.no_history_btn.isChecked() or (not self.history_toggle.isChecked())
+        is_tangent = self.tangent_btn.isChecked() and not is_no_history
+        save_history = not is_no_history
+        use_history = (not is_no_history) and (not is_tangent)
+        context = self.store.context(target_sid)
+        rounds = 2 if self.peer_rounds_toggle.isChecked() else 1
+        selected_providers = [name for name, enabled in self.provider_states.items() if enabled is True]
+        if self.max_ais_per_turn and self.max_ais_per_turn > 0 and len(selected_providers) > self.max_ais_per_turn:
+            selected_providers = selected_providers[:self.max_ais_per_turn]
+        tool_cfg = load_tool_settings(self.config_path)
+        use_palace_code = bool(self.palace_code_btn.isChecked() or tool_cfg.get('palace_source_tool', False) and self.current_squad_label == '🛠 Work Mode')
+        proj_folder = self.store.get_project_folder() if (tool_cfg.get('project_folder_tool', True) and hasattr(self.store, 'get_project_folder')) else ''
+        cur_search_depth = getattr(self, 'current_search_depth', 'default')
+        model_ov = dict(getattr(self, 'active_model_overrides', {}) or {})
+        ctx_depth = str(getattr(self, 'active_context_depth', 'standard') or 'standard')
+        tim_prof = str(getattr(self, 'active_timing_profile', 'default') or 'default')
+        proj_nm = self._current_project_name()
+
+        # Append anchored Question + Reserved Parallel Answer Slot directly under it
+        self.append_message('user', f'[Parallel Job #{job_id}] {prompt}', render=False)
+        disp_list = ', '.join(provider_display_name(n) for n in selected_providers) if selected_providers else 'Council'
+        placeholder_idx = self.append_message(
+            'assistant',
+            f'⚡ **Running in Parallel (Job #{job_id})** — Consulting {disp_list}…',
+            contributors=selected_providers,
+            render=True,
+        )
+        self.composer.clear()
+        self.attachments = []
+        self.refresh_attachments()
+
+        cancel_ev = threading.Event()
+        steer_state = {'notes': [], 'include_palace_code': use_palace_code}
+        worker_box: dict[str, TaskThread | None] = {'w': None}
+
+        def _ask_parallel():
+            palace = self.palace_factory(context)
+            use_shared_mem = bool(use_history and getattr(self, 'enable_shared_memory', self.palace_factory == self._build_palace))
+            all_kwargs = {
+                'provider_names': selected_providers if selected_providers else None,
+                'include_memory': use_shared_mem,
+                'include_context': use_history,
+                'save_to_context': save_history,
+                'max_rounds': rounds,
+                'include_palace_code': use_palace_code,
+                'project_folder': proj_folder,
+                'search_depth': cur_search_depth,
+                'cancel_event': cancel_ev,
+                'steering_state': steer_state,
+                'on_phase_status': lambda ev: worker_box['w'].progress.emit(ev) if worker_box.get('w') is not None else None,
+                'project_name': proj_nm,
+                'model_overrides': model_ov,
+                'context_depth': ctx_depth,
+                'timing_profile': tim_prof,
+            }
+            try:
+                sig = inspect.signature(palace.run)
+                params = sig.parameters
+                accepts_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+                call_kwargs = all_kwargs if accepts_var_kw else {k: v for k, v in all_kwargs.items() if k in params}
+            except (TypeError, ValueError):
+                call_kwargs = {'provider_names': selected_providers if selected_providers else None}
+            return palace.run(prompt, **call_kwargs)
+
+        w_thread = TaskThread(_ask_parallel, self)
+        worker_box['w'] = w_thread
+        init_ai_states = {
+            p_name: {'status': 'Working', 'elapsed_sec': 0, 'detail': ''}
+            for p_name in (selected_providers or [n for n, en in self.provider_states.items() if en is True])
+        }
+        job_entry = {
+            'job_id': job_id,
+            'session_id': target_sid,
+            'question': question,
+            'prompt': prompt,
+            'worker': w_thread,
+            'cancel_event': cancel_ev,
+            'steering_state': steer_state,
+            'placeholder_idx': placeholder_idx,
+            'status_text': f'0/{max(1, len(init_ai_states))} AIs Consulting',
+            'progress_pct': 18,
+            'started_ts': time.time(),
+            'save_history': save_history,
+            'ai_states': init_ai_states,
+        }
+        self.active_jobs[job_id] = job_entry
+
+        def _on_job_progress(ev, jid=job_id):
+            jb = self.active_jobs.get(jid)
+            if not jb or not isinstance(ev, dict):
+                return
+            kind = ev.get('event')
+            el_now = max(0, int(time.time() - float(jb.get('started_ts', time.time()))))
+            if kind == 'provider_done':
+                prov = str(ev.get('provider') or '')
+                ok = bool(ev.get('succeeded', True))
+                err_txt = str(ev.get('error') or '')
+                rnd = int(ev.get('round', 1))
+                done_c = int(ev.get('done', 1))
+                tot_c = max(1, int(ev.get('total', 1)))
+                if prov:
+                    st_map = jb.setdefault('ai_states', {})
+                    if ok:
+                        st_map[prov] = {'status': 'Responded', 'elapsed_sec': el_now, 'detail': ''}
+                    else:
+                        chip_st, _c = self._classify_provider_error_chip(err_txt)
+                        st_map[prov] = {'status': chip_st, 'elapsed_sec': el_now, 'detail': err_txt}
+                jb['status_text'] = f'{done_c}/{tot_c} AIs {"Deliberating" if rnd > 1 else "Consulting"}'
+                jb['progress_pct'] = min(92, int(20 + (done_c / tot_c) * (35 if rnd == 1 else 70)))
+            elif kind == 'phase':
+                txt = str(ev.get('text', '')).strip()
+                st_map = jb.setdefault('ai_states', {})
+                for r_prov in ev.get('reset_working', []) or []:
+                    st_map[r_prov] = {'status': 'Working', 'elapsed_sec': el_now, 'detail': ''}
+                if txt:
+                    jb['status_text'] = txt[:44]
+                    jb['progress_pct'] = min(95, int(jb.get('progress_pct', 50)) + 20)
+            self._rebuild_parallel_ops_bar()
+
+        def _on_job_done(result, jid=job_id):
+            jb = self.active_jobs.pop(jid, None)
+            if not jb:
+                return
+            ans = str(getattr(result, 'final_answer', '') or '').strip() or '*No answer returned.*'
+            contribs = list(getattr(result, 'contributors', []) or [])
+            sp_msgs = getattr(result, 'speaker_messages', None) or []
+            if jb.get('session_id') == self.session_id:
+                p_idx = jb.get('placeholder_idx')
+                if isinstance(p_idx, int) and 0 <= p_idx < len(self.chat_items):
+                    self.chat_items[p_idx]['content'] = ans
+                    self.chat_items[p_idx]['contributors'] = contribs
+                    self.chat_items[p_idx]['speaker_messages'] = sp_msgs if len(getattr(result, 'provider_results', {})) > 1 else []
+                    self.reply_archive.append(ans)
+                    self._item_html_cache.clear()
+                    self._render_chat_items(scroll_to_bottom=False)
+                else:
+                    self.append_message('assistant', ans, contributors=contribs, speaker_messages=sp_msgs)
+            elif hasattr(self.store, 'set_unread'):
+                try:
+                    self.store.set_unread(jb['session_id'], True)
+                    self.refresh_sessions()
+                except Exception:
+                    pass
+            self._rebuild_parallel_ops_bar()
+            self._refresh_busy_mode_controls()
+            self.show_notice(f'✓ Parallel Job #{jid} finished ("{jb.get("question", "")[:40]}").')
+
+        def _on_job_fail(err_str: str, jid=job_id):
+            jb = self.active_jobs.pop(jid, None)
+            if jb and jb.get('session_id') == self.session_id:
+                p_idx = jb.get('placeholder_idx')
+                if isinstance(p_idx, int) and 0 <= p_idx < len(self.chat_items):
+                    self.chat_items[p_idx]['content'] = f'⚠ Parallel Job #{jid} error: {err_str}'
+                    self._item_html_cache.clear()
+                    self._render_chat_items(scroll_to_bottom=False)
+            self._rebuild_parallel_ops_bar()
+            self._refresh_busy_mode_controls()
+
+        w_thread.progress.connect(_on_job_progress)
+        w_thread.succeeded.connect(_on_job_done)
+        w_thread.failed.connect(_on_job_fail)
+        w_thread.finished.connect(w_thread.deleteLater)
+        if not self.pulse_timer.isActive():
+            self.pulse_timer.start()
+        self._rebuild_parallel_ops_bar()
+        self._refresh_busy_mode_controls()
+        w_thread.start()
+        self.show_notice(f'⚡ Launched Parallel Job #{job_id}: "{question[:50]}"')
 
     def _refresh_busy_mode_controls(self):
         mode = getattr(self, '_busy_submit_mode', 'steer')
         if mode not in {'steer', 'queue'}:
             mode = 'steer'
-        is_busy = self.worker is not None
-        steer_n = len((getattr(self, 'active_steering_state', None) or {}).get('notes', [])) if is_busy else 0
+        is_busy = self.worker is not None or bool(getattr(self, 'active_jobs', None))
+        steer_n = len((getattr(self, 'active_steering_state', None) or {}).get('notes', [])) if self.worker is not None else 0
+        for jb in (getattr(self, 'active_jobs', None) or {}).values():
+            steer_n += len((jb.get('steering_state') or {}).get('notes', []))
         queue_n = len(getattr(self, 'queued_prompts', None) or [])
 
         if hasattr(self, 'steer_button'):
+            self.steer_button.setVisible(is_busy)
             if mode == 'queue':
                 base = f'⏳ Queue ({queue_n}) ▾' if queue_n > 0 else '⏳ Queue ▾'
                 if steer_n > 0:
@@ -16787,7 +18805,7 @@ class PalaceWindow(QMainWindow):
                 self.steer_button.setText(base)
                 self.steer_button.setStyleSheet(
                     'QPushButton { background: #29230f; color: #eab308; border: 1px solid #eab308; '
-                    'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                    'padding: 1px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; }'
                 )
             else:
                 base = f'🧭 Steer ({steer_n}) ▾' if steer_n > 0 else '🧭 Steer ▾'
@@ -16797,17 +18815,19 @@ class PalaceWindow(QMainWindow):
                 if steer_n > 0:
                     self.steer_button.setStyleSheet(
                         'QPushButton { background: #132238; color: #58a6ff; border: 1px solid #3b82f6; '
-                        'padding: 4px 10px; border-radius: 6px; font-size: 11.5px; font-weight: 700; }'
+                        'padding: 1px 8px; border-radius: 5px; font-size: 11px; font-weight: 700; }'
                     )
                 elif hasattr(self, '_neutral_busy_btn_style'):
                     self.steer_button.setStyleSheet(self._neutral_busy_btn_style)
+        if hasattr(self, 'parallel_launch_btn'):
+            self.parallel_launch_btn.setVisible(is_busy)
 
         if hasattr(self, 'composer') and getattr(self, 'current_profile', '') != 'Idle':
             if is_busy:
                 self.composer.setPlaceholderText(
-                    'Type follow-up prompt to Queue for next turn (Enter or ↑)…'
+                    'Type follow-up prompt to Queue (Enter) or click ⚡ Parallel to run now…'
                     if mode == 'queue'
-                    else 'Type live instructions to Steer the active turn (Enter or ↑)…'
+                    else 'Type live instructions to Steer (Enter) or click ⚡ Parallel to fire a parallel query…'
                 )
             else:
                 self.composer.setPlaceholderText('Ask anything, @ to mention, or drop files')
@@ -16815,9 +18835,9 @@ class PalaceWindow(QMainWindow):
         if hasattr(self, 'send_button'):
             if is_busy:
                 self.send_button.setToolTip(
-                    'Queue prompt for next turn (Enter)'
+                    'Queue prompt for next turn (Enter) · Or click ⚡ Parallel to fire immediately'
                     if mode == 'queue'
-                    else 'Inject Live Steer into active turn (Enter)'
+                    else 'Inject Live Steer into active turn (Enter) · Or click ⚡ Parallel to fire immediately'
                 )
             else:
                 self.send_button.setToolTip('Send message (Enter)')
@@ -16941,13 +18961,27 @@ class PalaceWindow(QMainWindow):
 
     @Slot()
     def send_message(self):
+        target_jid = getattr(self, '_target_steer_job_id', None)
+        if target_jid and target_jid in getattr(self, 'active_jobs', {}):
+            self.steer_parallel_job(target_jid)
+            return
         if self.worker is not None:
             if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
                 self.queue_next_turn()
             else:
                 self.steer_active_turn()
             return
+        if getattr(self, 'active_jobs', None):
+            if getattr(self, '_busy_submit_mode', 'steer') == 'queue':
+                self.queue_next_turn()
+            else:
+                latest_jid = max(self.active_jobs.keys())
+                self.steer_parallel_job(latest_jid)
+            return
         question = self.composer.toPlainText().strip()
+        if not question and self.attachments:
+            has_img_att = any(getattr(a, 'kind', '') == 'image' for a in self.attachments)
+            question = 'What is in this picture?' if has_img_att else 'Please review the attached file(s).'
         if not question:
             self.status_label.setText('Enter a question or instructions for the attached files.')
             self.composer.setFocus()
@@ -17075,6 +19109,7 @@ class PalaceWindow(QMainWindow):
         else:
             self.pending_status_text = 'Consulting the enabled providers'
         self._turn_start_time = time.time()
+        self._primary_turn_pct = 24
         self.pulse_step = 0
         self.pulse_timer.start()
         self._active_working_session_id = self.session_id
@@ -17092,9 +19127,11 @@ class PalaceWindow(QMainWindow):
         self.composer.clear()
         self.attachments = []
         self.refresh_attachments()
+        self._primary_ai_states = {}
         for name, enabled in self.provider_states.items():
             if enabled is True and (not selected_providers or name in selected_providers):
                 self.set_provider_status(name, 'Working', '#95b9ff')
+                self._primary_ai_states[name] = {'status': 'Working', 'elapsed_sec': 0, 'detail': ''}
 
         import threading
         self.active_cancel_event = threading.Event()
@@ -17127,6 +19164,7 @@ class PalaceWindow(QMainWindow):
                 'project_name': self._current_project_name(),
                 'model_overrides': dict(getattr(self, 'active_model_overrides', {}) or {}),
                 'context_depth': str(getattr(self, 'active_context_depth', 'standard') or 'standard'),
+                'timing_profile': str(getattr(self, 'active_timing_profile', 'default') or 'default'),
             }
             sr_override = getattr(self, 'smart_routing_override', None)
             if sr_override is not None:
@@ -17160,6 +19198,7 @@ class PalaceWindow(QMainWindow):
         if not isinstance(ev, dict):
             return
         kind = ev.get('event')
+        el_now = max(0, int(time.time() - float(getattr(self, '_turn_start_time', time.time()))))
         if kind == 'provider_done':
             prov = str(ev.get('provider', ''))
             ok = bool(ev.get('succeeded', True))
@@ -17167,21 +19206,32 @@ class PalaceWindow(QMainWindow):
             rnd = int(ev.get('round', 1))
             done_c = int(ev.get('done', 0))
             tot_c = int(ev.get('total', 1))
+            if not hasattr(self, '_primary_ai_states') or self._primary_ai_states is None:
+                self._primary_ai_states = {}
             if prov:
                 if ok:
                     self.set_provider_status(prov, 'Responded', '#90d7c1')
+                    self._primary_ai_states[prov] = {'status': 'Responded', 'elapsed_sec': el_now, 'detail': ''}
                 else:
                     chip_status, chip_col = self._classify_provider_error_chip(err_txt)
                     self.set_provider_status(prov, chip_status, chip_col, err_txt)
+                    self._primary_ai_states[prov] = {'status': chip_status, 'elapsed_sec': el_now, 'detail': err_txt}
             self.pending_status_text = f'Round {rnd}: {done_c}/{tot_c} AIs responded ({provider_display_name(prov)} finished)'
+            self._primary_turn_pct = min(92, 20 + int((done_c / max(1, tot_c)) * 65))
             self._update_inline_status_banner()
+            self._rebuild_parallel_ops_bar()
         elif kind == 'phase':
             txt = str(ev.get('text', '')).strip()
+            if not hasattr(self, '_primary_ai_states') or self._primary_ai_states is None:
+                self._primary_ai_states = {}
             for r_prov in ev.get('reset_working', []) or []:
                 self.set_provider_status(r_prov, 'Working', '#95b9ff')
+                self._primary_ai_states[r_prov] = {'status': 'Working', 'elapsed_sec': el_now, 'detail': ''}
             if txt:
                 self.pending_status_text = txt
+                self._primary_turn_pct = min(96, int(getattr(self, '_primary_turn_pct', 35)) + 15)
                 self._update_inline_status_banner()
+                self._rebuild_parallel_ops_bar()
 
     @Slot(object)
     def answer_ready(self, result):
@@ -17206,7 +19256,12 @@ class PalaceWindow(QMainWindow):
             try:
                 from voice_service import clean_text_for_speech, load_voice_settings, speak_agent_response
                 v_cfg = load_voice_settings(self.config_path)
-                live_active = bool(
+                silent_screen_only = bool(
+                    getattr(self, '_turn_silent_screen_only', False)
+                    or str(getattr(self, 'active_voice_mode', 'full_conversation') or '').strip().lower() == 'input_only'
+                )
+                self._turn_silent_screen_only = False
+                live_active = (not silent_screen_only) and bool(
                     getattr(self, '_turn_triggered_by_live_voice', False)
                     or getattr(self, '_background_delegated_from_voice', False)
                     or (hasattr(self, 'live_voice_button') and self.live_voice_button.isChecked())
@@ -17242,7 +19297,7 @@ class PalaceWindow(QMainWindow):
                         sum_w.start()
                     else:
                         speak_agent_response(result.final_answer, config_path=self.config_path)
-                elif v_cfg.get('auto_speak_responses'):
+                elif (not silent_screen_only) and v_cfg.get('auto_speak_responses'):
                     speak_agent_response(result.final_answer, config_path=self.config_path)
             except Exception:
                 pass
@@ -17408,6 +19463,8 @@ class PalaceWindow(QMainWindow):
 
     def show_desktop_toast(self, title: str, message: str):
         try:
+            if not bool(load_ui_settings(self.config_path).get('show_tray_balloon_notifications', True)):
+                return
             tray = self._ensure_system_tray()
             if tray is None:
                 return
@@ -17487,26 +19544,39 @@ class PalaceWindow(QMainWindow):
         self.worker.start()
 
     def set_busy(self, busy):
-        for widget in (self.attach_button, self.remove_button,
-                       self.pinned_list, self.project_list, self.new_project_button, self.attach_project_folder_btn,
-                       self.history_toggle, self.peer_rounds_toggle, self.deliberate_pill_btn,
-                       self.tangent_btn, self.no_history_btn,
-                       self.ai_pill_button, self.profile_combo):
-            widget.setEnabled(not busy)
-        # Hide pre-turn setup buttons while busy so the composer row never crowds or clips; keep send_button active for Steer / Queue!
-        for setup_w in (
-            self.attach_button,
-            self.ai_pill_button,
+        # Keep setup controls, Squad selector, Options menu, Tangent, Code, Mic, and Parallel launch unlocked
+        # so the user can configure and fire a Parallel Query at any time while jobs are running!
+        for widget in (
+            self.pinned_list,
+            self.project_list,
+            self.new_project_button,
+            self.attach_project_folder_btn,
+            self.history_toggle,
+            self.peer_rounds_toggle,
             self.deliberate_pill_btn,
             self.tangent_btn,
-            self.search_depth_btn,
-            self.permission_pill_btn,
+            self.no_history_btn,
+            self.ai_pill_button,
+            self.profile_combo,
+        ):
+            widget.setEnabled(True)
+        self.attach_button.setEnabled(True)
+        self.attach_button.setVisible(True)
+        self.remove_button.setEnabled(True)
+        for setup_w in (
+            self.ai_pill_button,
+            self.tangent_btn,
             self.mic_button,
         ):
-            setup_w.setVisible(not busy)
-        if hasattr(self, 'permission_pill_btn'):
-            self.permission_pill_btn.setEnabled(not busy)
-        # Keep composer, send_button (for Steer/Queue), Settings & AIs, and Fairybread Code toggle unlocked during work!
+            setup_w.setVisible(True)
+        any_busy = bool(busy) or bool(getattr(self, 'active_jobs', None))
+        if hasattr(self, 'composer_options_btn'):
+            self.composer_options_btn.setEnabled(True)
+            self.composer_options_btn.setVisible(True)
+        if hasattr(self, 'parallel_launch_btn'):
+            self.parallel_launch_btn.setEnabled(True)
+            self.parallel_launch_btn.setVisible(any_busy)
+        self._sync_decluttered_option_chips()
         self.manage_ais_button.setEnabled(True)
         self.composer.setEnabled(True)
         self.send_button.setEnabled(True)
@@ -17516,9 +19586,9 @@ class PalaceWindow(QMainWindow):
         self.new_button.setEnabled(True)
         self.session_list.setEnabled(True)
         if hasattr(self, 'stop_button'):
-            self.stop_button.setVisible(bool(busy))
+            self.stop_button.setVisible(bool(busy) and not bool(getattr(self, 'active_jobs', None)))
         if hasattr(self, 'steer_button'):
-            self.steer_button.setVisible(bool(busy) or bool(getattr(self, 'queued_prompts', None)))
+            self.steer_button.setVisible(any_busy)
         if hasattr(self, 'queue_button'):
             self.queue_button.hide()
         if self.current_profile == 'Idle':
@@ -17527,6 +19597,7 @@ class PalaceWindow(QMainWindow):
             if not getattr(getattr(self, 'idle_manager', None), 'operator_admitted', False):
                 self.composer.setEnabled(False)
                 self.send_button.setEnabled(False)
+        self._rebuild_parallel_ops_bar()
         self._refresh_busy_mode_controls()
         self._sync_composer_live_bar_visibility()
 
@@ -17606,22 +19677,24 @@ class PalaceWindow(QMainWindow):
             and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
             and bool(load_ui_settings(self.config_path).get('close_to_tray', False))
         ):
-            # Stop live microphone & speech whenever hiding to tray so nothing keeps talking invisibly
-            try:
-                self._close_voice_avatar_window()
-                self.stop_all_voice_modes(exit_talk_only=False)
-            except Exception:
-                pass
-            self._ensure_system_tray()
-            self.hide()
+            self._hide_to_system_tray('Fairybread Closed to System Tray')
             event.ignore()
-            if not getattr(self, '_tray_hint_shown', False):
-                self._tray_hint_shown = True
-                self.show_desktop_toast(
-                    'Fairybread Minimized to Tray',
-                    'Fairybread is still running in the system tray. Right-click the tray icon to Expand or Exit.',
-                )
             return
+        if (
+            not force_quit
+            and os.environ.get('QT_QPA_PLATFORM') != 'offscreen'
+            and bool(load_ui_settings(self.config_path).get('confirm_on_exit', False))
+        ):
+            ans_exit = QMessageBox.question(
+                self,
+                'Confirm Exit — Fairybread',
+                'Are you sure you want to exit Fairybread?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if ans_exit != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         try:
             self._close_voice_avatar_window()
             self.stop_all_voice_modes(exit_talk_only=True)
@@ -17629,6 +19702,11 @@ class PalaceWindow(QMainWindow):
             try:
                 from voice_service import stop_speaking
                 stop_speaking()
+            except Exception:
+                pass
+        for jid in list((getattr(self, 'active_jobs', None) or {}).keys()):
+            try:
+                self.stop_parallel_job(jid)
             except Exception:
                 pass
         if force_quit and self.worker is not None:
@@ -17772,7 +19850,21 @@ def _trigger_zero_touch_autofallback(trigger: str, exc_type: str, exc_msg: str, 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Palace Windows interface')
     parser.add_argument('--demo', action='store_true', help='Local simulated responses in separate preview storage; no credentials or APIs.')
+    parser.add_argument('--restore-default-theme', action='store_true', help='Reset UI theme and background artwork to factory Midnight Dark before launch.')
+    parser.add_argument('--restore-default-settings', action='store_true', help='Reset all app settings to factory defaults (keeping API keys & Memory Palace) before launch.')
+    parser.add_argument('--rescue-exit', action='store_true', help='Exit immediately after applying --restore-default-theme or --restore-default-settings (used by Setup.exe rescue mode).')
     args = parser.parse_args(argv)
+
+    if args.restore_default_settings:
+        from palace_config import restore_default_settings
+        restore_default_settings(CONFIG_PATH)
+        if args.rescue_exit:
+            return 0
+    elif args.restore_default_theme:
+        from palace_config import restore_default_theme_only
+        restore_default_theme_only(CONFIG_PATH)
+        if args.rescue_exit:
+            return 0
     if sys.platform == 'win32':
         try:
             import ctypes
@@ -17905,8 +19997,13 @@ def main(argv=None):
                 sock = single_server.nextPendingConnection()
                 if sock is not None:
                     try:
-                        sock.readAll()
+                        sock.waitForReadyRead(250)
+                        raw_bytes = bytes(sock.readAll())
                         sock.close()
+                        raw_text = raw_bytes.decode('utf-8', errors='replace')
+                        for line in raw_text.splitlines():
+                            if line.strip():
+                                window.handle_external_ipc_payload(line.strip())
                     except Exception:
                         pass
             window.restore_from_tray()

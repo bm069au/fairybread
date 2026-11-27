@@ -692,6 +692,133 @@ def is_weather_query(question: str) -> bool:
     return bool(_WEATHER_QUERY_RE.search(question or ""))
 
 
+_BUILTIN_CITY_SUGGESTIONS: tuple[str, ...] = (
+    "Adelaide, South Australia, Australia",
+    "Adelaide River, Northern Territory, Australia",
+    "Adelaide Hills, South Australia, Australia",
+    "Port Adelaide, South Australia, Australia",
+    "Adelaide, Eastern Cape, South Africa",
+    "Adelaide, California, United States",
+    "Melbourne, Victoria, Australia",
+    "Sydney, New South Wales, Australia",
+    "Brisbane, Queensland, Australia",
+    "Perth, Western Australia, Australia",
+    "Hobart, Tasmania, Australia",
+    "Darwin, Northern Territory, Australia",
+    "Canberra, Australian Capital Territory, Australia",
+    "Gold Coast, Queensland, Australia",
+    "Newcastle, New South Wales, Australia",
+    "Geelong, Victoria, Australia",
+    "Wollongong, New South Wales, Australia",
+    "Sunshine Coast, Queensland, Australia",
+    "Townsville, Queensland, Australia",
+    "Cairns, Queensland, Australia",
+    "Toowoomba, Queensland, Australia",
+    "Ballarat, Victoria, Australia",
+    "Bendigo, Victoria, Australia",
+    "Albury, New South Wales, Australia",
+    "Launceston, Tasmania, Australia",
+    "Mackay, Queensland, Australia",
+    "Rockhampton, Queensland, Australia",
+    "Bunbury, Western Australia, Australia",
+    "Bundaberg, Queensland, Australia",
+    "Hervey Bay, Queensland, Australia",
+    "Wagga Wagga, New South Wales, Australia",
+    "Mildura, Victoria, Australia",
+    "Mount Gambier, South Australia, Australia",
+    "Whyalla, South Australia, Australia",
+    "Port Lincoln, South Australia, Australia",
+    "Port Pirie, South Australia, Australia",
+    "Murray Bridge, South Australia, Australia",
+    "Victor Harbor, South Australia, Australia",
+    "Gawler, South Australia, Australia",
+    "Alice Springs, Northern Territory, Australia",
+    "Auckland, New Zealand",
+    "Wellington, New Zealand",
+    "Christchurch, New Zealand",
+    "London, England, United Kingdom",
+    "Manchester, England, United Kingdom",
+    "Edinburgh, Scotland, United Kingdom",
+    "New York, New York, United States",
+    "Los Angeles, California, United States",
+    "Chicago, Illinois, United States",
+    "Seattle, Washington, United States",
+    "Austin, Texas, United States",
+    "Toronto, Ontario, Canada",
+    "Vancouver, British Columbia, Canada",
+    "Tokyo, Japan",
+    "Singapore, Singapore",
+    "Berlin, Germany",
+    "Paris, France",
+)
+
+
+def search_location_autocomplete(query: str, *, count: int = 8, timeout: float = 2.5) -> list[str]:
+    """Return canonical 'City, State/Region, Country' autocomplete suggestions for a partial city name or postcode."""
+    clean = (query or "").strip()
+    if len(clean) < 2:
+        return list(_BUILTIN_CITY_SUGGESTIONS[:count])
+    q_low = clean.lower()
+    local_matches = [c for c in _BUILTIN_CITY_SUGGESTIONS if c.lower().startswith(q_low)] + [
+        c for c in _BUILTIN_CITY_SUGGESTIONS if q_low in c.lower() and not c.lower().startswith(q_low)
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(item: str) -> None:
+        norm = item.strip()
+        if norm and norm.lower() not in seen:
+            seen.add(norm.lower())
+            out.append(norm)
+
+    # 1. If 4-digit Australian postcode, resolve via Zippopotam
+    pc_m = re.fullmatch(r"(\d{4})", clean)
+    if pc_m and 200 <= int(pc_m.group(1)) <= 9999:
+        pc = pc_m.group(1)
+        try:
+            req = urllib_request.Request(
+                f"https://api.zippopotam.us/au/{pc}",
+                headers={"User-Agent": "FairybreadWeather/1.0"},
+            )
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                zdata = json.loads(resp.read().decode("utf-8"))
+            for p in (zdata.get("places") or [])[:count]:
+                pname = str(p.get("place name") or "").strip()
+                state = str(p.get("state") or p.get("state abbreviation") or "").strip()
+                if pname:
+                    _add(f"{pname}, {state}, Australia ({pc})" if state else f"{pname}, Australia ({pc})")
+        except Exception:
+            pass
+
+    # 2. Query Open-Meteo geocoding API for worldwide cities/suburbs matching `clean`
+    q_name = clean.split(",")[0].strip()
+    if len(q_name) >= 2:
+        try:
+            gurl = "https://geocoding-api.open-meteo.com/v1/search?" + urllib_parse.urlencode(
+                {"name": q_name, "count": max(6, count), "language": "en", "format": "json"}
+            )
+            req = urllib_request.Request(gurl, headers={"User-Agent": "FairybreadWeather/1.0"})
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                gdata = json.loads(resp.read().decode("utf-8"))
+            for r in (gdata.get("results") or []):
+                parts = [str(r.get("name") or "").strip()]
+                if r.get("admin1"):
+                    parts.append(str(r["admin1"]).strip())
+                if r.get("country"):
+                    parts.append(str(r["country"]).strip())
+                elif r.get("country_code"):
+                    parts.append(str(r["country_code"]).strip())
+                parts = [p for p in parts if p]
+                if parts:
+                    _add(", ".join(parts))
+        except Exception:
+            pass
+
+    for lm in local_matches:
+        _add(lm)
+    return out[:count]
+
+
 def resolve_saved_user_location(config_path: Path | None = None) -> str:
     """Return user's explicitly entered Home Location from Settings or Living Profile (never uses silent Geo-IP)."""
     try:

@@ -739,6 +739,50 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
 ]
 
 
+def push_exchange_to_live_palace_window(
+    user_text: str,
+    assistant_text: str,
+    *,
+    contributors: list[str] | None = None,
+    config_path: Path = CONFIG_PATH,
+) -> bool:
+    """Append an external Foreman/MCP exchange to the active SessionStore conversation AND notify the open PalaceWindow over QLocalSocket so it appears immediately on the user's screen."""
+    contribs = list(contributors or ["palace"])
+    payload = {
+        "cmd": "EXTERNAL_EXCHANGE",
+        "user_text": user_text,
+        "assistant_text": assistant_text,
+        "contributors": contribs,
+    }
+    sent_live = False
+    try:
+        from PySide6.QtNetwork import QLocalSocket
+        sock = QLocalSocket()
+        sock.connectToServer("FairybreadPalaceDesktopSingleInstance_v1")
+        if sock.waitForConnected(300):
+            raw_msg = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+            sock.write(raw_msg)
+            sock.flush()
+            sock.waitForBytesWritten(400)
+            sock.disconnectFromServer()
+            sent_live = True
+    except Exception:
+        sent_live = False
+
+    if not sent_live:
+        try:
+            from palace_config import get_palace_data_root
+            from session_store import SessionStore
+            store = SessionStore(get_palace_data_root(config_path))
+            ctx = store.context(store.selected)
+            ctx.append_exchange(user_text, assistant_text, contributors=contribs)
+            store.rename_from_question(store.selected, user_text)
+            store.save()
+        except Exception:
+            pass
+    return sent_live
+
+
 def execute_bridge_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -779,6 +823,13 @@ def execute_bridge_tool(
             q = str(arguments.get("question", "")).strip()
             rounds = max(1, min(2, int(arguments.get("rounds", 2))))
             res = palace.run(q, max_rounds=rounds)
+            if res.final_answer:
+                push_exchange_to_live_palace_window(
+                    f"🤖 [External Foreman Query]: {q}",
+                    res.final_answer,
+                    contributors=list(res.contributors or []),
+                    config_path=config_path,
+                )
             return {
                 "final_answer": res.final_answer,
                 "contributors": res.contributors,
@@ -797,15 +848,26 @@ def execute_bridge_tool(
         QGuiApplication.instance() or QGuiApplication([])
         from palace_theme import generate_ai_image_to_png, get_image_engine_badge
 
+        prm = str(arguments.get("prompt", ""))
+        ttl = str(arguments.get("title", "fairybread_image"))
+        sz = str(arguments.get("size", "1024x1024"))
+        qual = str(arguments.get("quality", "high"))
         p = generate_ai_image_to_png(
-            prompt=str(arguments.get("prompt", "")),
-            title=str(arguments.get("title", "fairybread_image")),
-            size=str(arguments.get("size", "1024x1024")),
-            quality=str(arguments.get("quality", "high")),
+            prompt=prm,
+            title=ttl,
+            size=sz,
+            quality=qual,
             allow_network=True,
         )
         if p and p.exists():
-            return {"image_path": str(p), "engine": get_image_engine_badge(p)}
+            eng = get_image_engine_badge(p)
+            push_exchange_to_live_palace_window(
+                f"🤖 [External Foreman Drawing Request]: {ttl} ({sz})",
+                f'Rendered visual concept ({eng}):\n\n[GENERATE_IMAGE path="{p}" title="{ttl}" size="{sz}" quality="{qual}" prompt="{prm}"]',
+                contributors=["gemini", "openai"],
+                config_path=config_path,
+            )
+            return {"image_path": str(p), "engine": eng}
         return {"error": "Image generation failed or no image provider keys configured."}
 
     if tool_name == "fairybread_search_email":

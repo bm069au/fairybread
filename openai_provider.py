@@ -38,14 +38,18 @@ class OpenAIProvider(AIProvider):
         base_url: str | None = None,
         provider_name: str = "openai",
         max_tokens: int | None = None,
-        timeout: float = 300.0,
+        timeout: float | None = 0.0,
+        handshake_timeout: float = 15.0,
         max_retries: int = 0,
     ):
-        eff_timeout: Any = (
-            httpx.Timeout(float(timeout), connect=min(15.0, float(timeout)))
-            if isinstance(timeout, (int, float)) and float(timeout) > 15.0
-            else timeout
-        )
+        hs = max(5.0, float(handshake_timeout or 15.0))
+        if timeout is None or (isinstance(timeout, (int, float)) and float(timeout) <= 0.0):
+            # Unlimited thinking time with strict handshake timeout: fails only on dead handshake or HTTP/socket error
+            eff_timeout: Any = httpx.Timeout(connect=hs, read=None, write=60.0, pool=hs)
+        elif isinstance(timeout, (int, float)) and float(timeout) > hs:
+            eff_timeout = httpx.Timeout(float(timeout), connect=min(hs, float(timeout)))
+        else:
+            eff_timeout = timeout
         if base_url:
             kw: dict[str, Any] = {
                 "api_key": api_key,
@@ -66,6 +70,7 @@ class OpenAIProvider(AIProvider):
         self.provider_name = provider_name
         self.max_tokens = max_tokens
         self.timeout = timeout
+        self.handshake_timeout = hs
         self.max_retries = max_retries
 
     @staticmethod

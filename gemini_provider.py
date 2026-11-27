@@ -24,17 +24,25 @@ class GeminiProvider(AIProvider):
         self,
         api_key: str,
         model: str = "gemini-3.5-flash-lite",
-        timeout: float = 300.0,
+        timeout: float | None = 0.0,
+        handshake_timeout: float = 15.0,
     ):
         try:
+            # 0 or None = Unlimited thinking (1 hour SDK ceiling) while preserving HTTP error fail-fast
+            eff_ms = (
+                3_600_000
+                if (timeout is None or float(timeout) <= 0.0)
+                else max(5000, int(float(timeout) * 1000))
+            )
             self.client = genai.Client(
                 api_key=api_key,
-                http_options=types.HttpOptions(timeout=max(5000, int(timeout * 1000))),
+                http_options=types.HttpOptions(timeout=eff_ms),
             )
         except Exception:
             self.client = genai.Client(api_key=api_key)
         self.model = model
         self.timeout = timeout
+        self.handshake_timeout = max(5.0, float(handshake_timeout or 15.0))
 
     def generate(
         self,

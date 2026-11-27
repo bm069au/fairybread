@@ -1,6 +1,6 @@
-# Fairybread (Beta v0.95b) — User Guide & Setup Handbook
+# Fairybread (Beta v0.95e) — User Guide & Setup Handbook
 
-**Created by Brett Martin Moore (`bm069au@gmail.com`)** · Official site: [fairybread.me](https://fairybread.me)
+**Created by Brett Martin Moore (`bm069au@gmail.com`)** · Official site: [fairybread.me](https://fairybread.me) · **Live IRC Support:** [**`#Fairybread` on Rizon IRC**](https://qchat.rizon.net/?channels=Fairybread) (`irc.rizon.net:+6697`)
 
 ---
 
@@ -276,17 +276,25 @@ The Prompt Architect and image engines natively understand photographic and arti
 
 ## 11. Composer Toolbar, Council Modes & Mouseover Hints
 
+![Fairybread Window — Slim 22px Decluttered Composer Toolbar When Idle (Zero Clutter, Mouseover Tooltips)](theme_assets/window_idle_toolbar_guide.png)
+
 Hover your mouse over **any button, icon, or chip** in Fairybread to see a plain-English tooltip explaining what it does:
-- **`Choose AIs (N)`:** Pick which AI providers are active, choose a quick preset profile (**Code AIs**, **Light Chat (Free / Fast)**, **Deeper Chat (Paid — Reasoning & Long)**, **Generalist**, **Graphics & Vision**, **Work Mode**), or pick a **Solo AI** for direct 1-on-1 chat.
-- **`Council` Toggle (Purple when ON):**
-  - **ON (2-Round Peer Deliberation):** Agents answer in Round 1, inspect and critique each other's responses in Round 2 (replying `[PASS]` if a peer already nailed it), and the Synthesizer combines the best insights into one final answer.
-  - **OFF (1-Round Fast Synthesis):** Agents answer in one parallel wave and synthesize immediately.
-- **`Tangent` Toggle:** Ask a side question without including prior conversation history in the prompt, while still saving the exchange to your current chat.
-- **`{} Code` Toggle:** Grants the council read-only visibility into Fairybread's own source code so the agents can diagnose or design upgrades for their own app.
+- **`+` (Attach Files / Images):** Attach documents, PDFs, code files, or pictures (`Ctrl+O`), or paste screenshots directly with `Ctrl+V`.
+- **`{}` (Icon-Only Code Pill):** Mouseover: *"Insert Fairybread source code into conversation"*. Grants the council read-only visibility into Fairybread's own source code (glows electric cyan when toggled ON).
+- **`↗` (Icon-Only Tangent Pill):** Mouseover: *"Tangent: Ask a side question without prior chat history"*. Asks a quick side question without sending prior conversation turns (glows amber when toggled ON).
+- **`2 AIs ▾` (Compact AI & Squad Selector):** Pick which AI providers are active, choose a quick preset profile (**Code AIs**, **Light Chat (Free / Fast)**, **Deeper Chat (Paid — Reasoning & Long)**, **Generalist**, **Graphics & Vision**, **Work Mode**), or pick a **Solo AI** for direct 1-on-1 chat.
+- **`⚙ Options ▾` & Removable Active Override Chips:**
+  - Houses **2-Round Peer Deliberation** (agents answer in Round 1, critique each other in Round 2, and the Synthesizer combines the best insights), **3-Tier Web Search Depth** (`Default`, `Moderate`, `Deep`), **AI Access Permissions** (`Request Review`, `Default`, `Auto`, `Turbo`), and **`/` Slash Commands**.
+  - Whenever an override is active, a compact removable chip appears right next to `⚙ Options ▾` (such as **`(Deliberate ×)`**, **`🔎 Moderate ×`**, or **`🌐 Deep ×`**) so you can turn it off with a single click.
+- **`🧭 Steer ▾` & `⚡ Parallel` (Context-Aware — Appear Only While a Query Is Processing):**
+  - When Fairybread is **Idle** (`0` queries running), **`🧭 Steer ▾`** and **`⚡ Parallel`** stay completely hidden so the composer toolbar has wide open breathing room.
+  - The instant a query starts processing, **`🧭 Steer ▾`** and **`⚡ Parallel`** appear automatically on the right side of the bar.
 - **`🎤` Dictate Button:** Click once and speak (`🎙 ▂▅▇█▄▂` shows your live mic level); click again to transcribe your voice directly into the prompt box for all Council AIs.
-- **`|||✨` Live Voice Mode Button (Circular Soundwave + Sparkle):** Hands-free live voice conversation with the Council. Automatically detects when you pause speaking (`~1.5s`), sends your spoken prompt to the Council, and reads the synthesized reply back to you aloud.
-- **`No-History` (Top Bar):** Ephemeral privacy mode—neither reads nor saves session history.
+- **`|||✨` Live Voice Mode Button (Circular Soundwave + Sparkle):** Hands-free live voice conversation with the Council (click `▾` next to it to switch between **🎙️ Full Conversation** and **🎤 Voice Input Only**).
+- **`History` (Top Bar):** Toggle ephemeral `No-History` privacy mode (neither reads nor saves session history).
 - **`Experimental: OFF / ON` (Top Bar):** Switches to autonomous **Experimental Mode**, where agents converse freely, share notes in **Shared Experimental Memory**, optionally inspect Fairybread's source code (`{} Code`), and send you improvement proposals via **Agent Mail**.
+
+![Fairybread 4-Panel Visual Specification — Idle Toolbar vs Active Processing Toolbar, Options Popup & System Tray Settings](theme_assets/composer_and_tray_guide.png)
 
 ---
 
@@ -358,14 +366,27 @@ Fairybread includes a 3-tier **Sharded Multi-Agent Web Search Engine** controlla
 
 ---
 
-## 16. Stop Button (`■ Stop`) & Combined `Steer / Queue ▾` Dropdown
+## 16. Live Parallel Operations Bar, Segmented 8–15 AI Progress Bar & Dedicated `⚡ Parallel` Launch (`v0.95e`)
 
-While a turn is running, the composer input box and **`{} Code`** toggle remain **unlocked**, and two clean controls appear on the right side of the composer bar:
+![Fairybread Window — Active Processing State with Live Parallel Operations Bar, Segmented Multi-Color Progress & Context-Aware Steer / Parallel Controls](theme_assets/window_active_parallel_guide.png)
 
-1. **`■ Stop` (`Esc` key):** Immediately aborts the active turn, cancels any remaining rounds/synthesis, removes the unfinished turn bubble, and **restores your original prompt right back into the composer box** so you can edit it, attach a file, or toggle **`{} Code`** and hit Send again without retyping.
-2. **`Steer / Queue ▾` Dropdown:**
-   - **`🧭 Steer Active Turn`:** Type additional instructions into the composer while agents are working and choose **Steer Active Turn** to inject them directly into the active turn's next phase and synthesis.
-   - **`⏳ Queue Next Turn`:** Type your next question while the council is working and choose **Queue Next Turn** so it fires automatically the instant the current turn finishes.
+While any turn is running, **nothing on the composer bar is locked out**—you can type, paste screenshots (`Ctrl+V`), attach files (`+`), switch AI squads (`2 AIs ▾`), toggle `{}` or `↗`, and choose how to submit your message:
+
+1. **① Live Parallel Operations Bar & Segmented Multi-Color 8–15 AI Progress (`[ 5/8 AIs ▾ ]` Popover):**
+   - Appears automatically whenever 1 or more queries are running, with an **`⚡ N Parallel Running`** badge in the top-right corner.
+   - **Segmented Multi-Color Progress Bar:** Instead of cramming 8 to 15 tiny AI chips onto a single row, each active AI gets its own color-coded segment inside the progress bar (**Green `#22c55e`** = Responded, **Cyan `#06b6d4`** = Working / Deliberating, **Amber `#eab308`** = Rate-Limited, **Red `#ef4444`** = Error).
+   - **`[ 5/8 AIs ▾ ]` Popover Pill:** Click (or hover over) the **`5/8 AIs ▾`** pill next to the percentage (`66%`) to pop open a clean list of all 8–15 active AIs with their provider icon, display name, exact status (`✓ Responded · 9s` or `◌ Deliberating · 18s`), plus per-job **`[Steer ▾]`** and **`[■ Stop]`** buttons.
+   - **Anchored Question/Answer Slots:** Every parallel job reserves its answer slot directly beneath its own question in the chat stream—so even if `Job #2` finishes before `Job #1`, each answer lands cleanly under its own question.
+
+![Handling 8–15 Working AIs Cleanly — Segmented Multi-Color Progress Bar & Popover Pill Specification](theme_assets/parallel_8ai_options_guide.png)
+
+2. **② Slim `22px` Decluttered Single-Row Composer Toolbar:**
+   - Keeps essential everyday controls in one clean `22px` row: **`+` (Attach)**, **`{}` (Code)**, **`↗` (Tangent)**, **`2 AIs ▾`**, and **`⚙ Options ▾`** (which houses **2-Round Peer Deliberation**, **Web Search Depth**, **AI Access Permissions**, and **`/` Slash Commands**).
+   - Whenever a non-default option is active, a **removable active chip** appears next to **`⚙ Options ▾`** (such as **`(Deliberate ×)`**, **`🔎 Moderate ×`**, or **`🌐 Deep ×`**) so you can see and clear active overrides with one click.
+3. **③ Context-Aware `🧭 Steer ▾` (or `⏳ Queue`) vs. Dedicated `⚡ Parallel` Launch:**
+   - **Hidden When Idle, Visible When Processing:** **`🧭 Steer ▾`** and **`⚡ Parallel`** appear only while a turn is actively running.
+   - **`🧭 Steer ▾` (Default for `Enter` / `↑` while busy):** Pressing `Enter` or clicking **`↑`** while a job is running injects your text as live steering instructions into the active turn by default. Click **`🧭 Steer ▾`** to switch the default `Enter` / `↑` action to **`⏳ Queue`** (which saves your prompt to run automatically after the current turn finishes).
+   - **`⚡ Parallel` Button:** Click the electric-cyan **`⚡ Parallel`** button anytime while busy to launch your current composer prompt and attached screenshots/files **immediately in parallel** alongside the running turn.
 
 ---
 
@@ -393,18 +414,35 @@ While a turn is running, the composer input box and **`{} Code`** toggle remain 
 
 ---
 
-## 20. Close to System Tray (`✕` Button & System Tray Menu)
+## 20. uTorrent-Style System Tray, Auto-Completing Home Location & Window Behavior (`Options → Fairybread → General`)
 
-- **Close Behavior (`Options → Fairybread → General`):** Optionally minimize Fairybread into the Windows System Tray on close so background tasks and Experimental Mode sessions keep running safely.
+Open **`Tools → Options (Alt+F12) → Fairybread → General`** to customize how Fairybread behaves on your Windows desktop:
+- **System Tray (2-Column uTorrent-Style Controls):**
+  - **`Close to tray`:** Clicking the window close button (`✕`) hides Fairybread to the Windows System Tray instead of quitting so background turns and Experimental Mode sessions keep running.
+  - **`Minimize to tray`:** Clicking minimize (`_`) sends Fairybread to the System Tray instead of keeping a taskbar button open.
+  - **`Always show tray icon`:** Keeps the Fairybread icon visible in your Windows System Tray at all times.
+  - **`Single click on tray icon to open`:** Restores the window with a single left-click on the tray icon (uncheck to require a double-click).
+  - **`Show balloon notifications in tray`:** Enables Windows system tray toast notifications when background turns complete.
+  - **`Always activate when clicked`:** Brings Fairybread to the foreground and focuses the window whenever clicked in the tray.
+- **`Show confirmation dialog on exit`:** Prompts for confirmation before closing Fairybread completely.
+- **Auto-Completing `📍 Home Location:` & Weather Display:**
+  - Start typing any city, suburb, or postcode (for example, `Adelaide`) into the wide **`📍 Home Location:`** box and pick your exact match from the live autocomplete dropdown (`Adelaide, South Australia, Australia`, `Adelaide River, Northern Territory, Australia`, etc.).
+  - Choose between **`Radar Map + 7-Day Forecast`** or **`Text Forecast Only (No Radar Map)`** under **`🌦️ Weather Display:`**.
 - **Right-Click the System Tray Icon:** Choose **`🔼 Expand / Open Fairybread`** or **`✕ Exit Fairybread`**.
 
 ---
 
-## 21. Reporting Bugs, Sharing Ideas & Helping Out
+## 21. Live IRC Support (`#Fairybread` on Rizon), Reporting Bugs & Sharing Ideas
 
-Fairybread improves fastest from real-world feedback. If something looks broken, confusing, or could work better, please let us know—you do **not** need to be a programmer to send a great report.
+Fairybread has an official live support channel on **Rizon IRC** alongside GitHub and email support. If you have a question, want live help configuring keys or voice engines, or want to share feedback directly with the creator (**`~bm069au`**) and community:
 
+- **💬 Live IRC Support Channel (`#Fairybread` on Rizon IRC):**
+  - **Network:** **Rizon IRC** (`irc.rizon.net` — standard port `6667` or SSL/TLS port **`+6697`**)
+  - **Channel:** **`#Fairybread`** *(Official Fairybread Support Channel)*
+  - **One-Click Webchat (No IRC Client Required):** [**qchat.rizon.net/?channels=Fairybread**](https://qchat.rizon.net/?channels=Fairybread) *(or click **`Help → 💬 Live IRC Support (#Fairybread on Rizon) ↗`** inside Fairybread)*
+  - **Using mIRC / HexChat / Irssi / WeeChat:** `/server -m irc.rizon.net +6697` then `/join #Fairybread`
 - **Where to Send Bug Reports, Feature Ideas, Custom `.json` Themes, or Offers to Help:**
+  - **Live IRC Chat:** **`#Fairybread`** on **Rizon IRC** ([Join via Webchat](https://qchat.rizon.net/?channels=Fairybread))
   - **GitHub Issues:** [github.com/bm069au/fairybread/issues](https://github.com/bm069au/fairybread/issues)
   - **Official Website:** [fairybread.me](https://fairybread.me)
   - **Direct Email:** [`bm069au@gmail.com`](mailto:bm069au@gmail.com?subject=Fairybread%20Bug%20Report%20or%20Idea)

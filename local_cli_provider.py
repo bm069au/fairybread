@@ -231,7 +231,13 @@ def _extract_text_from_json_obj(obj: Any) -> str:
 class LocalCLIProvider(AIProvider):
     """Run a locally installed external AI CLI cleanly as a Fairybread council provider."""
 
-    def __init__(self, platform_key: str, cli_path: str | None = None, timeout_sec: int = 90) -> None:
+    def __init__(
+        self,
+        platform_key: str,
+        cli_path: str | None = None,
+        timeout_sec: int = 0,
+        handshake_sec: int = 15,
+    ) -> None:
         key = (platform_key or "").strip().lower()
         if key not in EXTERNAL_CLI_SPECS:
             raise ValueError(f"Unsupported local CLI platform: {platform_key}")
@@ -239,7 +245,8 @@ class LocalCLIProvider(AIProvider):
         self.spec = EXTERNAL_CLI_SPECS[key]
         self.provider_name = str(self.spec["provider_key"])
         self.cli_path = cli_path or find_cli_binary(key)
-        self.timeout_sec = max(10, int(timeout_sec))
+        self.timeout_sec = 0 if int(timeout_sec or 0) <= 0 else max(10, int(timeout_sec))
+        self.handshake_sec = max(5, int(handshake_sec or 15))
 
     def build_command(self, prompt: str) -> list[str]:
         exe = self.cli_path or find_cli_binary(self.platform_key) or str(self.spec["binary"])
@@ -311,7 +318,7 @@ class LocalCLIProvider(AIProvider):
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
-            "timeout": self.timeout_sec,
+            "timeout": None if self.timeout_sec <= 0 else self.timeout_sec,
             "env": env,
         }
         if os.name == "nt":

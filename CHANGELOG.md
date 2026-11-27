@@ -1,3 +1,30 @@
+# Fairybread — Beta v0.95e (Win_x64) Changelog
+**Release Date:** 2026-11-27
+**Version:** `0.95e` (`0.95.5.0`)
+
+![Fairybread v0.95e — Slim 22px Composer Toolbar, Option 2 Segmented 8-AI Progress Bar & uTorrent-Style System Tray](theme_assets/composer_and_tray_guide.png)
+
+## Summary of Changes in `v0.95e`
+1. **⚡ Live Parallel Operations Bar, Option 2 Segmented Multi-Color 8–15 AI Progress Bar & Dedicated `⚡ Parallel` Launch (`palace_gui.py`):**
+   - **Context-Aware `🧭 Steer ▾` & `⚡ Parallel` (Hidden When Idle, Active When Processing):** Keeps **`🧭 Steer ▾`** and **`⚡ Parallel`** hidden while idle (`0` queries running) for wide open breathing space, and reveals them automatically as soon as a query starts processing.
+   - **Option 2 Segmented Multi-Color Progress Bar + `[ 5/8 AIs ▾ ]` Popover Pill:** Scales cleanly to 8–15 simultaneous AIs by rendering 1 color-coded segment per active AI inside the job progress bar (`#22c55e` green = Responded, `#06b6d4` cyan = Working/Deliberating, `#eab308` amber = Limited, `#ef4444` red = Failed) paired with a clickable **`[ 5/8 AIs ▾ ]`** popover pill listing every AI's icon, name, status, and elapsed time.
+   - **Anchored Question/Answer Ordering:** Each parallel job reserves an anchored answer slot directly underneath its own question card in the chat stream so answers always land under their corresponding question in submission order.
+2. **🧹 Design `1A` Slim `22px` Decluttered Single-Row Composer Toolbar (`palace_gui.py`):**
+   - Slim `22px` toolbar height with icon-only **`{}`** (*"Insert Fairybread source code into conversation"*) and **`↗`** (*"Tangent: Ask a side question without prior chat history"*) pills, compact **`2 AIs ▾`** selector pill, **`⚙ Options ▾`** (grouping 2-Round Peer Deliberation, Web Search Depth, AI Access Permissions, and `/` Slash Commands), and **removable active override chips** (`(Deliberate ×)`, `🔎 Moderate ×`, `🌐 Deep ×`).
+   - **Unclipped `32px` Bottom `Agents:` Bar:** Ensures `⚙ Settings & AIs`, `Agents:`, and `Tokens:` have full vertical padding and never clip at the bottom window edge.
+3. **🖥️ uTorrent-Style System Tray Controls, Auto-Completing `380px` Home Location Box & `#Fairybread` Rizon IRC Support (`palace_config.py`, `search_service.py`, `palace_gui.py`, `USER_GUIDE.md`):**
+   - Adds a 2-column uTorrent-style **System Tray** group in `Tools → Options → Fairybread → General` (**Close to tray**, **Minimize to tray**, **Always show tray icon**, **Single click on tray icon to open**, **Show balloon notifications in tray**, **Always activate when clicked**) plus **Show confirmation dialog on exit**.
+   - Upgrades **`📍 Home Location:`** to a wide `380–480px` live auto-completing `LocationAutocompleteLineEdit` (`search_location_autocomplete()` powered by Open-Meteo Geocoding + AU Postcodes + built-in city list) and cleans up **`🌦️ Weather Display:`** labels (**`Radar Map + 7-Day Forecast`** / **`Text Forecast Only (No Radar Map)`**).
+   - Adds the official **`#Fairybread` on Rizon IRC (`irc.rizon.net:+6697` / webchat)** live support link to the `Help` menu, `About Fairybread` dialog, `USER_GUIDE.md`, and `README.md`, along with bundled static visual help diagrams in `theme_assets/`.
+4. **🔗 Live On-Screen External Agent IPC Bridge & Local-Path `[GENERATE_IMAGE path="..."]` Rendering (`fairybread_mcp.py`, `palace_theme.py`, `palace_gui.py`):**
+   - External agent tool calls (`fairybread_ask_council`, `fairybread_generate_image`) push their prompts, multi-AI council deliberations, and rendered images live over `QLocalSocket` (`FairybreadPalaceDesktopSingleInstance_v1`) directly into the currently open Fairybread chat window, and `[GENERATE_IMAGE path="..."]` renders existing local PNG files inline immediately.
+5. **🎨 Universal WCAG 4.5:1 Theme Contrast Engine, Dual-Stroke Checkbox Ticks (`✓`), Double-Quoted Voice Filter Lists & 3-Layer Rescue System (`palace_theme.py`, `voice_service.py`, `palace_config.py`, `palace_gui.py`, `fairybread_setup.iss`):**
+   - Enforces automatic `>= 4.5:1` contrast guardrails across all 19+ built-in and custom themes (preventing white-on-white, black-on-black, or red-on-red text/buttons) and renders crisp dual-stroke (`✓`) checkbox tick marks on both dark and neon/light accent fills.
+   - Adds the **`🛡️ Advanced Voice Input Filters & Commands`** sub-section under `Options → Voice & Audio` with 4 full-width `"..."` double-quoted editable boxes (**Physical Mic Noises** + On/Off toggle, **Spoken Filler Words** + On/Off toggle, **Words Never Filtered**, and **2+ Word Vocal Submit & Editing Commands**).
+   - Adds 3-layer UI recovery: `Setup.exe` maintenance radio options (**Restore Default Theme Only** / **Restore All Default Settings**), `--restore-default-theme` / `--restore-default-settings` CLI flags, and **`Ctrl+Shift+Alt+R`** emergency in-app theme/settings rescue.
+
+---
+
 # Fairybread — Beta v0.95c (Win_x64) Changelog
 **Release Date:** 2026-11-26
 **Version:** `0.95c` (`0.95.3.0`)
