@@ -7,7 +7,15 @@ from uuid import uuid4
 from context_service import ContextService
 from dispatcher import ProviderDispatcher
 from memory_service import MemoryService
-from palace_config import build_palace_source_context, build_project_folder_context, format_democratic_roster
+from palace_config import (
+    FAIRYBREAD_EDITION,
+    FAIRYBREAD_VERSION,
+    FAIRYBREAD_WINDOWS_VERSION,
+    build_palace_source_context,
+    build_project_folder_context,
+    format_democratic_roster,
+    get_live_version_verification_info,
+)
 from provider_result import ProviderResult
 from synthesizer import (
     PalaceSynthesizer,
@@ -118,9 +126,11 @@ _ORDINAL_TO_DRAFT_NUM = {
 }
 
 _SINGLE_DRAFT_PICK_RE = re.compile(
-    r"^\s*(?:#|number\s+|no\.?\s*|draft\s+|option\s+|choice\s+|pick\s+|use\s+|go\s+with\s+|i\s+like\s+|let'?s\s+do\s+|render\s+)?"
+    r"(?:^\s*(?:#|number\s+|no\.?\s*|draft\s+|option\s+|choice\s+|pick\s+|use\s+|go\s+with\s+|i\s+like\s+|let'?s\s+do\s+|render\s+)?"
     r"([1-9]|first|1st|second|2nd|third|3rd|fourth|4th)"
-    r"(?:\s*(?:one|please|thanks|thank\s+you))?(?:\s*[.,!]+)?(?:\s*[,;:\-]\s*.*|\s+(?:in\s+)?(?:\d{3,4}x\d{3,4}|standard(?:\s+size)?|high[- ]?res(?:olution)?|full[- ]?res(?:olution)?|4k|wallpaper(?:_4k)?|facebook(?:_page|_cover)?|youtube_banner|print_(?:8x10|a4)|more\s+.*|less\s+.*|with\s+.*))?$",
+    r"(?:\s*(?:one|please|thanks|thank\s+you|is\s+(?:perfect|great|best|good|the\s+one|awesome|spot\s+on)|looks\s+(?:great|good|best|perfect)))?"
+    r"(?:\s*[.,!]+)?(?:\s*[,;:\-]\s*.*|\s+(?:in\s+)?(?:\d{3,4}x\d{3,4}|standard(?:\s+size)?|high[- ]?res(?:olution)?|full[- ]?res(?:olution)?|4k|wallpaper(?:_4k)?|facebook(?:_page|_cover)?|youtube_banner|print_(?:8x10|a4)|more\s+.*|less\s+.*|with\s+.*|make\s+.*|please.*))?$"
+    r"|\b(?:draft|option|choice)\s*#?\s*([1-9]|first|1st|second|2nd|third|3rd|fourth|4th)\b)",
     re.IGNORECASE,
 )
 
@@ -133,14 +143,15 @@ _DRAFT_MIX_RE = re.compile(
 
 def _extract_selected_draft_number(question: str) -> int | None:
     q = (question or "").strip()
-    if not q or len(q) > 160:
+    if not q or len(q) > 220:
         return None
     if _DRAFT_MIX_RE.search(q):
         return None
-    m = _SINGLE_DRAFT_PICK_RE.match(q)
+    m = _SINGLE_DRAFT_PICK_RE.search(q)
     if not m:
         return None
-    tok = m.group(1).strip().lower()
+    raw_tok = m.group(1) or (m.group(2) if m.lastindex and m.lastindex >= 2 else "")
+    tok = (raw_tok or "").strip().lower()
     if tok.isdigit():
         num = int(tok)
         return num if 1 <= num <= 9 else None
@@ -368,11 +379,12 @@ def _last_assistant_has_patch_proposal(session_context: str) -> bool:
 
 
 def _last_turn_has_image_context(session_context: str) -> bool:
-    """Inspect only the most recent exchange for active image/draft context."""
+    """Inspect the recent exchanges (up to last 4 turns so parallel jobs never wipe out active image drafts) for image/draft context."""
     last_ex = _extract_last_exchange_text(session_context)
-    if not last_ex:
+    tail_ctx = (session_context or "")[-9000:]
+    if not last_ex and not tail_ctx:
         return False
-    up = last_ex.upper()
+    up = (last_ex + "\n" + tail_ctx).upper()
     return any(
         tok in up
         for tok in (
@@ -940,7 +952,8 @@ class PalaceOrchestrator:
                 f"     - Default quality is ALWAYS `quality=\"high\"` (primary `{_prim_eng}`, fast draft `{_draft_eng}`) unless draft/low quality (`quality=\"low\"`) is requested.\n"
                 "     - Default size is `\"1024x1024\"`, or pass a named preset or exact dimension in `size=\"...\"`: `\"youtube_banner\"` (2560x1440), `\"youtube_thumbnail\"` (1280x720), `\"facebook_cover\"` / `\"facebook_page\"` (1920x1080), `\"facebook_pc_banner\"` (820x312), `\"facebook_group\"` (1640x856), `\"desktop_wallpaper\"` (1920x1080), `\"wallpaper_1440p\"` (2560x1440), `\"wallpaper_4k\"` (3840x2160), `\"phone_wallpaper\"` / `\"story\"` (1080x1920), `\"print_8x10\"` (2400x3000 @ 300 DPI), `\"print_a4\"` (2480x3508 @ 300 DPI), any `\"WxH\"` pixel size, or any `\"WxHin\"` print size.\n"
                 "  2. For technical architecture diagrams, flowcharts, or simple vector icons ONLY, use a self-contained ` ```svg ... ``` ` block (never use raw hand-coded SVG for realistic pictures or illustrations).\n"
-                "  3. To inspect how the live Fairybread window looks on screen (strictly scoped to the application window buffer), emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`."
+                "  3. To inspect how the live Fairybread window looks on screen (strictly scoped to the application window buffer), emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`.\n"
+                "  4. When the user asks to generate or animate a video clip, emit `[GENERATE_VIDEO prompt=\"...\" title=\"...\" size=\"832x480\" frames=\"49\"]` for local ComfyUI video or animation generation."
             )
         else:
             _weather_tool_note = (
@@ -955,7 +968,8 @@ class PalaceOrchestrator:
                 f"{_weather_tool_note}"
                 "  * Save User Location (`[SET_LOCATION location=\"<City, Region or Postcode>\"]`): Whenever the user tells you where they live or asks to set their location, emit this tag to save it into Settings.\n"
                 "  * Set AI Custom Name (`[SET_AGENT_NAME provider=\"<provider_id>\" name=\"<CustomName>\"]`): Whenever the user assigns or edits an AI agent's given name (e.g., naming `gemini` \"Max\" or `openai` \"Ash\"), emit this tag to save it permanently into Settings.\n"
-                "  * Visual & Diagram Tools: Only emit `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` when the user asks to create or show an image/graphic; for technical flowcharts use ` ```svg ... ``` `; for app UI inspection emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`."
+                "  * Visual & Diagram Tools: Only emit `[GENERATE_IMAGE prompt=\"...\" title=\"...\" size=\"1024x1024\" quality=\"high\"]` when the user asks to create or show an image/graphic; for technical flowcharts use ` ```svg ... ``` `; for app UI inspection emit `[PALACE_UI_SNAPSHOT title=\"Live UI Inspection\"]`.\n"
+                "  * Local ComfyUI Video & Animation: When the user asks to generate or animate a video clip, emit `[GENERATE_VIDEO prompt=\"...\" title=\"...\" size=\"832x480\" frames=\"49\"]`."
             )
         enable_ws_tools = (
             drawing_mode == "none"
@@ -1006,13 +1020,20 @@ class PalaceOrchestrator:
         solo_id_block = f"\n{solo_identity_note}\n" if solo_identity_note else ""
         if is_solo_casual:
             identity_header = (
-                "You are Fairybread, talking directly with the user like a natural, sharp, warm friend and collaborator."
+                f"You are Fairybread (Live Runtime Version: v{FAIRYBREAD_VERSION} / Windows Build {FAIRYBREAD_WINDOWS_VERSION}, {FAIRYBREAD_EDITION} edition), "
+                "talking directly with the user like a natural, sharp, warm friend and collaborator."
                 f"{solo_id_block}{detail_section}{pers_section}"
             )
             democratic_rule = ""
         else:
+            try:
+                _v_info = get_live_version_verification_info()
+                _v_badge = _v_info["status_badge"]
+            except Exception:
+                _v_badge = f"Runtime v{FAIRYBREAD_VERSION}"
             identity_header = (
-                "You are an AI working inside the Fairybread (Palace) democratic multi-agent council."
+                f"You are an AI working inside the Fairybread (Palace) democratic multi-agent council "
+                f"(Live Runtime Version: v{FAIRYBREAD_VERSION} | Code Verification: {_v_badge})."
                 f"{solo_id_block}{detail_section}{pers_section}\n"
                 f"DEMOCRATIC COUNCIL ROSTER & PEER STRENGTHS (Use custom Given Names when addressing peers):\n{roster}\n"
             )
@@ -1290,7 +1311,7 @@ Instructions:
                 "\n\n[OPERATOR /AUTOPATCH DIRECTIVE ACTIVE]:\n"
                 f"1. ALLOWLISTED EDITABLE FILES ONLY: `{allowlist_str}`. "
                 "DO NOT invent new subdirectories or unallowlisted filenames (e.g. `services/image_pipeline.py` will be rejected). Put fixes inside the real allowlisted files above.\n"
-                "2. In Round 1, use `[TOOL: search_source_code query=\"...\"]` and `[TOOL: read_source_file file=\"...\" start=1 end=80]` to inspect exact lines. NEVER fabricate `[TOOL_OUTPUT]` text inline.\n"
+                "2. In Round 1, use `[TOOL: read_symbol file=\"palace_gui.py\" query=\"_on_job_done\"]`, `[TOOL: list_symbols file=\"palace_gui.py\" query=\"parallel\"]`, `[TOOL: search_source_code query=\"...\"]`, or `[TOOL: read_source_file file=\"...\" start=1 end=300]` (up to 450 lines per call) to inspect exact lines. NEVER fabricate `[TOOL_OUTPUT]` text inline.\n"
                 "3. Once you have the exact existing lines (non-empty `<<<TARGET`), emit an executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread can verify, apply, and hot-reboot automatically.\n"
                 "4. MANDATORY END-OF-TURN STATUS REQUIREMENT: ONLY emit `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]` if your message actually includes a real `[IDLE_PATCH]` block; otherwise conclude with `✓ [ALL TASKS COMPLETED SUCCESSFULLY]` or `⏸ [PAUSED — WAITING FOR USER INPUT: <reason>]`."
             )
@@ -1399,7 +1420,7 @@ Instructions:
                 "\n\n[OPERATOR /AUTOPATCH DIRECTIVE ACTIVE]:\n"
                 f"1. ALLOWLISTED EDITABLE FILES ONLY: `{allowlist_str}`. "
                 "DO NOT invent new subdirectories or unallowlisted filenames. Put fixes inside the real allowlisted files above.\n"
-                "2. In Round 1, use `[TOOL: search_source_code query=\"...\"]` and `[TOOL: read_source_file file=\"...\" start=1 end=80]` to inspect exact lines. NEVER fabricate `[TOOL_OUTPUT]` text inline.\n"
+                "2. In Round 1, use `[TOOL: read_symbol file=\"palace_gui.py\" query=\"_on_job_done\"]`, `[TOOL: list_symbols file=\"palace_gui.py\" query=\"parallel\"]`, `[TOOL: search_source_code query=\"...\"]`, or `[TOOL: read_source_file file=\"...\" start=1 end=300]` (up to 450 lines per call) to inspect exact lines. NEVER fabricate `[TOOL_OUTPUT]` text inline.\n"
                 "3. Once you have the exact existing lines (non-empty `<<<TARGET`), emit an executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block with `<<<TARGET`, `===REPLACE`, and `>>>` so Fairybread verifies and applies it automatically.\n"
                 "4. MANDATORY END-OF-TURN STATUS REQUIREMENT: ONLY emit `⚡ [AUTOPATCH STAGED: REBOOTING TO CONTINUE NEXT STEP]` if your message actually includes a real `[IDLE_PATCH]` block; otherwise conclude with `✓ [ALL TASKS COMPLETED SUCCESSFULLY]` or `⏸ [PAUSED — WAITING FOR USER INPUT: <reason>]`."
             )
@@ -2428,6 +2449,7 @@ Instructions:
                 return _strip_internal_tool_plumbing(tool_out, keep_code_tools=False)
             return "I checked internally, though I couldn't complete a full summary on that step. Please try rephrasing what you'd like me to do."
 
+        shared_evidence_locker: list[str] = []
         if is_autopatch:
             try:
                 from idle_service import execute_sandbox_tool
@@ -2442,17 +2464,42 @@ Instructions:
                         _t_out = execute_sandbox_tool(_p_txt)
                         if _t_out:
                             extra_tool_sections.append(f"[ON-DEMAND SOURCE CODE TOOL RESULT]:\n{_t_out}")
+                            if _t_out not in shared_evidence_locker:
+                                shared_evidence_locker.append(_t_out)
                     _p_upper = _p_txt.upper()
                     if "[FILE_LIST" in _p_upper or "[FILE_READ" in _p_upper:
                         _ws_out = execute_readonly_workspace_tools_in_text(_p_txt, project_folder=project_folder)
                         if _ws_out:
                             extra_tool_sections.append(f"[WORKSPACE READ TOOL RESULT]:\n{_ws_out}")
+                            if _ws_out not in shared_evidence_locker:
+                                shared_evidence_locker.append(_ws_out)
                     if extra_tool_sections:
+                        # In-Round Tool Follow-Up Loop: if the agent called [TOOL: ...] in Round 1 without yet emitting
+                        # an [IDLE_PATCH], give it an immediate follow-up hop inside Round 1 with the retrieved code!
+                        joined_tools = "\n\n".join(extra_tool_sections)
+                        if "[IDLE_PATCH" not in _p_upper and not (cancel_event is not None and hasattr(cancel_event, "is_set") and cancel_event.is_set()):
+                            _hop1_prompt = (
+                                f"USER /AUTOPATCH REQUEST:\n{effective_question}\n\n"
+                                f"YOUR ROUND 1 TOOL CALLS & RETRIEVED VERBATIM SOURCE CODE:\n{_p_txt}\n\n{joined_tools[:28000]}\n\n"
+                                "Now that you have the exact verbatim source lines above, emit your complete, syntax-verified "
+                                "`[IDLE_PATCH file=\"<filename.py>\" summary=\"...\"]` block(s) with exact `<<<TARGET`, `===REPLACE`, and `>>>` markers "
+                                "(do NOT include line-number prefixes like '1234: ' inside `<<<TARGET`, and define any new helper methods you call)."
+                            )
+                            _hop1_res = _dispatch_internal_followup(_p_name, _hop1_prompt)
+                            if _hop1_res is not None and _hop1_res.succeeded and _hop1_res.response is not None and (_hop1_res.response.text or "").strip():
+                                _hop1_txt = _hop1_res.response.text or ""
+                                if "[TOOL:" in _hop1_txt:
+                                    _t2_out = execute_sandbox_tool(_hop1_txt)
+                                    if _t2_out and _t2_out not in shared_evidence_locker:
+                                        shared_evidence_locker.append(_t2_out)
+                                        joined_tools += f"\n\n[ON-DEMAND SOURCE CODE TOOL RESULT (HOP 2)]:\n{_t2_out}"
+                                _p_txt = f"{_p_txt}\n\n[Round 1 Post-Tool Patch Implementation]:\n{_hop1_txt}"
                         _new_resp = _copy_obj(_p_res.response)
-                        _new_resp.text = f"{_p_txt}\n\n" + "\n\n".join(extra_tool_sections)
+                        _new_resp.text = f"{_p_txt}\n\n{joined_tools}"
                         _new_res = _copy_obj(_p_res)
                         _new_res.response = _new_resp
                         active_results[_p_name] = _new_res
+                        provider_results[_p_name] = _new_res
             except Exception:
                 pass
         else:
@@ -2543,10 +2590,16 @@ Instructions:
         )
 
         def _clip_peer_text(txt: str, limit: int = 4500) -> str:
+            upper = (txt or "").upper()
+            # Structure-preserving clip: NEVER middle-chop source code tool outputs, [IDLE_PATCH] blocks, or [GENERATE_IMAGE] tags!
+            if is_autopatch or "[IDLE_PATCH" in upper or "[ON-DEMAND SOURCE CODE TOOL RESULT]" in upper:
+                code_limit = 32000
+                if len(txt) <= code_limit:
+                    return txt
+                return txt[:code_limit] + "\n...[truncated after 32,000 chars]"
             if len(txt) <= limit:
                 return txt
-            upper = txt.upper()
-            if "[IDLE_PATCH" in upper or "[GENERATE_IMAGE" in upper or "[ON-DEMAND SOURCE CODE TOOL RESULT]" in upper:
+            if "[GENERATE_IMAGE" in upper:
                 return txt[:limit] + "\n...[truncated]...\n" + txt[-2200:] if len(txt) > limit + 2200 else txt
             return txt[:limit] + "\n...[truncated for peer deliberation]"
 
@@ -2571,6 +2624,9 @@ Instructions:
                     if steering_state.get("notes"):
                         notes_joined = "\n".join(f"- {n}" for n in steering_state["notes"])
                         steered_q += f"\n\n[LIVE OPERATOR STEERING INSTRUCTIONS]:\n{notes_joined}"
+                if shared_evidence_locker:
+                    locker_txt = "\n\n".join(shared_evidence_locker)[:28000]
+                    steered_q += f"\n\n=== SHARED VERIFIED SOURCE CODE EVIDENCE LOCKER (All Round 1 Reads) ===\n{locker_txt}"
 
                 peer_prompt = self._build_peer_prompt(
                     steered_q,
@@ -2692,6 +2748,8 @@ Instructions:
                                 from idle_service import execute_sandbox_tool
                                 _r2_t_out = execute_sandbox_tool(txt)
                                 if _r2_t_out:
+                                    if _r2_t_out not in shared_evidence_locker:
+                                        shared_evidence_locker.append(_r2_t_out)
                                     txt = f"{txt}\n\n[ON-DEMAND SOURCE CODE TOOL RESULT]:\n{_r2_t_out}"
                             except Exception:
                                 pass
@@ -3019,19 +3077,42 @@ Instructions:
                     synthesis.text = cleaned_syn
                     _collect_rejections(cleaned_syn)
 
-                if not applied_files:
+                if not applied_files or rejection_notes:
+                    # Pick the single best peer patch (most hunks) to complete or replace partial synthesis patches
+                    best_peer_patch: tuple[int, str, str] | None = None
                     for _p_name, _p_res in active_results.items():
                         if _p_res.succeeded and _p_res.response and "[IDLE_PATCH" in (_p_res.response.text or "").upper():
-                            _c_txt, _af, _asum = execute_live_autopatches_in_text(
-                                _p_res.response.text, author=f"{_p_name}_autopatch"
-                            )
-                            _collect_rejections(_c_txt)
-                            if _af:
-                                applied_files.extend(_af)
-                                autopatch_summary = _asum
-                                if synthesis and synthesis.text:
-                                    synthesis.text += f"\n\n---\n✓ **Verified & Staged Patch ({', '.join(_af)})**: {_asum}"
-                                break
+                            _p_txt = _p_res.response.text or ""
+                            # Prefer Round 2 peer refinement block if present
+                            if "[Round 2 Peer Deliberation / Refinement]:" in _p_txt:
+                                _p_txt = _p_txt.split("[Round 2 Peer Deliberation / Refinement]:", 1)[1]
+                            _h_cnt = _p_txt.count("<<<TARGET")
+                            if best_peer_patch is None or _h_cnt > best_peer_patch[0]:
+                                best_peer_patch = (_h_cnt, _p_name, _p_txt)
+                    if best_peer_patch is not None:
+                        _, _bp_name, _bp_txt = best_peer_patch
+                        _c_txt, _af, _asum = execute_live_autopatches_in_text(
+                            _bp_txt,
+                            author=f"{_bp_name}_autopatch",
+                            sync_before_apply=(not applied_files),
+                        )
+                        if _af:
+                            # Clear prior rejection_notes if the peer patch succeeded without new rejections
+                            new_rejs = [
+                                ln.strip()
+                                for ln in (_c_txt or "").splitlines()
+                                if "⚠" in ln and ("Autopatch Rejected" in ln or "Autopatch Error" in ln)
+                            ]
+                            if not new_rejs:
+                                rejection_notes.clear()
+                            else:
+                                _collect_rejections(_c_txt)
+                            for _f_i in _af:
+                                if _f_i not in applied_files:
+                                    applied_files.append(_f_i)
+                            autopatch_summary = _asum
+                            if synthesis and synthesis.text:
+                                synthesis.text += f"\n\n---\n✓ **Verified & Staged Patch ({_bp_name} → {', '.join(_af)})**: {_asum}"
 
                 if not applied_files and session_context and is_terse_patch_confirmation(cleaned_q):
                     last_assistant_block = session_context.rsplit("\n\nASSISTANT", 1)[-1]
@@ -3046,12 +3127,19 @@ Instructions:
                             if synthesis and synthesis.text:
                                 synthesis.text += f"\n\n---\n✓ **Verified & Staged Confirmed Patch ({', '.join(_af_sc)})**: {_asum_sc}"
 
-                # If no patch was applied yet (e.g. agents only called [TOOL: ...] or had a target/allowlist/syntax mismatch),
-                # run up to 1 automatic In-Turn Coding Architect Self-Heal / Patch Generation pass!
-                if not applied_files and (explicit_autopatch_requested or rejection_notes) and succeeded_initial:
+                # If no patch was applied yet, OR if any peer had a rejected patch / unapplied Round 2 tool read,
+                # run the In-Turn Lead Coding Architect Self-Heal / Patch Generation pass!
+                has_unapplied_r2_tools = any(
+                    "[ON-DEMAND SOURCE CODE TOOL RESULT]" in (v.response.text or "") and "[IDLE_PATCH" not in (v.response.text or "").upper()
+                    for v in active_results.values()
+                    if v.succeeded and v.response is not None
+                )
+                if (not applied_files or rejection_notes or has_unapplied_r2_tools) and (explicit_autopatch_requested or rejection_notes) and succeeded_initial:
                     pref_order = ["deepseek", "gemini", "openai", "mistral", "qwen", "groq", "cerebras", "cohere"]
                     lead_coder = next((c for c in pref_order if c in succeeded_initial), succeeded_initial[0])
                     gathered_ctx = ""
+                    if shared_evidence_locker:
+                        gathered_ctx += "=== SHARED SOURCE EVIDENCE LOCKER ===\n" + "\n\n".join(shared_evidence_locker)[:20000] + "\n\n"
                     if session_context:
                         gathered_ctx += f"[RECENT SESSION CONTEXT]:\n{session_context[-4500:]}\n\n"
                     gathered_ctx += "\n\n".join(
@@ -3079,9 +3167,9 @@ Instructions:
                         f"ALLOWLISTED EDITABLE FILES ONLY: {allow_txt}\n"
                         f"(Never target unallowlisted or non-existent paths like services/image_pipeline.py.)\n\n"
                         f"USER REQUEST:\n{effective_question}\n\n"
-                        f"RETRIEVED SOURCE CODE & DIAGNOSTICS:\n{gathered_ctx[-12000:]}\n\n"
+                        f"RETRIEVED SOURCE CODE & DIAGNOSTICS:\n{gathered_ctx[-24000:]}\n\n"
                         f"INSTRUCTIONS:\n"
-                        f"1. If you still need to read exact lines before patching, emit `[TOOL: read_source_file file=\"...\" start=1 end=90]`.\n"
+                        f"1. If you still need to read a method or line range before patching, emit `[TOOL: read_symbol file=\"...\" query=\"method_name\"]` or `[TOOL: read_source_file file=\"...\" start=1 end=300]`.\n"
                         f"2. Otherwise, emit the exact executable `[IDLE_PATCH file=\"<filename.py>\" summary=\"<short description>\"]` block now:\n"
                         f"[IDLE_PATCH file=\"palace_gui.py\" summary=\"Short summary\"]\n"
                         f"<<<TARGET\n"
@@ -3110,7 +3198,9 @@ Instructions:
                                     heal_txt = hop2_res.response.text
                         if "[IDLE_PATCH" in heal_txt.upper():
                             cleaned_h, _af2, _asum2 = execute_live_autopatches_in_text(
-                                heal_txt, author=f"{lead_coder}_autopatch"
+                                heal_txt,
+                                author=f"{lead_coder}_autopatch",
+                                sync_before_apply=(not applied_files),
                             )
                             _collect_rejections(cleaned_h)
                             if _af2:

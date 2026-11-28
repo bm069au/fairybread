@@ -291,8 +291,33 @@ VOICE_STYLE_PRESETS: dict[str, tuple[str, str]] = {
 }
 
 VOICE_AVATAR_MODES = ("no_avatar", "windowed", "fullscreen")
-VOICE_AVATAR_SHAPES = ("neural_core", "tesseract", "astrolabe", "torus_knot", "swarm", "mandala")
+VOICE_AVATAR_SHAPES = ("cartoon_character", "neural_core", "tesseract", "astrolabe", "torus_knot", "swarm", "mandala")
 VOICE_AVATAR_PALETTES = ("tulsa_cyan", "jarvis_amber", "emerald_holo", "nebula_violet", "theme_accent", "auto_ai")
+
+DEFAULT_CARTOON_AVATAR_CONFIG: dict[str, Any] = {
+    "engine_mode": "studio_3d",   # "studio_3d" | "lifelike_portrait" | "ut_3d_mesh" | "vector_2d"
+    "preset_id": "pixar_3d_female", # "pixar_3d_female" | "pixar_3d_male" | "lifelike_girl" | "lifelike_male" | "custom"
+    "custom_portrait_path": "",
+    "custom_model_path": "",      # Optional .obj / .glb / .vrm 3D mesh path
+    "hw_tier": "auto",            # "auto" | "full_3d" | "lite_3d" | "2d_fallback"
+    "benchmarked_tier": "",       # Cached result from the 3.5s Live GPU Benchmark
+    "benchmark_fps": 0.0,
+    "benchmark_p95_ms": 0.0,
+    "benchmark_gpu_name": "",
+    "benchmark_reason": "",
+    "sleep_3d_on_battery": True,
+    "comfyui_live_bridge": False,
+    "show_landmark_overlay": False,
+    "jaw_sensitivity": 100,       # 50..180%
+    "gender": "female",           # "female" | "male"
+    "skin_tone": "warm_light",    # "fair" | "warm_light" | "olive" | "tan" | "warm_brown" | "deep_dark"
+    "hair_style": "cozy_bun",     # "cozy_bun" | "long_wavy" | "curly" | "short_crop" | "side_part" | "spiky"
+    "hair_color": "chestnut",     # "chestnut" | "blonde" | "auburn" | "dark_brown" | "jet_black" | "silver" | "cyber_violet"
+    "eye_color": "hazel",         # "hazel" | "brown" | "blue" | "emerald" | "amber" | "violet"
+    "outfit_color": "cream",      # "cream" | "navy_hoodie" | "emerald" | "crimson" | "charcoal"
+    "glasses": False,
+    "facial_hair": "none",        # "none" | "stubble" | "beard"
+}
 
 BUILTIN_VOICE_PERSONAS: dict[str, dict[str, Any]] = {
     "default": {
@@ -708,10 +733,14 @@ DEFAULT_VOICE_SETTINGS: dict[str, Any] = {
     "voice_companion_enabled": True,
     "spoken_summary_for_background": True,
     "voice_avatar_mode": "no_avatar",
-    "voice_avatar_shape": "neural_core",
+    "voice_avatar_shape": "cartoon_character",
     "voice_avatar_palette": "tulsa_cyan",
     "voice_avatar_always_on_top": True,
     "voice_avatar_show_activity": True,
+    "cartoon_avatar_config": dict(DEFAULT_CARTOON_AVATAR_CONFIG),
+    "voice_model_tier": "intermediate",  # "light" | "intermediate" | "heavy" | "auto"
+    "voice_model_override": "",
+    "auto_model_tiering": False,
     "active_voice_persona": "normal_female",
     "multi_ai_voice_enabled": False,
     "multi_ai_max_volleys": 3,
@@ -1110,6 +1139,20 @@ def load_voice_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         merged["voice_avatar_always_on_top"] = bool(raw["voice_avatar_always_on_top"])
     if "voice_avatar_show_activity" in raw:
         merged["voice_avatar_show_activity"] = bool(raw["voice_avatar_show_activity"])
+    raw_cartoon = raw.get("cartoon_avatar_config")
+    c_cfg = dict(DEFAULT_CARTOON_AVATAR_CONFIG)
+    if isinstance(raw_cartoon, dict):
+        for ck in DEFAULT_CARTOON_AVATAR_CONFIG:
+            if ck in raw_cartoon:
+                if isinstance(DEFAULT_CARTOON_AVATAR_CONFIG[ck], bool):
+                    c_cfg[ck] = bool(raw_cartoon[ck])
+                else:
+                    c_cfg[ck] = str(raw_cartoon[ck] or DEFAULT_CARTOON_AVATAR_CONFIG[ck]).strip().lower()
+    merged["cartoon_avatar_config"] = c_cfg
+    v_tier = str(raw.get("voice_model_tier") or "intermediate").strip().lower()
+    merged["voice_model_tier"] = v_tier if v_tier in {"light", "intermediate", "heavy", "auto"} else "intermediate"
+    merged["voice_model_override"] = str(raw.get("voice_model_override") or "").strip()
+    merged["auto_model_tiering"] = bool(raw.get("auto_model_tiering", v_tier == "auto"))
     merged["active_voice_persona"] = str(raw.get("active_voice_persona") or "normal_female").strip() or "normal_female"
     merged["multi_ai_voice_enabled"] = bool(raw.get("multi_ai_voice_enabled", False))
     try:
@@ -1577,6 +1620,47 @@ def pcm_chunk_to_int16_mono_and_level(
     level_pct = int(min(100.0, (effective / 9500.0) * 100.0))
     packed = struct.pack(f"<{len(samples_mono)}h", *samples_mono)
     return packed, level_pct
+
+
+def is_voiced_human_speech_chunk(pcm16_mono_bytes: bytes, level_pct: int = 0) -> bool:
+    """Return True if a 16-bit mono PCM chunk exhibits human vocal speech characteristics
+    rather than an impulsive broadband transient (cough, throat-clear, sneeze, desk thump, or mic click).
+    """
+    if not pcm16_mono_bytes or len(pcm16_mono_bytes) < 64:
+        return False
+    even_len = len(pcm16_mono_bytes) - (len(pcm16_mono_bytes) % 2)
+    if even_len < 64:
+        return False
+    vals = array("h")
+    vals.frombytes(pcm16_mono_bytes[:even_len])
+    if sys.byteorder != "little":
+        vals.byteswap()
+    n = len(vals)
+    if n < 32:
+        return False
+    sum_sq = 0.0
+    peak = 0
+    zero_crossings = 0
+    prev = vals[0]
+    for v in vals:
+        a = abs(v)
+        if a > peak:
+            peak = a
+        sum_sq += float(v * v)
+        if (v >= 0 and prev < 0) or (v < 0 and prev >= 0):
+            zero_crossings += 1
+        prev = v
+    rms = math.sqrt(sum_sq / n)
+    if rms < 60.0:
+        return False
+    crest_factor = float(peak) / max(1.0, rms)
+    zcr = float(zero_crossings) / float(n)
+    # Impulsive thumps/coughs/clicks have very high crest factor (> 5.8) or broadband unvoiced hiss ZCR (> 0.36)
+    if crest_factor > 5.8:
+        return False
+    if zcr > 0.36 or zcr < 0.012:
+        return False
+    return True
 
 
 def format_wave_bars(level_history: list[int], width: int = 6) -> str:
@@ -2182,9 +2266,11 @@ class LiveAudioSession:
                     channels=self._channels,
                     gain_percent=self._gain_percent,
                 )
+                is_voiced = is_voiced_human_speech_chunk(pcm16, lvl)
                 if pcm16:
                     self._barge_prebuf.extend(pcm16)
-                    max_pre = max(3200, int(self._sample_rate * 2 * 0.75))
+                    # Keep up to 2.2s in candidate barge prebuffer so short noises can be verified by STT without stopping TTS
+                    max_pre = max(6400, int(self._sample_rate * 2 * 2.2))
                     if len(self._barge_prebuf) > max_pre:
                         del self._barge_prebuf[:-max_pre]
                 self._level_history.append(lvl)
@@ -2193,21 +2279,47 @@ class LiveAudioSession:
                 bars = format_wave_bars(self._level_history, width=6)
                 b_lvl_req = int(getattr(self, "_barge_level_threshold", 37))
                 b_tks_req = int(getattr(self, "_barge_ticks_threshold", 10))
-                if lvl >= b_lvl_req:
+                if lvl >= b_lvl_req and is_voiced:
                     self._barge_ticks += 1
                     self._barge_miss_tolerance = 1
+                    self._barge_quiet_ticks = 0
                 elif self._barge_ticks > 0 and getattr(self, "_barge_miss_tolerance", 0) > 0 and lvl >= max(12, b_lvl_req - 10):
                     # Allow 1 brief syllable dip inside continuous human speech without resetting sustained count
                     self._barge_miss_tolerance = 0
                 else:
-                    self._barge_ticks = 0
-                    self._barge_miss_tolerance = 0
-                if self._barge_ticks >= b_tks_req:
+                    # Two-Stage Speech-Verified Barge-In:
+                    # If the user made a short burst (< sustained threshold) while TTS is playing and then went quiet,
+                    # NEVER kill TTS blindly! If it was at least b_tks_req ticks, ship candidate WAV to STT while TTS keeps playing;
+                    # if it was shorter than b_tks_req (like a cough, throat clear, or desk bump), discard it silently!
+                    self._barge_quiet_ticks = int(getattr(self, "_barge_quiet_ticks", 0)) + 1
+                    if self._barge_ticks >= b_tks_req and self._barge_quiet_ticks >= 7:
+                        # Candidate short phrase finished while AI is speaking -> verify via STT before stopping TTS!
+                        cand_pcm = bytes(self._barge_prebuf)
+                        self._barge_prebuf.clear()
+                        self._barge_ticks = 0
+                        self._barge_miss_tolerance = 0
+                        self._barge_quiet_ticks = 0
+                        if len(cand_pcm) >= int(self._sample_rate * 2 * 0.45) and self.on_utterance_ready is not None:
+                            out_path = Path(tempfile.gettempdir()) / "fairybread_barge_candidate.wav"
+                            wav_p = write_pcm16_wav(out_path, cand_pcm, sample_rate=self._sample_rate)
+                            if wav_p:
+                                self.on_utterance_ready(wav_p)
+                        return
+                    if self._barge_quiet_ticks >= 5:
+                        self._barge_ticks = 0
+                        self._barge_miss_tolerance = 0
+                        if self._barge_quiet_ticks >= 9:
+                            self._barge_prebuf.clear()
+
+                # Only interrupt TTS immediately if the user speaks continuously with voiced human speech for >= 2x threshold (~1.1s+ sustained sentence)
+                sustained_immediate_tks = max(b_tks_req + 8, int(b_tks_req * 1.8)) if getattr(self, "_ignore_vocal_noises", True) else b_tks_req
+                if self._barge_ticks >= sustained_immediate_tks:
                     stop_speaking()
                     self._pcm_buffer = bytearray(self._barge_prebuf)
                     self._barge_prebuf.clear()
                     self._barge_ticks = 0
                     self._barge_miss_tolerance = 0
+                    self._barge_quiet_ticks = 0
                     self._speech_detected = True
                     self._speech_ticks = b_tks_req
                     self._last_voice_ts = time.monotonic()
@@ -2275,15 +2387,19 @@ class LiveAudioSession:
         idle_lvl_req = int(getattr(self, "_idle_level_threshold", 14)) if self.live_mode else 7
         idle_tks_req = int(getattr(self, "_idle_ticks_threshold", 3)) if self.live_mode else 2
         if lvl >= idle_lvl_req:
-            self._speech_ticks += 1
+            if not self.live_mode or is_voiced_human_speech_chunk(pcm16, lvl) or self._speech_detected:
+                self._speech_ticks += 1
+                self._last_voice_ts = now
+                if self._speech_ticks >= idle_tks_req:
+                    self._speech_detected = True
+        elif self._speech_detected and lvl >= max(6, idle_lvl_req - 6):
+            # Keep trailing quieter syllables at the end of a clause alive so the mic doesn't clip mid-thought
             self._last_voice_ts = now
-            if self._speech_ticks >= idle_tks_req:
-                self._speech_detected = True
         else:
             if not self._speech_detected:
                 self._speech_ticks = 0
             if self.live_mode and not self._speech_detected:
-                max_lead_bytes = self._sample_rate * 2
+                max_lead_bytes = int(self._sample_rate * 2 * 0.65)
                 if len(self._pcm_buffer) > max_lead_bytes:
                     del self._pcm_buffer[:-max_lead_bytes]
 
@@ -2296,7 +2412,10 @@ class LiveAudioSession:
         if self.live_mode and self._speech_detected:
             silence_ms = (now - self._last_voice_ts) * 1000.0
             min_bytes = int(self._sample_rate * 2 * 0.35)
-            if silence_ms >= self._silence_timeout_ms and len(self._pcm_buffer) >= min_bytes:
+            # Dynamic clause-continuation buffer: give slightly longer utterances (1.2s–4.5s) an extra 220ms breathing room for mid-sentence pauses
+            utt_dur_sec = len(self._pcm_buffer) / float(max(1, self._sample_rate * 2))
+            eff_timeout_ms = self._silence_timeout_ms + (220 if 1.1 <= utt_dur_sec <= 5.5 else 0)
+            if silence_ms >= eff_timeout_ms and len(self._pcm_buffer) >= min_bytes:
                 # Reject short transient physical bumps/coughs/sniffs (< ~275ms of actual voiced ticks) before STT
                 min_voiced_ticks = max(4, idle_tks_req + 1)
                 if self._speech_ticks < min_voiced_ticks:
@@ -2767,7 +2886,7 @@ def clean_text_for_speech(markdown_text: str) -> str:
 def split_text_for_streaming_tts(
     text: str,
     *,
-    first_chunk_max: int = 200,
+    first_chunk_max: int = 110,
     max_chunk_chars: int = 420,
 ) -> list[str]:
     """Split cleaned text along natural sentence boundaries for low-latency streaming playback."""

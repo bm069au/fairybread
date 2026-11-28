@@ -10,19 +10,20 @@ from providers import AIProvider
 
 _PASS_PREFIX_RE = re.compile(r"^\[PASS\](?:$|\s|[:\-—–.,;])", re.IGNORECASE)
 _EXEC_IMAGE_TAG_NONEMPTY_RE = re.compile(
-    r'\[GENERATE_IMAGE\s+[^\]]*prompt\s*=\s*"[^"]{8,}"',
+    r'\[GENERATE_(?:IMAGE|VIDEO)\s+[^\]]*prompt\s*=\s*"[^"]{8,}"',
     re.IGNORECASE | re.DOTALL,
 )
 _EXEC_IMAGE_TAG_ANY_ATTR_RE = re.compile(
-    r'\[GENERATE_IMAGE\s+[^\]]*prompt\s*=',
+    r'\[GENERATE_(?:IMAGE|VIDEO)\s+[^\]]*prompt\s*=',
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def has_executable_image_tag(text: str, *, allow_empty_prompt: bool = False) -> bool:
-    """Return True when text contains a [GENERATE_IMAGE prompt=...] tag rather than bare [GENERATE_IMAGE] prose."""
+    """Return True for an executable image or video tag rather than a bare tag mention."""
     raw = text or ""
-    if "[GENERATE_IMAGE" not in raw.upper():
+    up = raw.upper()
+    if "[GENERATE_IMAGE" not in up and "[GENERATE_VIDEO" not in up:
         return False
     pattern = _EXEC_IMAGE_TAG_ANY_ATTR_RE if allow_empty_prompt else _EXEC_IMAGE_TAG_NONEMPTY_RE
     return bool(pattern.search(raw))

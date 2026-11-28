@@ -1344,7 +1344,7 @@ class WindowTests(unittest.TestCase):
         from palace_config import FAIRYBREAD_VERSION, bump_minor_letter_version
         from search_service import is_terse_patch_confirmation, parse_turn_commands
 
-        self.assertEqual(FAIRYBREAD_VERSION, '0.95e')
+        self.assertEqual(FAIRYBREAD_VERSION, '0.95h')
         gui_src = Path(__file__).with_name('palace_gui.py').read_text(encoding='utf-8')
         self.assertIn('Proprietary Source-Available Donationware (NOT Open Source)', gui_src)
         self.assertNotIn('open-source', gui_src.lower())
@@ -3122,9 +3122,19 @@ class VoiceUpgradeTests(unittest.TestCase):
         ign_custom, _ = is_unconscious_human_noise_or_filler('krrk', audio_dur_sec=0.5, config_path=svc_cfg)
         self.assertTrue(ign_custom)
 
-        # Verify build_voice_code_context returns real function/class implementations (not just 18-line headers)
-        gen_code_ctx = build_voice_code_context('Look at the code')
+        # Verify build_voice_code_context returns real function/class implementations (not just 18-line headers) and live version verification
+        from palace_config import FAIRYBREAD_VERSION, get_live_version_verification_info
+        ver_info = get_live_version_verification_info()
+        self.assertTrue(ver_info['in_sync'])
+        self.assertIn(FAIRYBREAD_VERSION, ver_info['status_badge'])
+        gen_code_ctx = build_voice_code_context(
+            "Okay, code's open.",
+            recent_history=[('Why is there a lag when I stop talking?', 'It might be the silence-detection window in the audio pipeline.')],
+        )
         self.assertIn('CODEBASE SYMBOL MAP', gen_code_ctx)
+        self.assertIn('LIVE VERSION & SOURCE SYNC VERIFICATION:', gen_code_ctx)
+        self.assertIn(FAIRYBREAD_VERSION, gen_code_ctx)
+        self.assertIn('voice_service.py', gen_code_ctx)
         self.assertIn('def ', gen_code_ctx)
         self.assertNotIn('(header)', gen_code_ctx)
         self.assertGreater(len(gen_code_ctx), 2500)
@@ -3406,9 +3416,23 @@ class VoiceUpgradeTests(unittest.TestCase):
             self.assertIn(2, win_p.active_jobs)
             win_p.stop_parallel_job(2)
             self.assertTrue(win_p.parallel_ops_bar.isHidden())
+
+            # Verify parallel_ops_bar stays hidden when only a single normal turn (win_p.worker) is running
+            win_p.worker = object()
+            try:
+                win_p._rebuild_parallel_ops_bar()
+                self.assertTrue(win_p.parallel_ops_bar.isHidden())
+            finally:
+                win_p.worker = None
         finally:
+            if getattr(win_p, 'local_ipc_server', None) is not None:
+                try:
+                    win_p.local_ipc_server.close()
+                except Exception:
+                    pass
             win_p._force_quit = True
             win_p.close()
+            win_p.deleteLater()
             app.processEvents()
 
 

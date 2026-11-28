@@ -133,6 +133,15 @@ def load_configured_providers(
         api_key = credentials.get_api_key(
             provider_name
         )
+        if not api_key:
+            _raw_base = str(cfg_entry.get("base_url") or "").strip() if isinstance(cfg_entry, dict) else ""
+            _host = ""
+            if _raw_base:
+                from urllib.parse import urlparse as _urlparse
+                _parsed = _urlparse(_raw_base if "://" in _raw_base else f"http://{_raw_base}")
+                _host = (_parsed.hostname or "").strip().lower()
+            if str(provider_name).strip().lower() == "ollama" or _host in {"localhost", "127.0.0.1", "::1"}:
+                api_key = "local"
 
         if api_key:
             providers[provider_name] = factory(

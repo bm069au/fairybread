@@ -1569,13 +1569,13 @@ def render_live_weather_map_png(
 ) -> Path | None:
     """Stitch dark base map + live RainViewer radar + regional weather stations + 7-day forecast card (100% API-key-free)."""
     global _RAINVIEWER_META_CACHE, _REGIONAL_WEATHER_CACHE
-    use_pil = True
+    use_pil = False
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PySide6.QtGui import QColor, QImage, QPainter, QPen
     except Exception:
-        use_pil = False
+        use_pil = True
         try:
-            from PySide6.QtGui import QColor, QImage, QPainter, QPen
+            from PIL import Image, ImageDraw, ImageFont
         except Exception:
             return None
 
@@ -2143,21 +2143,21 @@ def render_live_weather_map_png(
         try:
             from PySide6.QtCore import QRect, Qt
             from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics, QGuiApplication
-            if (
-                QGuiApplication.instance() is not None
-                and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
-            ):
+            if QGuiApplication.instance() is not None:
                 fams = QFontDatabase.families()
                 can_use_qfont = bool(fams)
         except Exception:
             can_use_qfont = False
 
-        qcanvas = QImage(768, canvas_h, QImage.Format.Format_ARGB32_Premultiplied)
+        S = 2  # True 2x HiDPI super-sampled canvas (1536x1280) for razor-sharp text in QTextBrowser
+        qcanvas = QImage(768 * S, canvas_h * S, QImage.Format.Format_ARGB32_Premultiplied)
         qcanvas.fill(QColor(11, 15, 22, 255))
         painter = QPainter(qcanvas)
         try:
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            painter.scale(float(S), float(S))
             painter.save()
             painter.setClipRect(0, map_top, 768, map_bottom - map_top)
             for row_i, col_i, _gx, _gy in tile_jobs:
@@ -2224,10 +2224,20 @@ def render_live_weather_map_png(
                 _draw_qt_wind_arrow(painter, pin_px, pin_py, wind_deg, length=24, qcolor=QColor(56, 189, 248, 225))
 
             main_badge_txt = f"{city_only} · {temp}°C" if temp != "?" else short_lbl
-            font_hdr_q = QFont("Segoe UI", 9, QFont.Weight.Bold) if can_use_qfont else None
-            font_sub_q = QFont("Segoe UI", 8) if can_use_qfont else None
-            font_pin_q = QFont("Segoe UI", 8, QFont.Weight.DemiBold) if can_use_qfont else None
-            font_sm_b_q = QFont("Segoe UI", 8, QFont.Weight.DemiBold) if can_use_qfont else None
+            if can_use_qfont:
+                font_hdr_q = QFont("Segoe UI")
+                font_hdr_q.setPixelSize(13)
+                font_hdr_q.setWeight(QFont.Weight.Bold)
+                font_sub_q = QFont("Segoe UI")
+                font_sub_q.setPixelSize(11)
+                font_pin_q = QFont("Segoe UI")
+                font_pin_q.setPixelSize(12)
+                font_pin_q.setWeight(QFont.Weight.DemiBold)
+                font_sm_b_q = QFont("Segoe UI")
+                font_sm_b_q.setPixelSize(11)
+                font_sm_b_q.setWeight(QFont.Weight.DemiBold)
+            else:
+                font_hdr_q = font_sub_q = font_pin_q = font_sm_b_q = None
             lbl_w = (QFontMetrics(font_pin_q).horizontalAdvance(main_badge_txt) + 18) if can_use_qfont else (len(main_badge_txt) * 6 + 16)
             lbl_w = max(78, int(lbl_w))
             bx = max(8, min(768 - lbl_w - 8, pin_px + 16))
@@ -2291,7 +2301,7 @@ def render_live_weather_map_png(
             if can_use_qfont and font_sub_q is not None:
                 painter.setFont(font_sub_q)
                 painter.setPen(fg_muted)
-                painter.drawText(QRect(10, bar_y, 32, 22), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "Rain:")
+                painter.drawText(QRect(10, bar_y, 34, 22), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "Rain:")
                 painter.drawText(QRect(120, bar_y, 640, 22), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, attr_txt[:108])
             else:
                 _draw_qimage_bitmap_text(painter, 10, bar_y + 7, "Rain:", fg_muted, scale=1)
@@ -2443,7 +2453,64 @@ def render_live_weather_map_png(
             painter.end()
         if not qcanvas.save(str(out_fp), "PNG"):
             return None
+        try:
+            disp_q = qcanvas.scaledToWidth(768, Qt.TransformationMode.SmoothTransformation)
+            disp_q.save(str(out_fp.with_name(out_fp.stem + "_disp768.png")), "PNG")
+        except Exception:
+            pass
     return out_fp if out_fp.is_file() else None
+
+
+def upgrade_legacy_weather_map_png_if_needed(png_path: Path) -> Path:
+    """If an existing weather_radar_*.png on disk is a legacy low-res 768px 5x7-bitmap image,
+    automatically re-render it in 2x HiDPI TrueType Segoe UI and return the crisp display PNG path.
+    """
+    if not isinstance(png_path, Path) or not png_path.is_file():
+        return png_path
+    disp_fp = png_path.with_name(png_path.stem + "_disp768.png")
+    if disp_fp.is_file():
+        return disp_fp
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage
+        qim = QImage(str(png_path))
+        if qim.isNull():
+            return png_path
+        if qim.width() >= 1400:
+            scaled = qim.scaledToWidth(768, Qt.TransformationMode.SmoothTransformation)
+            if scaled.save(str(disp_fp), "PNG"):
+                return disp_fp
+            return png_path
+        # Legacy 768px image -> parse city slug from filename (weather_radar_<Slug>_YYYYMMDD_HHMMSS.png)
+        m = re.match(r"^weather_radar_(.+?)_\d{8}_\d{6}$", png_path.stem)
+        city_guess = m.group(1).replace("_", " ").strip() if m else "Adelaide"
+        loc = _geocode_open_meteo(city_guess, timeout=3.5)
+        if not loc and city_guess.lower().startswith("adelaide"):
+            loc = {"lat": -34.9285, "lon": 138.6007, "label": "Adelaide, South Australia, Australia"}
+        if loc:
+            w_url = "https://api.open-meteo.com/v1/forecast?" + urllib_parse.urlencode({
+                "latitude": loc["lat"],
+                "longitude": loc["lon"],
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m",
+                "hourly": "temperature_2m,precipitation_probability,weather_code",
+                "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,uv_index_max,sunrise,sunset",
+                "timezone": "auto",
+                "forecast_days": 7,
+            })
+            req = urllib_request.Request(w_url, headers={"User-Agent": "FairybreadWeather/1.2"})
+            with urllib_request.urlopen(req, timeout=4.0) as resp:
+                w_data = json.loads(resp.read(250_000).decode("utf-8", errors="replace"))
+            fresh = render_live_weather_map_png(loc, w_data, out_dir=png_path.parent, timeout=4.0)
+            if fresh and fresh.is_file():
+                import shutil
+                shutil.copy2(fresh, png_path)
+                fresh_disp = fresh.with_name(fresh.stem + "_disp768.png")
+                if fresh_disp.is_file():
+                    shutil.copy2(fresh_disp, disp_fp)
+                    return disp_fp
+    except Exception:
+        pass
+    return png_path
 
 
 def _search_bing_rss(query: str, max_results: int = 8, angle: str = "general") -> list[WebSearchHit]:

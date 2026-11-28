@@ -466,6 +466,11 @@ _GENERATE_IMAGE_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_GENERATE_VIDEO_TAG_PATTERN = re.compile(
+    r'\[GENERATE_VIDEO\s+((?:[^\]"]|"[^"]*")*)\]',
+    re.IGNORECASE,
+)
+
 _ATTR_KV_PATTERN = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"')
 
 _PALACE_SNAPSHOT_PATTERN = re.compile(
@@ -1024,13 +1029,37 @@ def generate_ai_image_to_png(
             pass
     ref_hash = ref_hasher.hexdigest()[:12] if valid_refs else "noref"
 
-    base_key = f"{clean_prompt}|{target_w}x{target_h}|{'std' if is_low_quality else 'hd'}"
+    # FIX: The old cache key only encoded (prompt, size, quality). Switching from a
+    # cloud engine to a local ComfyUI / SD WebUI checkpoint therefore returned the
+    # previously-cached cloud PNG for the same prompt (out_path.exists() short-circuits
+    # BEFORE the engine chain is resolved at line ~1491), and the local ComfyUI server
+    # was never even contacted. Also, a successful fallback was saved to the same
+    # destination, masking the primary engine on the next identical request.
+    # Include the resolved engine identity + local checkpoint in the key, and bump
+    # the cache version to invalidate already-poisoned cache entries.
+    _engine_tag = str(primary_engine or '').strip().lower() or 'auto'
+    _model_tag = str(model or '').strip().lower() or 'auto'
+    _local_ckpt_tag = ''
+    try:
+        from palace_config import load_graphics_settings as _lgs_cache
+        _gcx_cache = _lgs_cache() or {}
+        _local_ckpt_tag = str(_gcx_cache.get('local_image_model') or '').strip().lower()
+        if not _engine_tag or _engine_tag == 'auto':
+            _engine_tag = str(_gcx_cache.get('primary_image_engine') or '').strip().lower() or 'auto'
+    except Exception:
+        _gcx_cache = {}
+    _local_ckpt_tag = _local_ckpt_tag or 'auto'
+
+    base_key = (
+        f"{clean_prompt}|{target_w}x{target_h}|{'std' if is_low_quality else 'hd'}"
+        f"|eng:{_engine_tag}|mdl:{_model_tag}|ckpt:{_local_ckpt_tag}"
+    )
     if not allow_network and not valid_refs:
         recent = _lookup_recent_render(base_key)
         if recent is not None:
             return recent
 
-    cache_key = f"{base_key}|{ref_hash}|v3"
+    cache_key = f"{base_key}|{ref_hash}|v4"
     digest = hashlib.sha1(cache_key.encode("utf-8", errors="replace")).hexdigest()[:10]
     safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (title or "image").strip())[:24] or "image"
     out_path = get_generated_images_dir() / f"{safe_slug}_{target_w}x{target_h}_{digest}.png"
@@ -1346,6 +1375,208 @@ def generate_ai_image_to_png(
             "fallback_image_engines": ["gemini-3-pro-image", "gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
         }
 
+    def _try_sdwebui_local() -> tuple[Path | None, bool]:
+        try:
+            import json as _json
+            import urllib.parse as _up
+
+            # FIX: ComfyUI and SD WebUI share a single local_image_server_url today, so a
+            # user who selected sdwebui:local while local_image_server_url is still
+            # http://127.0.0.1:8188 (ComfyUI's default) was silently POSTing SD WebUI's
+            # /sdapi/v1/txt2img payload to the ComfyUI server and failing with a cryptic
+            # HTTP error. Prefer an explicit per-backend override, and defensively
+            # hop :8188 -> :7860 for loopback addresses when no explicit override exists.
+            _sd_url_override = str(g_cfg.get("local_sdwebui_server_url") or "").strip()
+            raw_url = str(_sd_url_override or g_cfg.get("local_image_server_url") or "").strip().rstrip("/")
+            if not raw_url:
+                base_url = "http://127.0.0.1:7860"
+            elif _sd_url_override:
+                base_url = raw_url
+            elif raw_url.rstrip("/").endswith(":8188") and (
+                "127.0.0.1" in raw_url or "localhost" in raw_url
+            ):
+                base_url = raw_url[:-5] + ":7860"
+            else:
+                base_url = raw_url
+            local_ckpt = str(g_cfg.get("local_image_model") or "").strip()
+            if not base_url:
+                return None, False
+            w_sd = int(min(max(target_w, 64), 1344))
+            h_sd = int(min(max(target_h, 64), 1344))
+            w_sd -= w_sd % 8
+            h_sd -= h_sd % 8
+            payload = {
+                "prompt": clean_prompt,
+                "width": w_sd,
+                "height": h_sd,
+                "steps": 14 if is_low_quality else 24,
+                "cfg_scale": 7.0,
+            }
+            if local_ckpt:
+                payload["override_settings"] = {"sd_model_checkpoint": local_ckpt}
+            req = urllib_request.Request(
+                f"{base_url}/sdapi/v1/txt2img",
+                data=_json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "Fairybread"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=180) as resp:
+                body = _json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            images = body.get("images") if isinstance(body, dict) else None
+            if not isinstance(images, list) or not images:
+                attempted_errors.append(f"sdwebui({base_url}): empty images response")
+                return None, False
+            first = str(images[0] or "").strip()
+            if first.startswith("data:") and "," in first:
+                first = first.split(",", 1)[1]
+            if not first:
+                attempted_errors.append(f"sdwebui({base_url}): empty image payload")
+                return None, False
+            raw_bytes = base64.b64decode(first)
+            if _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                return out_path, False
+            attempted_errors.append(f"sdwebui({base_url}): could not decode returned PNG")
+            return None, False
+        except Exception as exc:
+            attempted_errors.append(f"sdwebui: {_format_image_http_error(exc)}")
+            return None, False
+
+    def _try_comfyui_local() -> tuple[Path | None, bool]:
+        try:
+            import json as _json
+            import time as _time
+            import urllib.parse as _up
+
+            # FIX: mirrored the SD WebUI fix above. When the user selected comfyui:local
+            # but local_image_server_url is still http://127.0.0.1:7860 (SD WebUI's
+            # default), ComfyUI's /prompt endpoint was posted to SD WebUI and failed
+            # with a generic HTTP error. Prefer an explicit per-backend override and
+            # defensively hop :7860 -> :8188 on loopback when no override exists.
+            _cf_url_override = str(g_cfg.get("local_comfyui_server_url") or "").strip()
+            raw_url = str(_cf_url_override or g_cfg.get("local_image_server_url") or "").strip().rstrip("/")
+            if not raw_url:
+                base_url = "http://127.0.0.1:8188"
+            elif _cf_url_override:
+                base_url = raw_url
+            elif raw_url.rstrip("/").endswith(":7860") and (
+                "127.0.0.1" in raw_url or "localhost" in raw_url
+            ):
+                base_url = raw_url[:-5] + ":8188"
+            else:
+                base_url = raw_url
+            local_ckpt = str(g_cfg.get("local_image_model") or "v1-5-pruned-emaonly.safetensors").strip() or "v1-5-pruned-emaonly.safetensors"
+            if not base_url:
+                return None, False
+            w_lat = int(min(max(target_w, 64), 1344))
+            h_lat = int(min(max(target_h, 64), 1344))
+            w_lat -= w_lat % 8
+            h_lat -= h_lat % 8
+            workflow = {
+                "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": local_ckpt}},
+                "2": {"class_type": "CLIPTextEncode", "inputs": {"text": clean_prompt, "clip": ["1", 1]}},
+                "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "text, watermark, logo, signature, blurry, low quality, deformed", "clip": ["1", 1]}},
+                "4": {"class_type": "EmptyLatentImage", "inputs": {"width": w_lat, "height": h_lat, "batch_size": 1}},
+                "5": {"class_type": "KSampler", "inputs": {
+                    "model": ["1", 0],
+                    "positive": ["2", 0],
+                    "negative": ["3", 0],
+                    "latent_image": ["4", 0],
+                    "seed": abs(hash(clean_prompt)) % (2 ** 31),
+                    "steps": 14 if is_low_quality else 24,
+                    "cfg": 7.0,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                }},
+                "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+                "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": "Fairybread"}},
+            }
+            req = urllib_request.Request(
+                f"{base_url}/prompt",
+                data=_json.dumps({"prompt": workflow}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "Fairybread"},
+                method="POST",
+            )
+            with urllib_request.urlopen(req, timeout=60) as resp:
+                submitted = _json.loads(resp.read().decode("utf-8", "replace") or "{}")
+            prompt_id = str((submitted or {}).get("prompt_id") or "").strip()
+            if not prompt_id:
+                attempted_errors.append(f"comfyui({base_url}): no prompt_id returned")
+                return None, False
+            # FIX: previously a ComfyUI workflow that *executed* but failed (missing
+            # checkpoint name, OOM, sampler error, VAE mismatch, etc.) simply never
+            # populated outputs, so we always reported a generic “timed out waiting”
+            # after 45s. Now poll for status_str=="error" on every /history/{id} and
+            # surface the real exception_message so the user can fix the config.
+            entry = None
+            comfy_hard_error = ""
+            for _ in range(45):
+                _time.sleep(1.0)
+                try:
+                    with urllib_request.urlopen(
+                        urllib_request.Request(f"{base_url}/history/{prompt_id}", headers={"User-Agent": "Fairybread"}),
+                        timeout=15,
+                    ) as hr:
+                        hist = _json.loads(hr.read().decode("utf-8", "replace") or "{}")
+                except Exception:
+                    continue
+                if not isinstance(hist, dict):
+                    continue
+                candidate = hist.get(prompt_id)
+                if not isinstance(candidate, dict):
+                    continue
+                _st_obj = candidate.get("status") if isinstance(candidate.get("status"), dict) else {}
+                if str(_st_obj.get("status_str") or "").lower() == "error":
+                    _errs: list[str] = []
+                    for _msg in (_st_obj.get("messages") or []):
+                        if isinstance(_msg, (list, tuple)) and len(_msg) >= 2:
+                            _payload = _msg[1]
+                            if isinstance(_payload, dict):
+                                _em = str(_payload.get("exception_message") or "").strip()
+                                if _em:
+                                    _errs.append(_em[:240])
+                    comfy_hard_error = "; ".join(_errs) or "ComfyUI reported an execution error"
+                    break
+                if candidate.get("outputs"):
+                    entry = candidate
+                    break
+            if entry is None:
+                if comfy_hard_error:
+                    attempted_errors.append(f"comfyui({base_url}): {comfy_hard_error}")
+                    return None, False
+                attempted_errors.append(f"comfyui({base_url}): timed out waiting for image")
+                return None, False
+            first_image = None
+            for node_out in (entry.get("outputs") or {}).values():
+                if not isinstance(node_out, dict):
+                    continue
+                for item in (node_out.get("images") or []):
+                    if isinstance(item, dict) and item.get("filename"):
+                        first_image = item
+                        break
+                if first_image:
+                    break
+            if not first_image:
+                attempted_errors.append(f"comfyui({base_url}): workflow completed with no image")
+                return None, False
+            view_qs = _up.urlencode({
+                "filename": str(first_image.get("filename") or ""),
+                "subfolder": str(first_image.get("subfolder") or ""),
+                "type": str(first_image.get("type") or "output"),
+            })
+            with urllib_request.urlopen(
+                urllib_request.Request(f"{base_url}/view?{view_qs}", headers={"User-Agent": "Fairybread"}),
+                timeout=120,
+            ) as vr:
+                raw_bytes = vr.read(60_000_000)
+            if raw_bytes and _fit_and_save_target_png(raw_bytes, out_path, target_w, target_h):
+                return out_path, False
+            attempted_errors.append(f"comfyui({base_url}): could not decode returned image")
+            return None, False
+        except Exception as exc:
+            attempted_errors.append(f"comfyui: {_format_image_http_error(exc)}")
+            return None, False
+
     prim = (primary_engine or "").strip().lower()
     if not prim:
         if is_low_quality or "flash" in req_model:
@@ -1370,6 +1601,8 @@ def generate_ai_image_to_png(
             "gpt-image-2",
             "flux-1-dev",
             "openrouter",
+            "comfyui",
+            "sdwebui",
         ):
             raw_chain.append(default_eng)
 
@@ -1379,6 +1612,12 @@ def generate_ai_image_to_png(
             engine_chain.append(e)
 
     def _run_engine(eng: str) -> tuple[Path | None, bool, str]:
+        if eng.startswith("comfyui"):
+            p, ref = _try_comfyui_local()
+            return p, ref, "ComfyUI Local"
+        if eng.startswith("sdwebui") or eng.startswith("forge") or eng.startswith("a1111"):
+            p, ref = _try_sdwebui_local()
+            return p, ref, "SD WebUI Local"
         if eng.startswith("openrouter:"):
             spec = eng.split(":", 1)[1].strip()
             p, ref = _try_openrouter_image(spec)
@@ -1452,34 +1691,217 @@ def generate_ai_image_to_png(
     return None
 
 
+def generate_comfyui_video_file(
+    prompt: str,
+    *,
+    title: str = "video",
+    width: int = 832,
+    height: int = 480,
+    frames: int = 49,
+) -> Path | None:
+    """Generate a local video or animated sequence via ComfyUI (/prompt -> /history/{id} -> /view)."""
+    clean_prompt = (prompt or "").strip()
+    if not clean_prompt:
+        return None
+    try:
+        from palace_config import load_graphics_settings
+        g_cfg = load_graphics_settings()
+    except Exception:
+        g_cfg = {}
+
+    base_url = str(g_cfg.get("local_video_server_url") or g_cfg.get("local_image_server_url") or "http://127.0.0.1:8188").strip().rstrip("/")
+    if base_url.endswith(":7860") and ("127.0.0.1" in base_url or "localhost" in base_url):
+        base_url = base_url[:-5] + ":8188"
+    vid_model = str(g_cfg.get("local_video_model") or g_cfg.get("local_image_model") or "wan2.1_t2v_1.3B_fp16.safetensors").strip() or "wan2.1_t2v_1.3B_fp16.safetensors"
+    wf_path = str(g_cfg.get("local_video_workflow_path") or "").strip()
+    if not base_url:
+        return None
+
+    w_lat = max(64, int(width) - (int(width) % 8))
+    h_lat = max(64, int(height) - (int(height) % 8))
+    f_cnt = max(8, int(frames))
+    seed_val = abs(hash(clean_prompt)) % (2 ** 31)
+
+    workflow: dict[str, Any] | None = None
+    if wf_path and Path(wf_path).is_file():
+        try:
+            raw_wf_txt = Path(wf_path).read_text(encoding="utf-8", errors="replace")
+            has_prompt_placeholder = "{{PROMPT}}" in raw_wf_txt
+            raw_wf_txt = raw_wf_txt.replace("{{WIDTH}}", str(w_lat)).replace("{{HEIGHT}}", str(h_lat)).replace("{{FRAMES}}", str(f_cnt)).replace("{{SEED}}", str(seed_val))
+            if has_prompt_placeholder:
+                # Do not expand workflow tokens that appear literally in the user's prompt.
+                raw_wf_txt = raw_wf_txt.replace("{{PROMPT}}", json.dumps(clean_prompt)[1:-1])
+            loaded_wf = json.loads(raw_wf_txt)
+            if isinstance(loaded_wf, dict):
+                workflow = loaded_wf
+                if not has_prompt_placeholder:
+                    for sampler in workflow.values():
+                        if not isinstance(sampler, dict) or sampler.get("class_type") not in (
+                            "KSampler", "KSamplerAdvanced", "SamplerCustom",
+                        ):
+                            continue
+                        s_inputs = sampler.get("inputs")
+                        pos_ref = s_inputs.get("positive") if isinstance(s_inputs, dict) else None
+                        if not isinstance(pos_ref, list) or not pos_ref:
+                            continue
+                        pos_node = workflow.get(str(pos_ref[0]))
+                        if not isinstance(pos_node, dict) or pos_node.get("class_type") != "CLIPTextEncode":
+                            continue
+                        pos_inputs = pos_node.get("inputs")
+                        if isinstance(pos_inputs, dict):
+                            pos_inputs["text"] = clean_prompt
+                            break
+                    else:
+                        for node in workflow.values():
+                            if isinstance(node, dict) and node.get("class_type") == "CLIPTextEncode":
+                                inputs = node.get("inputs")
+                                if isinstance(inputs, dict) and isinstance(inputs.get("text"), str) and not inputs["text"].strip():
+                                    inputs["text"] = clean_prompt
+                                    break
+        except Exception:
+            workflow = None
+
+    if workflow is None:
+        workflow = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": vid_model}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": clean_prompt, "clip": ["1", 1]}},
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"text": "text, watermark, blurry, deformed, low quality", "clip": ["1", 1]}},
+            "4": {"class_type": "EmptyLatentImage", "inputs": {"width": w_lat, "height": h_lat, "batch_size": min(f_cnt, 24)}},
+            "5": {"class_type": "KSampler", "inputs": {
+                "model": ["1", 0],
+                "positive": ["2", 0],
+                "negative": ["3", 0],
+                "latent_image": ["4", 0],
+                "seed": seed_val,
+                "steps": 20,
+                "cfg": 6.5,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1.0,
+            }},
+            "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+            "7": {"class_type": "SaveAnimatedWEBP", "inputs": {
+                "images": ["6", 0],
+                "filename_prefix": "FairybreadVideo",
+                "fps": 16.0,
+                "lossless": False,
+                "quality": 85,
+                "method": "default",
+            }},
+        }
+
+    try:
+        import urllib.parse as _up
+        req = urllib_request.Request(
+            f"{base_url}/prompt",
+            data=json.dumps({"prompt": workflow}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": "Fairybread"},
+            method="POST",
+        )
+        with urllib_request.urlopen(req, timeout=60) as resp:
+            submitted = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        prompt_id = str((submitted or {}).get("prompt_id") or "").strip()
+        if not prompt_id:
+            return None
+        entry = None
+        deadline_ts = time.monotonic() + 90.0
+        consec_net_errs = 0
+        for _ in range(90):
+            if time.monotonic() >= deadline_ts:
+                break
+            time.sleep(1.0)
+            try:
+                with urllib_request.urlopen(
+                    urllib_request.Request(f"{base_url}/history/{prompt_id}", headers={"User-Agent": "Fairybread"}),
+                    timeout=10,
+                ) as hr:
+                    hist = json.loads(hr.read().decode("utf-8", "replace") or "{}")
+                consec_net_errs = 0
+            except Exception:
+                consec_net_errs += 1
+                if consec_net_errs >= 5:
+                    break
+                continue
+            if isinstance(hist, dict):
+                cand = hist.get(prompt_id)
+                if isinstance(cand, dict):
+                    _st_obj = cand.get("status") if isinstance(cand.get("status"), dict) else {}
+                    _st_str = str(_st_obj.get("status_str") or "").lower()
+                    if _st_str == "error":
+                        break
+                    if cand.get("outputs"):
+                        entry = cand
+                        break
+                    if _st_str in ("success", "completed") or bool(_st_obj.get("completed")):
+                        break
+        if entry is None:
+            return None
+        first_media = None
+        outputs_dict = entry.get("outputs") if isinstance(entry.get("outputs"), dict) else {}
+        # Rank animated/video outputs ('gifs', 'videos') across ALL nodes before falling back to 'images' (prevents grabbing a PreviewImage temp thumbnail)
+        for key in ("gifs", "videos", "images"):
+            for node_out in outputs_dict.values():
+                if not isinstance(node_out, dict):
+                    continue
+                for item in (node_out.get(key) or []):
+                    if isinstance(item, dict) and item.get("filename"):
+                        first_media = item
+                        break
+                if first_media:
+                    break
+            if first_media:
+                break
+        if not first_media:
+            return None
+        fname = str(first_media.get("filename") or "")
+        ext = Path(fname).suffix.lower() or ".webp"
+        view_qs = _up.urlencode({
+            "filename": fname,
+            "subfolder": str(first_media.get("subfolder") or ""),
+            "type": str(first_media.get("type") or "output"),
+        })
+        with urllib_request.urlopen(
+            urllib_request.Request(f"{base_url}/view?{view_qs}", headers={"User-Agent": "Fairybread"}),
+            timeout=180,
+        ) as vr:
+            raw_bytes = vr.read(120_000_000)
+        if not raw_bytes:
+            return None
+        safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (title or "video").strip())[:24] or "video"
+        digest = hashlib.sha1(f"{clean_prompt}|{w_lat}x{h_lat}|{f_cnt}".encode("utf-8", errors="replace")).hexdigest()[:10]
+        out_path = get_generated_images_dir() / f"{safe_slug}_{w_lat}x{h_lat}_{digest}{ext}"
+        out_path.write_bytes(raw_bytes)
+        return out_path
+    except Exception:
+        return None
+
+
 def _unwrap_real_image_tags(text: str) -> str:
-    """Unwrap real [GENERATE_IMAGE prompt="..." ...] tags that an AI accidentally placed inside
-    ```text / ```markdown fences or standalone/inline backticks, while keeping short documentation
-    examples (like `Use `[GENERATE_IMAGE prompt="example" title="demo"]` to draw.`) untouched as code.
-    """
-    if not text or "[GENERATE_IMAGE" not in text.upper():
+    """Recover image and video tags accidentally formatted as code."""
+    if not text or ("[GENERATE_IMAGE" not in text.upper() and "[GENERATE_VIDEO" not in text.upper()):
         return text
 
     def _unwrap_fence(m: re.Match) -> str:
         inner = (m.group(3) or "").strip()
         while inner.startswith("`") and inner.endswith("`") and len(inner) > 2:
             inner = inner[1:-1].strip()
-        if inner.upper().startswith("[GENERATE_IMAGE") and inner.endswith("]"):
+        if re.match(r"\[GENERATE_(?:IMAGE|VIDEO)\b", inner, flags=re.IGNORECASE) and inner.endswith("]"):
             return f"\n{inner}\n"
         return m.group(0)
 
-    # 1. Matches 3+ backticks fences with optional language and optional trailing spaces/newlines
+    # Do not match across a closing fence while looking for the end of a tag.
     out = re.sub(
-        r"(`{3,})([a-zA-Z0-9_-]*)[ \t]*\n?([ \t]*`?\[GENERATE_IMAGE\b.*?\]`?[ \t]*)\n?\1",
+        r"(`{3,})([a-zA-Z0-9_-]*)[ \t]*\n?([ \t]*`?\[GENERATE_(?:IMAGE|VIDEO)\b(?:(?!`{3,}).)*?\]`?[ \t]*)\n?\1",
         _unwrap_fence,
         text,
         flags=re.DOTALL | re.IGNORECASE,
     )
 
-    # 2. Matches [GENERATE_IMAGE ...] enclosed in backticks anywhere as a real tag
+    # Preserve the existing inline documentation-example heuristic for both media types.
     def _unwrap_backticked_tag(m: re.Match) -> str:
         tag = m.group(1)
-        attrs = _parse_generate_image_attrs(tag)
+        attr_tag = re.sub(r"^\[GENERATE_VIDEO\b", "[GENERATE_IMAGE", tag, flags=re.IGNORECASE)
+        attrs = _parse_generate_image_attrs(attr_tag)
         p = attrs.get("prompt", "").strip()
         explicit_p = attrs.get("path", "").strip()
         if explicit_p and Path(explicit_p).is_file():
@@ -1488,7 +1910,7 @@ def _unwrap_real_image_tags(text: str) -> str:
             return tag
         return m.group(0)
 
-    out = re.sub(r'`+(\[GENERATE_IMAGE\s+(?:[^\]"`]|"[^"]*")*\])`+', _unwrap_backticked_tag, out, flags=re.IGNORECASE)
+    out = re.sub(r'`+(\[GENERATE_(?:IMAGE|VIDEO)\s+(?:[^\]"`]|"[^"]*")*\])`+', _unwrap_backticked_tag, out, flags=re.IGNORECASE)
     return out
 
 
@@ -1500,16 +1922,16 @@ def _strip_code_spans_for_tag_scan(text: str) -> str:
 
 
 def neutralize_intermediate_image_tags(text: str) -> str:
-    """Wrap bare [GENERATE_IMAGE ...] tags inside intermediate peer deliberation bubbles in inline backticks
-    so only the final synthesized answer executes and renders the actual high-resolution image once.
-    """
-    if not text or "[GENERATE_IMAGE" not in text.upper():
+    """Keep image and video generation tags inert in intermediate peer bubbles."""
+    if not text or ("[GENERATE_IMAGE" not in text.upper() and "[GENERATE_VIDEO" not in text.upper()):
         return text
 
-    def _wrap_if_bare(m: re.Match) -> str:
-        return f"`{m.group(0)}`"
+    def _neutralize(m: re.Match) -> str:
+        # Backticks would be removed by tag recovery. Use a non-triggering bracket.
+        return m.group(0).replace("[", "\uff3b", 1)
 
-    return _GENERATE_IMAGE_TAG_PATTERN.sub(_wrap_if_bare, text)
+    text = _GENERATE_IMAGE_TAG_PATTERN.sub(_neutralize, text)
+    return _GENERATE_VIDEO_TAG_PATTERN.sub(_neutralize, text)
 
 
 def prewarm_generated_images(
@@ -1532,6 +1954,22 @@ def prewarm_generated_images(
             svg_results.append(rendered_svg)
 
     scannable = _strip_code_spans_for_tag_scan(content or "")
+    for v_match in _GENERATE_VIDEO_TAG_PATTERN.finditer(scannable):
+        v_attrs = _parse_generate_image_attrs(v_match.group(1))
+        v_prompt = (v_attrs.get("prompt") or "").strip()
+        if not v_prompt:
+            continue
+        v_title = v_attrs.get("title") or v_prompt[:40]
+        v_size = v_attrs.get("size") or "832x480"
+        try:
+            v_frames = max(8, int(v_attrs.get("frames") or 49))
+        except (ValueError, TypeError):
+            v_frames = 49
+        vw, vh, _ = resolve_target_image_size(v_size, v_prompt)
+        v_path = generate_comfyui_video_file(v_prompt, title=v_title, width=vw, height=vh, frames=v_frames)
+        if v_path is not None and v_path.exists():
+            svg_results.append(v_path)
+
     specs: list[tuple[str, str, str, str, str, str]] = []
     for match in _GENERATE_IMAGE_TAG_PATTERN.finditer(scannable):
         attrs = _parse_generate_image_attrs(match.group(1))
@@ -1779,6 +2217,71 @@ def format_markdown_and_drawings(content: str, *, theme_id: str = "") -> str:
 
     processed = _GENERATE_IMAGE_TAG_PATTERN.sub(_replace_gen_img, processed)
 
+    def _replace_gen_vid(match: re.Match) -> str:
+        nonlocal all_media_rendered
+        v_attrs = _parse_generate_image_attrs(match.group(1))
+        explicit_v_str = (v_attrs.get("path") or "").strip()
+        v_prompt = (v_attrs.get("prompt") or "").strip()
+        explicit_v = Path(explicit_v_str) if explicit_v_str else None
+        has_explicit_v = bool(explicit_v and explicit_v.is_file())
+        if not v_prompt and not has_explicit_v:
+            return match.group(0)
+        v_title = v_attrs.get("title") or (v_prompt[:40] if v_prompt else (explicit_v.stem if explicit_v else "Generated Video"))
+        v_size = v_attrs.get("size") or "832x480"
+        try:
+            v_frames = max(8, int(v_attrs.get("frames") or 49))
+        except (ValueError, TypeError):
+            v_frames = 49
+        vw, vh, v_size_lbl = resolve_target_image_size(v_size, v_prompt)
+        vid_path: Path | None = None
+        if has_explicit_v and explicit_v is not None:
+            vid_path = explicit_v
+        else:
+            w_lat = max(64, int(vw) - (int(vw) % 8))
+            h_lat = max(64, int(vh) - (int(vh) % 8))
+            safe_slug = re.sub(r"[^a-zA-Z0-9_-]+", "_", (v_title or "video").strip())[:24] or "video"
+            digest = hashlib.sha1(f"{v_prompt}|{w_lat}x{h_lat}|{v_frames}".encode("utf-8", errors="replace")).hexdigest()[:10]
+            for cand_ext in (".webp", ".gif", ".mp4", ".webm", ".png"):
+                cand_fp = get_generated_images_dir() / f"{safe_slug}_{w_lat}x{h_lat}_{digest}{cand_ext}"
+                if cand_fp.is_file():
+                    vid_path = cand_fp
+                    break
+            if vid_path is None:
+                vid_path = generate_comfyui_video_file(v_prompt, title=v_title, width=vw, height=vh, frames=v_frames)
+        if vid_path and vid_path.exists():
+            try:
+                rendered_deps.append((str(vid_path), vid_path.stat().st_mtime_ns))
+            except OSError:
+                all_media_rendered = False
+            file_url = vid_path.as_uri()
+            esc_title = html.escape(v_title)
+            esc_path = html.escape(str(vid_path))
+            esc_meta = html.escape(f"ComfyUI Local Video · {v_size_lbl} · {v_frames} frames")
+            preview_html = (
+                f'<a href="reveal-file:{esc_path}"><img src="{file_url}" width="480"></a>'
+                if vid_path.suffix.lower() in {".webp", ".gif", ".png"}
+                else ""
+            )
+            vid_block = (
+                f'<table width="100%" cellspacing="0" cellpadding="10" style="margin:10px 0; background:{card_bg}; border:1px solid {card_border};">'
+                f'<tr><td>'
+                f'<div style="color:{txt_muted}; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
+                f'🎬 {esc_title} &nbsp;<span style="color:{txt_muted};">({esc_meta})</span> &nbsp;·&nbsp; '
+                f'<a href="reveal-file:{esc_path}" style="color:#3b82f6; text-decoration:none;">▶ Play / Show Video</a> &nbsp;·&nbsp; '
+                f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
+                f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
+                f'</div>'
+                f'{preview_html}'
+                f'</td></tr></table>'
+            )
+            idx = len(rendered_images_html)
+            rendered_images_html.append(vid_block)
+            return f"@@PALACE_IMG_{idx}@@"
+        all_media_rendered = False
+        return f'[Video Request ({v_size_lbl}, {v_frames} frames): "{v_prompt}"]'
+
+    processed = _GENERATE_VIDEO_TAG_PATTERN.sub(_replace_gen_vid, processed)
+
     # 2b. Extract and render any [PALACE_UI_SNAPSHOT] tags (strictly PalaceWindow widget buffer only)
     def _replace_ui_snap(match: re.Match) -> str:
         nonlocal all_media_rendered
@@ -1841,11 +2344,17 @@ def format_markdown_and_drawings(content: str, *, theme_id: str = "") -> str:
         map_title = (attrs.get("title") or "Live Weather Radar Map").strip()
         mp = Path(map_path_str) if map_path_str else None
         if mp is not None and mp.is_file():
+            disp_mp = mp
             try:
-                rendered_deps.append((str(mp), mp.stat().st_mtime_ns))
+                from search_service import upgrade_legacy_weather_map_png_if_needed
+                disp_mp = upgrade_legacy_weather_map_png_if_needed(mp)
+            except Exception:
+                disp_mp = mp
+            try:
+                rendered_deps.append((str(disp_mp), disp_mp.stat().st_mtime_ns))
             except OSError:
                 all_media_rendered = False
-            file_url = mp.as_uri()
+            file_url = disp_mp.as_uri()
             esc_title = html.escape(map_title)
             esc_path = html.escape(str(mp))
             img_block = (
@@ -1853,12 +2362,12 @@ def format_markdown_and_drawings(content: str, *, theme_id: str = "") -> str:
                 f'<tr><td>'
                 f'<div style="color:#14b8a6; font-size:11.5px; font-weight:600; margin-bottom:6px;">'
                 f'🗺️ {esc_title} &nbsp;·&nbsp; '
-                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size</a> &nbsp;·&nbsp; '
+                f'<a href="open-img:{esc_path}" style="color:#3b82f6; text-decoration:none;">🔍 View Full Size (HiDPI)</a> &nbsp;·&nbsp; '
                 f'<a href="save-file:{esc_path}" style="color:#22c55e; text-decoration:none;">💾 Download / Save As…</a> &nbsp;·&nbsp; '
                 f'<a href="reveal-file:{esc_path}" style="color:#58a6ff; text-decoration:none;">📂 Show in Folder</a> &nbsp;·&nbsp; '
                 f'<a href="delete-file:{esc_path}" style="color:#f85149; text-decoration:none;">🗑 Delete</a>'
                 f'</div>'
-                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="660"></a>'
+                f'<a href="open-img:{esc_path}"><img src="{file_url}" width="768"></a>'
                 f'</td></tr></table>'
             )
             idx = len(rendered_images_html)

@@ -87,14 +87,19 @@ _IDLE_MAIL_PATTERN = re.compile(
 )
 
 _IDLE_TOOL_PATTERN = re.compile(
-    r'\[TOOL:\s*(?P<name>[a-z_]+)(?:\s+file="(?P<file>[^"]*)")?(?:\s+query="(?P<query>[^"]*)")?(?:\s+start=(?P<start>\d+))?(?:\s+end=(?P<end>\d+))?\s*\]',
+    r'\[TOOL:\s*(?P<name>[a-z_]+)(?:\s+file="(?P<file>[^"]*)")?(?:\s+(?:query|symbol)="(?P<query>[^"]*)")?(?:\s+start=(?P<start>\d+))?(?:\s+end=(?P<end>\d+))?\s*\]',
     re.IGNORECASE,
 )
 
 _IDLE_PATCH_PATTERN = re.compile(
-    r'\[IDLE_PATCH\s+file="(?P<file>[^"]+)"(?:\s+summary="(?P<summary>[^"]*)")?\s*\]\s*'
-    r'<<<TARGET[ \t]*\r?\n(?P<target>.*?)\r?\n?===REPLACE[ \t]*\r?\n(?P<replacement>.*?)\r?\n>>>'
-    r'(?:\s*\[/IDLE_PATCH\])?',
+    r'\[IDLE_PATCH\s+file="(?P<file>[^"]+)"(?:\s+(?:summary|title)="(?P<summary>[^"]*)")?[^\]]*\]'
+    r'(?P<body>(?:(?!\[IDLE_PATCH\b).)*?)'
+    r'(?:\[/IDLE_PATCH\]|(?=\[IDLE_PATCH\b)|\Z)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_IDLE_HUNK_PATTERN = re.compile(
+    r'<<<TARGET[ \t]*\r?\n(?P<target>.*?)\r?\n?===REPLACE[ \t]*\r?\n(?P<replacement>.*?)\r?\n>>>',
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -191,8 +196,14 @@ def execute_sandbox_tool(
         return DEFAULT_IDLE_INSTRUCTION
     if name == "list_source_files":
         try:
+            from palace_config import get_live_version_verification_info
+            v_info = get_live_version_verification_info()
+            v_hdr = f"[{v_info['status_badge']} | Build {v_info['windows_version']}]\n"
+        except Exception:
+            v_hdr = ""
+        try:
             files = sorted(p.name for p in mirror_dir.iterdir() if p.is_file())
-            return "Palace source mirror files: " + (", ".join(files) if files else "None")
+            return v_hdr + "Palace source mirror files: " + (", ".join(files) if files else "None")
         except OSError:
             return "Source mirror unavailable."
     if name == "read_source_file":
@@ -201,13 +212,129 @@ def execute_sandbox_tool(
         if not target.exists():
             return f"File '{safe}' not found in source_mirror."
         try:
+            from palace_config import get_live_version_verification_info
+            v_info = get_live_version_verification_info()
+            v_tag = f" | {v_info['status_badge']}"
+        except Exception:
+            v_tag = ""
+        try:
+            import hashlib as _hashlib
             lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
             s = max(1, start_line)
-            e = min(len(lines), max(s, min(s + 90, end_line)))
+            max_span = 450
+            req_e = min(len(lines), max(s, end_line))
+            e = min(req_e, s + max_span - 1)
+            raw_block = "\n".join(lines[s - 1 : e])
+            blk_hash = _hashlib.sha256(raw_block.encode("utf-8")).hexdigest()[:10]
             snippet = "\n".join(f"{i}: {lines[i-1]}" for i in range(s, e + 1))
-            return f"[{safe} lines {s}-{e} of {len(lines)}]:\n{snippet}"
+            trunc_footer = (
+                f"\n[TRUNCATED AT LINE {e} OF {req_e} (450-line per-call limit) — call "
+                f'[TOOL: read_source_file file="{safe}" start={e + 1} end={req_e}] for the rest]'
+                if e < req_e
+                else ""
+            )
+            return f"[{safe} lines {s}-{e} of {len(lines)} | sha256:{blk_hash}{v_tag}]:\n{snippet}{trunc_footer}"
         except OSError as exc:
             return f"Error reading '{safe}': {exc}"
+    if name in {"read_symbol", "read_function", "read_method"}:
+        safe = Path(file_arg or "palace_gui.py").name
+        target = mirror_dir / safe
+        if not target.exists():
+            return f"File '{safe}' not found in source_mirror."
+        sym = (query_arg or "").strip()
+        if not sym:
+            return 'Provide query="<function_or_method_name>" to read_symbol.'
+        try:
+            import ast as _ast
+            import hashlib as _hashlib
+            src_txt = target.read_text(encoding="utf-8", errors="replace")
+            lines = src_txt.splitlines()
+            tree = _ast.parse(src_txt, filename=safe)
+            want_cls, _, want_fn = sym.rpartition(".")
+            matches_found: list[tuple[str, int, int]] = []
+            for node in tree.body:
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    if not want_cls and (node.name == want_fn or node.name.lower() == want_fn.lower()):
+                        s_ln = getattr(node, "lineno", 1)
+                        if getattr(node, "decorator_list", None):
+                            s_ln = min(s_ln, *(getattr(d, "lineno", s_ln) for d in node.decorator_list))
+                        e_ln = getattr(node, "end_lineno", s_ln + 40)
+                        matches_found.append((node.name, s_ln, e_ln))
+                elif isinstance(node, _ast.ClassDef):
+                    if not want_fn or node.name == sym or node.name.lower() == sym.lower():
+                        s_ln = getattr(node, "lineno", 1)
+                        e_ln = min(getattr(node, "end_lineno", s_ln + 120), s_ln + 250)
+                        matches_found.append((node.name, s_ln, e_ln))
+                    if not want_cls or node.name.lower() == want_cls.lower():
+                        for sub in node.body:
+                            if isinstance(sub, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                                if sub.name == want_fn or sub.name.lower() == want_fn.lower():
+                                    s_ln = getattr(sub, "lineno", 1)
+                                    if getattr(sub, "decorator_list", None):
+                                        s_ln = min(s_ln, *(getattr(d, "lineno", s_ln) for d in sub.decorator_list))
+                                    e_ln = getattr(sub, "end_lineno", s_ln + 40)
+                                    matches_found.append((f"{node.name}.{sub.name}", s_ln, e_ln))
+            if not matches_found:
+                return f"Symbol '{sym}' not found in '{safe}'."
+            out_blocks: list[str] = []
+            for q_name, s_ln, e_ln in matches_found[:3]:
+                cap_e = min(len(lines), e_ln, s_ln + 450)
+                raw_blk = "\n".join(lines[s_ln - 1 : cap_e])
+                blk_hash = _hashlib.sha256(raw_blk.encode("utf-8")).hexdigest()[:10]
+                numbered = "\n".join(f"{i}: {lines[i - 1]}" for i in range(s_ln, cap_e + 1))
+                verbatim_no_nums = "\n".join(lines[s_ln - 1 : cap_e])
+                if cap_e < e_ln:
+                    tail_s = max(cap_e + 1, min(len(lines), e_ln) - 34)
+                    tail_e = min(len(lines), e_ln)
+                    tail_numbered = "\n".join(f"{i}: {lines[i - 1]}" for i in range(tail_s, tail_e + 1))
+                    tail_verbatim = "\n".join(lines[tail_s - 1 : tail_e])
+                    trunc = (
+                        f"\n[TRUNCATED AT LINE {cap_e} OF {e_ln} — call read_source_file start={cap_e + 1} end={e_ln} for middle lines]\n"
+                        f"--- [Symbol Tail `{q_name}` lines {tail_s}-{tail_e} (end of function)] ---\n"
+                        f"{tail_numbered}"
+                    )
+                    verbatim_no_nums = (
+                        f"{verbatim_no_nums}\n"
+                        f"--- [Verbatim Tail `{q_name}` lines {tail_s}-{tail_e}] ---\n"
+                        f"{tail_verbatim}"
+                    )
+                else:
+                    trunc = ""
+                out_blocks.append(
+                    f"[{safe} symbol `{q_name}` lines {s_ln}-{cap_e} (end={e_ln}) | sha256:{blk_hash}]:\n"
+                    f"{numbered}{trunc}\n"
+                    f"--- [Verbatim `{q_name}` (copy directly into <<<TARGET without line numbers)] ---\n"
+                    f"{verbatim_no_nums}"
+                )
+            return "\n\n".join(out_blocks)
+        except Exception as exc:
+            return f"Error reading symbol '{sym}' in '{safe}': {exc}"
+    if name == "list_symbols":
+        safe = Path(file_arg or "palace_gui.py").name
+        target = mirror_dir / safe
+        if not target.exists():
+            return f"File '{safe}' not found in source_mirror."
+        try:
+            import ast as _ast
+            src_txt = target.read_text(encoding="utf-8", errors="replace")
+            tree = _ast.parse(src_txt, filename=safe)
+            filt = (query_arg or "").strip().lower()
+            items: list[str] = []
+            for node in tree.body:
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    if not filt or filt in node.name.lower():
+                        items.append(f"def {node.name} (lines {node.lineno}-{getattr(node, 'end_lineno', node.lineno)})")
+                elif isinstance(node, _ast.ClassDef):
+                    if not filt or filt in node.name.lower():
+                        items.append(f"class {node.name} (lines {node.lineno}-{getattr(node, 'end_lineno', node.lineno)})")
+                    for sub in node.body:
+                        if isinstance(sub, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                            full_nm = f"{node.name}.{sub.name}"
+                            if not filt or filt in full_nm.lower():
+                                items.append(f"  def {full_nm} (lines {sub.lineno}-{getattr(sub, 'end_lineno', sub.lineno)})")
+            return f"[{safe} symbols ({len(items)} matched)]:\n" + "\n".join(items[:160])
+        except Exception as exc:
+            return f"Error listing symbols in '{safe}': {exc}"
     if name in {"search_source_code", "grep_source"}:
         q = (query_arg or "").strip().lower()
         if not q:
@@ -221,17 +348,17 @@ def execute_sandbox_tool(
                 file_lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
                 for idx, line in enumerate(file_lines, 1):
                     if q in line.lower():
-                        hits.append(f"{p.name}:{idx}: {line.strip()[:100]}")
-                        if len(context_blocks) < 4:
-                            c_start = max(1, idx - 6)
-                            c_end = min(len(file_lines), idx + 14)
+                        hits.append(f"{p.name}:{idx}: {line.strip()[:110]}")
+                        if len(context_blocks) < 6:
+                            c_start = max(1, idx - 8)
+                            c_end = min(len(file_lines), idx + 36)
                             verbatim_window = "\n".join(file_lines[c_start - 1 : c_end])
                             context_blocks.append(
                                 f"--- [{p.name} verbatim lines {c_start}-{c_end} around match at line {idx}] ---\n{verbatim_window}"
                             )
-                        if len(hits) >= 15:
+                        if len(hits) >= 25:
                             break
-                if len(hits) >= 15:
+                if len(hits) >= 25:
                     break
         except OSError:
             pass
@@ -285,17 +412,22 @@ def execute_all_code_tools_in_text(
     *,
     sandbox_root: Path | None = None,
 ) -> str:
-    """Parse and run all [TOOL: ...] tags in response_text and return concatenated tool results."""
+    """Parse and run all [TOOL: ...] tags in response_text and return concatenated tool results with fair per-tool char budgeting."""
     eff_sandbox = Path(sandbox_root) if sandbox_root is not None else get_experimental_data_root()
     if not response_text or "[TOOL:" not in response_text.upper():
         return ""
+    matches = list(_IDLE_TOOL_PATTERN.finditer(response_text))
+    if not matches:
+        return ""
+    total_calls = len(matches)
+    per_call_cap = 26_000 if total_calls <= 1 else max(4_200, min(14_000, 27_000 // total_calls))
     outputs: list[str] = []
-    for match in _IDLE_TOOL_PATTERN.finditer(response_text):
+    for idx_m, match in enumerate(matches, 1):
         t_name = (match.group("name") or "").strip()
         t_file = (match.group("file") or "").strip()
         t_query = (match.group("query") or "").strip()
         t_start = int(match.group("start") or 1)
-        t_end = int(match.group("end") or 80)
+        t_end = int(match.group("end") or (t_start + 180))
         out = execute_sandbox_tool(
             t_name,
             file_arg=t_file,
@@ -304,7 +436,16 @@ def execute_all_code_tools_in_text(
             end_line=t_end,
             sandbox_root=eff_sandbox,
         )
-        outputs.append(f"[🛠 Tool `{t_name}` result]:\n{out}")
+        if len(out) > per_call_cap:
+            # Keep both head and tail (verbatim block / symbol tail) when a single tool call is huge in a multi-tool batch
+            head_budget = int(per_call_cap * 0.65)
+            tail_budget = per_call_cap - head_budget - 160
+            out = (
+                f"{out[:head_budget]}\n"
+                f"... [PER-TOOL BATCH BUDGET ({per_call_cap} chars across {total_calls} tool calls) — middle elided] ...\n"
+                f"{out[-max(400, tail_budget):]}"
+            )
+        outputs.append(f"[🛠 Tool #{idx_m}/{total_calls} `{t_name}` ({t_file or t_query}) result]:\n{out}")
     return "\n\n".join(outputs)
 
 
@@ -312,6 +453,7 @@ def execute_live_autopatches_in_text(
     response_text: str,
     *,
     author: str = "council_autopatch",
+    sync_before_apply: bool = True,
 ) -> tuple[str, list[str], str]:
     """Parse any [IDLE_PATCH file="..."] blocks in response_text, stage & preflight-verify them via palace_ouroboros,
     and return (cleaned_text, applied_files, status_or_reboot_summary).
@@ -336,20 +478,10 @@ def execute_live_autopatches_in_text(
     def _run_patch(match: re.Match) -> str:
         p_file = (match.group("file") or "").strip()
         p_sum = (match.group("summary") or f"Autopatch to {p_file} by {author}").strip()
-        p_target = match.group("target") or ""
-        p_repl = match.group("replacement") or ""
-        if not p_target.strip() or p_target.strip() in {"exact existing lines", "# No existing file to replace"}:
-            try:
-                from palace_ouroboros import EDITABLE_PALACE_FILES
-                allow_str = ", ".join(sorted(EDITABLE_PALACE_FILES))
-            except Exception:
-                allow_str = "allowlisted Palace .py files"
-            rej_msg = (
-                f"<<<TARGET cannot be empty or placeholder; [IDLE_PATCH] only modifies existing lines "
-                f"in allowlisted files ({allow_str})."
-            )
-            status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {rej_msg}")
-            return f"[⚠ Autopatch Rejected: `{p_file}` — {rej_msg}]"
+        body = match.group("body") or ""
+        hunks = list(_IDLE_HUNK_PATTERN.finditer(body))
+        if not hunks:
+            return match.group(0)
         try:
             from palace_ouroboros import LIVE_DIR, SANDBOX_ROOT, SOURCE_REPO_DIR, STAGING_DIR, stage_palace_replace, sync_live_to_staging
             try:
@@ -362,11 +494,113 @@ def execute_live_autopatches_in_text(
                     return f"[⏸ Approval Required: `{p_file}` — {excl_msg}]"
             except Exception:
                 pass
-            if not applied_files:
+            if sync_before_apply and not applied_files:
                 sync_live_to_staging()
-            ok, msg = stage_palace_replace(p_file, p_target, p_repl, author=author)
-            if ok:
-                staged_fp = STAGING_DIR / Path(p_file).name
+            staged_fp = STAGING_DIR / Path(p_file).name
+            pre_patch_snapshot = staged_fp.read_text(encoding="utf-8", errors="replace") if staged_fp.exists() else None
+            applied_hunk_count = 0
+            last_msg = ""
+            hunk_errors: list[str] = []
+            for h_idx, h_match in enumerate(hunks, 1):
+                p_target = h_match.group("target") or ""
+                p_repl = h_match.group("replacement") or ""
+                if not p_target.strip() or p_target.strip() in {"exact existing lines", "# No existing file to replace"}:
+                    try:
+                        from palace_ouroboros import EDITABLE_PALACE_FILES
+                        allow_str = ", ".join(sorted(EDITABLE_PALACE_FILES))
+                    except Exception:
+                        allow_str = "allowlisted Palace .py files"
+                    rej_msg = (
+                        f"Hunk #{h_idx}: <<<TARGET cannot be empty or placeholder; [IDLE_PATCH] only modifies existing lines "
+                        f"in allowlisted files ({allow_str})."
+                    )
+                    hunk_errors.append(rej_msg)
+                    continue
+                is_last_hunk = (h_idx == len(hunks))
+                ok, msg = stage_palace_replace(
+                    p_file,
+                    p_target,
+                    p_repl,
+                    author=author,
+                    verify_ast_methods=is_last_hunk,
+                )
+                if ok:
+                    applied_hunk_count += 1
+                    last_msg = msg
+                else:
+                    # Only treat a hunk as idempotently present if the replacement is substantive (>=2 lines or >=48 chars)
+                    # and the target is no longer present in the file
+                    cur_stg_txt = staged_fp.read_text(encoding="utf-8", errors="replace") if staged_fp.exists() else ""
+                    clean_repl = p_repl.strip()
+                    clean_tgt = p_target.strip()
+                    is_substantive = (len(clean_repl.splitlines()) >= 2 or len(clean_repl) >= 48)
+                    if is_substantive and clean_repl in cur_stg_txt and clean_tgt not in cur_stg_txt:
+                        applied_hunk_count += 1
+                        last_msg = f"Hunk #{h_idx} already present in staged '{p_file}'."
+                    else:
+                        hunk_errors.append(f"Hunk #{h_idx}: {msg}")
+
+            # Atomic multi-hunk gate: if ANY hunk failed, or if the combined post-block AST method check fails,
+            # roll back staged_fp to pre_patch_snapshot so a half-patched file never leaks to LIVE_DIR!
+            if hunk_errors and pre_patch_snapshot is not None:
+                try:
+                    staged_fp.write_text(pre_patch_snapshot, encoding="utf-8")
+                except OSError:
+                    pass
+                applied_hunk_count = 0
+            elif applied_hunk_count > 0 and pre_patch_snapshot is not None and staged_fp.exists():
+                try:
+                    import ast as _ast
+                    post_txt = staged_fp.read_text(encoding="utf-8", errors="replace")
+                    tree = _ast.parse(post_txt, filename=staged_fp.name)
+                    defined_attrs: set[str] = set()
+                    for node in _ast.walk(tree):
+                        if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                            defined_attrs.add(node.name)
+                        elif isinstance(node, _ast.Assign):
+                            for tgt in node.targets:
+                                if isinstance(tgt, _ast.Attribute) and isinstance(tgt.value, _ast.Name) and tgt.value.id == "self":
+                                    defined_attrs.add(tgt.attr)
+                    called_now = set(re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\s*\(", post_txt)) | set(
+                        re.findall(r"\.connect\(\s*self\.(_[a-zA-Z0-9_]+)\s*\)", post_txt)
+                    )
+                    called_before = set(re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\s*\(", pre_patch_snapshot)) | set(
+                        re.findall(r"\.connect\(\s*self\.(_[a-zA-Z0-9_]+)\s*\)", pre_patch_snapshot)
+                    )
+                    missing_m = sorted(m for m in (called_now - called_before) if m not in defined_attrs)
+                    if missing_m:
+                        staged_fp.write_text(pre_patch_snapshot, encoding="utf-8")
+                        applied_hunk_count = 0
+                        hunk_errors.append(
+                            f"Atomic Multi-Hunk AST Error in '{staged_fp.name}' (rolled back): Patch calls undefined method(s) "
+                            f"{', '.join('self.' + m + '()' for m in missing_m)}."
+                        )
+                    else:
+                        defined_mod_names = set(defined_attrs)
+                        for node in _ast.walk(tree):
+                            if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                                for alias in node.names:
+                                    defined_mod_names.add(alias.asname or alias.name)
+                            elif isinstance(node, _ast.Assign):
+                                for tgt in node.targets:
+                                    if isinstance(tgt, _ast.Name):
+                                        defined_mod_names.add(tgt.id)
+                        mod_called_now = set(re.findall(r"(?<![.\w])(_[a-zA-Z0-9_]+)\s*\(", post_txt))
+                        mod_called_before = set(re.findall(r"(?<![.\w])(_[a-zA-Z0-9_]+)\s*\(", pre_patch_snapshot))
+                        missing_mod = sorted(m for m in (mod_called_now - mod_called_before) if m not in defined_mod_names)
+                        if missing_mod:
+                            staged_fp.write_text(pre_patch_snapshot, encoding="utf-8")
+                            applied_hunk_count = 0
+                            hunk_errors.append(
+                                f"Atomic Multi-Hunk AST Error in '{staged_fp.name}' (rolled back): Patch calls undefined module helper(s) "
+                                f"{', '.join(m + '()' for m in missing_mod)}."
+                            )
+                except Exception as ast_exc:
+                    staged_fp.write_text(pre_patch_snapshot, encoding="utf-8")
+                    applied_hunk_count = 0
+                    hunk_errors.append(f"Atomic Multi-Hunk Syntax/AST Error (rolled back): {ast_exc}")
+
+            if applied_hunk_count > 0 and not hunk_errors:
                 mirror_dir = SANDBOX_ROOT / "source_mirror"
                 if staged_fp.exists() and mirror_dir.exists():
                     try:
@@ -378,16 +612,19 @@ def execute_live_autopatches_in_text(
                         shutil.copy2(staged_fp, LIVE_DIR / staged_fp.name)
                     except OSError:
                         pass
-                applied_files.append(p_file)
-                summaries.append(p_sum)
-                status_notes.append(f"✓ **Verified & Staged Patch (`{p_file}`)**: {msg}")
+                if p_file not in applied_files:
+                    applied_files.append(p_file)
+                summaries.append(f"{p_sum} ({applied_hunk_count}/{len(hunks)} hunks)")
+                status_notes.append(
+                    f"✓ **Verified & Staged Patch (`{p_file}` — {applied_hunk_count}/{len(hunks)} hunks)**: {last_msg}"
+                )
                 try:
                     IdleMailboxStore().send_agent_email(
                         sender=author,
-                        subject=f"✅ Autopatch Staged & Verified: {p_file}",
+                        subject=f"✅ Autopatch Staged & Verified: {p_file} ({applied_hunk_count}/{len(hunks)} hunks)",
                         body=(
                             f"Summary: {p_sum}\n"
-                            f"Verification: {msg}\n"
+                            f"Verification: {last_msg}\n"
                             f"Location: Staged in Agent Sandbox ({STAGING_DIR / Path(p_file).name}) and synced to Live runtime. "
                             f"Pending owner promotion to master E: repository and Git."
                         ),
@@ -395,10 +632,11 @@ def execute_live_autopatches_in_text(
                     )
                 except Exception:
                     pass
-                return f"[⚡ Autopatch Applied: `{p_file}` — {p_sum}]"
+                return f"[⚡ Autopatch Applied: `{p_file}` — {p_sum} ({applied_hunk_count}/{len(hunks)} hunks)]"
             else:
-                status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {msg}")
-                return f"[⚠ Autopatch Rejected: `{p_file}` — {msg}]"
+                joined_err = "; ".join(hunk_errors) or "No hunks matched"
+                status_notes.append(f"⚠ **Autopatch Rejected (`{p_file}`)**: {joined_err}")
+                return f"[⚠ Autopatch Rejected: `{p_file}` — {joined_err}]"
         except Exception as exc:
             status_notes.append(f"⚠ **Autopatch Error (`{p_file}`)**: {exc}")
             return f"[⚠ Autopatch Error: `{p_file}` — {exc}]"

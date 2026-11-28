@@ -1,4 +1,4 @@
-# Fairybread (Beta v0.95e) — User Guide & Setup Handbook
+# Fairybread (Beta v0.95h) — User Guide & Setup Handbook
 
 **Created by Brett Martin Moore (`bm069au@gmail.com`)** · Official site: [fairybread.me](https://fairybread.me) · **Live IRC Support:** [**`#Fairybread` on Rizon IRC**](https://qchat.rizon.net/?channels=Fairybread) (`irc.rizon.net:+6697`)
 

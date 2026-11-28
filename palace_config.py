@@ -93,7 +93,7 @@ def _resolve_default_config_path() -> Path:
 CONFIG_PATH = _resolve_default_config_path()
 
 FAIRYBREAD_BASE_VERSION = "0.95"
-FAIRYBREAD_VERSION = "0.95e"
+FAIRYBREAD_VERSION = "0.95h"
 FAIRYBREAD_WINDOWS_VERSION = version_to_windows_4part(FAIRYBREAD_VERSION)
 FAIRYBREAD_EDITION = "developer"  # Hardwired to "public" in Public non-Dev builds
 IS_DEVELOPER_EDITION = (FAIRYBREAD_EDITION == "developer")
@@ -265,7 +265,8 @@ PROVIDER_CATALOG: dict[str, dict[str, Any]] = {
         "key_url": "https://deepinfra.com/dash/keys",
         "default_base_url": "https://api.deepinfra.com/v1/openai",
         "default_model": "Qwen/Qwen3.8-27B",
-        "suggested_models": ["Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash", "Qwen/Qwen3.8-Max", "Qwen/Qwen3-32B"],
+        "suggested_models": ["Qwen/Qwen4-Max", "qwen4-max", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-Flash", "Qwen/Qwen3.8-Max", "Qwen/Qwen3-32B"],
+        "openrouter_suggested_models": ["qwen/qwen4-max", "qwen/qwen3-32b", "qwen/qwen3.8-27b"],
         "billing_note": "Hosted via DeepInfra ($10 balance / set usage limit in Billing) or Alibaba DashScope.",
     },
     "cohere": {
@@ -856,7 +857,7 @@ OPENROUTER_PRESET_TIERS: dict[str, dict[str, dict[str, str]]] = {
         "gemini": {"model": "google/gemini-4-neon", "label": "Gemini 4 Neon"},
         "openai": {"model": "openai/gpt-6.2-astra", "label": "GPT-6.2 Astra"},
         "deepseek": {"model": "deepseek/deepseek-chat", "label": "DeepSeek Chat V3"},
-        "qwen": {"model": "qwen/qwen3-32b", "label": "Qwen 3 32B"},
+        "qwen": {"model": "qwen/qwen4-max", "label": "Qwen 4 Max (1M Context + Vision)"},
         "mistral": {"model": "mistralai/mistral-large-2411", "label": "Mistral Large (Full Flagship)"},
         "grok": {"model": "x-ai/grok-4", "label": "Grok 4"},
         "cohere": {"model": "cohere/command-a", "label": "Cohere Command A"},
@@ -943,7 +944,23 @@ def fetch_live_provider_models(
     cat = PROVIDER_CATALOG.get(clean, {})
     fallback = list(cat.get("suggested_models", []))
     key = (api_key or "").strip()
-    if not key and clean != "ollama":
+    import urllib.parse
+    eff_url = (base_url or str(cat.get("default_base_url") or "")).strip().rstrip("/")
+    if not eff_url and clean == "openai":
+        eff_url = "https://api.openai.com/v1"
+    elif not eff_url and clean == "mistral":
+        eff_url = "https://api.mistral.ai/v1"
+
+    parsed_host = ""
+    if eff_url:
+        try:
+            parsed_host = (
+                urllib.parse.urlparse(eff_url if "://" in eff_url else f"http://{eff_url}").hostname or ""
+            ).strip().lower()
+        except ValueError:
+            parsed_host = ""
+    is_local_host = parsed_host in {"127.0.0.1", "localhost", "::1", "0.0.0.0", "host.docker.internal"}
+    if not key and clean != "ollama" and not is_local_host:
         return fallback
 
     discovered: list[str] = []
@@ -970,15 +987,25 @@ def fetch_live_provider_models(
                     discovered.append(mname)
         else:
             import urllib.request
-            eff_url = (base_url or str(cat.get("default_base_url") or "")).strip().rstrip("/")
-            if not eff_url and clean == "openai":
-                eff_url = "https://api.openai.com/v1"
-            elif not eff_url and clean == "mistral":
-                eff_url = "https://api.mistral.ai/v1"
             if eff_url:
+                if "://" not in eff_url:
+                    eff_url = f"http://{eff_url}"
+                url_parts = urllib.parse.urlparse(eff_url)
+                path = url_parts.path.rstrip("/")
+                lowered = path.lower()
+                for suffix in ("/chat/completions", "/completions", "/responses", "/models"):
+                    if lowered.endswith(suffix):
+                        path = path[: -len(suffix)].rstrip("/")
+                        break
+                if (clean == "ollama" or ":11434" in eff_url) and not path.lower().endswith("/v1"):
+                    path = f"{path}/v1" if path else "/v1"
+                eff_url = f"{url_parts.scheme}://{url_parts.netloc}{path}".rstrip("/")
+                req_headers = {"Accept": "application/json"}
+                if key:
+                    req_headers["Authorization"] = f"Bearer {key}"
                 req = urllib.request.Request(
                     f"{eff_url}/models",
-                    headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+                    headers=req_headers,
                 )
                 with urllib.request.urlopen(req, timeout=6.0) as resp:
                     payload = json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -1139,6 +1166,8 @@ OPENROUTER_MODEL_OVERRIDE_MAP: dict[str, str] = {
     "deepseek-chat": "deepseek/deepseek-chat",
     "claude-3-7-sonnet-latest": "anthropic/claude-sonnet-5.5",
     "claude-sonnet-5.5": "anthropic/claude-sonnet-5.5",
+    "qwen4-max": "qwen/qwen4-max",
+    "qwen/qwen4-max": "qwen/qwen4-max",
 }
 
 
@@ -1157,6 +1186,7 @@ def resolve_profile_model_override(
         "openai": "openai",
         "gemini": "google",
         "deepseek": "deepseek",
+        "qwen": "qwen",
         "anthropic": "anthropic",
         "claude": "anthropic",
         "mistral": "mistralai",
@@ -1215,14 +1245,35 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "quick",
         "voice_mode": "full_conversation",
         "auto_start_voice": True,
+        "show_in_quick_list": True,
+        "category": "voice",
         "model_overrides": {
-            "gemini": "gemini-4-neon",
-            "openai": "gpt-6-luna",
+            "gemini": "gemini-2.5-flash",
+            "openai": "gpt-5-mini",
             "deepseek": "deepseek-flash",
         },
     },
+    "voice_intermediate": {
+        "label": "🎙️ Voice 2 — Intermediate (Balanced)",
+        "providers": ["gemini", "openai", "deepseek", "mistral"],
+        "deliberate": False,
+        "code_access": False,
+        "max_ais": 0,
+        "context_depth": "standard",
+        "timing_profile": "unlimited",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": True,
+        "show_in_quick_list": True,
+        "category": "voice",
+        "model_overrides": {
+            "gemini": "gemini-3.8-flash",
+            "openai": "gpt-6-luna",
+            "deepseek": "deepseek-chat",
+            "mistral": "mistral-medium-latest",
+        },
+    },
     "voice_2": {
-        "label": "🎙️ Voice 2 — Smart Conversation",
+        "label": "🎙️ Voice 3 — Smart Conversation (Deep Pro)",
         "providers": ["openai", "gemini", "deepseek", "mistral", "anthropic"],
         "deliberate": False,
         "code_access": False,
@@ -1231,6 +1282,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "full_conversation",
         "auto_start_voice": True,
+        "show_in_quick_list": True,
+        "category": "voice",
         "model_overrides": {
             "openai": "gpt-6.1-terra",
             "gemini": "gemini-4-hydrogen",
@@ -1249,6 +1302,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "input_only",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "work",
         "model_overrides": {
             "mistral": "codestral-latest",
         },
@@ -1263,8 +1318,29 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "quick",
         "voice_mode": "full_conversation",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "chat",
         "model_overrides": {
             "mistral": "mistral-small-latest",
+        },
+    },
+    "intermediate_chat": {
+        "label": "⚖️ Intermediate Chat (Balanced Speed & IQ)",
+        "providers": ["gemini", "openai", "deepseek", "mistral"],
+        "deliberate": False,
+        "code_access": False,
+        "max_ais": 0,
+        "context_depth": "standard",
+        "timing_profile": "standard",
+        "voice_mode": "full_conversation",
+        "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "chat",
+        "model_overrides": {
+            "gemini": "gemini-2.5-flash",
+            "openai": "gpt-6-luna",
+            "deepseek": "deepseek-chat",
+            "mistral": "mistral-medium-latest",
         },
     },
     "deep_chat": {
@@ -1277,6 +1353,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "input_only",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "chat",
         "model_overrides": {
             "openai": "gpt-6.2-sol",
             "gemini": "gemini-4-carbon",
@@ -1296,8 +1374,10 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "full_conversation",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "chat",
         "model_overrides": {
-            "gemini": "gemini-4-neon",
+            "gemini": "gemini-2.5-flash",
             "openai": "gpt-6-luna",
             "deepseek": "deepseek-flash",
             "mistral": "mistral-medium-latest",
@@ -1314,6 +1394,8 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "input_only",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "work",
         "model_overrides": {},
     },
     "work_mode": {
@@ -1326,11 +1408,120 @@ DEFAULT_AI_SQUADS: dict[str, dict[str, Any]] = {
         "timing_profile": "unlimited",
         "voice_mode": "input_only",
         "auto_start_voice": False,
+        "show_in_quick_list": True,
+        "category": "work",
         "model_overrides": {
             "mistral": "mistral-medium-latest",
         },
     },
 }
+
+PROVIDER_MODEL_TIERS: dict[str, dict[str, dict[str, str]]] = {
+    "gemini": {
+        "light": {"model": "gemini-2.5-flash", "short": "2.5 Flash", "desc": "Light & Fast (Low cost, instant voice/chat)"},
+        "intermediate": {"model": "gemini-3.8-flash", "short": "3.8 Flash", "desc": "Intermediate (Balanced IQ & speed)"},
+        "heavy": {"model": "gemini-4-neon", "short": "4 Neon", "desc": "Heavy / Deep Pro (Frontier reasoning)"},
+    },
+    "openai": {
+        "light": {"model": "gpt-5-mini", "short": "GPT-5 Mini", "desc": "Light & Fast (Low cost, quick turns)"},
+        "intermediate": {"model": "gpt-6-luna", "short": "GPT-6 Luna", "desc": "Intermediate (Balanced conversational)"},
+        "heavy": {"model": "gpt-6.2-sol", "short": "GPT-6.2 Sol", "desc": "Heavy / Deep Pro (High-IQ flagship)"},
+    },
+    "deepseek": {
+        "light": {"model": "deepseek-flash", "short": "V4 Flash", "desc": "Light & Fast (1M context fast)"},
+        "intermediate": {"model": "deepseek-chat", "short": "V3 Chat", "desc": "Intermediate (Balanced reasoning)"},
+        "heavy": {"model": "deepseek-v4-pro", "short": "V4 Pro", "desc": "Heavy / Deep Pro (Deep coder & logic)"},
+    },
+    "mistral": {
+        "light": {"model": "mistral-small-latest", "short": "Small 3.1", "desc": "Light & Fast"},
+        "intermediate": {"model": "mistral-medium-latest", "short": "Medium 3.1", "desc": "Intermediate (Balanced)"},
+        "heavy": {"model": "mistral-large-latest", "short": "Large", "desc": "Heavy / Deep Pro (Flagship)"},
+    },
+    "groq": {
+        "light": {"model": "llama-3.3-70b-versatile", "short": "Llama 3.3 70B", "desc": "Light & Fast LPU"},
+        "intermediate": {"model": "openai/gpt-oss-120b", "short": "GPT-OSS 120B", "desc": "Intermediate LPU"},
+        "heavy": {"model": "openai/gpt-oss-120b", "short": "GPT-OSS 120B", "desc": "Heavy LPU"},
+    },
+    "qwen": {
+        "light": {"model": "Qwen/Qwen3.8-Flash", "short": "Qwen 3.8 Flash", "desc": "Light & Fast"},
+        "intermediate": {"model": "Qwen/Qwen3.8-27B", "short": "Qwen 3.8 27B", "desc": "Intermediate"},
+        "heavy": {"model": "Qwen/Qwen4-Max", "short": "Qwen 4 Max", "desc": "Heavy / Deep Pro (1M context + native vision)"},
+    },
+    "cohere": {
+        "light": {"model": "command-r-08-2024", "short": "Command R", "desc": "Light & Fast"},
+        "intermediate": {"model": "command-r-plus-08-2024", "short": "Command R+", "desc": "Intermediate"},
+        "heavy": {"model": "command-a-03-2025", "short": "Command A", "desc": "Heavy / Deep Pro"},
+    },
+    "cerebras": {
+        "light": {"model": "llama3.1-8b", "short": "Llama 3.1 8B", "desc": "Light & Fast Wafer"},
+        "intermediate": {"model": "gpt-oss-120b", "short": "GPT-OSS 120B", "desc": "Intermediate Wafer"},
+        "heavy": {"model": "gpt-oss-120b", "short": "GPT-OSS 120B", "desc": "Heavy Wafer"},
+    },
+    "xai": {
+        "light": {"model": "grok-3-mini", "short": "Grok 3 Mini", "desc": "Light & Fast"},
+        "intermediate": {"model": "grok-3", "short": "Grok 3", "desc": "Intermediate"},
+        "heavy": {"model": "grok-4", "short": "Grok 4", "desc": "Heavy / Deep Pro"},
+    },
+    "anthropic": {
+        "light": {"model": "claude-3-5-haiku-latest", "short": "Claude 3.5 Haiku", "desc": "Light & Fast"},
+        "intermediate": {"model": "claude-3-5-sonnet-latest", "short": "Claude 3.5 Sonnet", "desc": "Intermediate"},
+        "heavy": {"model": "claude-3-7-sonnet-latest", "short": "Claude 3.7 Sonnet", "desc": "Heavy / Deep Pro"},
+    },
+}
+
+
+def format_short_model_version(provider_name: str, model_id: str) -> str:
+    """Return a clean, compact human-readable model version badge (e.g. '2.5 Flash', 'GPT-6 Luna', '4 Neon')."""
+    p_clean = (provider_name or "").strip().lower()
+    m_clean = (model_id or "").strip()
+    if not m_clean:
+        cat_def = str((PROVIDER_CATALOG.get(p_clean) or {}).get("default_model") or "")
+        m_clean = cat_def
+    tiers = PROVIDER_MODEL_TIERS.get(p_clean, {})
+    for t_meta in tiers.values():
+        if t_meta.get("model", "").lower() == m_clean.lower():
+            return t_meta.get("short", m_clean)
+    bare = m_clean.split("/")[-1].split(":")[0]
+    replacements = (
+        ("gemini-", ""),
+        ("deepseek-", "V4 " if "v4" in bare.lower() else ""),
+        ("-latest", ""),
+        ("-instruct", ""),
+        ("mistral-", "Mistral "),
+        ("claude-3-7-", "3.7 "),
+        ("claude-3-5-", "3.5 "),
+    )
+    out = bare
+    for old_s, new_s in replacements:
+        if out.lower().startswith(old_s.lower()):
+            out = new_s + out[len(old_s):]
+        elif old_s.startswith("-") and out.lower().endswith(old_s.lower()):
+            out = out[:-len(old_s)]
+    out = out.replace("-", " ").strip()
+    if out.lower().startswith("gpt "):
+        out = "GPT-" + out[4:].title()
+    else:
+        out = out.title() if out.islower() else out
+    return out[:22] or "Default"
+
+
+def resolve_model_for_tier(provider_name: str, tier: str, question: str = "") -> str:
+    """Resolve concrete model ID for a provider and tier ('light', 'intermediate', 'heavy', or 'auto')."""
+    p_clean = (provider_name or "").strip().lower()
+    t_clean = (tier or "intermediate").strip().lower()
+    if t_clean == "auto":
+        q_low = (question or "").lower()
+        heavy_kw = ("architect", "refactor", "debug", "prove", "analyze deeply", "complex", "code", "algorithm", "why does")
+        if len(q_low) > 220 or any(k in q_low for k in heavy_kw):
+            t_clean = "heavy"
+        elif len(q_low) < 75:
+            t_clean = "light"
+        else:
+            t_clean = "intermediate"
+    tiers = PROVIDER_MODEL_TIERS.get(p_clean, {})
+    if t_clean in tiers:
+        return tiers[t_clean]["model"]
+    return str((PROVIDER_CATALOG.get(p_clean) or {}).get("default_model") or "")
 
 
 def _copy_default_squads() -> dict[str, dict[str, Any]]:
@@ -1378,6 +1569,16 @@ def _normalize_squad_entry(slug: str, val: dict[str, Any]) -> dict[str, Any]:
             v_clean = str(mv or "").strip()
             if k_clean and v_clean:
                 overrides[k_clean] = v_clean
+    raw_cat = str(val.get("category") or builtin_def.get("category") or "").strip().lower()
+    if raw_cat not in {"voice", "chat", "work"}:
+        lbl_low = str(val.get("label") or slug).lower()
+        if "voice" in lbl_low or "🎙" in lbl_low or auto_start_voice:
+            raw_cat = "voice"
+        elif any(w in lbl_low for w in ("code", "work", "graphic", "vision", "💻", "🛠", "🎨")):
+            raw_cat = "work"
+        else:
+            raw_cat = "chat"
+    show_in_quick = bool(val.get("show_in_quick_list", builtin_def.get("show_in_quick_list", True)))
     return {
         "label": str(val.get("label") or slug).strip(),
         "providers": [str(p).strip().lower() for p in (val.get("providers") or []) if str(p).strip()],
@@ -1388,6 +1589,8 @@ def _normalize_squad_entry(slug: str, val: dict[str, Any]) -> dict[str, Any]:
         "timing_profile": timing_prof,
         "voice_mode": voice_mode,
         "auto_start_voice": auto_start_voice,
+        "show_in_quick_list": show_in_quick,
+        "category": raw_cat,
         "model_overrides": overrides,
     }
 
@@ -1470,12 +1673,21 @@ PRIMARY_IMAGE_ENGINE_CHOICES: list[tuple[str, str]] = [
     ("gemini-3-pro-image", "Google Gemini 3 Pro Image"),
     ("gpt-image-2", "OpenAI GPT-Image 2 (Legacy)"),
     ("openrouter:openai/gpt-5.4-image-2", "OpenRouter → OpenAI GPT-5.4 Image 2"),
+    ("comfyui:local", "Local ComfyUI (127.0.0.1:8188 — Local Checkpoint / FLUX / SDXL)"),
+    ("sdwebui:local", "Local SD WebUI / Forge (127.0.0.1:7860 — Local Checkpoint)"),
 ]
 
 DRAFT_IMAGE_ENGINE_CHOICES: list[tuple[str, str]] = [
     ("gpt-image-2.6-flare", "OpenAI GPT-Image 2.6 Flare (Fast Drafts)"),
     ("gemini-3.1-flash-image", "Google Gemini 3.1 Flash Image (Fast Drafts)"),
     ("flux-1-schnell", "FLUX 1 Schnell (DeepInfra Fast)"),
+    ("comfyui:local", "Local ComfyUI (127.0.0.1:8188 — Fast Local Drafts)"),
+    ("sdwebui:local", "Local SD WebUI / Forge (127.0.0.1:7860 — Fast Local Drafts)"),
+]
+
+VIDEO_ENGINE_CHOICES: list[tuple[str, str]] = [
+    ("comfyui:video", "Local ComfyUI Video (127.0.0.1:8188 — Wan 2.1 / LTX-Video / Hunyuan / AnimateDiff)"),
+    ("comfyui:custom_workflow", "Local ComfyUI Custom API Workflow (.json)"),
 ]
 
 GRAPHICS_PIPELINE_MODES: list[tuple[str, str]] = [
@@ -1491,6 +1703,12 @@ DEFAULT_GRAPHICS_SETTINGS: dict[str, Any] = {
     "draft_image_engine": "gpt-image-2.6-flare",
     "fallback_image_engines": ["gemini-3-pro-image", "gemini-3.1-flash-image", "gpt-image-2", "flux-1-dev"],
     "pipeline_mode": "single_vision",
+    "local_image_server_url": "http://127.0.0.1:8188",
+    "local_image_model": "",
+    "video_engine": "comfyui:video",
+    "local_video_server_url": "http://127.0.0.1:8188",
+    "local_video_model": "",
+    "local_video_workflow_path": "",
 }
 
 
@@ -1509,6 +1727,12 @@ def load_graphics_settings(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
         "draft_image_engine": str(raw.get("draft_image_engine") or DEFAULT_GRAPHICS_SETTINGS["draft_image_engine"]).strip().lower(),
         "fallback_image_engines": [str(e).strip().lower() for e in (raw.get("fallback_image_engines") or DEFAULT_GRAPHICS_SETTINGS["fallback_image_engines"]) if str(e).strip()],
         "pipeline_mode": p_mode,
+        "local_image_server_url": str(raw.get("local_image_server_url") or DEFAULT_GRAPHICS_SETTINGS["local_image_server_url"]).strip(),
+        "local_image_model": str(raw.get("local_image_model") or DEFAULT_GRAPHICS_SETTINGS["local_image_model"]).strip(),
+        "video_engine": str(raw.get("video_engine") or DEFAULT_GRAPHICS_SETTINGS["video_engine"]).strip().lower(),
+        "local_video_server_url": str(raw.get("local_video_server_url") or DEFAULT_GRAPHICS_SETTINGS["local_video_server_url"]).strip(),
+        "local_video_model": str(raw.get("local_video_model") or DEFAULT_GRAPHICS_SETTINGS["local_video_model"]).strip(),
+        "local_video_workflow_path": str(raw.get("local_video_workflow_path") or DEFAULT_GRAPHICS_SETTINGS["local_video_workflow_path"]).strip(),
     }
     if not out["prompt_duo"]:
         out["prompt_duo"] = list(DEFAULT_GRAPHICS_SETTINGS["prompt_duo"])
@@ -1537,6 +1761,13 @@ def save_graphics_settings(
         pm = str(settings.get("pipeline_mode") or "").strip().lower()
         if pm in {"single_vision", "direct", "prompt_duo"}:
             merged["pipeline_mode"] = pm
+    for k in ("local_image_server_url", "local_image_model", "local_video_server_url", "local_video_model", "local_video_workflow_path"):
+        if k in settings:
+            merged[k] = str(settings.get(k) or "").strip()
+    if "video_engine" in settings:
+        ve = str(settings.get("video_engine") or "").strip().lower()
+        if ve:
+            merged["video_engine"] = ve
     data["graphics_settings"] = merged
     _write_raw_config(data, config_path)
     return load_graphics_settings(config_path)
@@ -2479,6 +2710,62 @@ def get_source_mirror_dir(config_path: Path = CONFIG_PATH) -> Path:
     return get_palace_data_root(config_path) / "source_mirror"
 
 
+def get_live_version_verification_info(config_path: Path = CONFIG_PATH) -> dict[str, Any]:
+    """Verify the running Fairybread runtime version against the source code mirror so AIs can confirm their code view is 100% up to date."""
+    mirror_dir = get_source_mirror_dir(config_path)
+    install_src = get_app_install_dir() / "source"
+    if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
+        src_dir = mirror_dir
+    elif install_src.exists() and any(install_src.glob("*.py")):
+        src_dir = install_src
+    else:
+        src_dir = Path(__file__).resolve().parent
+
+    mirror_cfg_py = src_dir / "palace_config.py"
+    mirror_ver = ""
+    if mirror_cfg_py.is_file():
+        try:
+            txt = mirror_cfg_py.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r'^FAIRYBREAD_VERSION\s*=\s*"([^"]+)"', txt, re.MULTILINE)
+            if m:
+                mirror_ver = m.group(1).strip()
+        except OSError:
+            pass
+
+    if not mirror_ver:
+        mirror_ver = FAIRYBREAD_VERSION
+
+    in_sync = (mirror_ver.lstrip("vV").lower() == FAIRYBREAD_VERSION.lstrip("vV").lower())
+    # Auto-refresh mirror if running from source and mirror is behind
+    if not in_sync and not is_frozen_app():
+        live_dir = Path(__file__).resolve().parent
+        if src_dir.exists() and src_dir.resolve() != live_dir.resolve():
+            try:
+                import shutil
+                for fp in live_dir.glob("*.py"):
+                    shutil.copy2(fp, src_dir / fp.name)
+                mirror_ver = FAIRYBREAD_VERSION
+                in_sync = True
+            except OSError:
+                pass
+
+    status_badge = (
+        f"VERIFIED IN-SYNC (Runtime v{FAIRYBREAD_VERSION} == Source Mirror v{mirror_ver})"
+        if in_sync
+        else f"MISMATCH (Runtime v{FAIRYBREAD_VERSION} != Source Mirror v{mirror_ver})"
+    )
+    return {
+        "runtime_version": f"v{FAIRYBREAD_VERSION}",
+        "raw_version": FAIRYBREAD_VERSION,
+        "windows_version": FAIRYBREAD_WINDOWS_VERSION,
+        "edition": FAIRYBREAD_EDITION,
+        "mirror_version": f"v{mirror_ver}",
+        "source_dir": str(src_dir),
+        "in_sync": in_sync,
+        "status_badge": status_badge,
+    }
+
+
 def build_palace_source_context(
     question: str = "",
     *,
@@ -2490,22 +2777,17 @@ def build_palace_source_context(
         return ""
     q_lower = (question or "").lower()
     code_keywords = (
-        "palace_gui", "idle_service", "orchestrator", "synthesizer",
-        "provider_loader", "palace_config", "session_store", "credential_store",
-        "palace code", "source code", "debug palace",
+        "palace_gui", "palace_theme", "palace_ouroboros", "idle_service", "orchestrator",
+        "synthesizer", "provider_loader", "palace_config", "session_store", "credential_store",
+        "palace code", "source code", "debug palace", "version", "voice_service",
+        "voice_companion", "voice_visualizer", "search_service", "workspace_tools", "/autopatch",
     )
     auto_triggered = any(k in q_lower for k in code_keywords)
     if not force_include and not auto_triggered:
         return ""
 
-    mirror_dir = get_source_mirror_dir()
-    install_src = get_app_install_dir() / "source"
-    if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
-        src_dir = mirror_dir
-    elif install_src.exists() and any(install_src.glob("*.py")):
-        src_dir = install_src
-    else:
-        src_dir = Path(__file__).resolve().parent
+    ver_info = get_live_version_verification_info()
+    src_dir = Path(ver_info["source_dir"])
     excluded = {"key.txt", "credentials.json", "palace_config.json"}
     try:
         py_files = sorted(
@@ -2523,11 +2805,14 @@ def build_palace_source_context(
 
     lines = [
         f"FAIRYBREAD SOURCE CODE REFERENCE (Read-Only Mirror at `{src_dir}`):",
+        f"LIVE VERSION & SOURCE SYNC VERIFICATION: {ver_info['status_badge']} | Windows Build {ver_info['windows_version']} ({ver_info['edition']} edition) | Defined in `palace_config.py` (`FAIRYBREAD_VERSION = \"{ver_info['raw_version']}\"`).",
         f"Available Python modules ({len(py_files)}): {manifest}",
         "ON-DEMAND SOURCE CODE TOOLS (Use these instead of full-file injection):",
-        '- `[TOOL: list_source_files]` -> List all files in the source mirror',
-        '- `[TOOL: search_source_code query="search_term"]` -> Search across all .py files for matching lines',
-        '- `[TOOL: read_source_file file="palace_gui.py" start=1 end=80]` -> Read specific line range on demand',
+        '- `[TOOL: list_source_files]` -> List all files in the source mirror with live version verification',
+        '- `[TOOL: list_symbols file="palace_gui.py" query="optional_filter"]` -> List classes and methods with exact start..end line numbers',
+        '- `[TOOL: read_symbol file="palace_gui.py" query="_on_job_done"]` -> Read the COMPLETE function/method by name (with line numbers + verbatim block for <<<TARGET)',
+        '- `[TOOL: search_source_code query="search_term"]` -> Search across all .py files for matching lines (returns 44-line verbatim windows)',
+        '- `[TOOL: read_source_file file="palace_gui.py" start=1 end=300]` -> Read up to 450 lines per call on demand (with explicit truncation footer if longer)',
         '- `[TOOL: inspect_palace_ui]` -> Run live PalaceWindow geometry & UI self-audit',
     ]
     for p in matched[:2]:
@@ -2536,6 +2821,37 @@ def build_palace_source_context(
             lines.append(f"\n--- REFERENCED MODULE HEADER ({p.name}, {len(txt.splitlines())} lines) ---\n{txt[:1800]}")
         except OSError:
             pass
+
+    # Pre-Hydration: automatically pre-fetch any explicit symbol names (`def xxx` or `_xxx_yyy`) or `start..end` line ranges
+    # mentioned in the user's question so Round 1 starts with the exact verbatim code already in front of every AI!
+    try:
+        from idle_service import execute_sandbox_tool
+        pre_hydrated: list[str] = []
+        covered_ranges: list[tuple[str, int, int]] = []
+        target_files = [p.name for p in matched] if matched else ["palace_gui.py", "orchestrator.py", "idle_service.py"]
+        for m_rng in re.finditer(r"(?:\b(?:file=)?\"?([a-zA-Z0-9_]+\.py)\"?[^\n]{0,45}?)?\b(?:lines?\s*|start=)(\d{1,5})\s*(?:-|–|to|\.\.|\s+end=)\s*(\d{1,5})\b", question or "", re.IGNORECASE):
+            f_nm = m_rng.group(1) or (target_files[0] if target_files else "palace_gui.py")
+            s_s, e_s = int(m_rng.group(2)), int(m_rng.group(3))
+            out_r = execute_sandbox_tool("read_source_file", file_arg=f_nm, start_line=s_s, end_line=min(e_s, s_s + 449))
+            if out_r and "not found" not in out_r:
+                pre_hydrated.append(out_r)
+                covered_ranges.append((f_nm.lower(), s_s, min(e_s, s_s + 449)))
+        sym_candidates = list(dict.fromkeys(re.findall(r"(?:\bdef\s+([a-zA-Z_][a-zA-Z0-9_]{2,})|\b(_[a-zA-Z0-9_]{4,})\b|\b([a-zA-Z_][a-zA-Z0-9_]{3,})\(\))", question or "")))
+        flat_syms: list[str] = []
+        for tup in sym_candidates:
+            for s_item in tup:
+                if s_item and s_item not in flat_syms and s_item not in {"__init__", "print", "super", "getattr", "setattr", "hasattr", "isinstance"}:
+                    flat_syms.append(s_item)
+        for sym_nm in flat_syms[:5]:
+            for tf in target_files[:3]:
+                out_s = execute_sandbox_tool("read_symbol", file_arg=tf, query_arg=sym_nm)
+                if out_s and "not found" not in out_s and "Error" not in out_s:
+                    pre_hydrated.append(out_s)
+                    break
+        if pre_hydrated:
+            lines.append("\n=== PRE-HYDRATED VERBATIM SOURCE CODE (Auto-Fetched for Mentioned Symbols/Ranges) ===\n" + "\n\n".join(pre_hydrated[:6]))
+    except Exception:
+        pass
     return "\n".join(lines)
 
 

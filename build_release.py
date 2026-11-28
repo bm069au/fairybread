@@ -166,6 +166,14 @@ def stage_clean_source(edition: str, stage_dir: Path, *, public_key_b64: str) ->
         for asset_fp in sorted(theme_assets_src.glob("*.png")):
             shutil.copy2(asset_fp, theme_assets_dst / asset_fp.name)
 
+    avatars_src = ROOT / "assets" / "avatars"
+    if avatars_src.is_dir():
+        avatars_dst = stage_dir / "assets" / "avatars"
+        avatars_dst.mkdir(parents=True, exist_ok=True)
+        for av_fp in sorted(avatars_src.glob("*")):
+            if av_fp.is_file():
+                shutil.copy2(av_fp, avatars_dst / av_fp.name)
+
     return stage_dir
 
 
@@ -193,6 +201,11 @@ def write_pyinstaller_spec(
     if theme_assets_stage.is_dir():
         for tp in sorted(theme_assets_stage.glob("*.png")):
             datas_lines.append(f"    (r'{tp}', 'theme_assets'),")
+    avatars_stage = stage_dir / "assets" / "avatars"
+    if avatars_stage.is_dir():
+        for ap in sorted(avatars_stage.glob("*")):
+            if ap.is_file():
+                datas_lines.append(f"    (r'{ap}', 'assets/avatars'),")
     datas_block = "\n".join(datas_lines)
 
     excludes = [

@@ -18,9 +18,13 @@ from credential_store import CredentialStore
 from memory_service import parse_save_memory_tags
 from palace_config import (
     CONFIG_PATH,
+    FAIRYBREAD_EDITION,
+    FAIRYBREAD_VERSION,
+    FAIRYBREAD_WINDOWS_VERSION,
     clean_given_name,
     format_personalization_prompt_block,
     get_app_install_dir,
+    get_live_version_verification_info,
     get_provider_attribution,
     get_source_mirror_dir,
     load_enabled_provider_names,
@@ -75,6 +79,19 @@ _CODE_STOPWORDS = {
     "chatting", "turn", "button", "fairybread", "palace", "make", "sure", "does", "happens", "how", "work", "works",
     "into", "from", "with", "that", "this", "have", "just", "want", "wanted", "tell", "explain", "right", "now",
     "can", "you", "see", "the", "and", "for", "are", "was", "were", "been", "some", "any", "inspect", "read",
+    "all", "enable", "enabled", "open", "opened", "watch", "watching", "going", "help", "okay", "alright",
+    "good", "great", "fine", "yes", "yeah", "yep", "let", "lets", "give", "show", "showing", "talk", "talking",
+    "say", "said", "saying", "think", "thinking", "know", "need", "use", "using", "used", "same", "being",
+}
+
+_SOURCE_INDEX_LOCK = threading.Lock()
+_SOURCE_INDEX_CACHE: dict[str, Any] = {
+    "src_dir": "",
+    "max_mtime": 0.0,
+    "file_count": 0,
+    "file_lines": {},
+    "outline_rows": [],
+    "manifest": "",
 }
 
 
@@ -103,6 +120,52 @@ def _extract_significant_code_bodies(lines: list[str], max_lines: int = 110) -> 
     return "\n".join(f"{start_idx + 1 + i}: {l[:150]}" for i, l in enumerate(chosen))
 
 
+def _get_cached_source_index(src_dir: Path, py_files: list[Path]) -> tuple[dict[str, list[str]], list[str], str]:
+    """Return cached (file_lines_cache, outline_rows, manifest) keyed by directory path and latest file mtime."""
+    max_mt = 0.0
+    for p in py_files:
+        try:
+            mt = p.stat().st_mtime
+            if mt > max_mt:
+                max_mt = mt
+        except OSError:
+            pass
+    dir_str = str(src_dir)
+    with _SOURCE_INDEX_LOCK:
+        if (
+            _SOURCE_INDEX_CACHE["src_dir"] == dir_str
+            and _SOURCE_INDEX_CACHE["file_count"] == len(py_files)
+            and abs(float(_SOURCE_INDEX_CACHE["max_mtime"]) - max_mt) < 1e-6
+            and _SOURCE_INDEX_CACHE["file_lines"]
+        ):
+            return (
+                dict(_SOURCE_INDEX_CACHE["file_lines"]),
+                list(_SOURCE_INDEX_CACHE["outline_rows"]),
+                str(_SOURCE_INDEX_CACHE["manifest"]),
+            )
+
+    file_lines_cache: dict[str, list[str]] = {}
+    outline_rows: list[str] = []
+    for p in py_files:
+        try:
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            file_lines_cache[p.name] = lines
+            sym_str = _extract_module_symbol_outline(lines, max_symbols=14)
+            if sym_str:
+                outline_rows.append(f"  • {p.name} ({len(lines)} lines): {sym_str}")
+        except OSError:
+            continue
+    manifest = ", ".join(p.name for p in py_files[:35])
+    with _SOURCE_INDEX_LOCK:
+        _SOURCE_INDEX_CACHE["src_dir"] = dir_str
+        _SOURCE_INDEX_CACHE["max_mtime"] = max_mt
+        _SOURCE_INDEX_CACHE["file_count"] = len(py_files)
+        _SOURCE_INDEX_CACHE["file_lines"] = file_lines_cache
+        _SOURCE_INDEX_CACHE["outline_rows"] = outline_rows
+        _SOURCE_INDEX_CACHE["manifest"] = manifest
+    return file_lines_cache, outline_rows, manifest
+
+
 def build_voice_code_context(
     utterance: str,
     max_chars: int = 18000,
@@ -111,16 +174,11 @@ def build_voice_code_context(
     """Fast local Python source lookup for Voice Mode when `{ } Code` is toggled ON.
 
     Guarantees full function/class implementation bodies (never 18-line import headers!),
-    conversation-history topic carryover, and an architecture symbol map across all modules.
+    live runtime-to-mirror version verification, conversation-history topic carryover,
+    and an architecture symbol map across all modules.
     """
-    mirror_dir = get_source_mirror_dir()
-    install_src = get_app_install_dir() / "source"
-    if mirror_dir.exists() and any(mirror_dir.glob("*.py")):
-        src_dir = mirror_dir
-    elif install_src.exists() and any(install_src.glob("*.py")):
-        src_dir = install_src
-    else:
-        src_dir = Path(__file__).resolve().parent
+    ver_info = get_live_version_verification_info()
+    src_dir = Path(ver_info["source_dir"])
 
     excluded = {"key.txt", "credentials.json", "palace_config.json", "ask_gpt_working_backup.py"}
     try:
@@ -133,12 +191,12 @@ def build_voice_code_context(
     if not py_files:
         return ""
 
-    # Combine current utterance with recent voice turns so "Look at the code for that" resolves the active topic
+    # Combine current utterance with recent voice turns (both User and Assistant) so "Okay, code's open" resolves the active topic
     combined_query = utterance or ""
     if recent_history:
-        prev_u = " ".join((u or "") for u, _a in recent_history[-2:])
-        if len((utterance or "").split()) <= 12 and prev_u:
-            combined_query = f"{utterance} {prev_u}"
+        prev_turns = " ".join(f"{u or ''} {a or ''}" for u, a in recent_history[-2:])
+        if len((utterance or "").split()) <= 16 and prev_turns.strip():
+            combined_query = f"{utterance} {prev_turns}"
 
     u_low = combined_query.lower()
     raw_tokens = [
@@ -151,13 +209,34 @@ def build_voice_code_context(
     concept_map = {
         "avatar": "voice_visualizer.py",
         "visualizer": "voice_visualizer.py",
+        "visual": "voice_visualizer.py",
+        "visuals": "voice_visualizer.py",
         "hologram": "voice_visualizer.py",
+        "sphere": "voice_visualizer.py",
+        "glitch": "voice_visualizer.py",
+        "glitching": "voice_visualizer.py",
+        "lag": "voice_service.py",
+        "lagging": "voice_service.py",
+        "delay": "voice_service.py",
+        "latency": "voice_service.py",
+        "silence": "voice_service.py",
+        "timeout": "voice_service.py",
+        "cough": "voice_service.py",
+        "coughs": "voice_service.py",
+        "coughing": "voice_service.py",
+        "clip": "voice_service.py",
+        "clipped": "voice_service.py",
+        "clipping": "voice_service.py",
+        "cutoff": "voice_service.py",
+        "stopping": "voice_service.py",
+        "version": "palace_config.py",
         "theme": "palace_theme.py",
         "themes": "palace_theme.py",
         "menu": "palace_gui.py",
         "options": "palace_gui.py",
         "window": "palace_gui.py",
         "sidebar": "palace_gui.py",
+        "parallel": "palace_gui.py",
         "clipboard": "palace_gui.py",
         "paste": "palace_gui.py",
         "memory": "memory_service.py",
@@ -211,36 +290,34 @@ def build_voice_code_context(
         "keys": "credential_store.py",
     }
     hinted_files = {concept_map[w] for w in re.findall(r"[a-z]+", u_low) if w in concept_map}
+    if not hinted_files:
+        hinted_files = {"voice_service.py", "voice_visualizer.py", "voice_companion.py", "palace_config.py"}
 
-    file_lines_cache: dict[str, list[str]] = {}
-    outline_rows: list[str] = []
-    for p in py_files:
-        try:
-            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-            file_lines_cache[p.name] = lines
-            sym_str = _extract_module_symbol_outline(lines, max_symbols=14)
-            if sym_str:
-                outline_rows.append(f"  • {p.name} ({len(lines)} lines): {sym_str}")
-        except OSError:
-            continue
+    file_lines_cache, outline_rows, manifest = _get_cached_source_index(src_dir, py_files)
 
-    manifest = ", ".join(p.name for p in py_files[:35])
     blocks: list[str] = [
         f"FAIRYBREAD LIVE SOURCE CODE ACCESS (`{{ }} Code` is ON — Read-Only Mirror: `{src_dir}`):",
+        f"LIVE VERSION & SOURCE SYNC VERIFICATION: {ver_info['status_badge']} | Windows Build {ver_info['windows_version']} ({ver_info['edition']} edition) | Defined in `palace_config.py` (`FAIRYBREAD_VERSION = \"{ver_info['raw_version']}\"`).",
         f"Modules ({len(py_files)}): {manifest}",
         "CODEBASE SYMBOL MAP (Classes & Functions per Module):\n" + "\n".join(outline_rows[:24]),
     ]
     used_chars = sum(len(x) for x in blocks)
 
     scored_hits: list[tuple[int, str, int, list[str]]] = []
-    for p in py_files:
+    # Scan hinted files first so their matches are never starved by the early-exit cap
+    ordered_py_files = sorted(
+        py_files,
+        key=lambda p: (0 if (p.name.lower() in u_low or p.stem.lower() in u_low) else (1 if p.name in hinted_files else 2), p.name),
+    )
+    for p in ordered_py_files:
         lines = file_lines_cache.get(p.name)
         if not lines:
             continue
         p_low = p.name.lower()
-        file_bonus = 10 if (p_low in u_low or p.stem.lower() in u_low) else (6 if p.name in hinted_files else 0)
+        file_bonus = 14 if (p_low in u_low or p.stem.lower() in u_low) else (8 if p.name in hinted_files else 0)
         if not tokens and not file_bonus:
             continue
+        file_hits = 0
         if tokens:
             for idx, line in enumerate(lines):
                 l_low = line.lower()
@@ -252,7 +329,8 @@ def build_voice_code_context(
                         lo = max(0, idx - 4)
                         hi = min(len(lines), idx + 42)
                         scored_hits.append((score, p.name, lo + 1, lines[lo:hi]))
-                        if len(scored_hits) > 65:
+                        file_hits += 1
+                        if file_hits >= 6 or len(scored_hits) > 120:
                             break
         if file_bonus and not any(h[1] == p.name for h in scored_hits):
             # Include real implementation code body (skipping top imports) for hinted files
@@ -261,16 +339,20 @@ def build_voice_code_context(
                 if idx > 5 and ln.strip().startswith(("def ", "class ")):
                     start_i = max(0, idx - 1)
                     break
-            scored_hits.append((file_bonus, p.name, start_i + 1, lines[start_i : min(len(lines), start_i + 65)]))
+            scored_hits.append((file_bonus + 18, p.name, start_i + 1, lines[start_i : min(len(lines), start_i + 65)]))
 
     scored_hits.sort(key=lambda item: item[0], reverse=True)
     seen_ranges: set[tuple[str, int]] = set()
+    seen_files: dict[str, int] = {}
     added = 0
     for _sc, fname, start_ln, snippet_lines in scored_hits:
+        if seen_files.get(fname, 0) >= 2:
+            continue
         bucket = (fname, start_ln // 35)
         if bucket in seen_ranges:
             continue
         seen_ranges.add(bucket)
+        seen_files[fname] = seen_files.get(fname, 0) + 1
         snip = "\n".join(f"{start_ln + i}: {ln[:150]}" for i, ln in enumerate(snippet_lines))
         entry = f"\n--- {fname} (lines {start_ln}–{start_ln + len(snippet_lines) - 1}) ---\n{snip}"
         if used_chars + len(entry) > max_chars:
@@ -313,10 +395,53 @@ from voice_service import clean_text_for_speech, load_voice_personas, load_voice
 
 _SET_AGENT_NAME_TAG_RE = re.compile(r"\[SET_AGENT_NAME\s+([^\]]+)\]", re.IGNORECASE)
 _SET_VOICE_SENSITIVITY_TAG_RE = re.compile(r"\[SET_VOICE_SENSITIVITY\s+([^\]]+)\]", re.IGNORECASE)
+_SET_MODEL_TIER_TAG_RE = re.compile(r"\[SET_MODEL_TIER\s+([^\]]+)\]", re.IGNORECASE)
 _ADD_IGNORED_NOISE_TAG_RE = re.compile(r"\[ADD_IGNORED_NOISE\s+([^\]]+)\]", re.IGNORECASE)
 _ALWAYS_INCLUDE_WORD_TAG_RE = re.compile(r"\[ALWAYS_INCLUDE_WORD\s+([^\]]+)\]", re.IGNORECASE)
 _ADD_VOICE_SUBMIT_PHRASE_TAG_RE = re.compile(r"\[ADD_VOICE_SUBMIT_PHRASE\s+([^\]]+)\]", re.IGNORECASE)
 _KV_ATTR_RE = re.compile(r'([a-zA-Z_]+)\s*=\s*"([^"]*)"|([a-zA-Z_]+)\s*=\s*\'([^\']*)\'')
+
+
+def parse_set_model_tier_tags(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """Extract and strip `[SET_MODEL_TIER tier="light|intermediate|heavy|auto" provider="..." model="..."]` tags."""
+    raw = text or ""
+    tier_updates: list[dict[str, Any]] = []
+
+    def _repl(match: re.Match[str]) -> str:
+        attrs_raw = match.group(1) or ""
+        parsed: dict[str, str] = {}
+        for m in _KV_ATTR_RE.finditer(attrs_raw):
+            k = (m.group(1) or m.group(3) or "").strip().lower()
+            v = (m.group(2) if m.group(1) else m.group(4)) or ""
+            if k:
+                parsed[k] = v.strip()
+        upd: dict[str, Any] = {}
+        t_val = (parsed.get("tier") or parsed.get("level") or "").strip().lower()
+        if t_val in {"light", "fast", "light_and_fast", "lighter"}:
+            upd["voice_model_tier"] = "light"
+            upd["auto_model_tiering"] = False
+        elif t_val in {"intermediate", "medium", "balanced", "mid"}:
+            upd["voice_model_tier"] = "intermediate"
+            upd["auto_model_tiering"] = False
+        elif t_val in {"heavy", "pro", "deep", "flagship", "heavier"}:
+            upd["voice_model_tier"] = "heavy"
+            upd["auto_model_tiering"] = False
+        elif t_val in {"auto", "automatic"}:
+            upd["voice_model_tier"] = "auto"
+            upd["auto_model_tiering"] = True
+        p_val = (parsed.get("provider") or "").strip().lower()
+        if p_val:
+            upd["voice_llm_provider"] = p_val
+        m_val = (parsed.get("model") or "").strip()
+        if m_val is not None and "model" in parsed:
+            upd["voice_model_override"] = m_val
+        if upd:
+            tier_updates.append(upd)
+        return ""
+
+    cleaned = _SET_MODEL_TIER_TAG_RE.sub(_repl, raw)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned, tier_updates
 
 
 def parse_voice_sensitivity_and_noise_tags(text: str) -> tuple[str, list[dict[str, Any]], list[str]]:
@@ -648,7 +773,9 @@ class VoiceCompanion:
         pref = (preferred_provider or str(v_cfg.get("voice_llm_provider") or "auto")).strip().lower() or "auto"
         fb = (fallback_provider or str(v_cfg.get("voice_llm_fallback") or "auto")).strip().lower() or "auto"
         explicit_set = {x for x in (pref, fb) if x not in {"", "auto", "none"}}
-        ov_model = (model_override or "").strip()
+        ov_model = (model_override or str(v_cfg.get("voice_model_override") or "")).strip()
+        v_tier = "auto" if bool(v_cfg.get("auto_model_tiering", False)) else str(v_cfg.get("voice_model_tier") or "intermediate").strip().lower()
+        from palace_config import resolve_model_for_tier
 
         def _is_usable(pname: str) -> bool:
             return (pname in enabled) or (not enabled) or (pname in explicit_set)
@@ -707,20 +834,21 @@ class VoiceCompanion:
 
             by_name["deepseek"] = _call_deepseek
 
-        # Gemini (use configured Paid model like gemini-4-neon first instead of forcing lite models)
+        # Gemini (defaults to selected tier e.g. Intermediate gemini-3.8-flash / 2.5-flash in Talk Mode instead of burning Neon unless Heavy tier is selected)
         gem_key = store.get_api_key("gemini")
         if gem_key and _is_usable("gemini"):
             gem_cfg_model = str((p_cfgs.get("gemini") or {}).get("model") or "").strip()
-            if ov_model and pref == "gemini":
-                gem_models = [ov_model, "gemini-4-neon", "gemini-2.5-flash", "gemini-4-hydrogen"]
+            tier_gem = resolve_model_for_tier("gemini", v_tier)
+            if ov_model and (pref in {"gemini", "auto"} or not preferred_provider):
+                gem_models = [ov_model, tier_gem, "gemini-2.5-flash", "gemini-3.8-flash", "gemini-4-neon"]
             else:
-                gem_models = []
-                if gem_cfg_model:
+                gem_models = [tier_gem] if tier_gem else []
+                if gem_cfg_model and (v_tier == "heavy" or not talk_only):
                     if talk_only and gem_cfg_model.lower() == "gemini-4-carbon":
                         gem_models.append("gemini-4-neon")
                     else:
                         gem_models.append(gem_cfg_model)
-                for fb_gem in ("gemini-4-neon", "gemini-2.5-flash", "gemini-4-hydrogen"):
+                for fb_gem in ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-4-neon", "gemini-4-hydrogen"):
                     if fb_gem not in gem_models:
                         gem_models.append(fb_gem)
             gem_models = list(dict.fromkeys(m for m in gem_models if m))
@@ -773,20 +901,19 @@ class VoiceCompanion:
 
             by_name["gemini"] = _call_gemini
 
-        # OpenAI (Paid conversational tier defaults to gpt-6.2-sol instead of downgrading to gpt-4o-mini)
+        # OpenAI (Respects selected Voice Model Tier: light=gpt-5-mini, intermediate=gpt-6-luna, heavy=gpt-6.2-sol)
         oai_key = store.get_api_key("openai")
         if oai_key and _is_usable("openai"):
             cfg_oai = str((p_cfgs.get("openai") or {}).get("model") or "").strip()
+            tier_oai = resolve_model_for_tier("openai", v_tier)
             oai_models: list[str] = []
-            if ov_model and pref == "openai":
+            if ov_model and (pref in {"openai", "auto"} or not preferred_provider):
                 oai_models.append(ov_model)
-            elif cfg_oai:
-                low_cfg = cfg_oai.lower()
-                if low_cfg in {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5-pro"} or low_cfg.startswith(("gpt-6.2-astra", "o1", "o3", "o4")):
-                    oai_models.append("gpt-6.2-sol")
-                else:
-                    oai_models.append(cfg_oai)
-            for fb_oai in ("gpt-6.2-sol", "gpt-6-luna", "gpt-6.1-terra", "gpt-5.4", "gpt-4o-mini"):
+            if tier_oai:
+                oai_models.append(tier_oai)
+            if cfg_oai and cfg_oai not in oai_models:
+                oai_models.append(cfg_oai)
+            for fb_oai in ("gpt-6-luna", "gpt-5-mini", "gpt-6.2-sol", "gpt-6.1-terra", "gpt-5.4", "gpt-4o-mini"):
                 if fb_oai not in oai_models:
                     oai_models.append(fb_oai)
             oai_models_t = tuple(dict.fromkeys(m for m in oai_models if m))
@@ -1420,7 +1547,8 @@ class VoiceCompanion:
         role_attr_txt = str(prov_attr.get("role_attribution") or "").strip()
         role_attr_block = f"AGENT ROLE & ATTRIBUTION:\n{role_attr_txt}\n\n" if role_attr_txt else ""
         identity_rule = (
-            f"AGENT IDENTITY RULE: Your assigned Fairybread name is '{eff_speaker}' (provider id: {eff_prov or 'auto'}). "
+            f"AGENT IDENTITY & LIVE VERSION RULE: Your assigned Fairybread name is '{eff_speaker}' (provider id: {eff_prov or 'auto'}). "
+            f"You are running inside Fairybread Live Runtime v{FAIRYBREAD_VERSION} (Windows Build {FAIRYBREAD_WINDOWS_VERSION}, {FAIRYBREAD_EDITION} edition), defined in `palace_config.py` as `FAIRYBREAD_VERSION = \"{FAIRYBREAD_VERSION}\"`. "
             f"Always answer to '{eff_speaker}' naturally as your real identity in this workspace — never insist you are Maya/another preset name and never refuse a user-given name.\n"
         )
 
@@ -1486,6 +1614,14 @@ class VoiceCompanion:
             "  • Place these tags at the very end of your reply (Fairybread applies them live and strips the tags before speaking) and confirm naturally out loud.\n"
         )
 
+        cur_tier = "auto" if bool(v_cfg.get("auto_model_tiering", False)) else str(v_cfg.get("voice_model_tier") or "intermediate")
+        model_tier_tool_rule = (
+            f"MODEL TIER & VERSION SWITCH TOOL (Current tier: {cur_tier} [light=Light & Fast, intermediate=Intermediate Balanced, heavy=Heavy/Deep Pro, auto=Auto Tiering]):\n"
+            "- If the user asks you to use a lighter/faster/cheaper model, switch to an intermediate model, upgrade to a heavier/deeper/pro model, downgrade to GPT-5 / Flash, or switch to Auto model tiering:\n"
+            "  • Emit `[SET_MODEL_TIER tier=\"light|intermediate|heavy|auto\" model=\"optional_exact_model\"]` at the very end of your response (e.g. `[SET_MODEL_TIER tier=\"light\"]` for 'use a lighter model', `[SET_MODEL_TIER tier=\"intermediate\"]` for 'use an intermediate model', `[SET_MODEL_TIER tier=\"auto\"]` for 'make it auto', or `[SET_MODEL_TIER tier=\"light\" provider=\"openai\" model=\"gpt-5-mini\"]` for 'downgrade to GPT-5').\n"
+            "  • Fairybread applies the model tier change immediately and strips the tag before speaking. Confirm the switch naturally out loud.\n"
+        )
+
         if talk_only:
             mode_cap_line = (
                 "SOURCE CODE ACCESS IS ACTIVE (`{ } Code` button is ON): You CAN read and inspect Fairybread's live Python source code provided in the prompt below (including full function/class implementations and symbol maps — NOT just headers). Discuss how the actual code works accurately in plain spoken English (summarize logic, line numbers, and module/function behavior clearly without reading raw punctuation aloud).\n\n"
@@ -1504,6 +1640,7 @@ class VoiceCompanion:
                 f"{VOICE_ANTI_STALL_RULES}\n"
                 f"{mem_rule_talk}\n"
                 f"{voice_sens_tool_rule}\n"
+                f"{model_tier_tool_rule}\n"
                 f"NAME CHANGE TOOL: If the user gives you (or another AI) a new name to go by (e.g. 'call yourself Ash' or 'I will name you Max'), "
                 f"emit `[SET_AGENT_NAME provider=\"{eff_prov or 'auto'}\" name=\"NewName\"]` at the very end so Fairybread saves it permanently, and adopt the name naturally out loud.\n"
             )
@@ -1517,7 +1654,7 @@ class VoiceCompanion:
                 "SPOKEN STYLE RULES:\n"
                 "- Reply in plain natural conversational sentences only (1-3 crisp spoken sentences, contractions okay).\n"
                 "- Engage directly with the substance of what the user just said; follow genuine topic shifts, jokes, and side tangents naturally while staying locked onto the active subject when the user challenges your style.\n"
-                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than optional trailing `[SAVE_MEMORY ...]`, `[SET_AGENT_NAME ...]`, `[SET_VOICE_SENSITIVITY ...]`, or `[ADD_IGNORED_NOISE ...]`."
+                "- ZERO JSON, ZERO markdown, ZERO asterisks, ZERO bullet lists, ZERO URLs, ZERO code blocks, and ZERO [bracket tags] OTHER than optional trailing `[SAVE_MEMORY ...]`, `[SET_AGENT_NAME ...]`, `[SET_VOICE_SENSITIVITY ...]`, `[SET_MODEL_TIER ...]`, or `[ADD_IGNORED_NOISE ...]`."
             )
             try:
                 raw_out, pname, m_used, req_p, fell_back, fb_reason = self._invoke_fast_llm_detailed(
@@ -1558,11 +1695,19 @@ class VoiceCompanion:
             stripped_txt, parsed_saves = parse_save_memory_tags(candidate_txt, replace_with_badge=False)
             stripped_txt, name_tags = parse_set_agent_name_tags(stripped_txt)
             stripped_txt, sens_tags, noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_txt)
+            stripped_txt, tier_tags = parse_set_model_tier_tags(stripped_txt)
             applied_names = self._persist_agent_name_updates(
                 name_tags,
                 default_provider=(pname if pname and pname != "fallback" else eff_prov),
             )
             applied_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(sens_tags, noise_tags)
+            if tier_tags:
+                from voice_service import save_voice_settings
+                for t_upd in tier_tags:
+                    if "voice_model_override" not in t_upd:
+                        t_upd["voice_model_override"] = ""
+                    save_voice_settings(t_upd, config_path=self.config_path)
+                    applied_voice_cfg.update(t_upd)
             for item in applied_names:
                 if item.get("provider") in {eff_prov, pname}:
                     eff_speaker = item["given_name"]
@@ -1698,11 +1843,19 @@ class VoiceCompanion:
             stripped_raw, parsed_raw_saves = parse_save_memory_tags(raw_out, replace_with_badge=False)
             stripped_raw, raw_name_tags = parse_set_agent_name_tags(stripped_raw)
             stripped_raw, raw_sens_tags, raw_noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_raw)
+            stripped_raw, raw_tier_tags = parse_set_model_tier_tags(stripped_raw)
             applied_raw_names = self._persist_agent_name_updates(
                 raw_name_tags,
                 default_provider=(pname if pname and pname != "fallback" else eff_prov),
             )
             applied_raw_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(raw_sens_tags, raw_noise_tags)
+            if raw_tier_tags:
+                from voice_service import save_voice_settings
+                for t_upd in raw_tier_tags:
+                    if "voice_model_override" not in t_upd:
+                        t_upd["voice_model_override"] = ""
+                    save_voice_settings(t_upd, config_path=self.config_path)
+                    applied_raw_voice_cfg.update(t_upd)
             for item in applied_raw_names:
                 if item.get("provider") in {eff_prov, pname}:
                     eff_speaker = item["given_name"]
@@ -1760,6 +1913,7 @@ class VoiceCompanion:
         stripped_reply, tag_saves = parse_save_memory_tags(raw_reply_field, replace_with_badge=False)
         stripped_reply, reply_name_tags = parse_set_agent_name_tags(stripped_reply)
         stripped_reply, reply_sens_tags, reply_noise_tags = parse_voice_sensitivity_and_noise_tags(stripped_reply)
+        stripped_reply, reply_tier_tags = parse_set_model_tier_tags(stripped_reply)
         json_sens_updates: list[dict[str, Any]] = list(reply_sens_tags)
         json_noise_updates: list[str] = list(reply_noise_tags)
         raw_svs = obj.get("set_voice_sensitivity")
@@ -1792,6 +1946,22 @@ class VoiceCompanion:
                 if str(x_n or "").strip():
                     json_noise_updates.append(str(x_n).strip())
         applied_json_voice_cfg = self._persist_voice_sensitivity_and_noise_updates(json_sens_updates, json_noise_updates)
+        raw_smt = obj.get("set_model_tier")
+        if isinstance(raw_smt, dict):
+            _, p_t = parse_set_model_tier_tags(
+                f'[SET_MODEL_TIER tier="{raw_smt.get("tier", "")}" provider="{raw_smt.get("provider", "")}" model="{raw_smt.get("model", "")}"]'
+            )
+            reply_tier_tags.extend(p_t)
+        elif isinstance(raw_smt, str) and raw_smt.strip():
+            _, p_t = parse_set_model_tier_tags(f'[SET_MODEL_TIER tier="{raw_smt.strip()}"]')
+            reply_tier_tags.extend(p_t)
+        if reply_tier_tags:
+            from voice_service import save_voice_settings
+            for t_upd in reply_tier_tags:
+                if "voice_model_override" not in t_upd:
+                    t_upd["voice_model_override"] = ""
+                save_voice_settings(t_upd, config_path=self.config_path)
+                applied_json_voice_cfg.update(t_upd)
 
         json_name_updates: list[dict[str, str]] = list(reply_name_tags)
         raw_sn = obj.get("set_agent_name")

@@ -14,10 +14,10 @@
   #define AppIdGuid "{B7F4E2A1-6C3D-4B89-9E51-FA18B4EAD001}"
 #endif
 #ifndef AppDispVer
-  #define AppDispVer "0.95e"
+  #define AppDispVer "0.95h"
 #endif
 #ifndef AppWinVer
-  #define AppWinVer "0.95.5.0"
+  #define AppWinVer "0.95.8.0"
 #endif
 #ifndef DefaultIncludeSource
   #define DefaultIncludeSource "0"
@@ -32,7 +32,7 @@
   #define OutputDirPath "dist"
 #endif
 #ifndef OutputExeBase
-  #define OutputExeBase "Fairybread_v0.95e_Win_x64_Setup"
+  #define OutputExeBase "Fairybread_v0.95h_Win_x64_Setup"
 #endif
 
 [Setup]

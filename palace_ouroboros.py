@@ -275,6 +275,7 @@ def stage_palace_replace(
     replacement_snippet: str,
     *,
     author: str = "council",
+    verify_ast_methods: bool = True,
 ) -> tuple[bool, str]:
     """Safely apply a snippet replacement to an allowlisted Palace file inside `staging/`."""
     clean_name = Path(filename or "").name
@@ -338,10 +339,62 @@ def stage_palace_replace(
     staged_file.write_text(updated, encoding="utf-8")
     try:
         py_compile.compile(str(staged_file), doraise=True)
+        # Lightweight AST verification: ensure any `self._method(...)` call added by the replacement
+        # is either already defined in the file or defined in the replacement itself.
+        import ast as _ast
+        import re as _re
+        tree = _ast.parse(updated, filename=clean_name)
+        defined_attrs: set[str] = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                defined_attrs.add(node.name)
+            elif isinstance(node, _ast.Assign):
+                for tgt in node.targets:
+                    if isinstance(tgt, _ast.Attribute) and isinstance(tgt.value, _ast.Name) and tgt.value.id == "self":
+                        defined_attrs.add(tgt.attr)
+        if verify_ast_methods:
+            called_private_self = set(_re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\s*\(", norm_repl))
+            referenced_private_self = set(_re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\b", norm_repl))
+            prev_called_private = set(_re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\s*\(", content))
+            prev_referenced_private = set(_re.findall(r"\bself\.(_[a-zA-Z0-9_]+)\b", content))
+            newly_called = (called_private_self - prev_called_private) | (
+                set(_re.findall(r"\.connect\(\s*self\.(_[a-zA-Z0-9_]+)\s*\)", norm_repl)) - prev_referenced_private
+            )
+            missing_methods = sorted(m for m in newly_called if m not in defined_attrs)
+            if missing_methods:
+                staged_file.write_text(content, encoding="utf-8")
+                return (
+                    False,
+                    f"AST Method Resolution Error in '{clean_name}' (reverted automatically): Patch calls undefined method(s) "
+                    f"{', '.join('self.' + m + '()' for m in missing_methods)}. Define the helper method(s) in the same patch!",
+                )
+            called_mod_helpers = set(_re.findall(r"(?<![.\w])(_[a-zA-Z0-9_]+)\s*\(", norm_repl))
+            prev_mod_helpers = set(_re.findall(r"(?<![.\w])(_[a-zA-Z0-9_]+)\s*\(", content))
+            newly_called_mod = called_mod_helpers - prev_mod_helpers
+            defined_mod_names = set(defined_attrs)
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.Import, _ast.ImportFrom)):
+                    for alias in node.names:
+                        defined_mod_names.add(alias.asname or alias.name)
+                elif isinstance(node, _ast.Assign):
+                    for tgt in node.targets:
+                        if isinstance(tgt, _ast.Name):
+                            defined_mod_names.add(tgt.id)
+            missing_mod_helpers = sorted(m for m in newly_called_mod if m not in defined_mod_names)
+            if missing_mod_helpers:
+                staged_file.write_text(content, encoding="utf-8")
+                return (
+                    False,
+                    f"AST Module Helper Resolution Error in '{clean_name}' (reverted automatically): Patch calls undefined helper function(s) "
+                    f"{', '.join(m + '()' for m in missing_mod_helpers)}. Define the helper function(s) in the same patch!",
+                )
     except py_compile.PyCompileError as exc:
         # Revert broken syntax immediately
         staged_file.write_text(content, encoding="utf-8")
         return False, f"Syntax error in staged '{clean_name}' (reverted automatically): {exc}"
+    except SyntaxError as exc:
+        staged_file.write_text(content, encoding="utf-8")
+        return False, f"AST Syntax error in staged '{clean_name}' (reverted automatically): {exc}"
 
     return True, f"Staged edit to '{clean_name}' by {author} compiled cleanly."
 

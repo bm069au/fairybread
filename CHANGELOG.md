@@ -1,3 +1,29 @@
+# Fairybread — Beta v0.95h (Win_x64) Changelog
+**Release Date:** 2026-11-28
+**Version:** `0.95h` (`0.95.8.0`)
+
+## Summary of Changes in `v0.95h`
+1. **🎮 3D & Lifelike Avatar Studio + Game-Style 3.5s Live GPU Benchmark (`voice_visualizer.py`, `voice_service.py`, `assets/avatars/*`):**
+   - **5 Avatar Engine Modes (`🎨 Customize`):**
+     - **✨ 3D Pixar / Studio Animated Character (`studio_3d`):** High-resolution 3D Pixar studio Male (bearded) & Female (Mockup #2) character portraits with 60 FPS chest/shoulder breathing, 2.5D head tilt, independent dual-eye blink masks, and audio-driven jaw/lip-sync.
+     - **📸 Lifelike Photorealistic Human Portrait (`lifelike_portrait`):** Animates photorealistic human portraits (built-in Female Bedroom Portrait, Male Study Portrait, or any custom `.png`/`.jpg` photo with auto `stat()` overwrite cache invalidation and 720×720 aspect-fill center crop) with natural blinking, breathing, and lip-sync, plus a **ComfyUI LivePortrait (`127.0.0.1:8188`)** synthesis hook.
+     - **🧱 3D Brick Movie Minifig Character (`voxel_3d`):** Macro stop-motion *Lego Movie*-style glossy ABS plastic minifig portraits (Male with molded 3D beard & navy hoodie, Female with molded 3D top-bun & knit sweater) animated at 60 FPS with dual-eye blinks, breathing, and audio lip-sync.
+     - **🎮 Unreal Tournament GOTY 360° Rotatable 3D Mesh (`ut_3d_mesh`):** Z-buffered Phong-lit 360° rotatable 3D polygon bust with hardened Wavefront `.OBJ` mesh loader (`Load 3D .OBJ…` — 32 MB / 20k-vertex DoS guard, parse-time negative index resolution, and out-of-bounds/degenerate triangle filtering).
+     - **🎨 Classic 2D Vector Cartoon (`vector_2d`):** Upgraded with chiseled masculine vs. tapered feminine jawlines, sculpted 3D beard with mouth cutout, and automatic gender preset coherence (`_on_gender_changed`).
+   - **Game-Style System Requirements & Live 3.5s GPU Benchmark (`🚀 Run 3.5s 3D Benchmark`):**
+     - Detects dedicated NVIDIA/Radeon/Quadro vs. integrated or software GPU, VRAM, display refresh rate (`Hz`), and AC/Battery power state; runs a 3.5-second live 3D spin benchmark (discarding the first 1.2s shader warmup window and timing real `QPainter` polygon rasterization via `time.perf_counter()`) to score Average FPS and p95 frame time (`ms`); auto-selects **`Full 3D`**, **`Lite 3D`**, or **`2D Fallback`** with a plain-English decision reason; stops cleanly if the dialog is closed mid-run; and includes a **Manual Tier Override** and step-down-only **Sleep Heavy 3D on Laptop Battery** guard.
+2. **🎬 Local ComfyUI & SD WebUI Video/Image Engine Hardening (`palace_theme.py`, `synthesizer.py`, `palace_config.py`, `palace_gui.py`):**
+   - **Interactive `[GENERATE_VIDEO ...]` Cards:** Preserves `[GENERATE_VIDEO]` tags through `synthesizer.py`, unwraps fenced tags, prewarms video jobs in `palace_theme.py`, and renders inline HTML video cards (`🎬 Title`, `▶ Play / Show Video`, `💾 Download / Save As…`, `🗑 Delete`).
+   - **ComfyUI Graph & Port Intelligence:** Automatically hops `:7860` → `:8188` for ComfyUI video calls, traces `KSampler` / `KSamplerAdvanced` / `SamplerCustom` `positive` links to inject prompts into the right `CLIPTextEncode` node, breaks immediately on ComfyUI `status_str == "error"`, rounds SD WebUI dimensions to multiples of 8, and adds **`↻ Fetch Local Models`** directly to the **ComfyUI Video Engine** card.
+   - **Keyless Local Model Discovery (`fetch_live_provider_models`):** Resolves `eff_url` before checking for an API key so local Ollama (`:11434`), LM Studio (`:1234`), vLLM, and llama.cpp servers on `localhost`/`127.0.0.1` can fetch models without a dummy API key, and hides the irrelevant OpenRouter fallback checkbox on localhost custom profiles.
+3. **🛠️ Options Dialog Ergonomics & Ouroboros AST Signal Verification (`palace_gui.py`, `palace_ouroboros.py`, `idle_service.py`):**
+   - **Appearance → `Washout Strength` SpinBox (`60%`–`96%`):** Adds an editable `QSpinBox` beside the `Washout Strength` slider with a 140ms single-shot debounce timer so dragging or typing is instant and lag-free.
+   - **Providers → Direct API Key:** Removes the non-functional `👁 Show` / `🙈 Hide` button next to DPAPI-vaulted API keys.
+   - **Memory Palace → Experimental → `Source Mirror Folder`:** Locks the `Source Mirror Folder` row inside `QFormLayout` (`maxWidth=360` + trailing stretch) so resizing the Options window never shifts the line horizontally.
+   - **Ouroboros AST Gate Upgrade:** Verifies module-level private helpers (`_helper_fn(`) and Qt signal bindings (`.connect(self._method)`) before any `/autopatch` can hot-swap live files.
+
+---
+
 # Fairybread — Beta v0.95e (Win_x64) Changelog
 **Release Date:** 2026-11-27
 **Version:** `0.95e` (`0.95.5.0`)
