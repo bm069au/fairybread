@@ -21,6 +21,18 @@ const LEGACY_KEYS_TO_CLEAR = [
 
 const DEFAULT_NEWS = [
   {
+    id: 'news-v095h-release',
+    title: 'Fairybread v0.95h: 3D & Lifelike Avatar Studio, Lego-Style 3D Brick Minifigs, Game-Style 3.5s Live GPU Benchmark & ComfyUI Video Cards',
+    tag: 'Release v0.95h',
+    date: '2026-11-28',
+    author: 'Brett Martin Moore (bm069au)',
+    body: `Fairybread v0.95h (Win_x64) is live on GitHub Releases with 1-click Update Only support:
+
+• 3D & Lifelike Avatar Studio (5 Engine Modes): Switch seamlessly between 3D Pixar / Studio Animated Characters (Male & Female), Lifelike Photorealistic Human Portraits (or any custom photo with live dual-eye blinks, breathing & audio lip-sync), 3D Brick Movie Minifig Characters (glossy ABS macro style), 360° Rotatable 3D Polygon Meshes (with custom .OBJ loader), and Classic 2D Vector Cartoons.
+• Game-Style System Requirements & Live 3.5s GPU Benchmark: Automatically detects dedicated NVIDIA/Radeon vs. integrated GPUs, display refresh rate, and laptop battery status—and runs a 3.5-second live 3D spin benchmark (ignoring the first 1.2s shader warmup) to auto-select Full 3D, Lite 3D, or 2D Fallback with a manual override and laptop battery saver guard.
+• Local ComfyUI Video Cards & Keyless Local Model Discovery: Renders interactive inline [GENERATE_VIDEO] HTML cards, auto-routes ComfyUI video workflows (:8188), adds ↻ Fetch Local Models to the Video Engine card, and supports keyless local model discovery for Ollama, LM Studio, and vLLM.`,
+  },
+  {
     id: 'news-v095e-release',
     title: 'Fairybread v0.95e: Slim 22px Composer Toolbar, Option 2 Segmented 8–15 AI Progress Bar, uTorrent System Tray, Location Autocomplete & #Fairybread Rizon IRC',
     tag: 'Release v0.95e',
@@ -967,7 +979,7 @@ async function autoUpdateLatestRelease() {
     const cleanTag = rawTag.replace(/-beta$/i, '');
 
     // Never downgrade if fetched release tag is older than the currently published baseline
-    const currentSiteVersion = 'v0.95e';
+    const currentSiteVersion = 'v0.95h';
     if (compareVersionTags(cleanTag, currentSiteVersion) < 0) {
       return;
     }
